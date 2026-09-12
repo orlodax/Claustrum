@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>claustrum</AssemblyName>
+    <RootNamespace>Claustrum</RootNamespace>
+    <PublishAot>true</PublishAot>
+    <StripSymbols>true</StripSymbols>
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>claustrum</ToolCommandName>
+    <PackageId>Claustrum</PackageId>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Claustrum.Core\Claustrum.Core.csproj" />
+    <ProjectReference Include="..\Claustrum.Roles\Claustrum.Roles.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="System.CommandLine" />
+    <PackageReference Include="ModelContextProtocol" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" />
+  </ItemGroup>
+</Project>

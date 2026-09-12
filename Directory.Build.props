@@ -1,0 +1,17 @@
+<Project>
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <IsAotCompatible>true</IsAotCompatible>
+    <EnableTrimAnalyzer>true</EnableTrimAnalyzer>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <JsonSerializerIsReflectionEnabledByDefault>false</JsonSerializerIsReflectionEnabledByDefault>
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+    <Authors>Dario Orlovich</Authors>
+    <RepositoryUrl>https://github.com/orlodax/Claustrum</RepositoryUrl>
+    <Version>0.1.0-alpha</Version>
+  </PropertyGroup>
+</Project>

@@ -1,0 +1,30 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+      - run: dotnet test --configuration Release
+
+  aot-publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+      - run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev
+      - run: dotnet publish src/Claustrum/Claustrum.csproj -c Release -r linux-x64 -p:PublishAot=true -warnaserror
+      - run: ./src/Claustrum/bin/Release/net10.0/linux-x64/publish/claustrum --version

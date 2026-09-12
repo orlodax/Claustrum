@@ -1,0 +1,11 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Claustrum.Core/Claustrum.Core.csproj" />
+    <Project Path="src/Claustrum.Roles/Claustrum.Roles.csproj" />
+    <Project Path="src/Claustrum/Claustrum.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Claustrum.Core.Tests/Claustrum.Core.Tests.csproj" />
+    <Project Path="tests/Claustrum.Roles.Tests/Claustrum.Roles.Tests.csproj" />
+  </Folder>
+</Solution>

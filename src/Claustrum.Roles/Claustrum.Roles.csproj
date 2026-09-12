@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>Claustrum.Roles</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Claustrum.Core\Claustrum.Core.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="..\..\roles\**\*" LinkBase="roles" />
+  </ItemGroup>
+</Project>
