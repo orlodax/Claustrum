@@ -8,6 +8,7 @@
     <PackAsTool>true</PackAsTool>
     <ToolCommandName>claustrum</ToolCommandName>
     <PackageId>Claustrum</PackageId>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\Claustrum.Core\Claustrum.Core.csproj" />
