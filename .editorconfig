@@ -1,0 +1,158 @@
+# EditorConfig — Claustrum
+# Machine-enforceable C# style. Principles and the judgment calls live in AGENTS.md §"Code style".
+# Every rule here is either `warning` (house style, becomes an error under TreatWarningsAsErrors)
+# or `none` (deliberately not a house rule). Nothing is left at `suggestion`: an IDE hint that is
+# never acted on is noise, and noise hides the one hint that matters.
+
+root = true
+
+[*]
+charset = utf-8
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+
+[*.md]
+trim_trailing_whitespace = false
+
+[*.{json,yml,yaml,csproj,props,targets,slnx}]
+indent_size = 2
+
+# ---------------------------------------------------------------------------
+# C#
+# ---------------------------------------------------------------------------
+[*.cs]
+indent_size = 4
+tab_width = 4
+
+# Anything the style analyzers would otherwise whisper as info/suggestion surfaces as a build
+# warning instead; the exceptions below are the rules we consciously do not hold.
+dotnet_analyzer_diagnostic.category-Style.severity = warning
+
+# --- Modern C# first ---------------------------------------------------------
+csharp_style_namespace_declarations = file_scoped:warning
+csharp_style_prefer_primary_constructors = true:warning
+dotnet_style_prefer_collection_expression = when_types_loosely_match:warning
+csharp_style_prefer_pattern_matching = true:warning
+csharp_style_pattern_matching_over_is_with_cast_check = true:warning
+csharp_style_pattern_matching_over_as_with_null_check = true:warning
+csharp_style_prefer_not_pattern = true:warning
+csharp_style_prefer_switch_expression = true:warning
+csharp_style_prefer_null_check_over_type_check = true:warning
+dotnet_style_prefer_is_null_check_over_reference_equality_method = true:warning
+csharp_style_prefer_index_operator = true:warning
+csharp_style_prefer_range_operator = true:warning
+csharp_style_prefer_utf8_string_literals = true:warning
+csharp_style_prefer_method_group_conversion = true:warning
+csharp_style_prefer_top_level_statements = true:warning
+csharp_prefer_simple_using_statement = true:warning
+csharp_style_prefer_tuple_swap = true:warning
+csharp_style_implicit_object_creation_when_type_is_apparent = true:warning
+dotnet_style_object_initializer = true:warning
+dotnet_style_collection_initializer = true:warning
+dotnet_style_prefer_auto_properties = true:warning
+dotnet_style_prefer_conditional_expression_over_assignment = true:warning
+dotnet_style_prefer_conditional_expression_over_return = true:warning
+dotnet_style_prefer_compound_assignment = true:warning
+dotnet_style_prefer_simplified_boolean_expressions = true:warning
+dotnet_style_prefer_simplified_interpolation = true:warning
+dotnet_style_null_propagation = true:warning
+dotnet_style_coalesce_expression = true:warning
+csharp_style_throw_expression = true:warning
+csharp_style_inlined_variable_declaration = true:warning
+csharp_style_deconstructed_variable_declaration = true:warning
+csharp_style_unused_value_assignment_preference = discard_variable:warning
+csharp_style_unused_value_expression_statement_preference = discard_variable:warning
+
+# --- Severe typing: explicit types, `var` only when the type would repeat or is unwieldy --------
+csharp_style_var_for_built_in_types = false:warning
+csharp_style_var_when_type_is_apparent = false:warning
+csharp_style_var_elsewhere = false:warning
+
+# --- Declarations ----------------------------------------------------------------
+dotnet_style_require_accessibility_modifiers = for_non_interface_members:warning
+dotnet_style_readonly_field = true:warning
+csharp_prefer_static_local_function = true:warning
+csharp_style_prefer_readonly_struct = true:warning
+csharp_style_prefer_readonly_struct_member = true:warning
+dotnet_style_predefined_type_for_locals_parameters_members = true:warning
+dotnet_style_predefined_type_for_member_access = true:warning
+dotnet_style_parentheses_in_arithmetic_binary_operators = never_if_unnecessary:warning
+dotnet_style_parentheses_in_relational_binary_operators = never_if_unnecessary:warning
+dotnet_style_parentheses_in_other_binary_operators = always_for_clarity:warning
+dotnet_style_parentheses_in_other_operators = never_if_unnecessary:warning
+csharp_prefer_braces = when_multiline:none
+csharp_preserve_single_line_statements = true
+csharp_preserve_single_line_blocks = true
+csharp_new_line_before_members_in_object_initializers = false
+csharp_new_line_before_members_in_anonymous_types = false
+csharp_style_expression_bodied_methods = when_on_single_line:none
+csharp_style_expression_bodied_constructors = when_on_single_line:none
+csharp_style_expression_bodied_operators = when_on_single_line:none
+csharp_style_expression_bodied_properties = when_on_single_line:none
+csharp_style_expression_bodied_indexers = when_on_single_line:none
+csharp_style_expression_bodied_accessors = when_on_single_line:none
+csharp_style_expression_bodied_lambdas = when_on_single_line:none
+csharp_style_expression_bodied_local_functions = when_on_single_line:none
+
+# --- Not house rules — off so they never nag -----------------------------------------
+dotnet_style_qualification_for_field = false:none
+dotnet_style_qualification_for_property = false:none
+dotnet_style_qualification_for_method = false:none
+dotnet_style_qualification_for_event = false:none
+dotnet_diagnostic.IDE0130.severity = none   # namespace must match folder — vertical slices, no
+dotnet_diagnostic.IDE0011.severity = none   # braces on single-line if — context-driven, see AGENTS.md
+dotnet_diagnostic.IDE0058.severity = none   # unused expression value — too noisy on fluent builders
+dotnet_diagnostic.IDE0022.severity = none   # expression body for methods — judgment
+dotnet_diagnostic.IDE0021.severity = none   # expression body for constructors — judgment
+dotnet_diagnostic.IDE0023.severity = none   # expression body for operators — judgment
+dotnet_diagnostic.IDE0024.severity = none
+dotnet_diagnostic.IDE0025.severity = none   # expression body for properties — judgment
+dotnet_diagnostic.IDE0026.severity = none
+dotnet_diagnostic.IDE0027.severity = none
+dotnet_diagnostic.IDE0053.severity = none   # expression body for lambdas — judgment
+dotnet_diagnostic.IDE0061.severity = none   # expression body for local functions — judgment
+dotnet_diagnostic.IDE0046.severity = none   # conditional over return: ternaries hurt density past one line
+dotnet_diagnostic.IDE0045.severity = none   # conditional over assignment — same
+dotnet_diagnostic.IDE0072.severity = none   # populate every switch arm — `_ =>` is fine
+
+# --- Usings ---------------------------------------------------------------------------
+dotnet_sort_system_directives_first = true
+dotnet_separate_import_directive_groups = false
+csharp_using_directive_placement = outside_namespace:warning
+dotnet_diagnostic.IDE0005.severity = warning   # remove unnecessary usings (needs GenerateDocumentationFile)
+
+# --- Naming -----------------------------------------------------------------------------
+dotnet_naming_rule.interfaces_i_prefixed.severity = warning
+dotnet_naming_rule.interfaces_i_prefixed.symbols = interface_symbols
+dotnet_naming_rule.interfaces_i_prefixed.style = i_prefixed_pascal
+dotnet_naming_symbols.interface_symbols.applicable_kinds = interface
+dotnet_naming_symbols.interface_symbols.applicable_accessibilities = *
+dotnet_naming_style.i_prefixed_pascal.required_prefix = I
+dotnet_naming_style.i_prefixed_pascal.capitalization = pascal_case
+
+dotnet_naming_rule.async_methods_suffixed.severity = warning
+dotnet_naming_rule.async_methods_suffixed.symbols = async_methods
+dotnet_naming_rule.async_methods_suffixed.style = async_suffix
+dotnet_naming_symbols.async_methods.applicable_kinds = method
+dotnet_naming_symbols.async_methods.applicable_accessibilities = *
+dotnet_naming_symbols.async_methods.required_modifiers = async
+dotnet_naming_style.async_suffix.required_suffix = Async
+dotnet_naming_style.async_suffix.capitalization = pascal_case
+
+# Private const stays PascalCase; the more specific rule must come before the field rule.
+dotnet_naming_rule.private_const_pascal.severity = warning
+dotnet_naming_rule.private_const_pascal.symbols = private_const_fields
+dotnet_naming_rule.private_const_pascal.style = pascal_case_style
+dotnet_naming_symbols.private_const_fields.applicable_kinds = field
+dotnet_naming_symbols.private_const_fields.applicable_accessibilities = private, private_protected
+dotnet_naming_symbols.private_const_fields.required_modifiers = const
+dotnet_naming_style.pascal_case_style.capitalization = pascal_case
+
+# Private fields camelCase, no `_` prefix (editor token colours already mark them).
+dotnet_naming_rule.private_fields_camel.severity = warning
+dotnet_naming_rule.private_fields_camel.symbols = private_fields
+dotnet_naming_rule.private_fields_camel.style = camel_case_plain
+dotnet_naming_symbols.private_fields.applicable_kinds = field
+dotnet_naming_symbols.private_fields.applicable_accessibilities = private, private_protected
+dotnet_naming_style.camel_case_plain.capitalization = camel_case
