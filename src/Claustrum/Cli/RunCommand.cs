@@ -128,7 +128,7 @@ public static class RunCommand
                 DiffByteCapBytes: CliDiffCapBytes,
                 BackendConfig: backendConfig,
                 EnvPassthroughAll: config.Merged.Defaults?.EnvPassthrough == "all",
-                OnStreamLine: streamMode ? line => Console.Error.WriteLine(line) : null);
+                OnStreamLine: streamMode ? Console.Error.WriteLine : null);
 
             RunResult result = await CliServices.Runner.RunAsync(request, resolved, options, cts.Token);
             RunResult output = rawMode ? result : result with { Raw = null };
