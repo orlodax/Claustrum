@@ -1,7 +1,9 @@
-Your final message ends with exactly one fenced block tagged `claustrum-report` containing JSON
-matching this schema:
+**Mandatory, no exceptions** — even for a one-line task, even when the review is clean. Your final
+message must END with exactly one fenced block tagged `claustrum-report`, and nothing after it. Copy
+this shape, filling in real values:
 
-```json
+````
+```claustrum-report
 {
   "status": "done | partial | blocked",
   "findings": [
@@ -18,6 +20,7 @@ matching this schema:
   "would_change_if_broader": ["..."]
 }
 ```
+````
 
 Rank findings most-severe first; an empty `findings` list is a legitimate outcome for a clean
 change. Mark each finding CONFIRMED only when you traced the path and it definitely breaks;
