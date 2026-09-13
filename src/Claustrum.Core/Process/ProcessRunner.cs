@@ -16,6 +16,7 @@ public sealed class ProcessRunner(IPlatform platform)
         ProcessSpec spec,
         BackendConfig? backendConfig,
         JobPaths job,
+        bool envPassthroughAll,
         Action<string>? onStreamLine,
         TimeSpan? timeout,
         CancellationToken cancellationToken)
@@ -35,7 +36,12 @@ public sealed class ProcessRunner(IPlatform platform)
         foreach (string arg in binary.Args)
             startInfo.ArgumentList.Add(arg);
 
-        foreach (KeyValuePair<string, string> entry in EnvAllowList.Build(platform, spec.Env, passthroughAll: false))
+        // .NET pre-populates ProcessStartInfo.Environment with this process's own environment when
+        // UseShellExecute is false, so without Clear() the allow-list below was a no-op and every
+        // Claustrum-process variable leaked into the child regardless (NOTES.md "Env allow-list is
+        // dead").
+        startInfo.Environment.Clear();
+        foreach (KeyValuePair<string, string> entry in EnvAllowList.Build(platform, spec.Env, envPassthroughAll))
             startInfo.Environment[entry.Key] = entry.Value;
 
         using System.Diagnostics.Process process = new() { StartInfo = startInfo };

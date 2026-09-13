@@ -111,7 +111,7 @@ public sealed class ClaudeBackend(IPlatform platform) : IBackend
 
         args.Add(run.Brief);
 
-        return new ProcessSpec(Name, [.. args], run.Cwd, [], []);
+        return new ProcessSpec(Name, [.. args], run.Cwd, run.Env, []);
     }
 
     public ParsedOutput Parse(string stdout, string stderr, int exitCode)

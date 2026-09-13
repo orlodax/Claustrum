@@ -1,4 +1,6 @@
+using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Claustrum.Core.Backends;
 using Claustrum.Core.Git;
 using Claustrum.Core.Jobs;
@@ -13,12 +15,18 @@ namespace Claustrum.Core;
 // docs/PLAN.md A3: blind gate -> resolve backend -> Build -> snapshot -> ProcessRunner -> snapshot
 // -> Parse -> ReportExtractor.Extract -> RunResult -> result.json -> delete temp files. "resolve"
 // here is the backend-name lookup in BackendRegistry, not Config.Resolve — the caller already
-// produced ResolvedRole before calling RunAsync.
-public sealed class Runner(IPlatform platform, BackendRegistry backends, ProcessRunner processRunner)
+// produced ResolvedRole before calling RunAsync. Once ProcessRunner returns an outcome the backend
+// process has definitely run, so everything from there on is wrapped: a throw in that section still
+// yields a Failed RunResult and a written result.json instead of an unobserved crash or, on
+// cancel/timeout, no result at all (NOTES.md "Runner always yields a result after the process ran").
+public sealed partial class Runner(IPlatform platform, BackendRegistry backends, ProcessRunner processRunner)
 {
     public async Task<RunResult> RunAsync(RunRequest request, ResolvedRole role, RunOptions options, CancellationToken cancellationToken)
     {
+        ValidateTimeout(request);
+
         string brief = ResolveBrief(request, platform);
+        brief = AppendAttachments(brief, request.AttachFiles, platform);
         EnsureBlindGate(role, brief);
 
         JobPaths job = JobDirectory.Create(platform);
@@ -29,44 +37,62 @@ public sealed class Runner(IPlatform platform, BackendRegistry backends, Process
             return WriteResult(job, MissingBackendResult(job, role));
 
         WorktreeState before = await WorktreeSnapshot.CaptureAsync(request.Cwd, cancellationToken);
-
-        ResolvedRun run = new(role, brief, request.Cwd, request.BudgetUsd, request.ResumeSession, request.AttachFiles, request.Stream, job.SystemMd, job.Directory);
+        ResolvedRun run = new(role, brief, request.Cwd, request.BudgetUsd, request.ResumeSession, request.AttachFiles, request.Stream, job.SystemMd, job.Directory, request.Env);
         ProcessSpec spec = backend.Build(run);
 
-        ProcessOutcome outcome = await processRunner.RunAsync(spec, backendConfig: null, job, options.OnStreamLine, request.Timeout, cancellationToken);
+        ProcessOutcome outcome = await processRunner.RunAsync(spec, options.BackendConfig, job, options.EnvPassthroughAll, options.OnStreamLine, request.Timeout, cancellationToken);
 
-        WorktreeState after = await WorktreeSnapshot.CaptureAsync(request.Cwd, cancellationToken);
-        SnapshotDiff diff = await WorktreeSnapshot.DiffAsync(request.Cwd, before, after, options.DiffByteCapBytes, cancellationToken);
+        try
+        {
+            // CancellationToken.None from here on: request.Timeout/cancellationToken already fired
+            // to produce this outcome, and a cancelled after-snapshot would throw before any result
+            // is ever written — the "Ctrl+C produces no result" bug this section exists to close.
+            WorktreeState after = await WorktreeSnapshot.CaptureAsync(request.Cwd, CancellationToken.None);
+            SnapshotDiff diff = await WorktreeSnapshot.DiffAsync(request.Cwd, before, after, options.DiffByteCapBytes, CancellationToken.None);
 
-        ParsedOutput parsed = backend.Parse(outcome.Stdout, outcome.Stderr, outcome.ExitCode);
-        ExtractedReport extracted = ReportExtractor.Extract(parsed.FinalMessage);
-        RunStatus status = DetermineStatus(outcome, parsed);
+            ParsedOutput parsed = backend.Parse(outcome.Stdout, outcome.Stderr, outcome.ExitCode);
+            ExtractedReport extracted = ReportExtractor.Extract(parsed.FinalMessage);
+            RunStatus status = DetermineStatus(outcome, parsed);
 
-        RunResult result = new(
-            SchemaVersion: "1",
-            JobId: job.Id,
-            Status: status,
-            Backend: role.Backend,
-            Model: role.Model,
-            Role: role.Name,
-            FinalMessage: parsed.FinalMessage,
-            ChangedFiles: diff.ChangedFiles,
-            Diff: diff.Diff,
-            DiffTruncated: diff.Truncated,
-            SessionId: parsed.SessionId,
-            CostUsd: parsed.CostUsd,
-            Usage: parsed.Usage,
-            ExitCode: outcome.ExitCode,
-            LogPath: job.StdoutLog,
-            DurationSeconds: outcome.Duration.TotalSeconds,
-            Error: status == RunStatus.Success ? null : parsed.FinalMessage,
-            Raw: parsed.Raw,
-            Report: extracted.Report,
-            ReportStatus: extracted.Status,
-            Warnings: extracted.Warnings);
+            RunResult result = new(
+                SchemaVersion: "1",
+                JobId: job.Id,
+                Status: status,
+                Backend: role.Backend,
+                Model: role.Model,
+                Role: role.Name,
+                FinalMessage: parsed.FinalMessage,
+                ChangedFiles: diff.ChangedFiles,
+                Diff: diff.Diff,
+                DiffTruncated: diff.Truncated,
+                SessionId: parsed.SessionId,
+                CostUsd: parsed.CostUsd,
+                Usage: parsed.Usage,
+                ExitCode: outcome.ExitCode,
+                LogPath: job.StdoutLog,
+                DurationSeconds: outcome.Duration.TotalSeconds,
+                Error: status == RunStatus.Success ? null : parsed.FinalMessage,
+                Raw: parsed.Raw,
+                Report: extracted.Report,
+                ReportStatus: extracted.Status,
+                Warnings: extracted.Warnings);
 
-        DeleteTempFiles(spec.TempFiles);
-        return WriteResult(job, result);
+            return WriteResult(job, result);
+        }
+        catch (Exception ex)
+        {
+            return WriteResult(job, FailureResult(job, role, outcome, ex));
+        }
+        finally
+        {
+            DeleteTempFiles(spec.TempFiles);
+        }
+    }
+
+    private static void ValidateTimeout(RunRequest request)
+    {
+        if (request.Timeout is { } timeout && timeout <= TimeSpan.Zero)
+            throw new RunRequestException("--timeout must be greater than zero");
     }
 
     private static string ResolveBrief(RunRequest request, IPlatform platform)
@@ -79,6 +105,24 @@ public sealed class Runner(IPlatform platform, BackendRegistry backends, Process
         throw new ArgumentException("RunRequest must set either Brief or BriefFile", nameof(request));
     }
 
+    // Harness-neutral (docs/PLAN.md A2): every backend gets attachments the same way, appended to
+    // the prompt text rather than passed as a native "file" concept most backends don't have.
+    private static string AppendAttachments(string brief, string[] attachFiles, IPlatform platform)
+    {
+        if (attachFiles.Length == 0)
+            return brief;
+
+        string[] missing = [.. attachFiles.Where(path => !platform.FileExists(path))];
+        if (missing.Length > 0)
+            throw new RunRequestException($"--file not found: {string.Join(", ", missing)}");
+
+        StringBuilder builder = new(brief);
+        foreach (string path in attachFiles)
+            builder.Append("\n\n## Attached: ").Append(path).Append('\n').Append(platform.ReadAllText(path));
+
+        return builder.ToString();
+    }
+
     // NOTES.md "Blind review is enforced, not requested".
     private static void EnsureBlindGate(ResolvedRole role, string brief)
     {
@@ -88,9 +132,16 @@ public sealed class Runner(IPlatform platform, BackendRegistry backends, Process
         if (brief.Contains("## Context", StringComparison.Ordinal)
             || brief.Contains("## Plan", StringComparison.Ordinal)
             || brief.Contains("## Rationale", StringComparison.Ordinal)
-            || brief.Contains("claustrum-report", StringComparison.Ordinal))
+            || ReportFencePattern().IsMatch(brief))
             throw new BlindGateException("blind role: brief carries rationale");
     }
+
+    // Line-start (optional indent) + 3-or-more backticks + "claustrum-report" — a bare-word
+    // substring match used to trip on any brief that merely mentioned the report format by name,
+    // not just one that actually pasted a fence (docs/PLAN.md B3; ReportExtractor.FencePattern is
+    // the deliberately-lenient sibling that finds this same fence in the backend's own output).
+    [GeneratedRegex(@"^[ \t]*`{3,}claustrum-report\b", RegexOptions.Multiline)]
+    private static partial Regex ReportFencePattern();
 
     private static RunResult MissingBackendResult(JobPaths job, ResolvedRole role) => new(
         SchemaVersion: "1",
@@ -110,6 +161,33 @@ public sealed class Runner(IPlatform platform, BackendRegistry backends, Process
         LogPath: job.StdoutLog,
         DurationSeconds: 0,
         Error: $"backend '{role.Backend}' is not registered",
+        Raw: null,
+        Report: null,
+        ReportStatus: ReportStatus.Missing,
+        Warnings: []);
+
+    // Status stays Failed here even for a termination that would otherwise map to Timeout/Cancelled
+    // — this branch only runs when something *else* broke after the process already ran (e.g. the
+    // after-snapshot's git process failed to spawn), so the termination enum alone would misreport
+    // why the run has no diff/report.
+    private static RunResult FailureResult(JobPaths job, ResolvedRole role, ProcessOutcome outcome, Exception ex) => new(
+        SchemaVersion: "1",
+        JobId: job.Id,
+        Status: RunStatus.Failed,
+        Backend: role.Backend,
+        Model: role.Model,
+        Role: role.Name,
+        FinalMessage: "",
+        ChangedFiles: [],
+        Diff: null,
+        DiffTruncated: false,
+        SessionId: null,
+        CostUsd: null,
+        Usage: null,
+        ExitCode: outcome.ExitCode,
+        LogPath: job.StdoutLog,
+        DurationSeconds: outcome.Duration.TotalSeconds,
+        Error: ex.Message,
         Raw: null,
         Report: null,
         ReportStatus: ReportStatus.Missing,
