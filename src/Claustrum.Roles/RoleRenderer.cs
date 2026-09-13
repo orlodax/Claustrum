@@ -37,7 +37,8 @@ public sealed class RoleRenderer(RoleLibrary library)
             SystemBody: systemBody,
             ModelClass: roleTier.Model,
             Effort: roleTier.Effort,
-            Permission: ParsePermission(definition.Permission, definition.Deny),
+            Permission: definition.Permission,
+            Deny: definition.Deny,
             ReportSchema: definition.Report,
             Blind: definition.Blind);
     }
@@ -106,14 +107,5 @@ public sealed class RoleRenderer(RoleLibrary library)
     {
         "claude" => $"""the `Agent` tool with `subagent_type: "{targetRole}"` (`run_in_background: false` to block on the result)""",
         _ => $"`claustrum run {targetRole} --brief-file <path> --json`",
-    };
-
-    private static PermissionPolicy ParsePermission(string permission, string[] deny) => permission switch
-    {
-        "readonly" => new PermissionPolicy(PermissionLevel.ReadOnly, deny),
-        "edit" => new PermissionPolicy(PermissionLevel.Edit, deny),
-        "edit+shell" => new PermissionPolicy(PermissionLevel.EditShell, deny),
-        "full" => new PermissionPolicy(PermissionLevel.Full, deny),
-        _ => throw new RoleRenderException($"unknown permission level '{permission}'"),
     };
 }
