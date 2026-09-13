@@ -18,17 +18,25 @@ translates paths: the Windows binary spawns Windows harnesses, the WSL binary sp
 `doctor` warns when a backend resolved from WSL is a `/mnt/c/…` Windows executable, because that
 harness would receive Linux paths it cannot open.
 
-## npm shims on Windows (2026-09-12)
+## npm shims on Windows (2026-09-12, confirmed 2026-09-13)
 
 `claude` and `copilot` install as `.cmd` shims. `CreateProcess` ignores `PATHEXT`, and `cmd.exe`
-mangles `%` and long argument lines. `BinaryLocator` reads the shim; when it matches the standard
-`"%dp0%\node_modules\<pkg>\bin\<exe>" %*` shape it runs that executable directly. Otherwise it runs
-the `.cmd` and escapes `%` as `%%`.
+mangles `%` and long argument lines. `BinaryLocator`/`NpmShimParser` read the shim body and
+recognize two real shapes, confirmed against actual installs on this machine: a compiled-binary
+shim (`claude.cmd` -> `"%dp0%\node_modules\@anthropic-ai\claude-code\bin\claude.exe" %*`, run
+directly) and the classic pure-JS shim (`yo.cmd` -> `"%_prog%" "%dp0%\node_modules\yo\lib\cli.js"
+%*` where `_prog` is `%dp0%\node.exe` if bundled else bare `node`, run as `node <script> args`).
+Anything that matches neither falls back to `cmd.exe /d /s /c` with `%` doubled to `%%`.
 
-## Role injection per backend (2026-09-12)
+## Role injection per backend (2026-09-12, corrected 2026-09-13)
 
-- claude: `--append-system-prompt-file` — file-based to avoid inline JSON through the shim; the
-  `--agents` inline form is kept as an opt-in mode.
+- claude: `--append-system-prompt <text>`, inline — **not** `--append-system-prompt-file`, which
+  does not exist on the installed CLI (`claude --help`, v2.1.269, checked while building the M1
+  `ClaudeBackend`; PLAN.md A3 had flagged this exact flag as "UNCONFIRMED — verify at M1"). The
+  `--agents` inline form is kept as a possible opt-in mode later. Passing the prompt inline is safe
+  because it goes through `ProcessStartInfo.ArgumentList` (never a shell string) in the normal case;
+  the `cmd.exe /d /s /c` fallback path still risks Windows' ~8191-char command-line limit for a very
+  long role body — not yet hit in practice, worth a guard if it ever is.
 - opencode: an inline agent in `OPENCODE_CONFIG_CONTENT` with the prompt string embedded, so nothing
   is written into the repo or `~/.config`.
 - cursor: no system-prompt hook exists; the role body is prefixed to the prompt.
