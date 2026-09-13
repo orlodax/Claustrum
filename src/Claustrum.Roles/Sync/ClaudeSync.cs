@@ -20,9 +20,12 @@ public sealed class ClaudeSync(RoleLibrary library, RoleRenderer renderer)
     public SyncResult Sync(string cwd, IReadOnlyList<string>? roles = null, bool global = false, bool force = false)
     {
         IReadOnlyList<string> targetRoles = roles is { Count: > 0 } ? roles : library.ListRoles();
-        string agentsDir = global
-            ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude", "agents")
-            : Path.Combine(cwd, ".claude", "agents");
+        // `--global` targets `~/.claude/...` throughout, not just the agents dir (review finding #3:
+        // the skill file used to hardcode `cwd` here regardless of `global`).
+        string claudeRoot = global
+            ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude")
+            : Path.Combine(cwd, ".claude");
+        string agentsDir = Path.Combine(claudeRoot, "agents");
         Directory.CreateDirectory(agentsDir);
 
         List<string> written = [];
@@ -42,7 +45,7 @@ public sealed class ClaudeSync(RoleLibrary library, RoleRenderer renderer)
             }
         }
 
-        WriteSkill(cwd, force, written, skipped, foreign, manifestFiles);
+        WriteSkill(claudeRoot, force, written, skipped, foreign, manifestFiles);
 
         if (!global)
             UpdateManifest(cwd, manifestFiles);
@@ -77,9 +80,9 @@ public sealed class ClaudeSync(RoleLibrary library, RoleRenderer renderer)
         WriteGenerated(path, role, frontmatter, body, force, written, skipped, foreign, manifestFiles);
     }
 
-    private void WriteSkill(string cwd, bool force, List<string> written, List<string> skipped, List<string> foreign, List<SyncManifestFile> manifestFiles)
+    private void WriteSkill(string claudeRoot, bool force, List<string> written, List<string> skipped, List<string> foreign, List<SyncManifestFile> manifestFiles)
     {
-        string skillDir = Path.Combine(cwd, ".claude", "skills", "delegate");
+        string skillDir = Path.Combine(claudeRoot, "skills", "delegate");
         Directory.CreateDirectory(skillDir);
         string frontmatter = """
             ---
@@ -118,14 +121,19 @@ public sealed class ClaudeSync(RoleLibrary library, RoleRenderer renderer)
 
         if (File.Exists(path))
         {
-            if (File.ReadAllText(path) == content)
+            string existing = File.ReadAllText(path);
+
+            // Compare with line endings normalized: a CRLF checkout (core.autocrlf) makes
+            // File.ReadAllText return `\r\n` while `content` above is built with plain `\n`, so a
+            // byte-exact compare here rewrote every generated file on every `sync` (review finding #3).
+            if (NormalizeLineEndings(existing) == NormalizeLineEndings(content))
             {
                 skipped.Add(path);
                 manifestFiles.Add(new SyncManifestFile(path, role, Harness, sha256));
                 return;
             }
 
-            if (!HasMarker(File.ReadAllText(path)) && !force)
+            if (!HasMarker(existing) && !force)
             {
                 foreign.Add(path);
                 return;
@@ -157,6 +165,8 @@ public sealed class ClaudeSync(RoleLibrary library, RoleRenderer renderer)
         SyncManifest manifest = new(library.Version, [.. merged.Values.OrderBy(f => f.Path, StringComparer.Ordinal)]);
         File.WriteAllText(manifestPath, JsonSerializer.Serialize(manifest, RolesJsonContext.Default.SyncManifest));
     }
+
+    private static string NormalizeLineEndings(string text) => text.Replace("\r\n", "\n");
 
     private static bool HasMarker(string content) =>
         content.Split('\n').Take(15).Any(line => line.TrimEnd('\r').StartsWith(MarkerPrefix, StringComparison.Ordinal));
