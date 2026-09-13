@@ -57,7 +57,7 @@ try {
     $claudeFound = $doctorOutput -match "claude:\s*\r?\n\s*found:\s*True"
     Add-Result "backends doctor claude finds it" $claudeFound ($doctorOutput.Trim() -replace "\r?\n", " | ")
 
-    $runOutput = (& $claustrum run builder --brief "create hello.txt containing hi" --json --cwd $tmp --budget 0.5 --model haiku 2>$null)
+    $runOutput = (& $claustrum run builder --brief "create hello.txt containing hi" --json --cwd $tmp --budget 0.5 --model sonnet 2>$null)
     $ok = $false
     $detail = "no output"
     try {

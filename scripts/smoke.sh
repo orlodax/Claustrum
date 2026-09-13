@@ -63,7 +63,7 @@ else
 fi
 report_check "backends doctor claude finds it" "$doctor_ok" "$(echo "$doctor_output" | tr '\n' ' ')"
 
-run_output="$("$claustrum_bin" run builder --brief "create hello.txt containing hi" --json --cwd "$tmp" --budget 0.5 --model haiku 2>/dev/null)"
+run_output="$("$claustrum_bin" run builder --brief "create hello.txt containing hi" --json --cwd "$tmp" --budget 0.5 --model sonnet 2>/dev/null)"
 status="$(echo "$run_output" | jq -r '.status // empty' 2>/dev/null)"
 has_hello="$(echo "$run_output" | jq -r '([.changed_files[]?.path] | index("hello.txt")) != null' 2>/dev/null)"
 report_present="$(echo "$run_output" | jq -r '.report != null' 2>/dev/null)"
