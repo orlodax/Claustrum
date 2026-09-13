@@ -13,7 +13,11 @@ namespace Claustrum.Core.Config;
 public sealed class Config
 {
     public required ConfigDocument Merged { get; init; }
-    public required IReadOnlyDictionary<string, ConfigLayer> Origins { get; init; }
+
+    // Dictionary, not IReadOnlyDictionary: Resolve records ConfigLayer.Flag entries for the same
+    // instance after Load hands it back, so `backends doctor` (and any future caller) sees flag
+    // overrides too, not just the four file/env layers (review finding #2).
+    public required Dictionary<string, ConfigLayer> Origins { get; init; }
 
     public static Config Load(IPlatform platform, string cwd)
     {
@@ -58,14 +62,54 @@ public sealed class Config
 
         string[] deny = [.. role.Deny, .. roleSettings?.Deny ?? [], .. overrides.Deny ?? []];
 
+        RecordFlagOrigins(role.Name, overrides);
+
         return new ResolvedRole(role.Name, role.SystemBody, backend, modelId, effort, new PermissionPolicy(level, deny), role.Blind);
     }
 
+    // Mirrors Resolve's model-spec precedence (flag > per-role config > the role's own tier class)
+    // without duplicating the alias chase, so the CLI can pick the harness a role will run on
+    // *before* it has anything to Render (review finding #2 "harness chosen before resolution") —
+    // Render needs a harness up front, but the backend that harness implies needs this config.
+    public string ResolveBackend(string roleName, string tierModelClass, ConfigOverrides overrides)
+    {
+        RoleSettings? roleSettings = Merged.Roles is not null && Merged.Roles.TryGetValue(roleName, out RoleSettings? found)
+            ? found
+            : null;
+
+        string modelSpec = overrides.Model ?? roleSettings?.Model ?? tierModelClass;
+        (string backendFromModel, _) = ResolveModel(modelSpec);
+        return overrides.Backend ?? backendFromModel;
+    }
+
+    private void RecordFlagOrigins(string roleName, ConfigOverrides overrides)
+    {
+        if (overrides.Backend is not null)
+            Origins[$"roles.{roleName}.backend"] = ConfigLayer.Flag;
+        if (overrides.Model is not null)
+            Origins[$"roles.{roleName}.model"] = ConfigLayer.Flag;
+        if (overrides.Effort is not null)
+            Origins[$"roles.{roleName}.effort"] = ConfigLayer.Flag;
+        if (overrides.Permission is not null)
+            Origins[$"roles.{roleName}.permission"] = ConfigLayer.Flag;
+        if (overrides.Deny is { Length: > 0 })
+            Origins[$"roles.{roleName}.deny"] = ConfigLayer.Flag;
+        if (overrides.BudgetUsd is not null)
+            Origins["defaults.budget_usd"] = ConfigLayer.Flag;
+        if (overrides.TimeoutSeconds is not null)
+            Origins["defaults.timeout_seconds"] = ConfigLayer.Flag;
+    }
+
+    // §A7 aliases resolve recursively to depth 3: {"a":"b","b":"c","c":"claude:opus"} must resolve
+    // ("a" is 3 hops from its terminal value). The loop below chases up to 3 hops and only then
+    // checks whether the landing spot is itself still an alias — checking termination inside the
+    // same bounded loop (as a first build did) needs a 4th iteration to notice hop 3 was terminal,
+    // silently capping real resolution at 2 hops.
     private (string Backend, string ModelId) ResolveModel(string spec)
     {
         HashSet<string> seen = [spec];
         string current = spec;
-        for (int depth = 0; depth < 3; depth++)
+        for (int hop = 0; hop < 3; hop++)
         {
             if (Merged.Models is null || !Merged.Models.TryGetValue(current, out string? next))
                 return SplitBackendModel(current);
@@ -76,7 +120,10 @@ public sealed class Config
             current = next;
         }
 
-        throw new ConfigException($"model alias '{spec}' did not resolve within 3 levels");
+        if (Merged.Models is not null && Merged.Models.ContainsKey(current))
+            throw new ConfigException($"model alias '{spec}' did not resolve within 3 levels");
+
+        return SplitBackendModel(current);
     }
 
     private static (string Backend, string ModelId) SplitBackendModel(string value)
@@ -198,8 +245,17 @@ public sealed class Config
     private static ConfigDocument ReadDocument(IPlatform platform, string path)
     {
         string json = platform.ReadAllText(path);
-        ConfigDocument? document = JsonSerializer.Deserialize(json, ClaustrumJsonContext.Default.ConfigDocument);
-        return document ?? throw new ConfigException($"'{path}' does not contain a JSON object");
+        try
+        {
+            ConfigDocument? document = JsonSerializer.Deserialize(json, ClaustrumJsonContext.Default.ConfigDocument);
+            return document ?? throw new ConfigException($"'{path}' does not contain a JSON object");
+        }
+        catch (JsonException ex)
+        {
+            // ex.Message already carries the line/byte position; naming the file here is what a bare
+            // JsonException wouldn't do (review finding #1).
+            throw new ConfigException($"'{path}': {ex.Message}", ex);
+        }
     }
 
     private static ConfigDocument? ReadEnvLayer(IPlatform platform)
