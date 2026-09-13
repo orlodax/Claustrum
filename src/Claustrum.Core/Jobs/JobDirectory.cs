@@ -8,7 +8,7 @@ public static class JobDirectory
 {
     public static JobPaths Create(IPlatform platform)
     {
-        string root = ResolveJobsRoot(platform);
+        string root = ResolveRoot(platform);
         string id = $"{DateTime.UtcNow:yyyyMMdd-HHmmss}-{Random.Shared.Next(0, 0x10000):x4}";
         string directory = Path.Combine(root, id);
         Directory.CreateDirectory(directory);
@@ -23,7 +23,9 @@ public static class JobDirectory
             Path.Combine(directory, "result.json"));
     }
 
-    private static string ResolveJobsRoot(IPlatform platform) =>
+    // Public so `claustrum jobs list|show|logs` (CLI, builder slice 2026-09-13) can find existing job
+    // directories without creating a new one.
+    public static string ResolveRoot(IPlatform platform) =>
         platform.GetEnvironmentVariable("CLAUSTRUM_HOME") is { Length: > 0 } home
             ? Path.Combine(home, "jobs")
             : Path.Combine(platform.HomeDirectory, ".claustrum", "jobs");
