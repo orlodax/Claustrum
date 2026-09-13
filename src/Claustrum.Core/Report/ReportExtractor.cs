@@ -32,6 +32,10 @@ public static partial class ReportExtractor
         }
     }
 
-    [GeneratedRegex("""`{3,}claustrum-report\s*\r?\n(?<body>.*?)\r?\n`{3,}""", RegexOptions.Singleline)]
+    // [ \t]* before the closing fence tolerates a fence indented inside a list item (review finding
+    // #4) — a bare `\r?\n` immediately before the backticks never matched an indented closer, so the
+    // whole fence went unfound rather than just mis-trimmed (JSON tolerates the leading whitespace
+    // that survives on the body's inner lines either way).
+    [GeneratedRegex("""`{3,}claustrum-report\s*\r?\n(?<body>.*?)\r?\n[ \t]*`{3,}""", RegexOptions.Singleline)]
     private static partial Regex FencePattern();
 }
