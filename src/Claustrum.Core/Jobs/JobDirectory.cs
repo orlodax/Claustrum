@@ -1,4 +1,8 @@
 using Claustrum.Core.Platform;
+// Alias, not `using Claustrum.Core.Config;`: from this file's namespace (a sibling of `Config` under
+// `Claustrum.Core`), the *namespace* `Claustrum.Core.Config` shadows the `Config` *type* inside it —
+// an unqualified `Config.Load(...)` binds to the namespace and fails to compile.
+using CoreConfig = Claustrum.Core.Config.Config;
 
 namespace Claustrum.Core.Jobs;
 
@@ -13,6 +17,8 @@ public static class JobDirectory
         string directory = Path.Combine(root, id);
         Directory.CreateDirectory(directory);
 
+        Prune(platform, root);
+
         return new JobPaths(
             id,
             directory,
@@ -21,6 +27,33 @@ public static class JobDirectory
             Path.Combine(directory, "stdout.log"),
             Path.Combine(directory, "stderr.log"),
             Path.Combine(directory, "result.json"));
+    }
+
+    // jobs.keep_last (docs/PLAN.md A7, review finding #5). The job store is one global
+    // `~/.claustrum/jobs` tree regardless of which repo a run happens in (ResolveRoot below never
+    // takes a cwd), so pruning deliberately reads only the non-repo config layers (builtin/user/env)
+    // — a repo's own claustrum.json can't scope a policy over another repo's job history anyway.
+    private static void Prune(IPlatform platform, string root)
+    {
+        int keepLast = CoreConfig.Load(platform, platform.HomeDirectory).Merged.Jobs?.KeepLast ?? 200;
+        IEnumerable<string> stale = Directory.EnumerateDirectories(root)
+            .OrderDescending(StringComparer.Ordinal)
+            .Skip(keepLast);
+
+        foreach (string directory in stale)
+        {
+            try
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+            catch (IOException)
+            {
+                // Best-effort: a directory still open (e.g. a log handle) is left for the next prune.
+            }
+            catch (UnauthorizedAccessException)
+            {
+            }
+        }
     }
 
     // Public so `claustrum jobs list|show|logs` (CLI, builder slice 2026-09-13) can find existing job

@@ -56,12 +56,21 @@ public static class JobsCommands
         if (!File.Exists(resultPath))
             return "pending (no result.json)";
 
-        using JsonDocument document = JsonDocument.Parse(File.ReadAllText(resultPath));
-        JsonElement rootElement = document.RootElement;
-        string status = rootElement.TryGetProperty("status", out JsonElement s) ? s.GetString() ?? "?" : "?";
-        string role = rootElement.TryGetProperty("role", out JsonElement r) ? r.GetString() ?? "?" : "?";
-        string backend = rootElement.TryGetProperty("backend", out JsonElement b) ? b.GetString() ?? "?" : "?";
-        return $"{status,-16} {role}/{backend}";
+        // A job killed mid-write (crash, `kill -9`, power loss) leaves a truncated/partial
+        // result.json; one bad job must not take the whole `jobs list` down (review finding #5).
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(File.ReadAllText(resultPath));
+            JsonElement rootElement = document.RootElement;
+            string status = rootElement.TryGetProperty("status", out JsonElement s) ? s.GetString() ?? "?" : "?";
+            string role = rootElement.TryGetProperty("role", out JsonElement r) ? r.GetString() ?? "?" : "?";
+            string backend = rootElement.TryGetProperty("backend", out JsonElement b) ? b.GetString() ?? "?" : "?";
+            return $"{status,-16} {role}/{backend}";
+        }
+        catch (JsonException)
+        {
+            return "incomplete (unparsable result.json)";
+        }
     }
 
     private static int Show(string id)
