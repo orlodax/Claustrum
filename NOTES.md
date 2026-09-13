@@ -125,3 +125,36 @@ change (builder's tiers all resolve to `frontier-coding` → `opus`). Dropping i
 `builder.md` and `builder-xhigh.md` byte-identical except for `name`/`description`. Additive,
 harmless if Claude Code ignores the field; flagged here as a deliberate departure from the literal
 field list, not an oversight.
+## Model seam records were created by the Core builder (2026-09-13)
+
+`PermissionLevel`, `PermissionPolicy`, `ClaustrumReport`, `RenderedRole`, `ResolvedRole` were briefed
+as already existing in `Model/` for the Roles builder to code against, but neither parallel worktree
+had them at task start (checked both `git log` and the sibling worktree's file tree). The M1 Core
+builder created them from the docs/PLAN.md A2/B2/B3 shapes, with two additions PLAN.md's sketch
+doesn't spell out: `RenderedRole.Deny` (the role's own baked-in deny list, concatenated with config
+and flag denies in `Config.Resolve`) and `ResolvedRole.Blind` (so `Runner.RunAsync`, which only ever
+sees `ResolvedRole`, can run the blind gate without a back-reference to `RenderedRole` or role.json).
+If the Roles builder's branch defines these differently, reconcile at rebase — the field list above
+is what `Claustrum.Core` actually compiles against.
+
+## Report extraction shape (2026-09-13)
+
+`ClaustrumReport(JsonElement? Data, string RawText)`: `Data` is null only when a fence was found but
+was not valid JSON (`ReportStatus.Unparsed`); `RawText` is always kept either way so "unparsed" never
+loses the evidence (docs/PLAN.md B3). `RunResult` carries `ReportStatus` and `Warnings` (e.g.
+multiple-fences-found) as fields additive to the original A2 sketch, not nested inside `report`.
+
+## Worktree snapshot: renames fold into Added (2026-09-13)
+
+`git status` reports a rename as one `R` entry with an `OldPath`; `WorktreeSnapshot` records only the
+new path as `ChangeKind.Added` and does not separately report the old path as removed. Revisit if a
+consumer needs the old path — `GitStatusEntry.OldPath` already carries it, `WorktreeSnapshot` just
+doesn't surface it in `ChangedFile` yet.
+
+## Config layer origins for concatenated deny lists (2026-09-13)
+
+`Config`'s per-key `Origins` map (for the future `doctor` command, docs/PLAN.md A7) records a single
+winning `ConfigLayer` per key. For `deny`, which concatenates across layers instead of overwriting,
+the recorded origin is the *last* layer that added anything to that role's deny list, not the full
+set of contributing layers. Good enough to answer "did my config file touch this," not "which layers
+built this list" — revisit if `doctor` needs the latter.
