@@ -8,16 +8,22 @@ using Claustrum.Core.Process;
 
 namespace Claustrum.Core.Backends.Claude;
 
-// argv and permission->flag mapping follow docs/PLAN.md A3, with one confirmed correction: the
-// installed `claude` 2.1.269 CLI has no `--append-system-prompt-file` flag (checked via
-// `claude --help`, 2026-09-13) — only inline `--append-system-prompt <text>`. PLAN.md's own
-// "UNCONFIRMED items" list flagged exactly this for verification at M1; see NOTES.md "Claude CLI
-// system-prompt injection is inline, not file-based". Parse auto-detects single-object `json`
-// output vs `stream-json` JSONL by trying to parse stdout as one JSON document first (IBackend.
-// Parse has no `--stream` flag to consult); this holds because a JSONL stream always has trailing
-// content after the first line closes, which JsonDocument rejects.
+// argv and permission->flag mapping follow docs/PLAN.md A3. `--append-system-prompt-file` DOES
+// exist on `claude` 2.1.269 — `.hideHelp()` keeps it off `claude --help`, and claude silently
+// ignores unrecognized flags, so the M1 pass mistook silent-ignore for "flag missing" and switched
+// to inline `--append-system-prompt` (wrong; see NOTES.md "Role injection per backend"). Parse
+// auto-detects single-object `json` output vs `stream-json` JSONL by trying to parse stdout as one
+// JSON document first (IBackend.Parse has no `--stream` flag to consult); this holds because a
+// JSONL stream always has trailing content after the first line closes, which JsonDocument rejects.
 public sealed class ClaudeBackend(IPlatform platform) : IBackend
 {
+    private static readonly TimeSpan detectTimeout = TimeSpan.FromSeconds(10);
+
+    // --permission-prompts none is passed for every level, including Full, so a headless run never
+    // blocks on a prompt regardless of mode. ReadOnly's --allowedTools additionally lets a blind
+    // code-reviewer read the diff it was asked to review (git/gh are read-only queries, not edits).
+    private const string ReadOnlyTools = "Read,Glob,Grep,Bash(git diff*),Bash(git log*),Bash(git show*),Bash(git status*),Bash(gh pr *),Bash(gh issue *)";
+
     public string Name => "claude";
 
     public async Task<Doctor> DetectAsync(BackendConfig? config, CancellationToken cancellationToken)
@@ -44,23 +50,55 @@ public sealed class ClaudeBackend(IPlatform platform) : IBackend
             startInfo.ArgumentList.Add(arg);
 
         using System.Diagnostics.Process process = new() { StartInfo = startInfo };
-        process.Start();
-        string stdout = await process.StandardOutput.ReadToEndAsync(cancellationToken);
-        await process.WaitForExitAsync(cancellationToken);
+        try
+        {
+            process.Start();
+        }
+        catch (Exception ex)
+        {
+            return new Doctor(false, binary.Executable, null, [$"'{Name} --version' failed to start: {ex.Message}"]);
+        }
+
+        Task<string> stdoutTask = process.StandardOutput.ReadToEndAsync(CancellationToken.None);
+        Task<string> stderrTask = process.StandardError.ReadToEndAsync(CancellationToken.None);
+
+        using CancellationTokenSource timeoutSource = new(detectTimeout);
+        using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutSource.Token);
+        try
+        {
+            await process.WaitForExitAsync(linked.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            process.Kill(entireProcessTree: true);
+            await process.WaitForExitAsync(CancellationToken.None);
+            if (timeoutSource.IsCancellationRequested)
+                return new Doctor(false, binary.Executable, null, [$"'{Name} --version' timed out after {detectTimeout.TotalSeconds}s"]);
+            throw;
+        }
+
+        string stdout = await stdoutTask;
+        string stderr = await stderrTask;
 
         return process.ExitCode == 0
             ? new Doctor(true, binary.Executable, stdout.Trim(), [])
-            : new Doctor(false, binary.Executable, null, [$"'{Name} --version' exited with code {process.ExitCode}"]);
+            : new Doctor(false, binary.Executable, null, [$"'{Name} --version' exited with code {process.ExitCode}: {stderr.Trim()}"]);
     }
 
     public ProcessSpec Build(ResolvedRun run)
     {
+        bool resuming = run.ResumeSession is { Length: > 0 };
+
         List<string> args = ["-p"];
         args.AddRange(run.Stream ? ["--output-format", "stream-json", "--verbose"] : ["--output-format", "json"]);
         args.AddRange(["--model", run.Role.Model]);
-        args.AddRange(["--append-system-prompt", run.Role.SystemPrompt]);
+        args.AddRange(["--append-system-prompt-file", run.SystemPromptFilePath]);
         args.AddRange(PermissionArgs(run.Role.Permission));
-        args.Add("--no-session-persistence");
+
+        // A resumed session must keep its own persisted history; --no-session-persistence would
+        // wipe exactly the state --resume is asking to reuse.
+        if (!resuming)
+            args.Add("--no-session-persistence");
 
         if (run.BudgetUsd is { } budget)
             args.AddRange(["--max-budget-usd", budget.ToString(CultureInfo.InvariantCulture)]);
@@ -68,8 +106,8 @@ public sealed class ClaudeBackend(IPlatform platform) : IBackend
         if (!string.IsNullOrEmpty(run.Role.Effort))
             args.AddRange(["--effort", run.Role.Effort]);
 
-        if (!string.IsNullOrEmpty(run.ResumeSession))
-            args.AddRange(["--resume", run.ResumeSession]);
+        if (run.ResumeSession is { Length: > 0 } resumeSession)
+            args.AddRange(["--resume", resumeSession]);
 
         args.Add(run.Brief);
 
@@ -95,16 +133,16 @@ public sealed class ClaudeBackend(IPlatform platform) : IBackend
 
     private static List<string> PermissionArgs(PermissionPolicy permission) => permission.Level switch
     {
-        PermissionLevel.ReadOnly => ["--permission-mode", "plan", "--permission-prompts", "none"],
-        PermissionLevel.Edit => ["--permission-mode", "acceptEdits", "--disallowedTools", "Bash"],
+        PermissionLevel.ReadOnly => ["--permission-mode", "plan", "--permission-prompts", "none", "--allowedTools", ReadOnlyTools],
+        PermissionLevel.Edit => ["--permission-mode", "acceptEdits", "--permission-prompts", "none", "--disallowedTools", "Bash"],
         PermissionLevel.EditShell => EditShellArgs(permission.Deny),
-        PermissionLevel.Full => ["--dangerously-skip-permissions"],
+        PermissionLevel.Full => ["--dangerously-skip-permissions", "--permission-prompts", "none"],
         _ => throw new ArgumentOutOfRangeException(nameof(permission)),
     };
 
     private static List<string> EditShellArgs(string[] deny)
     {
-        List<string> args = ["--permission-mode", "acceptEdits", "--allowedTools", "Edit,Write,Read,Glob,Grep,Bash(*)"];
+        List<string> args = ["--permission-mode", "acceptEdits", "--permission-prompts", "none", "--allowedTools", "Edit,Write,Read,Glob,Grep,Bash(*)"];
         if (deny.Length > 0)
             args.AddRange(["--disallowedTools", string.Join(',', deny.Select(pattern => $"Bash({pattern}*)"))]);
         return args;
@@ -158,12 +196,14 @@ public sealed class ClaudeBackend(IPlatform platform) : IBackend
         return new ParsedOutput(finalMessage, sessionId, cost, usage, [.. reportedEdits], root, isError || exitCode != 0);
     }
 
-    private static Usage ParseUsage(JsonElement usage)
-    {
-        int? input = usage.TryGetProperty("input_tokens", out JsonElement inputProp) && inputProp.TryGetInt32(out int inputValue) ? inputValue : null;
-        int? output = usage.TryGetProperty("output_tokens", out JsonElement outputProp) && outputProp.TryGetInt32(out int outputValue) ? outputValue : null;
-        return new Usage(input, output);
-    }
+    private static Usage ParseUsage(JsonElement usage) => new(
+        TryGetInt(usage, "input_tokens"),
+        TryGetInt(usage, "output_tokens"),
+        TryGetInt(usage, "cache_read_input_tokens"),
+        TryGetInt(usage, "cache_creation_input_tokens"));
+
+    private static int? TryGetInt(JsonElement parent, string propertyName) =>
+        parent.TryGetProperty(propertyName, out JsonElement property) && property.TryGetInt32(out int value) ? value : null;
 
     private static void CollectToolUseEdits(JsonElement root, List<ChangedFile> edits)
     {
