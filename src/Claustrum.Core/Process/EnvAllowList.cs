@@ -2,15 +2,18 @@ using Claustrum.Core.Platform;
 
 namespace Claustrum.Core.Process;
 
-// Exact allow-list from docs/PLAN.md A4; `*` entries are prefix/suffix wildcards on the variable
-// NAME only — values are never inspected or logged. `env_passthrough: all` disables filtering
-// entirely; caller-supplied `--env` always wins regardless of the list.
+// docs/PLAN.md A4's list, plus PATHEXT/windir/SystemDrive/ProgramFiles/ProgramFiles(x86)/ProgramData
+// (NOTES.md "Env allow-list is dead" — a Windows child needs these to resolve its own PATH/PATHEXT
+// and %ProgramFiles% lookups). `*` entries are prefix/suffix wildcards on the variable NAME only —
+// values are never inspected or logged. `passthroughAll: true` (config `env_passthrough: "all"`)
+// disables filtering entirely; caller-supplied `--env` always wins regardless of the list.
 public static class EnvAllowList
 {
     private static readonly string[] exactNames =
     [
         "PATH", "HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "TEMP", "TMP",
         "SystemRoot", "ComSpec", "LANG", "SHELL", "TERM", "GH_TOKEN", "GITHUB_TOKEN",
+        "PATHEXT", "windir", "SystemDrive", "ProgramFiles", "ProgramFiles(x86)", "ProgramData",
     ];
 
     private static readonly string[] prefixes =
