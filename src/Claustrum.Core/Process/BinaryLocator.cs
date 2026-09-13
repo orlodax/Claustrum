@@ -19,11 +19,13 @@ public static class BinaryLocator
 
         string shimDirectory = Path.GetDirectoryName(candidate) ?? "";
         NpmShimTarget? target = NpmShimParser.TryParse(platform.ReadAllText(candidate), shimDirectory, platform);
-        if (target is not null)
-            return new ResolvedBinary(target.Executable, [.. target.PrefixArgs, .. args]);
 
-        string commandLine = CmdEscaping.BuildCommandLine([candidate, .. args]);
-        return new ResolvedBinary("cmd.exe", ["/d", "/s", "/c", commandLine]);
+        // An unrecognized shim shape runs the .cmd directly on ArgumentList rather than through a
+        // composed `cmd /d /s /c` command line — NOTES.md "npm shims on Windows" has the measured
+        // failure modes of the cmd.exe composition this replaced.
+        return target is not null
+            ? new ResolvedBinary(target.Executable, [.. target.PrefixArgs, .. args])
+            : new ResolvedBinary(candidate, args);
     }
 
     private static string? ResolveCandidate(string name, BackendConfig? config, IPlatform platform)
