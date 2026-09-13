@@ -18,7 +18,7 @@ public sealed class ClaudeBackendBuildTests
         string effort = "high",
         string? resume = null,
         bool stream = false) => new(
-            Role: new ResolvedRole("builder", "system body", "claude", "sonnet", effort, permission, Blind: false),
+            Role: new ResolvedRole("builder", "system body", "claude", "sonnet", effort, permission, Blind: false, HasReport: true),
             Brief: "do the thing",
             Cwd: "/repo",
             BudgetUsd: budget,

@@ -28,6 +28,7 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
         string brief = ResolveBrief(request, platform);
         brief = AppendAttachments(brief, request.AttachFiles, platform);
         EnsureBlindGate(role, brief);
+        brief = AppendReportTrailer(brief, role);
 
         JobPaths job = JobDirectory.Create(platform);
         File.WriteAllText(job.SystemMd, role.SystemPrompt);
@@ -122,6 +123,14 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
 
         return builder.ToString();
     }
+
+    // Tester report: `## Report format` sitting last in a long system prompt got skipped on ~half
+    // of trivial one-line tasks. This trailer restates the requirement at the position models honour
+    // most — the end of the user prompt — on top of (not instead of) the system-prompt section.
+    private static string AppendReportTrailer(string brief, ResolvedRole role) =>
+        role.HasReport
+            ? $"{brief}\n\n---\nFinish your reply with the mandatory ```claustrum-report fenced JSON block from your system prompt; a reply without it is rejected."
+            : brief;
 
     // NOTES.md "Blind review is enforced, not requested".
     private static void EnsureBlindGate(ResolvedRole role, string brief)

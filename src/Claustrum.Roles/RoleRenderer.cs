@@ -1,3 +1,4 @@
+using System.Text;
 using Claustrum.Core.Model;
 using Claustrum.Roles.Model;
 using Claustrum.Roles.Templating;
@@ -33,17 +34,7 @@ public sealed class RoleRenderer(RoleLibrary library)
         string houseRules = library.ReadShared("_shared/house-rules.md").Trim();
         string reportFormat = library.ReadShared($"_shared/report/{definition.Report}.md").Trim();
 
-        string systemBody = $"""
-            {body.Trim()}
-
-            ## House rules
-
-            {houseRules}
-
-            ## Report format
-
-            {reportFormat}
-            """;
+        string systemBody = ComposeSystemBody(body, reportFormat, houseRules);
 
         return new RenderedRole(
             Name: definition.Name,
@@ -54,6 +45,26 @@ public sealed class RoleRenderer(RoleLibrary library)
             Deny: definition.Deny,
             ReportSchema: definition.Report,
             Blind: definition.Blind);
+    }
+
+    // `## Report format` sits right after the role's opening description (before the long
+    // ground-rules/how-you-work body), not at the very end after `## House rules` — a live smoke
+    // test found the model skipping a report-format section that only appeared last in a long system
+    // prompt on trivial one-line tasks (tester report). `body` is split on the first line-start `##`
+    // heading: everything before it is the opening description, everything from it on is the rest.
+    private static string ComposeSystemBody(string body, string reportFormat, string houseRules)
+    {
+        string trimmedBody = body.Trim();
+        int headingIndex = trimmedBody.IndexOf("\n## ", StringComparison.Ordinal);
+        string opening = headingIndex < 0 ? trimmedBody : trimmedBody[..headingIndex].TrimEnd();
+        string rest = headingIndex < 0 ? "" : trimmedBody[(headingIndex + 1)..].TrimEnd();
+
+        StringBuilder builder = new();
+        builder.Append(opening).Append("\n\n## Report format\n\n").Append(reportFormat);
+        if (rest.Length > 0)
+            builder.Append('\n').Append('\n').Append(rest);
+        builder.Append("\n\n## House rules\n\n").Append(houseRules);
+        return builder.ToString();
     }
 
     /// <summary>

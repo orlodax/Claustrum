@@ -64,7 +64,7 @@ public sealed class Config
 
         RecordFlagOrigins(role.Name, overrides);
 
-        return new ResolvedRole(role.Name, role.SystemBody, backend, modelId, effort, new PermissionPolicy(level, deny), role.Blind);
+        return new ResolvedRole(role.Name, role.SystemBody, backend, modelId, effort, new PermissionPolicy(level, deny), role.Blind, role.ReportSchema is { Length: > 0 });
     }
 
     // Mirrors Resolve's model-spec precedence (flag > per-role config > the role's own tier class)

@@ -87,6 +87,32 @@ public sealed class RunnerTests : IDisposable
     }
 
     [Fact]
+    public async Task RoleWithReportSchemaGetsTheReportTrailerAsync()
+    {
+        ScriptedBackend backend = ScriptedBackend.Success();
+        Runner runner = NewRunner(backend);
+        RunRequest request = MakeRequest(brief: "do it");
+
+        await runner.RunAsync(request, MakeRole(hasReport: true), DefaultOptions(), CancellationToken.None);
+
+        Assert.NotNull(backend.LastRun);
+        Assert.Contains("```claustrum-report fenced JSON block from your system prompt", backend.LastRun!.Brief, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task RoleWithoutReportSchemaGetsNoTrailerAsync()
+    {
+        ScriptedBackend backend = ScriptedBackend.Success();
+        Runner runner = NewRunner(backend);
+        RunRequest request = MakeRequest(brief: "do it");
+
+        await runner.RunAsync(request, MakeRole(hasReport: false), DefaultOptions(), CancellationToken.None);
+
+        Assert.NotNull(backend.LastRun);
+        Assert.Equal("do it", backend.LastRun!.Brief);
+    }
+
+    [Fact]
     public async Task TimeoutStillWritesAResultJsonAsync()
     {
         Runner runner = NewRunner(ScriptedBackend.Sleep(10));
@@ -136,8 +162,8 @@ public sealed class RunnerTests : IDisposable
         Permission: null, BudgetUsd: null, Timeout: timeout, ResumeSession: resume,
         AttachFiles: attachFiles ?? [], Env: [], Stream: false);
 
-    private static ResolvedRole MakeRole(bool blind = false, string backend = "scripted") =>
-        new("builder", "system prompt", backend, "sonnet", "high", new PermissionPolicy(PermissionLevel.EditShell, []), blind);
+    private static ResolvedRole MakeRole(bool blind = false, string backend = "scripted", bool hasReport = false) =>
+        new("builder", "system prompt", backend, "sonnet", "high", new PermissionPolicy(PermissionLevel.EditShell, []), blind, hasReport);
 
     private static RunOptions DefaultOptions() => new(DiffByteCapBytes: 200_000);
 
