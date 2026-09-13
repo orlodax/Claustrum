@@ -18,25 +18,49 @@ translates paths: the Windows binary spawns Windows harnesses, the WSL binary sp
 `doctor` warns when a backend resolved from WSL is a `/mnt/c/…` Windows executable, because that
 harness would receive Linux paths it cannot open.
 
-## npm shims on Windows (2026-09-12, confirmed 2026-09-13)
+## npm shims on Windows (2026-09-12, confirmed 2026-09-13, cmd.exe fallback removed 2026-09-13)
 
-`claude` and `copilot` install as `.cmd` shims. `CreateProcess` ignores `PATHEXT`, and `cmd.exe`
-mangles `%` and long argument lines. `BinaryLocator`/`NpmShimParser` read the shim body and
-recognize two real shapes, confirmed against actual installs on this machine: a compiled-binary
-shim (`claude.cmd` -> `"%dp0%\node_modules\@anthropic-ai\claude-code\bin\claude.exe" %*`, run
-directly) and the classic pure-JS shim (`yo.cmd` -> `"%_prog%" "%dp0%\node_modules\yo\lib\cli.js"
-%*` where `_prog` is `%dp0%\node.exe` if bundled else bare `node`, run as `node <script> args`).
-Anything that matches neither falls back to `cmd.exe /d /s /c` with `%` doubled to `%%`.
+`claude` and `copilot` install as `.cmd` shims. `CreateProcess` ignores `PATHEXT`, so a bare `claude`
+`FileName` never resolves. `BinaryLocator`/`NpmShimParser` read the shim body and recognize two real
+shapes, confirmed against actual installs on this machine: a compiled-binary shim (`claude.cmd` ->
+`"%dp0%\node_modules\@anthropic-ai\claude-code\bin\claude.exe" %*`, run directly) and the classic
+pure-JS shim (`yo.cmd` -> `"%_prog%" "%dp0%\node_modules\yo\lib\cli.js" %*` where `_prog` is
+`%dp0%\node.exe` if bundled else bare `node`, run as `node <script> args`).
 
-## Role injection per backend (2026-09-12, corrected 2026-09-13)
+Anything matching neither shape used to fall back to `cmd.exe /d /s /c` with `%` doubled to `%%`
+(`CmdEscaping`). Measured 2026-09-13: that fallback was actively wrong, not just untested. A quoted
+argument came out **split into 3** on the far side of `cmd`'s own re-tokenizing; a literal `%VAR%`
+in an argument **still expanded** despite the `%%` doubling (cmd expands during its own parse pass,
+before the doubled `%` collapses back to one); and a 9000-char argument through a real shim was
+**silently truncated** at cmd's ~8191-char command-line limit — no error, just a corrupted argv on
+the far side. Fix: spawn the `.cmd` file directly as `FileName` with the args on `ArgumentList`,
+exactly like any other executable, instead of composing the command line ourselves. `CmdEscaping` is
+deleted; `BinaryLocator` no longer builds a `cmd.exe` command line anywhere.
 
-- claude: `--append-system-prompt <text>`, inline — **not** `--append-system-prompt-file`, which
-  does not exist on the installed CLI (`claude --help`, v2.1.269, checked while building the M1
-  `ClaudeBackend`; PLAN.md A3 had flagged this exact flag as "UNCONFIRMED — verify at M1"). The
-  `--agents` inline form is kept as a possible opt-in mode later. Passing the prompt inline is safe
-  because it goes through `ProcessStartInfo.ArgumentList` (never a shell string) in the normal case;
-  the `cmd.exe /d /s /c` fallback path still risks Windows' ~8191-char command-line limit for a very
-  long role body — not yet hit in practice, worth a guard if it ever is.
+Re-measured against a fake `.cmd` shim: a space-containing argument and one with an embedded `"`
+both survive as exactly one argument each (no split) — the specific defect this fix targets. The
+underlying ~8191-char ceiling is still real, though, because a `.cmd` is always executed by
+`cmd.exe` no matter how it's launched; a 9000-char argument through the same shim now fails loudly
+(`Win32Exception`/child stderr "The command line is too long.", nonzero exit) instead of silently
+truncating. That is strictly better — a visible failure beats corrupted data — but it is a change in
+*how* an oversized arg fails, not a removal of the limit; a role/brief that can genuinely exceed it
+for an unrecognized `.cmd` shim still needs a guard — the same open item NOTES.md "Role injection
+per backend" already flagged and never closed.
+
+## Role injection per backend (2026-09-12, corrected 2026-09-13, correction reverted 2026-09-13)
+
+- claude: `--append-system-prompt-file <job>/system.md`, per PLAN.md A3, with `system.md` as the
+  source of truth. The M1 pass concluded this flag "does not exist" from `claude --help` (v2.1.269)
+  not listing it, and switched to inline `--append-system-prompt <text>` instead — **that conclusion
+  was wrong**: the flag is registered but hidden with `.hideHelp()`, and `claude` silently ignores
+  unrecognized flags rather than erroring, so `--help` not listing it and the inline flag "appearing
+  to work" both told nothing about whether the file-based flag actually exists. Re-verified
+  2026-09-13 against the CLI's own option table, not just `--help`'s rendered output. Now that
+  argv goes back to file-based injection, the role body itself no longer rides in an argv string at
+  all, so it can't be the thing that overflows a `cmd.exe`-composed command line. That ceiling still
+  exists in general for other long arguments through an *unrecognized* `.cmd` shim, now as a loud
+  failure instead of silent truncation (NOTES.md "npm shims on Windows"). The `--agents` inline form
+  is kept as a possible opt-in mode later.
 - opencode: an inline agent in `OPENCODE_CONFIG_CONTENT` with the prompt string embedded, so nothing
   is written into the repo or `~/.config`.
 - cursor: no system-prompt hook exists; the role body is prefixed to the prompt.
@@ -155,12 +179,28 @@ was not valid JSON (`ReportStatus.Unparsed`); `RawText` is always kept either wa
 loses the evidence (docs/PLAN.md B3). `RunResult` carries `ReportStatus` and `Warnings` (e.g.
 multiple-fences-found) as fields additive to the original A2 sketch, not nested inside `report`.
 
-## Worktree snapshot: renames fold into Added (2026-09-13)
+## Worktree snapshot: renames split into Added + Deleted, content hashed for dirty files (2026-09-13, corrected 2026-09-13)
 
-`git status` reports a rename as one `R` entry with an `OldPath`; `WorktreeSnapshot` records only the
-new path as `ChangeKind.Added` and does not separately report the old path as removed. Revisit if a
-consumer needs the old path — `GitStatusEntry.OldPath` already carries it, `WorktreeSnapshot` just
-doesn't surface it in `ChangedFile` yet.
+`git status` reports a rename as one `R` entry — in the index column normally, or in the worktree
+column when only the working tree side renamed it — carrying an `OldPath`. The original
+`WorktreeSnapshot` recorded only the new path as `ChangeKind.Added` and silently dropped the old
+path, so a backend that renamed a file was reported as a plain addition: the same file count as
+before the rename, with no record that the old name is gone. `ToChangedFiles` now emits two entries
+for a rename — the new path as `Added`, the old path as `Deleted` — and parses the `-z` old-path
+field for a worktree-column `R` too, not just the index column. A copy (`C`, index column only)
+still folds into a single `Added` at the new path with the source left untouched, since a copy
+doesn't remove anything; `git status` here has no `--find-copies`/`-C` though, so `C` is not
+actually reachable through this exact invocation.
+
+Comparing status codes alone across before/after also missed edits to a file that was already dirty
+going in: same `M` (or `??`) code before and after, content changed in between — the exact
+"already-dirty, edited again" case, and the same one that made an untracked file's *further* edit
+invisible even though `??` never changes. Each `GitStatusEntry` now also carries a SHA-256 of the
+worktree file's current bytes at capture time (null when the file doesn't exist on disk, e.g.
+deleted); `DiffAsync` reports a path when its status code *or* its hash changed relative to the
+prior snapshot. This is what makes the untracked-but-existing case come out right: an untracked file
+edited during the run keeps its git-perspective kind (`A`, not `M`) but is now included because its
+hash moved, not because its status letters did.
 
 ## Config layer origins for concatenated deny lists (2026-09-13)
 
@@ -169,3 +209,50 @@ winning `ConfigLayer` per key. For `deny`, which concatenates across layers inst
 the recorded origin is the *last* layer that added anything to that role's deny list, not the full
 set of contributing layers. Good enough to answer "did my config file touch this," not "which layers
 built this list" — revisit if `doctor` needs the latter.
+
+## Env allow-list is dead without clearing ProcessStartInfo.Environment (2026-09-13)
+
+`ProcessStartInfo.Environment` is pre-populated by .NET with a copy of the *current* process's own
+environment as soon as `UseShellExecute` is `false` — this is documented .NET behaviour, not a
+Claustrum default. `ProcessRunner.RunAsync` was only ever adding the allow-listed entries on top of
+that full inherited set with `startInfo.Environment[key] = value`, never removing anything, so every
+variable Claustrum itself was running with (secrets, unrelated tool config, all of it) leaked into
+every spawned backend regardless of `EnvAllowList`. Fix is `startInfo.Environment.Clear()` before
+populating from `EnvAllowList.Build` — confirmed with a fake backend exe that dumps its own
+environment: a non-allow-listed variable set in the test harness's own process no longer appears in
+the child, and a `--env` entry does. `EnvAllowList.Build` itself was already correct; the bug was
+entirely at this one call site.
+
+## Backend config and env passthrough are call-site data, not RunRequest fields (2026-09-13)
+
+`backends.<name>.path` and `defaults.env_passthrough` both come out of `Config`, which `Runner` does
+not read (`Config.Resolve` already ran by the time `RunAsync` is called, per docs/PLAN.md A3's own
+"resolve -> Build -> snapshot" pipeline). Rather than have `Runner` reach into `Config` — a
+dependency it deliberately doesn't have — `RunOptions` grew `BackendConfig?` and `EnvPassthroughAll`
+the same way it already carries `DiffByteCapBytes`: resolved by the caller, handed to `Runner` as a
+per-call knob. `ProcessRunner.RunAsync` gained a matching `envPassthroughAll` parameter and now
+passes `options.BackendConfig` through to `BinaryLocator.Locate` instead of the hardcoded `null` that
+made `backends.<name>.path` silently unreachable from `claustrum run`. Wiring `ConfigOverrides`/
+`config.Merged` into these two `RunOptions` fields is CLI-side (`RunCommand.cs`) and out of the Core
+builder's slice — flagged for the CLI builder rather than guessed at here.
+
+## Runner always yields a result after the process ran (2026-09-13)
+
+Two related gaps, one fix: Ctrl+C or a timeout left `Runner.RunAsync` with no `RunResult` at all,
+because the after-snapshot and its diff were still run with the same (already-cancelled) token as
+the backend process, so `WorktreeSnapshot.CaptureAsync`/`DiffAsync` threw `OperationCanceledException`
+before a result could ever be built — the CLI's generic `OperationCanceledException` catch then
+exited 130 with no `result.json` on disk to show for the run that did happen. Both calls now always
+use `CancellationToken.None`: by the time `ProcessOutcome` exists, cancellation/timeout has already
+done its job (`ProcessTermination.Cancelled`/`TimedOut`), and `DetermineStatus` reports it correctly
+without needing the token to still be live.
+
+More generally, everything from `ProcessOutcome outcome = await processRunner.RunAsync(...)` through
+building and writing `RunResult` is now in a `try`/`catch` that turns any exception into a `Failed`
+`RunResult` with `Error` set, still written to `result.json` — a git binary vanishing mid-diff, a
+`Parse` bug, anything. Scope is deliberate: it starts *after* `ProcessOutcome` is obtained, i.e. the
+backend process has definitely run to completion or been killed. A throw from `processRunner.RunAsync`
+itself — most notably `BackendNotFoundException`, when the resolved binary isn't actually on PATH —
+is pre-spawn by definition (`process.Start()` was never reached) and still propagates uncaught, same
+as before this fix: the CLI already has a dedicated catch mapping it to exit code 3 without a
+`result.json`, and changing that contract wasn't asked for.
