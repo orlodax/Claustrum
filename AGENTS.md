@@ -12,6 +12,8 @@ approved plan and milestone definitions are summarised in `docs/PLAN.md`.
   reports "Zero tests ran" with exit code 5 (measured 2026-09-13 on SDK 10.0.401).
 - `dotnet publish src/Claustrum/Claustrum.csproj -c Release -r <rid> -p:PublishAot=true` must produce
   **zero** IL2026/IL3050 trim warnings. Warnings are errors in this repo.
+- Solution-level `dotnet publish -c Release -r <rid> -p:PublishAot=true` also works: the test projects
+  declare `PublishAot` as a local property (xunit is not trim-safe), so the CLI flag skips them.
 - Windows AOT needs the VS "Desktop development with C++" workload (MSVC + Windows SDK). WSL AOT
   needs `clang` or `gcc` + `zlib1g-dev`; with gcc only, add `-p:CppCompilerAndLinker=gcc`.
 - Building the same checkout from both Windows and WSL: give WSL its own output tree so `obj/` does
