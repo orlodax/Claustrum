@@ -27,4 +27,17 @@ if (parseResult.Errors.Count > 0)
     return ExitCodes.Usage;
 }
 
-return await parseResult.InvokeAsync();
+// EnableDefaultExceptionHandler=false: System.CommandLine's own default handler would otherwise
+// catch a handler exception itself, print "Unhandled exception: <type>: <message>" plus its own
+// stack trace, and return exit 1 — before this file's catch ever sees it (confirmed 2026-09-13 by
+// running the built binary; ExceptionBoundary below was silently unreachable without this flag).
+InvocationConfiguration invocationConfig = new() { EnableDefaultExceptionHandler = false };
+
+try
+{
+    return await parseResult.InvokeAsync(invocationConfig);
+}
+catch (Exception exception)
+{
+    return ExceptionBoundary.Handle(exception);
+}

@@ -4,8 +4,6 @@ using Claustrum.Core;
 using Claustrum.Core.Config;
 using Claustrum.Core.Json;
 using Claustrum.Core.Model;
-using Claustrum.Core.Process;
-using Claustrum.Roles;
 
 namespace Claustrum.Cli;
 
@@ -91,10 +89,15 @@ public static class RunCommand
         try
         {
             string brief = ResolveBrief(briefText, briefFilePath);
-            string harness = overrides.Backend ?? "claude";
+
+            // Config first, then the harness the role's tier model resolves to (--backend still wins),
+            // then Render — Render must already know the harness it will run on (review finding #6),
+            // not the "claude" placeholder this used to render against regardless of the real target.
+            Config config = Config.Load(CliServices.Platform, cwd);
+            string tierModelClass = CliServices.RoleRenderer.TierModelClass(roleName, tierValue, cwd);
+            string harness = config.ResolveBackend(roleName, tierModelClass, overrides);
 
             RenderedRole rendered = CliServices.RoleRenderer.Render(roleName, tierValue, harness, cwd);
-            Config config = Config.Load(CliServices.Platform, cwd);
             ResolvedRole resolved = config.Resolve(rendered, overrides);
 
             decimal? budgetUsd = overrides.BudgetUsd ?? config.Merged.Defaults?.BudgetUsd;
@@ -122,6 +125,8 @@ public static class RunCommand
             RunOptions options = new(
                 DiffByteCapBytes: CliDiffCapBytes,
                 OnStreamLine: streamMode ? line => Console.Error.WriteLine(line) : null);
+            // TODO(#2): wire a backend config-path override + env passthrough into RunOptions once the
+            // concurrent Process/Backends slice adds those members.
 
             RunResult result = await CliServices.Runner.RunAsync(request, resolved, options, cts.Token);
             RunResult output = rawMode ? result : result with { Raw = null };
@@ -133,31 +138,11 @@ public static class RunCommand
 
             return ExitCodeFor(output.Status);
         }
-        catch (CliUsageException ex)
-        {
-            Console.Error.WriteLine(ex.Message);
-            return ExitCodes.Usage;
-        }
-        catch (RoleRenderException ex)
-        {
-            Console.Error.WriteLine(ex.Message);
-            return ExitCodes.Usage;
-        }
-        catch (ConfigException ex)
-        {
-            Console.Error.WriteLine(ex.Message);
-            return ExitCodes.Usage;
-        }
-        catch (BlindGateException ex)
-        {
-            Console.Error.WriteLine(ex.Message);
-            return ExitCodes.Usage;
-        }
-        catch (BackendNotFoundException ex)
-        {
-            Console.Error.WriteLine(ex.Message);
-            return ExitCodes.BackendMissing;
-        }
+        // Everything else (ConfigException, RoleRenderException, CliUsageException,
+        // BlindGateException, BackendNotFoundException, ...) is intentionally not caught here —
+        // Program.cs's top-level ExceptionBoundary maps those uniformly for every verb, not just
+        // `run` (review finding #1). OperationCanceledException stays local: it needs exit 130, which
+        // the boundary's generic "anything else" branch does not know about.
         catch (OperationCanceledException)
         {
             return ExitCodes.Cancelled;
@@ -179,13 +164,16 @@ public static class RunCommand
         if (briefText is { Length: > 0 })
             return briefText;
 
-        if (briefFilePath is { Length: > 0 })
-            return briefFilePath == "-" ? Console.In.ReadToEnd() : File.ReadAllText(briefFilePath);
+        // A brief-file path or redirected stdin that reads back empty falls through to the same "no
+        // brief given" as no source at all — checked here, before Config/RoleRenderer/Runner touch
+        // anything, so an empty brief never reaches a spawned process (review finding #1).
+        string brief = briefFilePath is { Length: > 0 }
+            ? briefFilePath == "-" ? Console.In.ReadToEnd() : File.ReadAllText(briefFilePath)
+            : Console.IsInputRedirected ? Console.In.ReadToEnd() : "";
 
-        if (!Console.IsInputRedirected)
-            throw new CliUsageException("a brief is required: --brief, --brief-file, or pipe one to stdin");
-
-        return Console.In.ReadToEnd();
+        return brief is { Length: > 0 }
+            ? brief
+            : throw new CliUsageException("no brief given");
     }
 
     private static Dictionary<string, string> ParseEnv(string[] entries)
