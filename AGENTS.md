@@ -8,6 +8,8 @@ approved plan and milestone definitions are summarised in `docs/PLAN.md`.
 - `dotnet build` and `dotnet test` must pass on Windows and Linux (WSL counts). Tests are xunit.v3
   on Microsoft.Testing.Platform, opted in through `"test": {"runner": …}` in `global.json` — the
   .NET 10 SDK refuses the legacy VSTest path otherwise (bit CI on the first push, 2026-09-12).
+  Never pass `-nologo`/`--nologo` to `dotnet test`: the flag is forwarded to the test app and the run
+  reports "Zero tests ran" with exit code 5 (measured 2026-09-13 on SDK 10.0.401).
 - `dotnet publish src/Claustrum/Claustrum.csproj -c Release -r <rid> -p:PublishAot=true` must produce
   **zero** IL2026/IL3050 trim warnings. Warnings are errors in this repo.
 - Windows AOT needs the VS "Desktop development with C++" workload (MSVC + Windows SDK). WSL AOT
