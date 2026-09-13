@@ -1,44 +1,58 @@
 using System.Diagnostics;
+using System.Security.Cryptography;
 using System.Text;
 using Claustrum.Core.Model;
 
 namespace Claustrum.Core.Git;
 
 // Harness-neutral changed-files capture (docs/PLAN.md A2): `git status --porcelain=v1 -z
-// --untracked-files=all` + `git diff HEAD` before and after the backend runs; changed_files is the
-// set difference between the two status snapshots, so a file already dirty before the run (and
-// left exactly as dirty) is not reported. Non-git cwd falls back to an mtime/size scan; diff is
-// then always null. Renames/copies are folded into Added — see NOTES.md "Worktree snapshot".
+// --untracked-files=all` + `git diff HEAD` before and after the backend runs. A file is reported
+// when its status code changes OR its content changes — each status entry carries a hash of the
+// worktree file's current bytes, so a file already dirty before the run that gets edited again
+// during it is still caught (NOTES.md "Worktree snapshot"). Non-git cwd falls back to an mtime/size
+// scan; diff is then always null. A rename (`R` in either the index or worktree column) is split
+// into two ChangedFiles: the new path as `A`, the old path as `D`.
 public static class WorktreeSnapshot
 {
     public static async Task<WorktreeState> CaptureAsync(string cwd, CancellationToken cancellationToken = default)
     {
         (int exitCode, string stdout, _) = await RunGitAsync(cwd, ["status", "--porcelain=v1", "-z", "--untracked-files=all"], cancellationToken);
-        return exitCode == 0
-            ? new WorktreeState(IsGit: true, ParseStatusZ(stdout), FileScan: null)
-            : new WorktreeState(IsGit: false, StatusEntries: [], FileScan: ScanFiles(cwd));
+        if (exitCode != 0)
+            return new WorktreeState.FileScan(ScanFiles(cwd));
+
+        GitStatusEntry[] entries = [.. ParseStatusZ(stdout).Select(entry => entry with { ContentHash = HashWorktreeFile(cwd, entry) })];
+        return new WorktreeState.Git(entries);
     }
 
     public static async Task<SnapshotDiff> DiffAsync(string cwd, WorktreeState before, WorktreeState after, int diffByteCapBytes, CancellationToken cancellationToken = default)
     {
-        if (!before.IsGit || !after.IsGit)
-            return DiffFileScans(before.FileScan!, after.FileScan!);
+        if (before is WorktreeState.Git beforeGit && after is WorktreeState.Git afterGit)
+            return await DiffGitAsync(cwd, beforeGit.StatusEntries, afterGit.StatusEntries, diffByteCapBytes, cancellationToken);
 
-        Dictionary<string, GitStatusEntry> beforeByPath = before.StatusEntries.ToDictionary(entry => entry.Path);
-        List<GitStatusEntry> changedEntries = [.. after.StatusEntries.Where(entry =>
+        if (before is WorktreeState.FileScan beforeScan && after is WorktreeState.FileScan afterScan)
+            return DiffFileScans(beforeScan.Files, afterScan.Files);
+
+        throw new InvalidOperationException("before/after worktree snapshots must both be git or both be non-git captures of the same cwd");
+    }
+
+    private static async Task<SnapshotDiff> DiffGitAsync(string cwd, GitStatusEntry[] beforeEntries, GitStatusEntry[] afterEntries, int diffByteCapBytes, CancellationToken cancellationToken)
+    {
+        Dictionary<string, GitStatusEntry> beforeByPath = beforeEntries.ToDictionary(entry => entry.Path);
+        List<GitStatusEntry> changedEntries = [.. afterEntries.Where(entry =>
             !beforeByPath.TryGetValue(entry.Path, out GitStatusEntry? prior)
             || prior.IndexStatus != entry.IndexStatus
-            || prior.WorktreeStatus != entry.WorktreeStatus)];
+            || prior.WorktreeStatus != entry.WorktreeStatus
+            || prior.ContentHash != entry.ContentHash)];
 
         if (changedEntries.Count == 0)
             return new SnapshotDiff([], null, false);
 
-        ChangedFile[] changedFiles = [.. changedEntries.Select(ToChangedFile)];
+        ChangedFile[] changedFiles = [.. changedEntries.SelectMany(ToChangedFiles)];
         string fullDiff = await BuildDiffAsync(cwd, changedEntries, cancellationToken);
 
         byte[] bytes = Encoding.UTF8.GetBytes(fullDiff);
         bool truncated = bytes.Length > diffByteCapBytes;
-        string diff = truncated ? Encoding.UTF8.GetString(bytes, 0, diffByteCapBytes) : fullDiff;
+        string diff = truncated ? TruncateUtf8(bytes, diffByteCapBytes) : fullDiff;
         return new SnapshotDiff(changedFiles, diff, truncated);
     }
 
@@ -79,26 +93,65 @@ public static class WorktreeSnapshot
             char indexStatus = token[0];
             char worktreeStatus = token[1];
             string path = token[3..];
-            string? oldPath = indexStatus is 'R' or 'C' && i + 1 < tokens.Length ? tokens[++i] : null;
+            bool isRenameOrCopy = indexStatus is 'R' or 'C' || worktreeStatus == 'R';
+            string? oldPath = isRenameOrCopy && i + 1 < tokens.Length ? tokens[++i] : null;
 
-            entries.Add(new GitStatusEntry(path, indexStatus, worktreeStatus, oldPath));
+            entries.Add(new GitStatusEntry(path, indexStatus, worktreeStatus, oldPath, ContentHash: null));
         }
 
         return [.. entries];
     }
 
-    private static ChangedFile ToChangedFile(GitStatusEntry entry) => new(entry.Path, ClassifyKind(entry));
+    // A rename (`R` in either column) is reported as two ChangedFiles — the new path as Added, the
+    // old path as Deleted — instead of folding into a single Added, which used to silently drop the
+    // old path from `changed_files` (NOTES.md "Worktree snapshot"). A copy (`C`, index column only)
+    // has no old-path removal: the source is untouched, only the new path is Added.
+    private static IEnumerable<ChangedFile> ToChangedFiles(GitStatusEntry entry)
+    {
+        if (entry.OldPath is { } oldPath && (entry.IndexStatus == 'R' || entry.WorktreeStatus == 'R'))
+        {
+            yield return new ChangedFile(entry.Path, ChangeKind.Added);
+            yield return new ChangedFile(oldPath, ChangeKind.Deleted);
+            yield break;
+        }
+
+        yield return new ChangedFile(entry.Path, ClassifyKind(entry));
+    }
 
     private static ChangeKind ClassifyKind(GitStatusEntry entry)
     {
         if (entry.IndexStatus == 'D' || entry.WorktreeStatus == 'D')
             return ChangeKind.Deleted;
-        if (IsUntracked(entry) || entry.IndexStatus == 'A')
+        if (IsUntracked(entry) || entry.IndexStatus is 'A' or 'C')
             return ChangeKind.Added;
         return ChangeKind.Modified;
     }
 
     private static bool IsUntracked(GitStatusEntry entry) => entry.IndexStatus == '?' && entry.WorktreeStatus == '?';
+
+    private static string? HashWorktreeFile(string cwd, GitStatusEntry entry)
+    {
+        string fullPath = Path.Combine(cwd, entry.Path);
+        if (!File.Exists(fullPath))
+            return null;
+
+        using FileStream stream = File.OpenRead(fullPath);
+        return Convert.ToHexStringLower(SHA256.HashData(stream));
+    }
+
+    // Backs up over UTF-8 continuation bytes (`10xxxxxx`) so a multi-byte codepoint straddling the
+    // cap is dropped whole rather than decoded into a replacement character.
+    private static string TruncateUtf8(byte[] bytes, int capBytes)
+    {
+        if (capBytes >= bytes.Length)
+            return Encoding.UTF8.GetString(bytes);
+
+        int end = capBytes;
+        while (end > 0 && (bytes[end] & 0xC0) == 0x80)
+            end--;
+
+        return Encoding.UTF8.GetString(bytes, 0, end);
+    }
 
     private static Dictionary<string, (long Size, DateTime ModifiedUtc)> ScanFiles(string cwd)
     {
