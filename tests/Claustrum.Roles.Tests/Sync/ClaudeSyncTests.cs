@@ -3,17 +3,21 @@ using Claustrum.Roles.Sync;
 namespace Claustrum.Roles.Tests.Sync;
 
 // docs/PLAN.md §B4: idempotency by construction (marker + manifest), foreign-file protection,
-// `--force` adoption. The `--global` scenario is intentionally not exercised here — see the
-// Skip reason on GlobalSyncPlacesFilesUnderAFakeHome and the tester report (fault_in: code,
-// src/Claustrum.Roles/Sync/ClaudeSync.cs).
+// `--force` adoption. `--global` is exercised via `fakeHome`, a per-test temp directory injected as
+// ClaudeSync's `homeDirectory` constructor parameter, so it never touches the real `~/.claude`.
 public sealed class ClaudeSyncTests : IDisposable
 {
     private readonly string cwd = Directory.CreateTempSubdirectory("claustrum-sync-").FullName;
+    private readonly string fakeHome = Directory.CreateTempSubdirectory("claustrum-sync-home-").FullName;
     private readonly RoleLibrary library = new();
 
-    public void Dispose() => Directory.Delete(cwd, recursive: true);
+    public void Dispose()
+    {
+        Directory.Delete(cwd, recursive: true);
+        Directory.Delete(fakeHome, recursive: true);
+    }
 
-    private ClaudeSync NewSync() => new(library, new RoleRenderer(library));
+    private ClaudeSync NewSync() => new(library, new RoleRenderer(library), fakeHome);
 
     [Fact]
     public void FreshSyncWritesBaseAgentTierStubsAndSkill()
@@ -91,13 +95,14 @@ public sealed class ClaudeSyncTests : IDisposable
         Assert.Contains("builder.md", File.ReadAllText(manifestPath));
     }
 
-    [Fact(Skip = "ClaudeSync.Sync(global: true) calls Environment.GetFolderPath(SpecialFolder.UserProfile) " +
-        "directly (src/Claustrum.Roles/Sync/ClaudeSync.cs, Sync method) instead of taking an injectable " +
-        "home directory the way IPlatform.HomeDirectory does elsewhere in this codebase. Empirically, " +
-        "overriding the USERPROFILE process environment variable does not change what " +
-        "Environment.GetFolderPath returns on .NET 10/Windows, so there is no safe way to redirect " +
-        "--global away from the real ~/.claude from a unit test. See tester report, fault_in: code.")]
+    [Fact]
     public void GlobalSyncPlacesFilesUnderAFakeHome()
     {
+        SyncResult result = NewSync().Sync(cwd, roles: ["builder"], global: true);
+
+        string expectedPath = Path.Combine(fakeHome, ".claude", "agents", "builder.md");
+        Assert.Contains(result.Written, p => p == expectedPath);
+        Assert.True(File.Exists(expectedPath));
+        Assert.False(Directory.Exists(Path.Combine(cwd, ".claude")));
     }
 }

@@ -11,7 +11,7 @@ namespace Claustrum.Roles.Sync;
 /// stubs) and `.claude/skills/delegate/SKILL.md` (docs/PLAN.md §B4). Idempotent by construction: a
 /// file without the `claustrum:generated` marker is never overwritten unless `force` is set.
 /// </summary>
-public sealed class ClaudeSync(RoleLibrary library, RoleRenderer renderer)
+public sealed class ClaudeSync(RoleLibrary library, RoleRenderer renderer, string homeDirectory)
 {
     private const string Harness = "claude";
     private const string MarkerPrefix = "<!-- claustrum:generated";
@@ -21,9 +21,11 @@ public sealed class ClaudeSync(RoleLibrary library, RoleRenderer renderer)
     {
         IReadOnlyList<string> targetRoles = roles is { Count: > 0 } ? roles : library.ListRoles();
         // `--global` targets `~/.claude/...` throughout, not just the agents dir (review finding #3:
-        // the skill file used to hardcode `cwd` here regardless of `global`).
+        // the skill file used to hardcode `cwd` here regardless of `global`). `homeDirectory` is
+        // caller-supplied (IPlatform.HomeDirectory in production) rather than read here directly, so
+        // a test can redirect `--global` away from the real `~/.claude` (tester report, fault_in: code).
         string claudeRoot = global
-            ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude")
+            ? Path.Combine(homeDirectory, ".claude")
             : Path.Combine(cwd, ".claude");
         string agentsDir = Path.Combine(claudeRoot, "agents");
         Directory.CreateDirectory(agentsDir);

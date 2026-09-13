@@ -13,8 +13,13 @@ namespace Claustrum.Roles.Tests.Sync;
 public sealed class ClaudeSyncGoldenTests : IDisposable
 {
     private readonly string cwd = Directory.CreateTempSubdirectory("claustrum-sync-golden-").FullName;
+    private readonly string fakeHome = Directory.CreateTempSubdirectory("claustrum-sync-golden-home-").FullName;
 
-    public void Dispose() => Directory.Delete(cwd, recursive: true);
+    public void Dispose()
+    {
+        Directory.Delete(cwd, recursive: true);
+        Directory.Delete(fakeHome, recursive: true);
+    }
 
     [Theory]
     [InlineData("builder", "builder.md")]
@@ -23,7 +28,7 @@ public sealed class ClaudeSyncGoldenTests : IDisposable
     public void GeneratedFileMatchesGoldenByteForByte(string role, string generatedFileName)
     {
         RoleLibrary library = new();
-        ClaudeSync sync = new(library, new RoleRenderer(library));
+        ClaudeSync sync = new(library, new RoleRenderer(library), fakeHome);
 
         sync.Sync(cwd, roles: [role]);
 
@@ -39,7 +44,7 @@ public sealed class ClaudeSyncGoldenTests : IDisposable
     public void TierStubWithoutARecordedGoldenStillRendersANonemptyFile(string role, string tier)
     {
         RoleLibrary library = new();
-        ClaudeSync sync = new(library, new RoleRenderer(library));
+        ClaudeSync sync = new(library, new RoleRenderer(library), fakeHome);
 
         sync.Sync(cwd, roles: [role]);
 
