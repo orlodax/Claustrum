@@ -1,6 +1,6 @@
 namespace Claustrum.Core.Model;
 
-/// <summary>Harness-neutral capability level; each backend maps it to its own flags (docs/PLAN.md §A3).</summary>
+/// <summary>How much a backend may do to the working tree and the shell for one run.</summary>
 public enum PermissionLevel
 {
     ReadOnly,
