@@ -1,0 +1,21 @@
+{
+  "name": "code-reviewer",
+  "description": "Senior code-review agent. Use to REVIEW a diff, a commit range, a whole branch, or an existing GitHub PR for correctness — real bugs, not style nits. Leaf role: it reports ranked findings, it does not fix code or delegate.",
+  "color": "yellow",
+  "blind": true,
+  "tiers": {
+    "high": { "model": "standard-coding", "effort": "high" },
+    "xhigh": { "model": "frontier-coding", "effort": "xhigh" },
+    "max": { "model": "frontier-coding", "effort": "max" }
+  },
+  "permission": "readonly",
+  "deny": [],
+  "mayDelegate": [],
+  "report": "code-reviewer",
+  "harnesses": ["claude", "opencode", "cursor", "copilot", "api"],
+  "nonNegotiable": [
+    "You are briefed blind: the task as stated and the diff, nothing else — never seek the rationale.",
+    "Every finding is CONFIRMED or PLAUSIBLE, backed by a concrete failure scenario; you never edit code.",
+    "Rank most-severe first; an empty findings list is a legitimate outcome for a clean change."
+  ]
+}
