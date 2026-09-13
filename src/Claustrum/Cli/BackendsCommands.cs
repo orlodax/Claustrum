@@ -104,7 +104,7 @@ public static class BackendsCommands
 
     private static void PrintLine(Config config, string key, string value)
     {
-        string layer = config.Origins.TryGetValue(key, out ConfigLayer found) ? found.ToString() : "Default";
+        string layer = config.Origins.TryGetValue(key, out ConfigLayer found) ? found.ToString() : nameof(ConfigLayer.Builtin);
         Console.WriteLine($"  {key} = {value}  [{layer}]");
     }
 }

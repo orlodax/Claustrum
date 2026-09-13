@@ -18,7 +18,7 @@ public sealed class Config
     public static Config Load(IPlatform platform, string cwd)
     {
         Dictionary<string, ConfigLayer> origins = [];
-        ConfigDocument merged = TrackDefaults(BuiltInDefaults(), ConfigLayer.Default, origins);
+        ConfigDocument merged = TrackDefaults(BuiltInDefaults(), ConfigLayer.Builtin, origins);
 
         string userPath = UserConfigPath(platform);
         if (platform.FileExists(userPath))
@@ -85,8 +85,18 @@ public sealed class Config
         return colon < 0 ? ("claude", value) : (value[..colon], value[(colon + 1)..]);
     }
 
+    // One alias per class in roles/library.json, so `claustrum run <role>` resolves a real model
+    // without `--model` and without a `claustrum.json` (builder brief item 2); claustrum.json's
+    // `models` layer still overrides any of these per key (MergeLayer runs after this).
     private static ConfigDocument BuiltInDefaults() => new(
-        Models: [],
+        Models: new Dictionary<string, string>
+        {
+            ["frontier-reasoning"] = "claude:opus",
+            ["frontier-coding"] = "claude:opus",
+            ["standard-coding"] = "claude:sonnet",
+            ["cheap-coding"] = "claude:haiku",
+            ["fast"] = "claude:haiku",
+        },
         Roles: [],
         Backends: [],
         Defaults: new DefaultsSettings(TimeoutSeconds: 1800, BudgetUsd: 5m, EnvPassthrough: "allowlist"),
@@ -94,6 +104,8 @@ public sealed class Config
 
     private static ConfigDocument TrackDefaults(ConfigDocument doc, ConfigLayer layer, Dictionary<string, ConfigLayer> origins)
     {
+        foreach ((string modelClass, _) in doc.Models ?? [])
+            origins[$"models.{modelClass}"] = layer;
         if (doc.Defaults?.TimeoutSeconds is not null)
             origins["defaults.timeout_seconds"] = layer;
         if (doc.Defaults?.BudgetUsd is not null)
