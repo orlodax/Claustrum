@@ -87,8 +87,11 @@ exists as `code_reviewer`).
 of `RoleRenderer` did a single `Regex.Replace` pass over `ROLE.md`, so the part's raw text — tokens
 and all — was pasted in unresolved and `{{delegate.architect}}` shipped literally into the rendered
 agent file. `RoleRenderer.ResolveToken`'s `part:` branch now re-renders the part's text through the
-same resolver before returning it. Parts are not allowed to reference `{{part:...}}` themselves
-(no recursion guard beyond this one extra level) — none of the shipped parts do.
+same resolver before returning it. None of the shipped parts reference `{{part:...}}` themselves, but
+a `.claustrum/roles/<role>/` local override could, and a `{{part:a}}`↔`{{part:b}}` cycle there would
+hit a `StackOverflowException` — uncatchable, kills the process past the new top-level exception
+boundary (review finding #3, 2026-09-13). `ResolveToken` now threads a `partDepth` counter and throws
+`RoleRenderException` past `MaxPartDepth` (8, comfortably above the one level shipped parts use).
 
 ## Tier stubs use their own token set, not `RoleRenderer.Render`'s (2026-09-13)
 

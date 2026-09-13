@@ -10,6 +10,19 @@ namespace Claustrum.Roles;
 /// </summary>
 public sealed class RoleRenderer(RoleLibrary library)
 {
+    // {{part:x}} recurses one level by design (NOTES.md "Role templating recurses one level into
+    // {{part:name}}"); this is a hard backstop against a cycle in a *local* role override, where a
+    // StackOverflowException would otherwise kill the process past any catch (review finding #3).
+    private const int MaxPartDepth = 8;
+
+    /// <summary>
+    /// The tier's model class only — no ROLE.md rendering — so a caller can pick the harness a role
+    /// will actually run on before <see cref="Render"/> needs one (review finding #2 "harness chosen
+    /// before resolution").
+    /// </summary>
+    public string TierModelClass(string role, string tier, string cwd) =>
+        RequireTier(library.LoadRole(role, cwd).Definition, role, tier).Model;
+
     public RenderedRole Render(string role, string tier, string harness, string cwd)
     {
         LoadedRole loaded = library.LoadRole(role, cwd);
@@ -76,14 +89,17 @@ public sealed class RoleRenderer(RoleLibrary library)
             ? roleTier
             : throw new RoleRenderException($"role '{role}' has no tier '{tier}'");
 
-    private string ResolveToken(string token, string role, string tier, string harness, string cwd, RoleTier roleTier, RoleDefinition definition)
+    private string ResolveToken(string token, string role, string tier, string harness, string cwd, RoleTier roleTier, RoleDefinition definition, int partDepth = 0)
     {
         if (token.StartsWith("part:", StringComparison.Ordinal))
         {
+            if (partDepth >= MaxPartDepth)
+                throw new RoleRenderException($"role '{role}': '{{{{part:...}}}}' nesting exceeded {MaxPartDepth} levels (cycle?)");
+
             // Parts can themselves reference {{delegate.<role>}} (see roles/*/parts/delegation.*.md),
             // so the substitution has to recurse one more level rather than paste the raw text.
             string partText = library.ReadPart(role, token["part:".Length..], harness, cwd).Trim();
-            return TemplateRenderer.Render(partText, t => ResolveToken(t, role, tier, harness, cwd, roleTier, definition));
+            return TemplateRenderer.Render(partText, t => ResolveToken(t, role, tier, harness, cwd, roleTier, definition, partDepth + 1));
         }
 
         if (token.StartsWith("delegate.", StringComparison.Ordinal))
