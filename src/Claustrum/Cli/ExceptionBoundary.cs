@@ -15,7 +15,7 @@ public static class ExceptionBoundary
     {
         switch (exception)
         {
-            case ConfigException or RoleRenderException or CliUsageException or BlindGateException or ArgumentException:
+            case ConfigException or RoleRenderException or CliUsageException or BlindGateException or RunRequestException or ArgumentException:
                 Console.Error.WriteLine(exception.Message);
                 return ExitCodes.Usage;
             case BackendNotFoundException:

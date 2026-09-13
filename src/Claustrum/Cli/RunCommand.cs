@@ -122,11 +122,13 @@ public static class RunCommand
                 Env: ParseEnv(envEntries),
                 Stream: streamMode);
 
+            BackendConfig? backendConfig = null;
+            config.Merged.Backends?.TryGetValue(resolved.Backend, out backendConfig);
             RunOptions options = new(
                 DiffByteCapBytes: CliDiffCapBytes,
+                BackendConfig: backendConfig,
+                EnvPassthroughAll: config.Merged.Defaults?.EnvPassthrough == "all",
                 OnStreamLine: streamMode ? line => Console.Error.WriteLine(line) : null);
-            // TODO(#2): wire a backend config-path override + env passthrough into RunOptions once the
-            // concurrent Process/Backends slice adds those members.
 
             RunResult result = await CliServices.Runner.RunAsync(request, resolved, options, cts.Token);
             RunResult output = rawMode ? result : result with { Raw = null };
