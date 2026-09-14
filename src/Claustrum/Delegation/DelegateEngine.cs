@@ -1,6 +1,7 @@
 using Claustrum.Casts;
 using Claustrum.Core;
 using Claustrum.Core.Config;
+using Claustrum.Core.Jobs;
 using Claustrum.Core.Model;
 
 namespace Claustrum.Delegation;
@@ -13,7 +14,13 @@ public static class DelegateEngine
 {
     public const int DefaultTimeoutSeconds = 1800;
 
-    public static async Task<RunResult> RunAsync(DelegateRequest request, CancellationToken cancellationToken)
+    public static async Task<RunResult> RunAsync(DelegateRequest request, CancellationToken cancellationToken) =>
+        await RunAsync(request, job: null, cancellationToken);
+
+    // JobManager (MCP delegate_async) needs the job id before the run finishes, so it pre-creates the
+    // JobPaths and passes it in; the CLI's synchronous `run` (and MCP's synchronous `delegate`) use
+    // the overload above, which lets Runner create one internally.
+    public static async Task<RunResult> RunAsync(DelegateRequest request, JobPaths? job, CancellationToken cancellationToken)
     {
         // Config first, then the harness the role's tier model resolves to, then Render — Render
         // must already know the harness it will run on (M1 review finding #2), not a placeholder
@@ -55,7 +62,9 @@ public static class DelegateEngine
             EnvPassthroughAll: config.Merged.Defaults?.EnvPassthrough == "all",
             OnStreamLine: request.OnStreamLine);
 
-        return await AppServices.Runner.RunAsync(runRequest, resolved, options, cancellationToken);
+        return job is null
+            ? await AppServices.Runner.RunAsync(runRequest, resolved, options, cancellationToken)
+            : await AppServices.Runner.RunAsync(runRequest, resolved, options, job, cancellationToken);
     }
 
     // The CLI's --permission option already validates against the known set (AcceptOnlyFromAmong)

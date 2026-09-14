@@ -2,6 +2,7 @@ using Claustrum.Core;
 using Claustrum.Core.Backends;
 using Claustrum.Core.Platform;
 using Claustrum.Core.Process;
+using Claustrum.Delegation;
 using Claustrum.Roles;
 
 namespace Claustrum;
@@ -16,4 +17,5 @@ internal static class AppServices
     public static readonly Runner Runner = new(Platform, Backends, new ProcessRunner(Platform));
     public static readonly RoleLibrary RoleLibrary = new();
     public static readonly RoleRenderer RoleRenderer = new(RoleLibrary);
+    public static readonly JobManager JobManager = new();
 }
