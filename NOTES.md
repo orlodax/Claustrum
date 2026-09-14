@@ -256,3 +256,71 @@ itself — most notably `BackendNotFoundException`, when the resolved binary isn
 is pre-spawn by definition (`process.Start()` was never reached) and still propagates uncaught, same
 as before this fix: the CLI already has a dedicated catch mapping it to exit code 3 without a
 `result.json`, and changing that contract wasn't asked for.
+
+## A cast is call-site data, not a Core concept (2026-09-14)
+
+Same category as `RunOptions.BackendConfig`/`EnvPassthroughAll` (NOTES.md "Backend config and env
+passthrough are call-site data, not RunRequest fields"): `Cast`/`CastStore`/`CastResolution`/
+`CastApplication` all live in `src/Claustrum/Casts/`, not `Claustrum.Core`. `Runner`/`Config` never
+see a cast — `CastApplication.Resolve` folds a cast's role entry into `ConfigOverrides` and the
+render tier *before* `Config.Resolve` ever runs, at the one call site (`RunCommand`, and now the MCP
+`delegate`/`delegate_async` tools) that already builds those overrides from its own flags/parameters.
+This keeps M2's cast feature from touching M1's Core/Roles projects at all — the only Core change
+this milestone needed was `Config.ResolveModelBackend` (the cast questionnaire's live-options filter)
+and the `Runner.RunAsync(..., JobPaths, ...)` overload (`delegate_async` needs the job id before the
+run finishes).
+
+## CastBudget: a plain `decimal?` can't tell "no cast" from "cast says unlimited" (2026-09-14)
+
+docs/PLAN.md §D1: a cast's `budget_usd: null` means the cap is disabled for that cast — authoritative
+over `claustrum.json`'s `defaults.budget_usd`, not a "no opinion, fall through" value. But when no
+cast is active at all, the *existing* `defaults.budget_usd` fallback must still apply. Both cases
+present as C# `null` if the cast's budget were folded into `ConfigOverrides.BudgetUsd` directly (the
+same trick used for `Model`/`Backend`), so `CastBudget` is a one-field wrapper: `CastBudget? castBudget
+= null` means no cast is active (fall back to config); `new CastBudget(null)` means an active cast
+says unlimited (stop there, do not fall back). `CastResolution.ApplyBudget` is the three-way
+precedence (flag > active cast > config default), kept pure/AppServices-free specifically so this
+tri-state logic has direct unit coverage without spinning up a real cast file on disk.
+
+## MCP tool registration, confirmed for real (2026-09-14)
+
+docs/PLAN.md §A1 flagged `ModelContextProtocol` 2.2.0's `WithTools<T>(JsonSerializerOptions)` overload
+as UNCONFIRMED, "verify at M2 by AOT-publishing with zero IL2026/IL3050 warnings." Confirmed, by
+reflecting over the installed package (not by reading docs) and then proving it three ways: (1)
+`dotnet publish -r linux-x64 -p:PublishAot=true` on this machine (has clang + zlib1g-dev) produces
+zero trim warnings with all 10 tools registered; (2) the published native binary answers a real stdio
+JSON-RPC session correctly — `initialize`, `tools/list`, and every `tools/call` route to the right
+method and return well-formed results; (3) a `delegate` call against the real `claude` CLI installed
+on this machine actually created a file, returned `status: "success"`, and the diff/report round-
+tripped. Shape: `Host.CreateEmptyApplicationBuilder` → `builder.Logging.AddConsole(o =>
+o.LogToStandardErrorThreshold = LogLevel.Trace)` (stdout is JSON-RPC only) → `AddMcpServer()
+.WithStdioServerTransport().WithTools<ClaustrumTools>(jsonOptions)`, where `jsonOptions.TypeInfoResolver
+= JsonTypeInfoResolver.Combine(ClaustrumJsonContext.Default, CastJsonContext.Default,
+McpJsonContext.Default)` — one combined resolver over every source-generated context a tool's
+parameters or return type can reach. `ClaustrumTools` must be a non-static class (`static class` can't
+be a generic type argument for `WithTools<TToolType>`), with the tool methods themselves `static`.
+
+## JSON sync targets are tracked by hash in sync-manifest.json, not an inline marker (2026-09-14)
+
+`.mcp.json`/`.vscode/mcp.json` (docs/PLAN.md §B4/§D5) have no room for the `<!-- claustrum:generated
+... -->` comment `ClaudeSync.WriteGenerated`'s Markdown targets carry (`SyncManifestFile`'s own doc
+comment already flagged this: "so a future non-marker target (e.g. JSON) is still idempotent").
+`McpConfigSync` instead: computes `JsonNode.DeepEquals` between the existing `claustrum` key and what
+it would write (skip if equal, formatting/property-order-independent); when they differ, treats the
+existing key as "ours to overwrite" only if `sync-manifest.json` has a recorded hash for that path
+that matches the *current* on-disk entry's hash (i.e., claustrum wrote it last time and nothing else
+has touched it since), otherwise foreign (needs `--force`). Everything else in the file — sibling
+`mcpServers`/`servers` entries, unrelated top-level keys — is preserved because only `root[sectionKey]
+["claustrum"]` is ever assigned. Skipped entirely under `--global`: these are repo-root files, not one
+of §B4's `--global` targets (agent directories, the desktop app's own config file).
+
+## The synced skill is named `claustrum`, not `delegate` (2026-09-14)
+
+docs/PLAN.md §D2: "the synced per-harness skill is named `claustrum`... it replaces the `delegate`
+skill" once the cast questionnaire exists — Claustrum owns the questions, the skill is only the UI
+that asks them with the host's native mechanism. `ClaudeSync.WriteSkill` now writes
+`.claude/skills/claustrum/SKILL.md`; the body leads with "run `cast_questions`, ask, then
+`cast_create`" before the unchanged delegation instructions. A repo that already has the old
+`.claude/skills/delegate/SKILL.md` from an M1 sync keeps it untouched (different path, sync never
+looks there) — not cleaned up automatically, since deleting a file a human might have since edited is
+not something `sync` does anywhere else either.
