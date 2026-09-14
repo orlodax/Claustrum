@@ -105,4 +105,58 @@ public sealed class ClaudeSyncTests : IDisposable
         Assert.True(File.Exists(expectedPath));
         Assert.False(Directory.Exists(Path.Combine(cwd, ".claude")));
     }
+
+    [Fact]
+    public void DryRunClassifiesWithoutTouchingDisk()
+    {
+        SyncResult result = NewSync().Sync(cwd, roles: ["builder"], mode: SyncMode.DryRun);
+
+        Assert.Contains(result.Written, p => p.EndsWith("builder.md", StringComparison.Ordinal));
+        Assert.False(Directory.Exists(Path.Combine(cwd, ".claude")));
+        Assert.NotNull(result.ProposedContent);
+        Assert.Contains(result.ProposedContent!.Keys, p => p.EndsWith("builder.md", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void CheckOnAFreshRepoReportsEverythingMissingWithoutWriting()
+    {
+        SyncResult result = NewSync().Sync(cwd, roles: ["builder"], mode: SyncMode.Check);
+
+        Assert.NotEmpty(result.Written);
+        Assert.False(Directory.Exists(Path.Combine(cwd, ".claude")));
+    }
+
+    [Fact]
+    public void CheckAfterARealSyncReportsNothingOutstanding()
+    {
+        ClaudeSync sync = NewSync();
+        sync.Sync(cwd, roles: ["builder"]);
+
+        SyncResult result = sync.Sync(cwd, roles: ["builder"], mode: SyncMode.Check);
+
+        Assert.Empty(result.Written);
+        Assert.Empty(result.Foreign);
+        Assert.NotEmpty(result.Skipped);
+    }
+
+    [Fact]
+    public void CheckStillDetectsAForeignFileWithoutAdoptingIt()
+    {
+        string path = Path.Combine(cwd, ".claude", "agents", "builder.md");
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        File.WriteAllText(path, "hand-written content, no marker\n");
+
+        SyncResult result = NewSync().Sync(cwd, roles: ["builder"], mode: SyncMode.Check);
+
+        Assert.Contains(path, result.Foreign);
+        Assert.Equal("hand-written content, no marker\n", File.ReadAllText(path));
+    }
+
+    [Fact]
+    public void WriteModeNeverPopulatesProposedContent()
+    {
+        SyncResult result = NewSync().Sync(cwd, roles: ["builder"]);
+
+        Assert.Null(result.ProposedContent);
+    }
 }
