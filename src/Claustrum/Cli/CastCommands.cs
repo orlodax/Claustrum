@@ -21,6 +21,10 @@ public static class CastCommands
         Command create = new("create", "Create a cast from answered questions.") { answersPath, createName };
         create.SetAction(parseResult => Create(parseResult.GetRequiredValue(answersPath), parseResult.GetValue(createName) ?? CastStore.DefaultName));
 
+        Option<string> newName = new("--name") { Description = "Cast name.", DefaultValueFactory = _ => CastStore.DefaultName };
+        Command @new = new("new", "Ask the cast questionnaire on this terminal (docs/PLAN.md §D2 TTY fallback).") { newName };
+        @new.SetAction(async parseResult => await NewAsync(parseResult.GetValue(newName) ?? CastStore.DefaultName));
+
         Command list = new("list", "List saved casts.");
         list.SetAction(_ => List());
 
@@ -32,7 +36,7 @@ public static class CastCommands
         Command use = new("use", "Copy an existing cast over .claustrum/casts/default.json.") { useName };
         use.SetAction(parseResult => Use(parseResult.GetRequiredValue(useName)));
 
-        return new Command("cast", "Manage casts: who plays which role (docs/PLAN.md §D).") { questions, create, list, show, use };
+        return new Command("cast", "Manage casts: who plays which role (docs/PLAN.md §D).") { questions, create, @new, list, show, use };
     }
 
     private static async Task<int> QuestionsAsync(bool jsonMode)
@@ -59,6 +63,35 @@ public static class CastCommands
                 Console.WriteLine($"  (or '{CastBuilder.NotNeeded}')");
         }
 
+        return ExitCodes.Ok;
+    }
+
+    // Same questions as `cast questions`/MCP `cast_questions`, asked directly on this terminal for
+    // people working outside any chat (docs/PLAN.md §D2 "Interactive TTY fallback").
+    private static async Task<int> NewAsync(string name)
+    {
+        string cwd = Environment.CurrentDirectory;
+        Config config = Config.Load(AppServices.Platform, cwd);
+        CastQuestionnaireResult questionnaire = await CastQuestionnaire.BuildAsync(AppServices.RoleLibrary, AppServices.Backends, config, cwd, CancellationToken.None);
+
+        if (questionnaire.ExistingCasts.Length > 0)
+            Console.WriteLine($"existing casts: {string.Join(", ", questionnaire.ExistingCasts)}");
+
+        Dictionary<string, string> answers = [];
+        foreach (CastQuestion question in questionnaire.Questions)
+        {
+            Console.WriteLine(question.Prompt);
+            if (question.Options.Length > 0)
+                Console.WriteLine($"  options: {string.Join(", ", question.Options)}{(question.AllowNotNeeded ? $", or '{CastBuilder.NotNeeded}'" : "")}");
+
+            Console.Write($"{question.Key}> ");
+            answers[question.Key] = Console.ReadLine() ?? "";
+        }
+
+        Cast cast = CastBuilder.FromAnswers(name, AppServices.RoleLibrary.Version, answers);
+        CastStore.Save(cwd, cast);
+
+        Console.WriteLine(CastStore.PathFor(cwd, name));
         return ExitCodes.Ok;
     }
 
