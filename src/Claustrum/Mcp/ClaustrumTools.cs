@@ -8,6 +8,7 @@ using Claustrum.Core.Model;
 using Claustrum.Delegation;
 using Claustrum.Mcp.Json;
 using Claustrum.Roles.Model;
+using ModelContextProtocol;
 using ModelContextProtocol.Server;
 
 namespace Claustrum.Mcp;
@@ -48,11 +49,56 @@ public sealed class ClaustrumTools
         bool includeRaw = false,
         CancellationToken cancellationToken = default)
     {
+        DelegateRequest request = BuildRequest(role, brief, cwd, backend, model, effort, tier, permission, deny, budgetUsd, timeoutSeconds, resumeSession, files, cast);
+        RunResult result = await DelegateEngine.RunAsync(request, cancellationToken);
+        RunResult output = includeRaw ? result : result with { Raw = null };
+
+        return JsonSerializer.Serialize(output, ClaustrumJsonContext.Default.RunResult);
+    }
+
+    [McpServerTool(Name = "delegate_async")]
+    [Description("Like delegate, but returns immediately with a job id instead of blocking — for a task expected to run longer than the calling host's own tool-call timeout. Poll job_status for progress and job_result for the final RunResult once state is 'done'.")]
+    public static string DelegateStart(
+        string role, string brief, string? cwd = null, string? backend = null, string? model = null, string? effort = null,
+        string? tier = null, string? permission = null, string[]? deny = null, decimal? budgetUsd = null,
+        int timeoutSeconds = DelegateEngine.DefaultTimeoutSeconds, string? resumeSession = null, string[]? files = null, string? cast = null)
+    {
+        DelegateRequest request = BuildRequest(role, brief, cwd, backend, model, effort, tier, permission, deny, budgetUsd, timeoutSeconds, resumeSession, files, cast);
+        // Deliberately CancellationToken.None: the job must outlive this tool call's own request,
+        // which is what "returns immediately" means — a client cancelling *this* call cannot reach
+        // back into an already-started background job.
+        (string jobId, string logPath) = AppServices.JobManager.Start(request, CancellationToken.None);
+
+        return JsonSerializer.Serialize(new DelegateAsyncResult(jobId, logPath), McpJsonContext.Default.DelegateAsyncResult);
+    }
+
+    [McpServerTool(Name = "job_status")]
+    [Description("Check a delegate_async job's progress: state (running|done), elapsed seconds, and the last captured output line. State 'unknown' means no such job id.")]
+    public static string JobStatus(string jobId)
+    {
+        JobStatusInfo status = AppServices.JobManager.GetStatus(jobId) ?? new JobStatusInfo("unknown", 0, null);
+        return JsonSerializer.Serialize(status, McpJsonContext.Default.JobStatusInfo);
+    }
+
+    [McpServerTool(Name = "job_result")]
+    [Description("Get a delegate_async job's RunResult once it has finished. Throws if the job id is unknown or has not finished yet — call job_status first if unsure.")]
+    public static async Task<string> JobResultAsync(string jobId)
+    {
+        RunResult result = await AppServices.JobManager.GetResultAsync(jobId)
+            ?? throw new McpException($"job '{jobId}' not found or not finished yet — check job_status first");
+
+        return JsonSerializer.Serialize(result, ClaustrumJsonContext.Default.RunResult);
+    }
+
+    private static DelegateRequest BuildRequest(
+        string role, string brief, string? cwd, string? backend, string? model, string? effort, string? tier,
+        string? permission, string[]? deny, decimal? budgetUsd, int timeoutSeconds, string? resumeSession, string[]? files, string? cast)
+    {
         string resolvedCwd = cwd is { Length: > 0 } ? Path.GetFullPath(cwd) : Environment.CurrentDirectory;
         ConfigOverrides overrides = new(Backend: backend, Model: model, Effort: effort, Permission: permission, Deny: deny, BudgetUsd: budgetUsd, TimeoutSeconds: timeoutSeconds);
         (string resolvedTier, ConfigOverrides resolvedOverrides, CastBudget? castBudget) = CastApplication.Resolve(resolvedCwd, role, cast, tier, overrides);
 
-        DelegateRequest request = new(
+        return new DelegateRequest(
             Role: role,
             Brief: brief,
             Cwd: resolvedCwd,
@@ -64,11 +110,6 @@ public sealed class ClaustrumTools
             Stream: false,
             DiffCapBytes: McpDiffCapBytes,
             CastBudget: castBudget);
-
-        RunResult result = await DelegateEngine.RunAsync(request, cancellationToken);
-        RunResult output = includeRaw ? result : result with { Raw = null };
-
-        return JsonSerializer.Serialize(output, ClaustrumJsonContext.Default.RunResult);
     }
 
     [McpServerTool(Name = "list_roles")]
