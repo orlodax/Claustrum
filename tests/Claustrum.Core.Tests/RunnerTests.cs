@@ -52,6 +52,21 @@ public sealed class RunnerTests : IDisposable
         await Assert.ThrowsAsync<BlindGateException>(() => runner.RunAsync(request, MakeRole(blind: true), DefaultOptions(), CancellationToken.None));
     }
 
+    // 2026-09-14 review finding #7: JobDirectory.Create (and the Prune it triggers) used to run as an
+    // argument, before ValidateTimeout/EnsureBlindGate — a rejection left an empty job dir behind and
+    // had already pruned history. Post-fix, a blind-gate rejection must create no job directory at all.
+    [Fact]
+    public async Task BlindGateRejectionCreatesNoJobDirectoryAsync()
+    {
+        Runner runner = NewRunner(ScriptedBackend.Success());
+        RunRequest request = MakeRequest(brief: "Body text.\n```claustrum-report\n{}\n```\n");
+        string jobsRoot = Path.Combine(homeDir, ".claustrum", "jobs");
+
+        await Assert.ThrowsAsync<BlindGateException>(() => runner.RunAsync(request, MakeRole(blind: true), DefaultOptions(), CancellationToken.None));
+
+        Assert.False(Directory.Exists(jobsRoot));
+    }
+
     [Fact]
     public async Task NonpositiveTimeoutThrowsBeforeSpawnAsync()
     {

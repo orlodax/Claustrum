@@ -22,12 +22,23 @@ namespace Claustrum.Core;
 public sealed partial class Runner(IPlatform platform, BackendRegistry backends, ProcessRunner processRunner)
 {
     public async Task<RunResult> RunAsync(RunRequest request, ResolvedRole role, RunOptions options, CancellationToken cancellationToken) =>
-        await RunAsync(request, role, options, JobDirectory.Create(platform), cancellationToken);
+        await RunCoreAsync(request, role, options, jobOverride: null, cancellationToken);
 
     // MCP delegate_async (docs/PLAN.md §A6) needs the job id *before* the run finishes, so it must
-    // create the JobPaths itself and hand it in here rather than letting RunAsync create one — this
-    // overload is that seam; the CLI's synchronous `run` never needs it (the 4-arg overload above).
-    public async Task<RunResult> RunAsync(RunRequest request, ResolvedRole role, RunOptions options, JobPaths job, CancellationToken cancellationToken)
+    // create the JobPaths itself and hand it in here rather than letting RunCoreAsync create one —
+    // this overload is that seam; the CLI's synchronous `run` never needs it (the 4-arg overload
+    // above).
+    public async Task<RunResult> RunAsync(RunRequest request, ResolvedRole role, RunOptions options, JobPaths job, CancellationToken cancellationToken) =>
+        await RunCoreAsync(request, role, options, jobOverride: job, cancellationToken);
+
+    // 2026-09-14 review finding #7: the old single-expression overload evaluated
+    // `JobDirectory.Create(platform)` as an *argument*, before the callee body ran — so
+    // JobDirectory.Prune's deletion of old job dirs, and the job dir itself, existed before
+    // ValidateTimeout/EnsureBlindGate ever ran. A routine blind-gate rejection left an empty
+    // `~/.claustrum/jobs/<id>/` behind and had already pruned history. Creating `job` here, after
+    // both checks, restores `main`'s original ordering while keeping delegate_async's pre-created
+    // job id intact via `jobOverride`.
+    private async Task<RunResult> RunCoreAsync(RunRequest request, ResolvedRole role, RunOptions options, JobPaths? jobOverride, CancellationToken cancellationToken)
     {
         ValidateTimeout(request);
 
@@ -35,6 +46,8 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
         brief = AppendAttachments(brief, request.AttachFiles, platform);
         EnsureBlindGate(role, brief);
         brief = AppendReportTrailer(brief, role);
+
+        JobPaths job = jobOverride ?? JobDirectory.Create(platform);
 
         File.WriteAllText(job.SystemMd, role.SystemPrompt);
         File.WriteAllText(job.RequestJson, JsonSerializer.Serialize(request, ClaustrumJsonContext.Default.RunRequest));
