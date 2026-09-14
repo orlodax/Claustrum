@@ -2,14 +2,15 @@ using Claustrum.Roles.Sync;
 
 namespace Claustrum.Roles.Tests.Sync;
 
-// docs/PLAN.md "Verification" item 2: renderer output for builder/code-reviewer x high/xhigh/max x
-// claude must equal tests/golden/claude/*.md byte-for-byte. The golden files are full generated
-// files (frontmatter + claustrum:generated marker + body), so the comparison runs ClaudeSync end to
-// end against a temp cwd rather than RoleRenderer alone. Only builder.md, builder-xhigh.md and
-// code-reviewer.md exist as recorded golden fixtures; builder-max.md/code-reviewer-xhigh.md/
-// code-reviewer-max.md are exercised for "renders without error" only (RenderTierStubProducesNonEmptyBody
-// below) since there is no recorded golden text to diff against — see the tester report for why
-// those were not fabricated here.
+// docs/PLAN.md "Verification" item 2: renderer output for builder/code-reviewer/tester x
+// high/xhigh/max x claude must equal tests/golden/claude/*.md byte-for-byte. The golden files are
+// full generated files (frontmatter + claustrum:generated marker + body), so the comparison runs
+// ClaudeSync end to end against a temp cwd rather than RoleRenderer alone. Only builder.md,
+// builder-xhigh.md, code-reviewer.md, tester.md and tester-xhigh.md exist as recorded golden
+// fixtures; builder-max.md/code-reviewer-xhigh.md/code-reviewer-max.md/tester-max.md are exercised
+// for "renders without error" only (TierStubWithoutARecordedGoldenStillRendersANonemptyFile below)
+// since there is no recorded golden text to diff against — see the tester report for why those were
+// not fabricated here.
 public sealed class ClaudeSyncGoldenTests : IDisposable
 {
     private readonly string cwd = Directory.CreateTempSubdirectory("claustrum-sync-golden-").FullName;
@@ -25,6 +26,8 @@ public sealed class ClaudeSyncGoldenTests : IDisposable
     [InlineData("builder", "builder.md")]
     [InlineData("builder", "builder-xhigh.md")]
     [InlineData("code-reviewer", "code-reviewer.md")]
+    [InlineData("tester", "tester.md")]
+    [InlineData("tester", "tester-xhigh.md")]
     public void GeneratedFileMatchesGoldenByteForByte(string role, string generatedFileName)
     {
         RoleLibrary library = new();
@@ -41,6 +44,7 @@ public sealed class ClaudeSyncGoldenTests : IDisposable
     [InlineData("builder", "max")]
     [InlineData("code-reviewer", "xhigh")]
     [InlineData("code-reviewer", "max")]
+    [InlineData("tester", "max")]
     public void TierStubWithoutARecordedGoldenStillRendersANonemptyFile(string role, string tier)
     {
         RoleLibrary library = new();
