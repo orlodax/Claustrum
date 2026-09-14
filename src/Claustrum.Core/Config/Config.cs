@@ -67,6 +67,11 @@ public sealed class Config
         return new ResolvedRole(role.Name, role.SystemBody, backend, modelId, effort, new PermissionPolicy(level, deny), role.Blind, role.ReportSchema is { Length: > 0 });
     }
 
+    // Exposes the alias chase for callers that only have a bare model spec, not a role — the cast
+    // questionnaire (docs/PLAN.md §D2) needs to know which of claustrum.json's own model aliases
+    // resolve to a backend that is actually installed, before it can offer them as live options.
+    public string ResolveModelBackend(string modelSpec) => ResolveModel(modelSpec).Backend;
+
     // Mirrors Resolve's model-spec precedence (flag > per-role config > the role's own tier class)
     // without duplicating the alias chase, so the CLI can pick the harness a role will run on
     // *before* it has anything to Render (review finding #2 "harness chosen before resolution") —
