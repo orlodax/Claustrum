@@ -1,3 +1,4 @@
+using Claustrum.Casts;
 using Claustrum.Core;
 using Claustrum.Core.Config;
 using Claustrum.Core.Model;
@@ -24,7 +25,7 @@ public static class DelegateEngine
         RenderedRole rendered = AppServices.RoleRenderer.Render(request.Role, request.Tier, harness, request.Cwd);
         ResolvedRole resolved = config.Resolve(rendered, request.Overrides);
 
-        decimal? budgetUsd = request.Overrides.BudgetUsd ?? config.Merged.Defaults?.BudgetUsd;
+        decimal? budgetUsd = CastResolution.ApplyBudget(request.Overrides.BudgetUsd, request.CastBudget, config.Merged.Defaults?.BudgetUsd);
         int timeoutSeconds = request.Overrides.TimeoutSeconds ?? config.Merged.Defaults?.TimeoutSeconds ?? DefaultTimeoutSeconds;
         PermissionPolicy? requestPermission = request.Overrides.Permission is { } permissionValue
             ? new PermissionPolicy(RequirePermissionLevel(permissionValue), request.Overrides.Deny ?? [])

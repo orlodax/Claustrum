@@ -1,5 +1,6 @@
 using System.CommandLine;
 using System.Text.Json;
+using Claustrum.Casts;
 using Claustrum.Core.Config;
 using Claustrum.Core.Json;
 using Claustrum.Core.Model;
@@ -23,12 +24,13 @@ public static class RunCommand
         Option<string?> backend = new("--backend") { Description = "Backend override (default: 'claude')." };
         Option<string?> model = new("--model") { Description = "Model override." };
         Option<string?> effort = new("--effort") { Description = "Effort override." };
-        Option<string> tier = new("--tier") { Description = "Role tier.", DefaultValueFactory = _ => "high" };
+        Option<string?> tier = new("--tier") { Description = "Role tier (default: the cast's, else 'high')." };
         tier.AcceptOnlyFromAmong("high", "xhigh", "max");
         Option<string?> permission = new("--permission") { Description = "Permission level override." };
         permission.AcceptOnlyFromAmong("readonly", "edit", "edit+shell", "full");
         Option<string[]> deny = new("--deny") { Description = "Extra deny pattern (repeatable)." };
         Option<decimal?> budget = new("--budget") { Description = "Budget cap in USD." };
+        Option<string?> cast = new("--cast") { Description = "Cast name (default: .claustrum/casts/default.json if present)." };
         Option<int?> timeout = new("--timeout") { Description = "Timeout in seconds." };
         Option<string?> resume = new("--resume") { Description = "Backend session id to resume." };
         Option<string[]> file = new("--file") { Description = "Attach a file (repeatable)." };
@@ -40,7 +42,7 @@ public static class RunCommand
         Command command = new("run", "Delegate a task to a role.")
         {
             role, brief, briefFile, cwd, backend, model, effort, tier, permission,
-            deny, budget, timeout, resume, file, env, json, stream, raw,
+            deny, budget, timeout, resume, file, env, cast, json, stream, raw,
         };
 
         command.SetAction(async parseResult => await ExecuteAsync(
@@ -48,7 +50,7 @@ public static class RunCommand
             parseResult.GetValue(brief),
             parseResult.GetValue(briefFile),
             parseResult.GetValue(cwd),
-            parseResult.GetValue(tier) ?? "high",
+            parseResult.GetValue(tier),
             new ConfigOverrides(
                 Backend: parseResult.GetValue(backend),
                 Model: parseResult.GetValue(model),
@@ -60,6 +62,7 @@ public static class RunCommand
             parseResult.GetValue(resume),
             parseResult.GetValue(file) ?? [],
             parseResult.GetValue(env) ?? [],
+            parseResult.GetValue(cast),
             parseResult.GetValue(json),
             parseResult.GetValue(stream),
             parseResult.GetValue(raw)));
@@ -68,9 +71,9 @@ public static class RunCommand
     }
 
     private static async Task<int> ExecuteAsync(
-        string roleName, string? briefText, string? briefFilePath, string? cwdOption, string tierValue,
+        string roleName, string? briefText, string? briefFilePath, string? cwdOption, string? tierFlag,
         ConfigOverrides overrides, string? resumeSession, string[] attachFiles, string[] envEntries,
-        bool jsonMode, bool streamMode, bool rawMode)
+        string? castName, bool jsonMode, bool streamMode, bool rawMode)
     {
         string cwd = Path.GetFullPath(cwdOption ?? Environment.CurrentDirectory);
 
@@ -89,17 +92,26 @@ public static class RunCommand
         {
             string brief = ResolveBrief(briefText, briefFilePath);
 
+            // docs/PLAN.md §D1: explicit --cast wins; otherwise a repo's default.json applies itself
+            // without being asked. A cast's role entry only fills gaps --backend/--model/--tier left
+            // open (CastResolution.ApplyRole); its budget_usd (even null, meaning unlimited) is
+            // authoritative over claustrum.json's default unless --budget was given.
+            Cast? cast = castName is { Length: > 0 } ? CastStore.Load(cwd, castName) : CastStore.TryLoadDefault(cwd);
+            CastRoleEntry? castRole = cast?.Roles.GetValueOrDefault(roleName);
+            (string tier, ConfigOverrides resolvedOverrides) = CastResolution.ApplyRole(tierFlag, overrides, castRole);
+
             DelegateRequest request = new(
                 Role: roleName,
                 Brief: brief,
                 Cwd: cwd,
-                Tier: tierValue,
-                Overrides: overrides,
+                Tier: tier,
+                Overrides: resolvedOverrides,
                 ResumeSession: resumeSession,
                 AttachFiles: attachFiles,
                 Env: ParseEnv(envEntries),
                 Stream: streamMode,
                 DiffCapBytes: CliDiffCapBytes,
+                CastBudget: cast is null ? null : new CastBudget(cast.BudgetUsd),
                 OnStreamLine: streamMode ? Console.Error.WriteLine : null);
 
             RunResult result = await DelegateEngine.RunAsync(request, cts.Token);
