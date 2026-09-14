@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Claustrum.Mcp;
+using ModelContextProtocol;
 
 namespace Claustrum.Tests.Mcp;
 
@@ -96,6 +97,46 @@ public sealed class ClaustrumToolsTests
         {
             Directory.Delete(cwd, recursive: true);
         }
+    }
+
+    [Fact]
+    public async Task DelegateAsyncStartThenJobStatusAndJobResultRoundTripAsync()
+    {
+        string cwd = Directory.CreateTempSubdirectory("claustrum-mcp-delegate-async-").FullName;
+        try
+        {
+            string startJson = ClaustrumTools.DelegateStart(role: "builder", brief: "hi", cwd: cwd, backend: "nonexistent");
+            using JsonDocument started = JsonDocument.Parse(startJson);
+            string jobId = started.RootElement.GetProperty("job_id").GetString()!;
+            Assert.NotEmpty(jobId);
+
+            string resultJson = await ClaustrumTools.JobResultAsync(jobId);
+            using JsonDocument result = JsonDocument.Parse(resultJson);
+            Assert.Equal("backend_missing", result.RootElement.GetProperty("status").GetString());
+
+            string statusJson = ClaustrumTools.JobStatus(jobId);
+            using JsonDocument status = JsonDocument.Parse(statusJson);
+            Assert.Equal("done", status.RootElement.GetProperty("state").GetString());
+        }
+        finally
+        {
+            Directory.Delete(cwd, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void JobStatusForAnUnknownJobIdReportsUnknown()
+    {
+        string json = ClaustrumTools.JobStatus("does-not-exist-" + Guid.NewGuid());
+
+        using JsonDocument document = JsonDocument.Parse(json);
+        Assert.Equal("unknown", document.RootElement.GetProperty("state").GetString());
+    }
+
+    [Fact]
+    public async Task JobResultForAnUnknownJobIdThrowsAsync()
+    {
+        await Assert.ThrowsAsync<McpException>(() => ClaustrumTools.JobResultAsync("does-not-exist-" + Guid.NewGuid()));
     }
 
     [Fact]
