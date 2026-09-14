@@ -135,8 +135,20 @@ public static class WorktreeSnapshot
         if (!File.Exists(fullPath))
             return null;
 
-        using FileStream stream = File.OpenRead(fullPath);
-        return Convert.ToHexStringLower(SHA256.HashData(stream));
+        try
+        {
+            using FileStream stream = File.OpenRead(fullPath);
+            return Convert.ToHexStringLower(SHA256.HashData(stream));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // 2026-09-14 (issue #3): a file locked FileShare.None by an editor/AV/OneDrive sync, or
+            // one that disappears between File.Exists and File.OpenRead, is unhashable, not fatal —
+            // this used to throw out of Runner entirely (NOTES.md "Worktree snapshot: an unreadable
+            // file is unhashable, not fatal"). Consequence: if the same file stays locked across both
+            // snapshots, a content-only edit to it can be missed in changed_files.
+            return null;
+        }
     }
 
     // Backs up over UTF-8 continuation bytes (`10xxxxxx`) so a multi-byte codepoint straddling the

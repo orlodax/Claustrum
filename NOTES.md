@@ -202,6 +202,37 @@ prior snapshot. This is what makes the untracked-but-existing case come out righ
 edited during the run keeps its git-perspective kind (`A`, not `M`) but is now included because its
 hash moved, not because its status letters did.
 
+## Worktree snapshot: an unreadable file is unhashable, not fatal (2026-09-14)
+
+`HashWorktreeFile` used to do a bare `File.Exists` + `File.OpenRead` on every path `git status`
+listed. A file locked `FileShare.None` by an editor, an antivirus scan, or OneDrive/Dropbox sync —
+or one that simply disappears between the two calls — made `File.OpenRead` throw, and that exception
+came out of `WorktreeSnapshot.CaptureAsync` with nothing to catch it. `Runner`'s *before* snapshot
+called this outside its own guarded section (see the next note), so one locked file destroyed the
+whole run: no `result.json`, and over MCP a `delegate_async` job that faulted instead of reporting
+`backend_missing`/`failed` with a real message.
+
+Fix: `HashWorktreeFile` now catches `IOException`/`UnauthorizedAccessException` around the read and
+returns `null`, exactly like the existing `!File.Exists` branch. Traded-off consequence, accepted
+deliberately: a file that is locked during *both* the before and after snapshot now hashes `null`
+both times, so `DiffAsync` falls back to comparing only the git status letters for it — a
+content-only edit to an already-dirty, already-locked file can be missed in `changed_files`. Strictly
+better than destroying the run, but not free; revisit if a real workflow depends on catching that
+exact case (e.g. by falling back to size+mtime like the non-git `ScanFiles` path does).
+
+## Runner's before-snapshot is now inside a guarded section too (2026-09-14)
+
+Docs/PLAN.md's "Runner always yields a result after the process ran" only ever guarded the *after*
+snapshot onward (the `try` starting where `ProcessOutcome outcome` is already in hand) — the *before*
+snapshot and `backend.Build` ran as plain statements ahead of it, so any exception there (a bad `cwd`
+that fails `git`'s `CreateProcess`, or any future `IBackend.Build` failure) escaped `RunCoreAsync`
+entirely and faulted the whole job/process instead of producing a `Failed` `RunResult`. Now the
+before-snapshot + `backend.Build` run in their own `try`/`catch (Exception)`, returning
+`WriteResult(job, FailureResult(job, role, outcome: null, ex))` — `FailureResult` takes a nullable
+`ProcessOutcome` so it can report `ExitCode: -1`/`DurationSeconds: 0` when the backend process never
+even started. No `finally`/`DeleteTempFiles` is needed for this section: `spec` does not exist yet if
+`backend.Build` is what threw, so nothing was created to clean up.
+
 ## Config layer origins for concatenated deny lists (2026-09-13)
 
 `Config`'s per-key `Origins` map (for the future `doctor` command, docs/PLAN.md A7) records a single

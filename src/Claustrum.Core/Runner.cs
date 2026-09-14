@@ -55,9 +55,21 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
         if (!backends.TryGet(role.Backend, out IBackend? backend))
             return WriteResult(job, MissingBackendResult(job, role, $"backend '{role.Backend}' is not registered"));
 
-        WorktreeState before = await WorktreeSnapshot.CaptureAsync(request.Cwd, cancellationToken);
-        ResolvedRun run = new(role, brief, request.Cwd, request.BudgetUsd, request.ResumeSession, request.AttachFiles, request.Stream, job.SystemMd, job.Directory, request.Env);
-        ProcessSpec spec = backend.Build(run);
+        // NOTES.md "Runner's before-snapshot is now inside a guarded section too": a bad `cwd` or any
+        // other pre-spawn failure here used to escape RunCoreAsync entirely. `spec` does not exist
+        // yet if this fails, so there is nothing for a `finally` to clean up.
+        WorktreeState before;
+        ProcessSpec spec;
+        try
+        {
+            before = await WorktreeSnapshot.CaptureAsync(request.Cwd, cancellationToken);
+            ResolvedRun run = new(role, brief, request.Cwd, request.BudgetUsd, request.ResumeSession, request.AttachFiles, request.Stream, job.SystemMd, job.Directory, request.Env);
+            spec = backend.Build(run);
+        }
+        catch (Exception ex)
+        {
+            return WriteResult(job, FailureResult(job, role, outcome: null, ex));
+        }
 
         ProcessOutcome outcome;
         try
@@ -206,10 +218,11 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
         Warnings: []);
 
     // Status stays Failed here even for a termination that would otherwise map to Timeout/Cancelled
-    // — this branch only runs when something *else* broke after the process already ran (e.g. the
-    // after-snapshot's git process failed to spawn), so the termination enum alone would misreport
-    // why the run has no diff/report.
-    private static RunResult FailureResult(JobPaths job, ResolvedRole role, ProcessOutcome outcome, Exception ex) => new(
+    // — this branch only runs when something *else* broke either before the process ever spawned
+    // (`outcome` is then null: a bad `cwd`, `backend.Build` itself throwing) or after it already ran
+    // (e.g. the after-snapshot's git process failed to spawn), so the termination enum alone would
+    // misreport why the run has no diff/report.
+    private static RunResult FailureResult(JobPaths job, ResolvedRole role, ProcessOutcome? outcome, Exception ex) => new(
         SchemaVersion: "1",
         JobId: job.Id,
         Status: RunStatus.Failed,
@@ -223,9 +236,9 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
         SessionId: null,
         CostUsd: null,
         Usage: null,
-        ExitCode: outcome.ExitCode,
+        ExitCode: outcome?.ExitCode ?? -1,
         LogPath: job.StdoutLog,
-        DurationSeconds: outcome.Duration.TotalSeconds,
+        DurationSeconds: outcome?.Duration.TotalSeconds ?? 0,
         Error: ex.Message,
         Raw: null,
         Report: null,

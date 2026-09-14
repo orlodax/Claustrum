@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.Versioning;
 using System.Text;
 using Claustrum.Core.Git;
 using Claustrum.Core.Model;
@@ -91,6 +92,57 @@ public sealed class WorktreeSnapshotTests
         Assert.Equal(2, diff.ChangedFiles.Length);
         Assert.Contains(diff.ChangedFiles, f => f.Path == "new.txt" && f.Kind == ChangeKind.Added);
         Assert.Contains(diff.ChangedFiles, f => f.Path == "old.txt" && f.Kind == ChangeKind.Deleted);
+    }
+
+    // 2026-09-14 (issue #3): a locked/unreadable file used to make HashWorktreeFile's bare
+    // File.OpenRead throw, and that exception came straight out of CaptureAsync with nothing in this
+    // class to catch it. Windows needs FileShare.None (an open editor/AV/OneDrive lock); a non-root
+    // Linux process cannot lock a file against itself that way, so it uses chmod 000 instead — both
+    // leave the file present but unreadable, which is the shape HashWorktreeFile must now tolerate.
+    [Fact]
+    public async Task LockedFileIsUnhashableInsteadOfFatalAsync()
+    {
+        CancellationToken ct = TestContext.Current.CancellationToken;
+        string dir = CreateRepo();
+        Commit(dir, "file.txt", "v1\n");
+        string path = Path.Combine(dir, "file.txt");
+        File.WriteAllText(path, "v2\n"); // dirty before the "run" starts
+
+        using (MakeFileUnreadable(path))
+        {
+            WorktreeState before = await WorktreeSnapshot.CaptureAsync(dir, ct);
+
+            GitStatusEntry entry = Assert.Single(((WorktreeState.Git)before).StatusEntries);
+            Assert.Equal("file.txt", entry.Path);
+            Assert.Null(entry.ContentHash);
+        }
+    }
+
+    private static IDisposable MakeFileUnreadable(string path)
+    {
+        if (OperatingSystem.IsWindows())
+            return File.Open(path, FileMode.Open, FileAccess.Read, FileShare.None);
+
+        return new UnixUnreadableFile(path);
+    }
+
+    // File.OpenRead on a 000-mode file throws UnauthorizedAccessException for any non-root process —
+    // exactly the branch HashWorktreeFile's catch now covers. Restores the original mode on Dispose
+    // so CreateRepo's temp directory can still be deleted afterwards.
+    [UnsupportedOSPlatform("windows")]
+    private sealed class UnixUnreadableFile : IDisposable
+    {
+        private readonly string path;
+        private readonly UnixFileMode original;
+
+        public UnixUnreadableFile(string path)
+        {
+            this.path = path;
+            original = File.GetUnixFileMode(path);
+            File.SetUnixFileMode(path, UnixFileMode.None);
+        }
+
+        public void Dispose() => File.SetUnixFileMode(path, original);
     }
 
     [Fact]
