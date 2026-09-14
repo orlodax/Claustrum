@@ -1,4 +1,5 @@
 using Claustrum.Core.Backends;
+using Claustrum.Core.Jobs;
 using Claustrum.Core.Model;
 using Claustrum.Core.Process;
 using Claustrum.Core.Tests.Testing;
@@ -74,6 +75,51 @@ public sealed class RunnerTests : IDisposable
         RunRequest request = MakeRequest(timeout: TimeSpan.Zero);
 
         await Assert.ThrowsAsync<RunRequestException>(() => runner.RunAsync(request, MakeRole(), DefaultOptions(), CancellationToken.None));
+    }
+
+    // Finding #7 again, for the *first* of the two checks that used to run after JobDirectory.Create:
+    // ValidateTimeout rejects before the blind gate, so a rejected timeout must leak no job dir either.
+    [Fact]
+    public async Task NonpositiveTimeoutRejectionCreatesNoJobDirectoryAsync()
+    {
+        Runner runner = NewRunner(ScriptedBackend.Success());
+        RunRequest request = MakeRequest(timeout: TimeSpan.Zero);
+        string jobsRoot = Path.Combine(homeDir, ".claustrum", "jobs");
+
+        await Assert.ThrowsAsync<RunRequestException>(() => runner.RunAsync(request, MakeRole(), DefaultOptions(), CancellationToken.None));
+
+        Assert.False(Directory.Exists(jobsRoot));
+    }
+
+    // The 5-arg overload finding #7's fix introduced (`jobOverride`) is what MCP delegate_async needs
+    // to know the job id before the run finishes; nothing in Core exercised it directly. The run must
+    // land in the caller's own directory and create no second one.
+    [Fact]
+    public async Task PrecreatedJobPathsOverloadUsesTheCallersJobDirectoryAsync()
+    {
+        HomeRedirectPlatform platform = new(homeDir);
+        Runner runner = new(platform, new BackendRegistry([ScriptedBackend.Success()]), new ProcessRunner(platform));
+        JobPaths job = JobDirectory.Create(platform);
+
+        RunResult result = await runner.RunAsync(MakeRequest(), MakeRole(), DefaultOptions(), job, CancellationToken.None);
+
+        Assert.Equal(job.Id, result.JobId);
+        Assert.True(File.Exists(job.ResultJson));
+        Assert.Single(Directory.EnumerateDirectories(Path.Combine(homeDir, ".claustrum", "jobs")));
+    }
+
+    // Same overload, validation half: a pre-created job directory does not license skipping the gate.
+    [Fact]
+    public async Task PrecreatedJobPathsOverloadStillEnforcesTheBlindGateAsync()
+    {
+        HomeRedirectPlatform platform = new(homeDir);
+        Runner runner = new(platform, new BackendRegistry([ScriptedBackend.Success()]), new ProcessRunner(platform));
+        JobPaths job = JobDirectory.Create(platform);
+        RunRequest request = MakeRequest(brief: "## Task\ndo it\n## Rationale\nbecause\n");
+
+        await Assert.ThrowsAsync<BlindGateException>(() => runner.RunAsync(request, MakeRole(blind: true), DefaultOptions(), job, CancellationToken.None));
+
+        Assert.False(File.Exists(job.ResultJson));
     }
 
     [Fact]

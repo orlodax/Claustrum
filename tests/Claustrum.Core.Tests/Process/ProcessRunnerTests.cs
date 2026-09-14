@@ -58,6 +58,36 @@ public sealed class ProcessRunnerTests
         }
     }
 
+    // Finding #11's fix is two lines that have to stay together: RedirectStandardInput = true *and*
+    // StandardInput.Close(). Redirecting without closing leaves the child on a pipe nobody ever
+    // writes to, so a child that reads stdin blocks until the run's own timeout — which is what this
+    // catches, on either OS. (Dropping both lines instead is only observable against a real host
+    // with a live stdin pipe: see Claustrum.Tests' McpStdioServerTests, and note the measurement
+    // there that the resulting hang reproduces on Windows but not on Linux.)
+    [Fact]
+    public async Task AChildThatReadsStdinSeesEofInsteadOfBlockingAsync()
+    {
+        JobPaths job = CreateTempJob();
+        try
+        {
+            (string exe, string[] args) = ReadStdinCommand();
+            ProcessSpec spec = new(exe, args, Path.GetTempPath(), [], []);
+            ProcessRunner runner = new(new RealPlatform());
+
+            ProcessOutcome outcome = await runner.RunAsync(spec, backendConfig: null, job, envPassthroughAll: false, onStreamLine: null, TimeSpan.FromSeconds(10), CancellationToken.None);
+
+            Assert.Equal(ProcessTermination.Completed, outcome.Termination);
+        }
+        finally
+        {
+            Directory.Delete(job.Directory, recursive: true);
+        }
+    }
+
+    private static (string Exe, string[] Args) ReadStdinCommand() => OperatingSystem.IsWindows()
+        ? ("cmd", ["/c", "more"])
+        : ("sh", ["-c", "cat"]);
+
     private static (string Exe, string[] Args) DumpEnvCommand() => OperatingSystem.IsWindows()
         ? ("cmd", ["/c", "set"])
         : ("sh", ["-c", "env"]);
