@@ -72,6 +72,29 @@ public sealed class CastQuestionnaireTests : IDisposable
         Assert.Contains("fast", result.Questions.Single(q => q.Key == "builder").Options);
     }
 
+    // Finding #9's duplicate-key guard cannot be provoked directly: RoleLibrary is sealed, reads
+    // embedded assembly resources, and ListRoles ignores local overrides, so there is no seam to
+    // inject a role named "architect" — and adding one to production code for a single throw was
+    // judged not worth it (CastBuilder's equivalent guard is tested directly). These two pin the
+    // guard's precondition instead, and fail on the day a library role would collide.
+    [Fact]
+    public void NoLibraryRoleCollidesWithAFixedQuestionKey()
+    {
+        Assert.DoesNotContain("architect", roleLibrary.ListRoles());
+        Assert.DoesNotContain("budget", roleLibrary.ListRoles());
+    }
+
+    [Fact]
+    public async Task EveryEmittedQuestionKeyIsUniqueAsync()
+    {
+        BackendRegistry backends = new([new FakeBackend("claude", found: true)]);
+
+        CastQuestionnaireResult result = await CastQuestionnaire.BuildAsync(roleLibrary, backends, EmptyConfig(), cwd, CancellationToken.None);
+
+        string[] keys = [.. result.Questions.Select(q => q.Key)];
+        Assert.Equal(keys.Length, keys.Distinct(StringComparer.Ordinal).Count());
+    }
+
     [Fact]
     public async Task ExistingCastsListsWhatIsAlreadyOnDiskAsync()
     {

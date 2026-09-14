@@ -132,6 +132,45 @@ public sealed class ClaustrumToolsTests
         }
     }
 
+    // delegate_async carried the identical non-nullable `int timeoutSeconds = 1800` parameter as
+    // delegate, and finding #4's fix changed both — but only delegate's half was pinned.
+    [Fact]
+    public async Task DelegateStartWithNoTimeoutAlsoFallsThroughToRepoConfigAsync()
+    {
+        string cwd = Directory.CreateTempSubdirectory("claustrum-mcp-timeout-async-").FullName;
+        try
+        {
+            Directory.CreateDirectory(Path.Combine(cwd, ".git"));
+            File.WriteAllText(Path.Combine(cwd, "claustrum.json"), /*lang=json,strict*/ """{"defaults":{"timeout_seconds":5400}}""");
+
+            string startJson = ClaustrumTools.DelegateStart(role: "builder", brief: "hi", cwd: cwd, backend: "nonexistent");
+            using JsonDocument started = JsonDocument.Parse(startJson);
+            string jobId = started.RootElement.GetProperty("job_id").GetString()!;
+            await ClaustrumTools.JobResultAsync(jobId);
+
+            string requestPath = Path.Combine(JobDirectory.ResolveRoot(new RealPlatform()), jobId, "request.json");
+            RunRequest request = JsonSerializer.Deserialize(File.ReadAllText(requestPath), ClaustrumJsonContext.Default.RunRequest)!;
+
+            Assert.Equal(TimeSpan.FromSeconds(5400), request.Timeout);
+        }
+        finally
+        {
+            Directory.Delete(cwd, recursive: true);
+        }
+    }
+
+    // The boundary's synchronous half (McpExceptionBoundary.Guard) had no test that made it convert
+    // anything: delegate_async deliberately does not throw for a bad role, and cast_create was only
+    // ever called with valid answers. An unparsable budget is a CastException raised inside Guard.
+    [Fact]
+    public void CastCreateWithAnUnparsableBudgetThrowsMcpExceptionWithTheRealMessage()
+    {
+        McpException exception = Assert.Throws<McpException>(
+            () => ClaustrumTools.CastCreate(new Dictionary<string, string> { ["budget"] = "lots" }));
+
+        Assert.Contains("lots", exception.Message, StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task DelegateAsyncStartThenJobStatusAndJobResultRoundTripAsync()
     {

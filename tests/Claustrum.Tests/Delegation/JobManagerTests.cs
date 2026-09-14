@@ -1,6 +1,10 @@
+using System.Text.Json;
 using Claustrum.Core;
 using Claustrum.Core.Config;
+using Claustrum.Core.Jobs;
+using Claustrum.Core.Json;
 using Claustrum.Core.Model;
+using Claustrum.Core.Platform;
 using Claustrum.Delegation;
 
 namespace Claustrum.Tests.Delegation;
@@ -143,6 +147,68 @@ public sealed class JobManagerTests : IDisposable
         faulted.SetException(new BlindGateException("blind role: brief carries rationale"));
 
         await Assert.ThrowsAsync<BlindGateException>(() => JobManager.ResolveTaskAsync(faulted.Task));
+    }
+
+    // job_status/job_result answer for a job this process never started by reading result.json off
+    // disk (the class comment's "same as `claustrum jobs show`"); nothing exercised that branch, so
+    // an MCP server restarted between delegate_async and job_result was untested.
+    [Fact]
+    public async Task AJobOnDiskFromAnotherProcessIsStillReadableAsync()
+    {
+        JobManager manager = new();
+        string jobId = $"claustrum-test-ondisk-{Guid.NewGuid():N}";
+        string directory = Path.Combine(JobDirectory.ResolveRoot(new RealPlatform()), jobId);
+        Directory.CreateDirectory(directory);
+        try
+        {
+            File.WriteAllText(Path.Combine(directory, "result.json"), JsonSerializer.Serialize(DummyResult(), ClaustrumJsonContext.Default.RunResult));
+
+            Assert.Equal("done", manager.GetStatus(jobId)?.State);
+            RunResult? result = await manager.GetResultAsync(jobId);
+            Assert.Equal(RunStatus.Success, result?.Status);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    // The 2026-09-14 "job_status said failed for a job that should have ended backend_missing"
+    // anomaly: GetStatus's terminal mapping is not racy (a Task never goes Faulted -> RanToCompletion),
+    // but any failure inside Runner's *pre-run* worktree snapshot escapes RunCoreAsync's guarded
+    // section and faults the whole job — an unusable cwd here, an unreadable worktree file in the
+    // wild. The tri-state contract still has to hold: a terminal 'failed', then the real error.
+    [Fact]
+    public async Task AJobWhoseWorktreeSnapshotCannotRunReportsFailedAndRethrowsTheRealErrorAsync()
+    {
+        JobManager manager = new();
+        DelegateRequest request = MissingBackendRequest() with
+        {
+            Cwd = Path.Combine(cwd, "no-such-directory"),
+            Overrides = new ConfigOverrides(Backend: "claude"),
+        };
+
+        (string jobId, _) = manager.Start(request, CancellationToken.None);
+
+        JobStatusInfo? status = await PollUntilTerminalAsync(manager, jobId);
+        Assert.Equal("failed", status?.State);
+
+        Exception error = await Assert.ThrowsAnyAsync<Exception>(() => manager.GetResultAsync(jobId));
+        Assert.Contains("git", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static async Task<JobStatusInfo?> PollUntilTerminalAsync(JobManager manager, string jobId)
+    {
+        for (int attempt = 0; attempt < 300; attempt++)
+        {
+            JobStatusInfo? status = manager.GetStatus(jobId);
+            if (status is not { State: "running" })
+                return status;
+
+            await Task.Delay(100, TestContext.Current.CancellationToken);
+        }
+
+        return null;
     }
 
     private static RunResult DummyResult() => new(
