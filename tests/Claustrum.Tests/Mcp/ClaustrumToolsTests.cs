@@ -2,15 +2,17 @@ using System.Text.Json;
 using Claustrum.Core.Jobs;
 using Claustrum.Core.Json;
 using Claustrum.Core.Model;
-using Claustrum.Core.Platform;
 using Claustrum.Mcp;
+using Claustrum.Tests.Testing;
 using ModelContextProtocol;
 
 namespace Claustrum.Tests.Mcp;
 
 // ClaustrumTools methods are plain static C# methods (the [McpServerTool]/[McpServerToolType]
 // attributes only matter to the MCP host, verified separately by publishing+probing the real server —
-// see NOTES.md), so they are testable directly without a transport.
+// see NOTES.md), so they are testable directly without a transport. AppServicesHomeFixture (the
+// "AppServices home" collection) keeps every job these tools start out of the real ~/.claustrum/jobs.
+[Collection(AppServicesHomeCollectionDefinition.Name)]
 public sealed class ClaustrumToolsTests
 {
     [Fact]
@@ -121,7 +123,7 @@ public sealed class ClaustrumToolsTests
             using JsonDocument document = JsonDocument.Parse(json);
             string jobId = document.RootElement.GetProperty("job_id").GetString()!;
 
-            string requestPath = Path.Combine(JobDirectory.ResolveRoot(new RealPlatform()), jobId, "request.json");
+            string requestPath = Path.Combine(JobDirectory.ResolveRoot(AppServices.Platform), jobId, "request.json");
             RunRequest request = JsonSerializer.Deserialize(File.ReadAllText(requestPath), ClaustrumJsonContext.Default.RunRequest)!;
 
             Assert.Equal(TimeSpan.FromSeconds(5400), request.Timeout);
@@ -148,7 +150,7 @@ public sealed class ClaustrumToolsTests
             string jobId = started.RootElement.GetProperty("job_id").GetString()!;
             await ClaustrumTools.JobResultAsync(jobId);
 
-            string requestPath = Path.Combine(JobDirectory.ResolveRoot(new RealPlatform()), jobId, "request.json");
+            string requestPath = Path.Combine(JobDirectory.ResolveRoot(AppServices.Platform), jobId, "request.json");
             RunRequest request = JsonSerializer.Deserialize(File.ReadAllText(requestPath), ClaustrumJsonContext.Default.RunRequest)!;
 
             Assert.Equal(TimeSpan.FromSeconds(5400), request.Timeout);
