@@ -30,6 +30,7 @@ public sealed class ProcessRunner(IPlatform platform)
             UseShellExecute = false,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
+            RedirectStandardInput = true,
             CreateNoWindow = true,
         };
 
@@ -56,6 +57,12 @@ public sealed class ProcessRunner(IPlatform platform)
 
         Stopwatch stopwatch = Stopwatch.StartNew();
         process.Start();
+
+        // Closed immediately, never fed: every backend takes its brief as an argv element (NOTES.md
+        // "MCP child stdin inheritance hung git"), so this cannot truncate one — and without it the
+        // child would inherit the MCP host's own live JSON-RPC pipe.
+        process.StandardInput.Close();
+
         process.BeginOutputReadLine();
         process.BeginErrorReadLine();
 

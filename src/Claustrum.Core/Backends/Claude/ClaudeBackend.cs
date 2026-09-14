@@ -44,6 +44,7 @@ public sealed class ClaudeBackend(IPlatform platform) : IBackend
             UseShellExecute = false,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
+            RedirectStandardInput = true,
             CreateNoWindow = true,
         };
         foreach (string arg in binary.Args)
@@ -53,6 +54,10 @@ public sealed class ClaudeBackend(IPlatform platform) : IBackend
         try
         {
             process.Start();
+
+            // Closed immediately, not inherited from the MCP host's own live stdio pipe (NOTES.md
+            // "MCP child stdin inheritance hung git").
+            process.StandardInput.Close();
         }
         catch (Exception ex)
         {
