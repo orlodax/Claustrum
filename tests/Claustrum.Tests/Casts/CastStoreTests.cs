@@ -107,4 +107,29 @@ public sealed class CastStoreTests : IDisposable
     {
         Assert.Empty(CastStore.ListNames(cwd));
     }
+
+    [Fact]
+    public void LoadCastFileMissingRolesThrowsCastExceptionNamingTheFile()
+    {
+        Directory.CreateDirectory(CastStore.DirectoryFor(cwd));
+        string path = CastStore.PathFor(cwd, "norole");
+        File.WriteAllText(path, /*lang=json,strict*/ """{"name":"norole","library":"1.0.0","architect":{"mode":"host"},"budget_usd":null}""");
+
+        // A structurally-valid document missing "roles" deserialises Cast.Roles to null (positional
+        // records do not enforce non-nullable reference types at runtime) and used to reach
+        // CastApplication.Resolve as "Value cannot be null" with no file name (review finding #3).
+        CastException ex = Assert.Throws<CastException>(() => CastStore.Load(cwd, "norole"));
+        Assert.Contains(path, ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void LoadCastFileMissingArchitectThrowsCastExceptionNamingTheFile()
+    {
+        Directory.CreateDirectory(CastStore.DirectoryFor(cwd));
+        string path = CastStore.PathFor(cwd, "noarchitect");
+        File.WriteAllText(path, /*lang=json,strict*/ """{"name":"noarchitect","library":"1.0.0","roles":{},"budget_usd":null}""");
+
+        CastException ex = Assert.Throws<CastException>(() => CastStore.Load(cwd, "noarchitect"));
+        Assert.Contains(path, ex.Message, StringComparison.Ordinal);
+    }
 }

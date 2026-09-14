@@ -27,8 +27,19 @@ public static class CastStore
 
         try
         {
-            return JsonSerializer.Deserialize(File.ReadAllText(path), CastJsonContext.Default.Cast)
+            Cast cast = JsonSerializer.Deserialize(File.ReadAllText(path), CastJsonContext.Default.Cast)
                 ?? throw new CastException($"'{path}' does not contain a JSON object");
+
+            // Positional-record construction does not enforce non-nullable reference types at
+            // runtime: a document that omits "roles" or "architect" deserialises those to null
+            // instead of failing, and every caller (CastApplication.Resolve) assumes non-null
+            // (review finding #3). Normalise the invariant here, once, for every caller.
+            if (cast.Roles is null)
+                throw new CastException($"'{path}': missing required field 'roles'");
+            if (cast.Architect is null)
+                throw new CastException($"'{path}': missing required field 'architect'");
+
+            return cast;
         }
         catch (JsonException ex)
         {
