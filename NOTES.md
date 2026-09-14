@@ -251,11 +251,17 @@ More generally, everything from `ProcessOutcome outcome = await processRunner.Ru
 building and writing `RunResult` is now in a `try`/`catch` that turns any exception into a `Failed`
 `RunResult` with `Error` set, still written to `result.json` — a git binary vanishing mid-diff, a
 `Parse` bug, anything. Scope is deliberate: it starts *after* `ProcessOutcome` is obtained, i.e. the
-backend process has definitely run to completion or been killed. A throw from `processRunner.RunAsync`
-itself — most notably `BackendNotFoundException`, when the resolved binary isn't actually on PATH —
-is pre-spawn by definition (`process.Start()` was never reached) and still propagates uncaught, same
-as before this fix: the CLI already has a dedicated catch mapping it to exit code 3 without a
-`result.json`, and changing that contract wasn't asked for.
+backend process has definitely run to completion or been killed.
+
+2026-09-14: `processRunner.RunAsync` itself throwing `BackendNotFoundException` — the resolved binary
+isn't actually on PATH — used to still propagate uncaught past this point, on the reasoning that
+`process.Start()` was never reached so it wasn't yet "a process that ran". That silently skipped the
+CLI's own exit-3 mapping's `result.json`, and left the MCP door with nothing to map at all (the MCP
+SDK's own generic "An error occurred invoking '...'" swallowed the real message). `RunAsync` now
+wraps just that call in its own `try`/`catch (BackendNotFoundException)` and returns the same
+`BackendMissing` `RunResult` the unregistered-backend-name branch above already produced, just with
+the binary-not-on-PATH message instead — one `MissingBackendResult(job, role, errorMessage)` builder,
+two callers. `ExitCodeFor(RunStatus.BackendMissing)` still maps to exit 3 on the CLI, unchanged.
 
 ## A cast is call-site data, not a Core concept (2026-09-14)
 
