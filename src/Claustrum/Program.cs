@@ -10,9 +10,9 @@ RootCommand root = new("Claustrum — harness-neutral coding-agent delegation.")
     JobsCommands.Build(),
     SyncCommand.Build(),
     CastCommands.Build(),
+    McpCommand.Build(),
 };
 
-// `claustrum mcp` is M2 — deliberately not registered yet (builder brief for #2).
 Command splash = new("splash", "Show the terminal splash screen.") { Hidden = true };
 splash.SetAction(_ => Splash.Run(animate: Splash.IsWanted));
 root.Subcommands.Add(splash);
