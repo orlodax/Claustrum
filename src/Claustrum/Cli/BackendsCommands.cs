@@ -22,7 +22,7 @@ public static class BackendsCommands
 
     private static int List()
     {
-        foreach (IBackend backend in CliServices.Backends.All)
+        foreach (IBackend backend in AppServices.Backends.All)
             Console.WriteLine(backend.Name);
 
         return ExitCodes.Ok;
@@ -30,10 +30,10 @@ public static class BackendsCommands
 
     private static async Task<int> DoctorAsync(string? name)
     {
-        IReadOnlyCollection<IBackend> targets = CliServices.Backends.All;
+        IReadOnlyCollection<IBackend> targets = AppServices.Backends.All;
         if (name is not null)
         {
-            if (!CliServices.Backends.TryGet(name, out IBackend? backend))
+            if (!AppServices.Backends.TryGet(name, out IBackend? backend))
             {
                 Console.Error.WriteLine($"unknown backend '{name}'");
                 return ExitCodes.Usage;
@@ -42,7 +42,7 @@ public static class BackendsCommands
             targets = [backend];
         }
 
-        Config config = Config.Load(CliServices.Platform, Environment.CurrentDirectory);
+        Config config = Config.Load(AppServices.Platform, Environment.CurrentDirectory);
 
         foreach (IBackend backend in targets)
         {

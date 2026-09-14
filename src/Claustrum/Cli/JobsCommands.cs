@@ -31,7 +31,7 @@ public static class JobsCommands
 
     private static int List(int last)
     {
-        string root = JobDirectory.ResolveRoot(CliServices.Platform);
+        string root = JobDirectory.ResolveRoot(AppServices.Platform);
         if (!Directory.Exists(root))
         {
             Console.WriteLine("(no jobs yet)");
@@ -75,7 +75,7 @@ public static class JobsCommands
 
     private static int Show(string id)
     {
-        string directory = Path.Combine(JobDirectory.ResolveRoot(CliServices.Platform), id);
+        string directory = Path.Combine(JobDirectory.ResolveRoot(AppServices.Platform), id);
         string resultPath = Path.Combine(directory, "result.json");
         string requestPath = Path.Combine(directory, "request.json");
 
@@ -92,13 +92,13 @@ public static class JobsCommands
             return ExitCodes.Ok;
         }
 
-        Console.Error.WriteLine($"job '{id}' not found under {JobDirectory.ResolveRoot(CliServices.Platform)}");
+        Console.Error.WriteLine($"job '{id}' not found under {JobDirectory.ResolveRoot(AppServices.Platform)}");
         return ExitCodes.Usage;
     }
 
     private static int Logs(string id, bool showStderr)
     {
-        string directory = Path.Combine(JobDirectory.ResolveRoot(CliServices.Platform), id);
+        string directory = Path.Combine(JobDirectory.ResolveRoot(AppServices.Platform), id);
         string logPath = Path.Combine(directory, showStderr ? "stderr.log" : "stdout.log");
 
         if (!File.Exists(logPath))

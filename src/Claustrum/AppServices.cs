@@ -4,11 +4,12 @@ using Claustrum.Core.Platform;
 using Claustrum.Core.Process;
 using Claustrum.Roles;
 
-namespace Claustrum.Cli;
+namespace Claustrum;
 
 // One process, one set of singletons — no DI container (AGENTS.md "no reflection, no assembly
-// scanning"). Every verb builds its RunRequest/config from this shared plumbing.
-internal static class CliServices
+// scanning"). Shared by both front doors (Cli/ and Mcp/): every verb and every MCP tool builds its
+// RunRequest/config from this shared plumbing (renamed from CliServices once Mcp/ needed it too).
+internal static class AppServices
 {
     public static readonly IPlatform Platform = new RealPlatform();
     public static readonly BackendRegistry Backends = BackendRegistry.CreateDefault(Platform);

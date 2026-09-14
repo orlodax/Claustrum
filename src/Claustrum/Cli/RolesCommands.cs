@@ -22,9 +22,9 @@ public static class RolesCommands
     private static int List()
     {
         string cwd = Environment.CurrentDirectory;
-        foreach (string role in CliServices.RoleLibrary.ListRoles())
+        foreach (string role in AppServices.RoleLibrary.ListRoles())
         {
-            RoleDefinition definition = CliServices.RoleLibrary.LoadRole(role, cwd).Definition;
+            RoleDefinition definition = AppServices.RoleLibrary.LoadRole(role, cwd).Definition;
             Console.WriteLine($"{role,-16} {(definition.Blind ? "[blind] " : "")}{definition.Description}");
         }
 
@@ -35,7 +35,7 @@ public static class RolesCommands
     {
         try
         {
-            RoleDefinition definition = CliServices.RoleLibrary.LoadRole(role, Environment.CurrentDirectory).Definition;
+            RoleDefinition definition = AppServices.RoleLibrary.LoadRole(role, Environment.CurrentDirectory).Definition;
             Console.WriteLine($"name:        {definition.Name}");
             Console.WriteLine($"description: {definition.Description}");
             Console.WriteLine($"blind:       {definition.Blind}");
