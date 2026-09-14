@@ -186,14 +186,23 @@ public sealed class ClaudeSync(RoleLibrary library, RoleRenderer renderer, strin
 
         string manifestDir = Path.Combine(cwd, ".claustrum");
         Directory.CreateDirectory(manifestDir);
-        SyncManifest manifest = new(library.Version, [.. merged.Values.OrderBy(f => f.Path, StringComparer.Ordinal)]);
+
+        // Stored relative to cwd with '/' separators (review finding #5): an absolute path only
+        // matches a sync run from the exact same checkout location, so building this repo from
+        // both Windows and WSL (AGENTS.md) — or any worktree, CI checkout, or rename — made
+        // claustrum's own entries look foreign forever. ReadManifest resolves the path back.
+        List<SyncManifestFile> portable = [.. merged.Values
+            .OrderBy(f => f.Path, StringComparer.Ordinal)
+            .Select(f => f with { Path = Path.GetRelativePath(cwd, f.Path).Replace('\\', '/') })];
+        SyncManifest manifest = new(library.Version, portable);
         File.WriteAllText(Path.Combine(manifestDir, "sync-manifest.json"), JsonSerializer.Serialize(manifest, RolesJsonContext.Default.SyncManifest));
     }
 
     // McpConfigSync's only way to tell "claustrum wrote this JSON key last time, safe to overwrite"
     // apart from "a human put unrelated content there" — JSON has no room for the inline
     // claustrum:generated marker WriteGenerated's Markdown targets carry (SyncManifestFile doc
-    // comment "so a future non-marker target ... is still idempotent").
+    // comment "so a future non-marker target ... is still idempotent"). Paths come back absolute
+    // here so every other caller keeps treating SyncManifestFile.Path as absolute in memory.
     private static Dictionary<string, SyncManifestFile> ReadManifest(string cwd)
     {
         string manifestPath = Path.Combine(cwd, ".claustrum", "sync-manifest.json");
@@ -203,7 +212,13 @@ public sealed class ClaudeSync(RoleLibrary library, RoleRenderer renderer, strin
         SyncManifest? existing = JsonSerializer.Deserialize(File.ReadAllText(manifestPath), RolesJsonContext.Default.SyncManifest);
         Dictionary<string, SyncManifestFile> byPath = [];
         foreach (SyncManifestFile file in existing?.Files ?? [])
-            byPath[file.Path] = file;
+        {
+            // Path.GetFullPath(path, basePath) resolves a portable, cwd-relative stored path back
+            // to absolute, and passes an already-absolute legacy entry through unchanged, so an
+            // old manifest full of absolute paths keeps working with no migration.
+            string absolutePath = Path.GetFullPath(file.Path, cwd);
+            byPath[absolutePath] = file with { Path = absolutePath };
+        }
 
         return byPath;
     }

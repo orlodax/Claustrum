@@ -1,4 +1,9 @@
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
 using System.Text.Json.Nodes;
+using Claustrum.Roles.Json;
+using Claustrum.Roles.Model;
 using Claustrum.Roles.Sync;
 
 namespace Claustrum.Roles.Tests.Sync;
@@ -13,7 +18,10 @@ public sealed class McpConfigSyncTests : IDisposable
 
     public void Dispose()
     {
-        Directory.Delete(cwd, recursive: true);
+        // Finding #5's regression test moves `cwd` to simulate a different checkout path, so it
+        // may no longer exist by the time this runs.
+        if (Directory.Exists(cwd))
+            Directory.Delete(cwd, recursive: true);
         Directory.Delete(fakeHome, recursive: true);
     }
 
@@ -139,4 +147,36 @@ public sealed class McpConfigSyncTests : IDisposable
 
         Assert.Contains(".mcp.json", exception.Message, StringComparison.Ordinal);
     }
+
+    // Finding #5: the manifest used to key its "did claustrum write this?" check on an absolute
+    // path, so the same checkout synced a second time from a different path (a moved/renamed
+    // directory, a worktree, a Windows/WSL mount of the same drive — AGENTS.md documents building
+    // from both) stopped recognizing its own `.mcp.json` entry and declared it foreign forever.
+    [Fact]
+    public void ManifestRecordedUnderADifferentCheckoutPathIsStillRecognizedAsOurs()
+    {
+        NewSync().Sync(cwd, roles: ["builder"]);
+
+        string movedCwd = Path.Combine(Path.GetDirectoryName(cwd)!, $"{Path.GetFileName(cwd)}-moved");
+        Directory.Move(cwd, movedCwd);
+
+        // Simulate the manifest correctly recording that claustrum wrote a previous version of the
+        // entry: rewrite the file to that old version and set the manifest's sha256 to match it.
+        const string oldEntryJson = /*lang=json,strict*/ """{"command":"claustrum-old","args":["mcp"]}""";
+        string mcpJsonPath = Path.Combine(movedCwd, ".mcp.json");
+        File.WriteAllText(mcpJsonPath, """{"mcpServers":{"claustrum":""" + oldEntryJson + "}}");
+
+        SyncManifest manifest = new("test", [new SyncManifestFile(".mcp.json", "_mcp", "claude", Sha256Hex(oldEntryJson))]);
+        File.WriteAllText(Path.Combine(movedCwd, ".claustrum", "sync-manifest.json"), JsonSerializer.Serialize(manifest, RolesJsonContext.Default.SyncManifest));
+
+        SyncResult result = new ClaudeSync(library, new RoleRenderer(library), fakeHome).Sync(movedCwd, roles: ["builder"], force: false);
+
+        Assert.Contains(mcpJsonPath, result.Written);
+        Assert.DoesNotContain(mcpJsonPath, result.Foreign);
+        Assert.Equal("claustrum", JsonNode.Parse(File.ReadAllText(mcpJsonPath))!["mcpServers"]!["claustrum"]!["command"]!.GetValue<string>());
+
+        Directory.Delete(movedCwd, recursive: true);
+    }
+
+    private static string Sha256Hex(string content) => Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(content)));
 }
