@@ -324,3 +324,26 @@ that asks them with the host's native mechanism. `ClaudeSync.WriteSkill` now wri
 `.claude/skills/delegate/SKILL.md` from an M1 sync keeps it untouched (different path, sync never
 looks there) — not cleaned up automatically, since deleting a file a human might have since edited is
 not something `sync` does anywhere else either.
+
+## MCP child stdin inheritance hung git under a real host (2026-09-14)
+
+`delegate` hung forever (measured >45s, waited 90s; CLI `run` finishes the same request in ~0.25s),
+but only against a real MCP host — one that writes `initialize`/`tools/call` and keeps stdin open, as
+every real host does. A probe whose stdin hits EOF (e.g. `echo '...' | claustrum mcp`) shuts the
+server down as soon as input ends, tearing the process down mid-`delegate` before it can hang — which
+is how the PR that shipped this bug's own manual test passed. Measured live: `Get-CimInstance
+Win32_Process` during the hang showed a child `git status --porcelain=v1 ...` still alive 20s in,
+where the same command run by hand finishes in 0.037s; the job directory held only `request.json` and
+`system.md`, i.e. it never got past `WorktreeSnapshot.CaptureAsync`, well before `ProcessRunner` ever
+spawns the backend.
+
+Root cause: none of the three spawn sites (`WorktreeSnapshot.RunGitAsync`, `ProcessRunner.RunAsync`,
+`ClaudeBackend.DetectAsync`) redirected `StandardInput`, so every child inherited the MCP server's own
+stdin — the live JSON-RPC pipe the host is writing into and the stdio transport is concurrently
+reading. A child inheriting that pipe can block on it (or steal protocol bytes from the host stream).
+Fix: `RedirectStandardInput = true` at all three sites, `Close()`d immediately after `Start()`. Safe to
+close unconditionally — no backend or `git` invocation here is ever fed anything over stdin; `claude`
+takes its brief as a positional argv element (`ClaudeBackend.Build`), and `git`'s own stdin is never
+read by the flags this codebase passes it. `RunGitAsync` additionally got a 30s defensive timeout (see
+its own `gitTimeout` field) so a git that hangs for some *other* reason can no longer wedge a tool
+call forever either — belt-and-suspenders, not the fix itself.
