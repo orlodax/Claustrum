@@ -27,7 +27,7 @@ public sealed class ClaudeSyncTests : IDisposable
         Assert.Contains(result.Written, p => p.EndsWith("builder.md", StringComparison.Ordinal));
         Assert.Contains(result.Written, p => p.EndsWith("builder-xhigh.md", StringComparison.Ordinal));
         Assert.Contains(result.Written, p => p.EndsWith("builder-max.md", StringComparison.Ordinal));
-        Assert.Contains(result.Written, p => p.EndsWith(Path.Combine("skills", "delegate", "SKILL.md"), StringComparison.Ordinal));
+        Assert.Contains(result.Written, p => p.EndsWith(Path.Combine("skills", "claustrum", "SKILL.md"), StringComparison.Ordinal));
         Assert.Empty(result.Skipped);
         Assert.Empty(result.Foreign);
     }

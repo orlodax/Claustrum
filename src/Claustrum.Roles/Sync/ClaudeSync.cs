@@ -8,8 +8,9 @@ namespace Claustrum.Roles.Sync;
 
 /// <summary>
 /// Renders the role library into `.claude/agents/&lt;role&gt;.md` (+ generated `-xhigh`/`-max` tier
-/// stubs) and `.claude/skills/delegate/SKILL.md` (docs/PLAN.md §B4). Idempotent by construction: a
-/// file without the `claustrum:generated` marker is never overwritten unless `force` is set.
+/// stubs) and `.claude/skills/claustrum/SKILL.md` (docs/PLAN.md §B4/§D2 — renamed from `delegate`
+/// once the skill grew a cast-questionnaire step). Idempotent by construction: a file without the
+/// `claustrum:generated` marker is never overwritten unless `force` is set.
 /// </summary>
 public sealed class ClaudeSync(RoleLibrary library, RoleRenderer renderer, string homeDirectory)
 {
@@ -94,33 +95,46 @@ public sealed class ClaudeSync(RoleLibrary library, RoleRenderer renderer, strin
         string claudeRoot, bool force, SyncMode mode,
         List<string> written, List<string> skipped, List<string> foreign, List<SyncManifestFile> manifestFiles, Dictionary<string, string> proposedContent)
     {
-        string skillDir = Path.Combine(claudeRoot, "skills", "delegate");
+        string skillDir = Path.Combine(claudeRoot, "skills", "claustrum");
         if (mode == SyncMode.Write)
             Directory.CreateDirectory(skillDir);
         string frontmatter = """
             ---
-            name: delegate
-            description: Delegate a task to a Claustrum role (builder, code-reviewer, ...) running on any configured backend.
+            name: claustrum
+            description: Delegate a task to a Claustrum role (builder, code-reviewer, ...) running on any configured backend, and set up a cast (who plays which role) the first time.
             ---
             """;
+        // docs/PLAN.md §D2: this skill replaces the old `delegate` one — Claustrum owns the cast
+        // questionnaire, this skill is only the UI. The delegation half is unchanged from `delegate`.
         string body = """
-            # Delegate
+            # Claustrum
 
+            ## First time in this repo (or asked to set up/change a cast)
+            Run `claustrum cast questions --json` (or the MCP `cast_questions` tool) and ask the user
+            each question with your host's native question mechanism (e.g. `AskUserQuestion` in
+            Claude Code). Write the answers to a file keyed by each question's `key`, then
+            `claustrum cast create --answers <file>` (or the MCP `cast_create` tool). The identical
+            questions are asked in every harness this library supports; only the picker fidelity
+            differs.
+
+            ## Delegating
             Write the brief to a file first — fixed H2 sections `## Task`, `## Scope`,
             `## Must still work`, `## Diff`, `## Context` (non-blind roles only); see this repo's
             `docs/PLAN.md` §B3 for the exact convention — then invoke:
 
             ```
-            claustrum run <role> --brief-file <path> --json
+            claustrum run <role> --brief-file <path> --json [--cast <name>]
             ```
 
             Parse the single JSON document Claustrum prints to stdout for `status`, `changed_files`,
             `diff`, and `report`. When the `claustrum` MCP server is connected, use the `delegate`
-            tool instead of the shell command: `{role, brief, cwd?, backend?, model?, effort?,
-            permission?, ...}`, still with the brief written to a file first if you already have one.
+            tool instead of the shell command: `{role, brief, cwd?, backend?, model?, effort?, tier?,
+            permission?, cast?, ...}`, still with the brief written to a file first if you already
+            have one. With no `--cast`/`cast` given, a repo's `.claustrum/casts/default.json` applies
+            itself automatically if present.
             """;
         string path = Path.Combine(skillDir, "SKILL.md");
-        WriteGenerated(path, "delegate", frontmatter, body, force, mode, written, skipped, foreign, manifestFiles, proposedContent);
+        WriteGenerated(path, "claustrum", frontmatter, body, force, mode, written, skipped, foreign, manifestFiles, proposedContent);
     }
 
     private void WriteGenerated(
