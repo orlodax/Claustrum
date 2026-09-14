@@ -94,11 +94,10 @@ public static class RunCommand
 
             // docs/PLAN.md §D1: explicit --cast wins; otherwise a repo's default.json applies itself
             // without being asked. A cast's role entry only fills gaps --backend/--model/--tier left
-            // open (CastResolution.ApplyRole); its budget_usd (even null, meaning unlimited) is
-            // authoritative over claustrum.json's default unless --budget was given.
-            Cast? cast = castName is { Length: > 0 } ? CastStore.Load(cwd, castName) : CastStore.TryLoadDefault(cwd);
-            CastRoleEntry? castRole = cast?.Roles.GetValueOrDefault(roleName);
-            (string tier, ConfigOverrides resolvedOverrides) = CastResolution.ApplyRole(tierFlag, overrides, castRole);
+            // open; its budget_usd (even null, meaning unlimited) is authoritative over
+            // claustrum.json's default unless --budget was given (CastApplication.Resolve, shared
+            // with MCP delegate/delegate_async).
+            (string tier, ConfigOverrides resolvedOverrides, CastBudget? castBudget) = CastApplication.Resolve(cwd, roleName, castName, tierFlag, overrides);
 
             DelegateRequest request = new(
                 Role: roleName,
@@ -111,7 +110,7 @@ public static class RunCommand
                 Env: ParseEnv(envEntries),
                 Stream: streamMode,
                 DiffCapBytes: CliDiffCapBytes,
-                CastBudget: cast is null ? null : new CastBudget(cast.BudgetUsd),
+                CastBudget: castBudget,
                 OnStreamLine: streamMode ? Console.Error.WriteLine : null);
 
             RunResult result = await DelegateEngine.RunAsync(request, cts.Token);
