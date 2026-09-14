@@ -7,5 +7,6 @@
   <Folder Name="/tests/">
     <Project Path="tests/Claustrum.Core.Tests/Claustrum.Core.Tests.csproj" />
     <Project Path="tests/Claustrum.Roles.Tests/Claustrum.Roles.Tests.csproj" />
+    <Project Path="tests/Claustrum.Tests/Claustrum.Tests.csproj" />
   </Folder>
 </Solution>
