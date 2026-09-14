@@ -81,6 +81,24 @@ public sealed class ClaustrumToolsTests
     }
 
     [Fact]
+    public async Task DelegateAsyncReturnsAParsedRunResultAsync()
+    {
+        string cwd = Directory.CreateTempSubdirectory("claustrum-mcp-delegate-").FullName;
+        try
+        {
+            string json = await ClaustrumTools.DelegateAsync(role: "builder", brief: "hi", cwd: cwd, backend: "nonexistent", cancellationToken: CancellationToken.None);
+
+            using JsonDocument document = JsonDocument.Parse(json);
+            Assert.Equal("backend_missing", document.RootElement.GetProperty("status").GetString());
+            Assert.Equal("builder", document.RootElement.GetProperty("role").GetString());
+        }
+        finally
+        {
+            Directory.Delete(cwd, recursive: true);
+        }
+    }
+
+    [Fact]
     public void CastCreateThenCastListRoundTrips()
     {
         string cwd = Directory.CreateTempSubdirectory("claustrum-mcp-cast-").FullName;
