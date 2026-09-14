@@ -353,3 +353,36 @@ takes its brief as a positional argv element (`ClaudeBackend.Build`), and `git`'
 read by the flags this codebase passes it. `RunGitAsync` additionally got a 30s defensive timeout (see
 its own `gitTimeout` field) so a git that hangs for some *other* reason can no longer wedge a tool
 call forever either — belt-and-suspenders, not the fix itself.
+
+## The stdin hang reproduces on Windows only, and its regression test had to be calibrated (2026-09-14)
+
+Measured while auditing M2's test coverage, by reverting all three `RedirectStandardInput`/`Close()`
+pairs and re-running `Claustrum.Tests`' `McpStdioServerTests`:
+
+- **Windows:** `delegate` over real stdio answers after **30.16s** with `isError` and the SDK's generic
+  "An error occurred invoking 'delegate'" — 30s being `RunGitAsync`'s own defensive timeout, not a
+  recovery. Fixed, the same call answers in **0.20s** with `status: backend_missing`.
+- **Linux (WSL, same source):** the reverted code **passes** in 2.6s. `git` does not block on the
+  inherited pipe there, so on Linux alone no test can distinguish the defect from the fix.
+
+Two consequences. The assertion has to be on the *payload*, not on "a response arrived" — a test that
+only waited for a reply would pass against the bug. And CI must run the Windows leg for that test to
+be load-bearing at all; `ProcessRunnerTests.AChildThatReadsStdinSeesEofInsteadOfBlockingAsync` is the
+platform-neutral half, catching a `RedirectStandardInput` left without its `Close()` on either OS.
+
+## An unreadable worktree file kills a whole run before any result exists (2026-09-14)
+
+`WorktreeSnapshot.CaptureAsync` runs `HashWorktreeFile` on every path `git status` lists, and that is
+`File.Exists` followed by `File.OpenRead` — a file that is locked, or that vanishes between the two,
+throws out of `CaptureAsync`. Runner calls it *before* the guarded section ("Runner always yields a
+result after the process ran" starts after `ProcessRunner` returns), so the exception escapes
+`RunCoreAsync` entirely: CLI `run` prints "error: The process cannot access the file …" and exits 1,
+and MCP `delegate_async` leaves the job `failed` with no `result.json`.
+
+Reproduced deliberately: one file in the repo held open with `FileShare.None` is enough (measured
+2026-09-14). This is the explanation for the one-off `job_status → "failed"` seen during M2 review
+verification on a job that should have ended `backend_missing`: that probe put `CLAUSTRUM_HOME`
+*inside* the scanned repo, so concurrent job files were being created and written while the snapshot
+hashed them. `JobManager.GetStatus`'s own mapping is not racy — a `Task` never goes `Faulted` →
+`RanToCompletion`. Not fixed here (it is M1 Core code, outside the M2 review's eleven findings); the
+fault shape is pinned by `JobManagerTests.AJobWhoseWorktreeSnapshotCannotRunReportsFailedAndRethrows…`.
