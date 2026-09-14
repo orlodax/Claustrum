@@ -34,9 +34,7 @@ internal static class McpConfigSync
         List<string> written, List<string> skipped, List<string> foreign, List<SyncManifestFile> manifestFiles,
         Dictionary<string, string> proposedContent, IReadOnlyDictionary<string, SyncManifestFile> existingManifest)
     {
-        JsonObject root = File.Exists(path)
-            ? JsonNode.Parse(File.ReadAllText(path)) as JsonObject ?? throw new RoleRenderException($"'{path}' does not contain a JSON object")
-            : [];
+        JsonObject root = File.Exists(path) ? ParseExisting(path) : [];
 
         JsonObject section = root[sectionKey] as JsonObject ?? [];
         JsonNode? existingEntry = section["claustrum"];
@@ -63,6 +61,11 @@ internal static class McpConfigSync
 
         section["claustrum"] = claustrumEntry.DeepClone();
         root[sectionKey] = section;
+
+        // Round-tripping through JsonNode drops any `//` comments a human left elsewhere in the
+        // file (JsonObject has no comment slots to preserve them in). The common re-sync path is
+        // the DeepEquals early-return above, which never reaches here, so comments survive an
+        // idempotent sync; they are lost only when the claustrum entry genuinely has to change.
         string content = root.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
 
         if (mode == SyncMode.Write)
@@ -79,6 +82,25 @@ internal static class McpConfigSync
 
         written.Add(path);
         manifestFiles.Add(new SyncManifestFile(path, "_mcp", "claude", newSha256));
+    }
+
+    // VS Code documents `.vscode/*.json` as JSONC (comments + trailing commas allowed), and a
+    // `.vscode/mcp.json` a human hand-wrote commonly has both. Parsing with the default, strict
+    // JsonDocumentOptions threw an uncaught JsonException here (review finding #1) that named
+    // neither the file nor the cause, and — because McpConfigSync runs after every Markdown target
+    // — left the sync half-applied with the manifest never updated.
+    private static JsonObject ParseExisting(string path)
+    {
+        JsonDocumentOptions options = new() { CommentHandling = JsonCommentHandling.Skip, AllowTrailingCommas = true };
+        try
+        {
+            return JsonNode.Parse(File.ReadAllText(path), documentOptions: options) as JsonObject
+                ?? throw new RoleRenderException($"'{path}' does not contain a JSON object");
+        }
+        catch (JsonException exception)
+        {
+            throw new RoleRenderException($"'{path}' is not valid JSON: {exception.Message}");
+        }
     }
 
     private static string ComputeSha256(string content) => Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(content)));

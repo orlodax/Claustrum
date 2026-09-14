@@ -105,4 +105,38 @@ public sealed class McpConfigSyncTests : IDisposable
         Assert.DoesNotContain(result.Written, p => p.EndsWith(".mcp.json", StringComparison.Ordinal));
         Assert.False(File.Exists(Path.Combine(cwd, ".mcp.json")));
     }
+
+    // Finding #1: VS Code documents `.vscode/*.json` as JSONC, so a hand-written `.vscode/mcp.json`
+    // commonly has a `//` comment. Parsing with default (strict) JsonDocumentOptions threw an
+    // uncaught JsonException here and left the whole sync half-applied.
+    [Fact]
+    public void JsoncVsCodeMcpFileWithACommentSyncsCleanlyAndKeepsTheForeignServer()
+    {
+        string vscodeDir = Path.Combine(cwd, ".vscode");
+        Directory.CreateDirectory(vscodeDir);
+        string vscodePath = Path.Combine(vscodeDir, "mcp.json");
+        File.WriteAllText(vscodePath, /*lang=json*/ """
+            {
+              // Managed by hand: see the team wiki
+              "servers": { "fetch": { "type": "stdio", "command": "uvx", "args": ["mcp-server-fetch"] } }
+            }
+            """);
+
+        SyncResult result = NewSync().Sync(cwd, roles: ["builder"]);
+
+        Assert.Contains(vscodePath, result.Written);
+        JsonNode json = JsonNode.Parse(File.ReadAllText(vscodePath))!;
+        Assert.Equal("uvx", json["servers"]!["fetch"]!["command"]!.GetValue<string>());
+        Assert.Equal("claustrum", json["servers"]!["claustrum"]!["command"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public void MalformedJsonNamesTheFileInsteadOfCrashingWithARawJsonException()
+    {
+        File.WriteAllText(Path.Combine(cwd, ".mcp.json"), "{ not json");
+
+        RoleRenderException exception = Assert.Throws<RoleRenderException>(() => NewSync().Sync(cwd, roles: ["builder"]));
+
+        Assert.Contains(".mcp.json", exception.Message, StringComparison.Ordinal);
+    }
 }
