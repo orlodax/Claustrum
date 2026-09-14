@@ -4,6 +4,8 @@ namespace Claustrum.Tests.Casts;
 
 public sealed class CastBuilderTests
 {
+    private static readonly string[] roleNames = ["builder", "code-reviewer", "tester"];
+
     [Fact]
     public void BuildsACastFromACompleteAnswerSet()
     {
@@ -16,7 +18,7 @@ public sealed class CastBuilderTests
             ["budget"] = "10",
         };
 
-        Cast cast = CastBuilder.FromAnswers("default", "1.0.0", answers);
+        Cast cast = CastBuilder.FromAnswers("default", "1.0.0", roleNames, answers);
 
         Assert.Equal("default", cast.Name);
         Assert.Equal("1.0.0", cast.Library);
@@ -32,7 +34,7 @@ public sealed class CastBuilderTests
     {
         Dictionary<string, string> answers = new() { ["budget"] = "no cap" };
 
-        Cast cast = CastBuilder.FromAnswers("default", "1.0.0", answers);
+        Cast cast = CastBuilder.FromAnswers("default", "1.0.0", roleNames, answers);
 
         Assert.Null(cast.BudgetUsd);
     }
@@ -40,7 +42,7 @@ public sealed class CastBuilderTests
     [Fact]
     public void MissingBudgetAnswerAlsoBecomesUnlimited()
     {
-        Cast cast = CastBuilder.FromAnswers("default", "1.0.0", new Dictionary<string, string>());
+        Cast cast = CastBuilder.FromAnswers("default", "1.0.0", roleNames, new Dictionary<string, string>());
 
         Assert.Null(cast.BudgetUsd);
     }
@@ -50,13 +52,13 @@ public sealed class CastBuilderTests
     {
         Dictionary<string, string> answers = new() { ["budget"] = "lots" };
 
-        Assert.Throws<CastException>(() => CastBuilder.FromAnswers("default", "1.0.0", answers));
+        Assert.Throws<CastException>(() => CastBuilder.FromAnswers("default", "1.0.0", roleNames, answers));
     }
 
     [Fact]
     public void MissingArchitectAnswerDefaultsToHost()
     {
-        Cast cast = CastBuilder.FromAnswers("default", "1.0.0", new Dictionary<string, string>());
+        Cast cast = CastBuilder.FromAnswers("default", "1.0.0", roleNames, new Dictionary<string, string>());
 
         Assert.Equal("host", cast.Architect.Mode);
     }
@@ -69,8 +71,25 @@ public sealed class CastBuilderTests
     {
         Dictionary<string, string> answers = new() { ["code-reviewer"] = answer };
 
-        Cast cast = CastBuilder.FromAnswers("default", "1.0.0", answers);
+        Cast cast = CastBuilder.FromAnswers("default", "1.0.0", roleNames, answers);
 
         Assert.Null(cast.Roles["code-reviewer"]);
+    }
+
+    [Fact]
+    public void RoleNamesDriveTheRolesDictionaryNotAHardcodedList()
+    {
+        Dictionary<string, string> answers = new() { ["ui-reviewer"] = "claude:opus" };
+
+        Cast cast = CastBuilder.FromAnswers("default", "1.0.0", ["ui-reviewer"], answers);
+
+        Assert.Equal("claude:opus", cast.Roles["ui-reviewer"]!.Model);
+        Assert.False(cast.Roles.ContainsKey("builder"));
+    }
+
+    [Fact]
+    public void ARoleNamedArchitectThrowsInsteadOfCollidingWithTheModeQuestion()
+    {
+        Assert.Throws<CastException>(() => CastBuilder.FromAnswers("default", "1.0.0", ["architect"], new Dictionary<string, string>()));
     }
 }
