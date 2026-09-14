@@ -10,16 +10,22 @@ public static class CastBuilder
     public const string NotNeeded = "not needed";
     public const string NoCap = "no cap";
 
-    public static Cast FromAnswers(string name, string library, IReadOnlyDictionary<string, string> answers)
+    // `roleNames` is the same list CastQuestionnaire asked about (callers pass
+    // AppServices.RoleLibrary.ListRoles()), not a hardcoded builder/code-reviewer/tester trio —
+    // that hardcoding silently dropped a later milestone's role answer (review finding #9).
+    public static Cast FromAnswers(string name, string library, IReadOnlyList<string> roleNames, IReadOnlyDictionary<string, string> answers)
     {
+        // "architect" is the questionnaire's fixed mode-question key, asked once before the
+        // per-role loop; a role literally named "architect" would collide with it, so this is
+        // rejected here too even though CastQuestionnaire already refuses to emit that pair.
+        if (roleNames.Contains("architect"))
+            throw new CastException("a role named 'architect' would collide with the cast architect-mode question key");
+
         string architectMode = answers.TryGetValue("architect", out string? mode) && mode.Length > 0 ? mode : "host";
 
-        Dictionary<string, CastRoleEntry?> roles = new()
-        {
-            ["builder"] = ParseRoleAnswer(answers.GetValueOrDefault("builder")),
-            ["code-reviewer"] = ParseRoleAnswer(answers.GetValueOrDefault("code-reviewer")),
-            ["tester"] = ParseRoleAnswer(answers.GetValueOrDefault("tester")),
-        };
+        Dictionary<string, CastRoleEntry?> roles = [];
+        foreach (string role in roleNames)
+            roles[role] = ParseRoleAnswer(answers.GetValueOrDefault(role));
 
         return new Cast(name, library, new CastArchitect(architectMode), roles, ParseBudgetAnswer(answers.GetValueOrDefault("budget")));
     }

@@ -167,7 +167,7 @@ public sealed class ClaustrumTools
         [Description("Question key -> answer.")] Dictionary<string, string> answers,
         [Description("Cast name (default: 'default', which run/delegate use automatically when no --cast/cast is given).")] string name = "default")
     {
-        Cast cast = CastBuilder.FromAnswers(name, AppServices.RoleLibrary.Version, answers);
+        Cast cast = CastBuilder.FromAnswers(name, AppServices.RoleLibrary.Version, AppServices.RoleLibrary.ListRoles(), answers);
         CastStore.Save(Environment.CurrentDirectory, cast);
 
         return JsonSerializer.Serialize(cast, CastJsonContext.Default.Cast);
