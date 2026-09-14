@@ -4,15 +4,17 @@ using Claustrum.Core.Config;
 using Claustrum.Core.Jobs;
 using Claustrum.Core.Json;
 using Claustrum.Core.Model;
-using Claustrum.Core.Platform;
 using Claustrum.Delegation;
+using Claustrum.Tests.Testing;
 
 namespace Claustrum.Tests.Delegation;
 
 // Exercises the real AppServices singletons end to end (no fakes: JobManager/DelegateEngine read
 // AppServices directly, same as RunCommand did before the extraction) against backend "nonexistent",
 // which Runner rejects immediately with Status.BackendMissing — fast, and never touches git or
-// spawns a real process, so this is safe to run without a `claude` install.
+// spawns a real process, so this is safe to run without a `claude` install. AppServicesHomeFixture
+// (the "AppServices home" collection) keeps every job this creates out of the real ~/.claustrum/jobs.
+[Collection(AppServicesHomeCollectionDefinition.Name)]
 public sealed class JobManagerTests : IDisposable
 {
     private readonly string cwd = Directory.CreateTempSubdirectory("claustrum-jobmanager-").FullName;
@@ -157,7 +159,7 @@ public sealed class JobManagerTests : IDisposable
     {
         JobManager manager = new();
         string jobId = $"claustrum-test-ondisk-{Guid.NewGuid():N}";
-        string directory = Path.Combine(JobDirectory.ResolveRoot(new RealPlatform()), jobId);
+        string directory = Path.Combine(JobDirectory.ResolveRoot(AppServices.Platform), jobId);
         Directory.CreateDirectory(directory);
         try
         {
@@ -174,12 +176,14 @@ public sealed class JobManagerTests : IDisposable
     }
 
     // The 2026-09-14 "job_status said failed for a job that should have ended backend_missing"
-    // anomaly: GetStatus's terminal mapping is not racy (a Task never goes Faulted -> RanToCompletion),
-    // but any failure inside Runner's *pre-run* worktree snapshot escapes RunCoreAsync's guarded
-    // section and faults the whole job — an unusable cwd here, an unreadable worktree file in the
-    // wild. The tri-state contract still has to hold: a terminal 'failed', then the real error.
+    // anomaly (issue #3 task 1): a failure inside Runner's *pre-run* worktree snapshot used to escape
+    // RunCoreAsync's guarded section entirely and fault the whole job (an unusable cwd here, an
+    // unreadable worktree file in the wild) — GetStatus said "failed" and GetResultAsync rethrew the
+    // raw Win32Exception instead of a RunResult. The before-snapshot now runs inside its own guarded
+    // section, so this is a normal Failed RunResult like any other backend-side failure: the task
+    // completes (state "done"), and job_result carries the real error message instead of throwing.
     [Fact]
-    public async Task AJobWhoseWorktreeSnapshotCannotRunReportsFailedAndRethrowsTheRealErrorAsync()
+    public async Task AJobWhoseWorktreeSnapshotCannotRunReportsAFailedRunResultAsync()
     {
         JobManager manager = new();
         DelegateRequest request = MissingBackendRequest() with
@@ -191,10 +195,11 @@ public sealed class JobManagerTests : IDisposable
         (string jobId, _) = manager.Start(request, CancellationToken.None);
 
         JobStatusInfo? status = await PollUntilTerminalAsync(manager, jobId);
-        Assert.Equal("failed", status?.State);
+        Assert.Equal("done", status?.State);
 
-        Exception error = await Assert.ThrowsAnyAsync<Exception>(() => manager.GetResultAsync(jobId));
-        Assert.Contains("git", error.Message, StringComparison.OrdinalIgnoreCase);
+        RunResult? result = await manager.GetResultAsync(jobId);
+        Assert.Equal(RunStatus.Failed, result?.Status);
+        Assert.Contains("git", result?.Error, StringComparison.OrdinalIgnoreCase);
     }
 
     private static async Task<JobStatusInfo?> PollUntilTerminalAsync(JobManager manager, string jobId)
