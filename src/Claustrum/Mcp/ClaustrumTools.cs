@@ -3,6 +3,9 @@ using System.Text.Json;
 using Claustrum.Casts;
 using Claustrum.Core.Backends;
 using Claustrum.Core.Config;
+using Claustrum.Core.Json;
+using Claustrum.Core.Model;
+using Claustrum.Delegation;
 using Claustrum.Mcp.Json;
 using Claustrum.Roles.Model;
 using ModelContextProtocol.Server;
@@ -15,6 +18,59 @@ namespace Claustrum.Mcp;
 [McpServerToolType]
 public sealed class ClaustrumTools
 {
+    // §A2: 200 KB on the CLI door, 64 KB on MCP.
+    private const int McpDiffCapBytes = 64 * 1024;
+
+    [McpServerTool(Name = "delegate")]
+    [Description(
+        "Delegate a task to a Claustrum role, blocking until it finishes, and return the parsed RunResult " +
+        "(status, changed_files, diff, report). Permission levels: 'readonly' (read-only tools only — the " +
+        "default for a blind role like code-reviewer), 'edit' (edit, no shell), 'edit+shell' (edit + shell — " +
+        "builder/tester's default), 'full' (dangerously skips all permission checks — use only when you mean " +
+        "it). A role with blind:true (see list_roles) must be briefed with only the task as stated and how to " +
+        "get the diff — never rationale, a plan, or a pasted claustrum-report block; the runner refuses such a " +
+        "brief outright (docs/PLAN.md §B3 blind gate).")]
+    public static async Task<string> DelegateAsync(
+        [Description("Role name, e.g. builder, code-reviewer, tester (see list_roles).")] string role,
+        [Description("The brief: markdown with H2 sections ## Task/## Scope/## Must still work/## Diff (docs/PLAN.md §B3).")] string brief,
+        [Description("Working directory (default: the server's own cwd).")] string? cwd = null,
+        string? backend = null,
+        string? model = null,
+        string? effort = null,
+        [Description("Role tier: high (default), xhigh, or max.")] string? tier = null,
+        [Description("readonly | edit | edit+shell | full — see the tool description.")] string? permission = null,
+        string[]? deny = null,
+        decimal? budgetUsd = null,
+        int timeoutSeconds = DelegateEngine.DefaultTimeoutSeconds,
+        string? resumeSession = null,
+        string[]? files = null,
+        [Description("Cast name to source model/tier defaults from (default: .claustrum/casts/default.json if present).")] string? cast = null,
+        bool includeRaw = false,
+        CancellationToken cancellationToken = default)
+    {
+        string resolvedCwd = cwd is { Length: > 0 } ? Path.GetFullPath(cwd) : Environment.CurrentDirectory;
+        ConfigOverrides overrides = new(Backend: backend, Model: model, Effort: effort, Permission: permission, Deny: deny, BudgetUsd: budgetUsd, TimeoutSeconds: timeoutSeconds);
+        (string resolvedTier, ConfigOverrides resolvedOverrides, CastBudget? castBudget) = CastApplication.Resolve(resolvedCwd, role, cast, tier, overrides);
+
+        DelegateRequest request = new(
+            Role: role,
+            Brief: brief,
+            Cwd: resolvedCwd,
+            Tier: resolvedTier,
+            Overrides: resolvedOverrides,
+            ResumeSession: resumeSession,
+            AttachFiles: files ?? [],
+            Env: [],
+            Stream: false,
+            DiffCapBytes: McpDiffCapBytes,
+            CastBudget: castBudget);
+
+        RunResult result = await DelegateEngine.RunAsync(request, cancellationToken);
+        RunResult output = includeRaw ? result : result with { Raw = null };
+
+        return JsonSerializer.Serialize(output, ClaustrumJsonContext.Default.RunResult);
+    }
+
     [McpServerTool(Name = "list_roles")]
     [Description("List every role in the embedded role library, with its description, blind flag, and supported harnesses.")]
     public static string ListRoles()
