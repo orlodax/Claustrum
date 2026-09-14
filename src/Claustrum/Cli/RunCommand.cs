@@ -1,9 +1,9 @@
 using System.CommandLine;
 using System.Text.Json;
-using Claustrum.Core;
 using Claustrum.Core.Config;
 using Claustrum.Core.Json;
 using Claustrum.Core.Model;
+using Claustrum.Delegation;
 
 namespace Claustrum.Cli;
 
@@ -13,7 +13,6 @@ namespace Claustrum.Cli;
 public static class RunCommand
 {
     private const int CliDiffCapBytes = 200 * 1024; // §A2: 200 KB on the CLI door, 64 KB on MCP.
-    private const int DefaultTimeoutSeconds = 1800;
 
     public static Command Build()
     {
@@ -90,47 +89,20 @@ public static class RunCommand
         {
             string brief = ResolveBrief(briefText, briefFilePath);
 
-            // Config first, then the harness the role's tier model resolves to (--backend still wins),
-            // then Render — Render must already know the harness it will run on (review finding #6),
-            // not the "claude" placeholder this used to render against regardless of the real target.
-            Config config = Config.Load(AppServices.Platform, cwd);
-            string tierModelClass = AppServices.RoleRenderer.TierModelClass(roleName, tierValue, cwd);
-            string harness = config.ResolveBackend(roleName, tierModelClass, overrides);
-
-            RenderedRole rendered = AppServices.RoleRenderer.Render(roleName, tierValue, harness, cwd);
-            ResolvedRole resolved = config.Resolve(rendered, overrides);
-
-            decimal? budgetUsd = overrides.BudgetUsd ?? config.Merged.Defaults?.BudgetUsd;
-            int timeoutSeconds = overrides.TimeoutSeconds ?? config.Merged.Defaults?.TimeoutSeconds ?? DefaultTimeoutSeconds;
-            PermissionPolicy? requestPermission = overrides.Permission is { } permissionValue
-                ? new PermissionPolicy(RequirePermissionLevel(permissionValue), overrides.Deny ?? [])
-                : null;
-
-            RunRequest request = new(
+            DelegateRequest request = new(
                 Role: roleName,
                 Brief: brief,
-                BriefFile: null,
                 Cwd: cwd,
-                Backend: overrides.Backend,
-                Model: overrides.Model,
-                Effort: overrides.Effort,
-                Permission: requestPermission,
-                BudgetUsd: budgetUsd,
-                Timeout: TimeSpan.FromSeconds(timeoutSeconds),
+                Tier: tierValue,
+                Overrides: overrides,
                 ResumeSession: resumeSession,
                 AttachFiles: attachFiles,
                 Env: ParseEnv(envEntries),
-                Stream: streamMode);
-
-            BackendConfig? backendConfig = null;
-            config.Merged.Backends?.TryGetValue(resolved.Backend, out backendConfig);
-            RunOptions options = new(
-                DiffByteCapBytes: CliDiffCapBytes,
-                BackendConfig: backendConfig,
-                EnvPassthroughAll: config.Merged.Defaults?.EnvPassthrough == "all",
+                Stream: streamMode,
+                DiffCapBytes: CliDiffCapBytes,
                 OnStreamLine: streamMode ? Console.Error.WriteLine : null);
 
-            RunResult result = await AppServices.Runner.RunAsync(request, resolved, options, cts.Token);
+            RunResult result = await DelegateEngine.RunAsync(request, cts.Token);
             RunResult output = rawMode ? result : result with { Raw = null };
 
             if (jsonMode)
@@ -191,13 +163,6 @@ public static class RunCommand
 
         return env;
     }
-
-    // AcceptOnlyFromAmong on the --permission option already rejects anything else during parsing;
-    // this only turns the validated string back into the enum, so failure here is unreachable.
-    private static PermissionLevel RequirePermissionLevel(string value) =>
-        PermissionLevelParser.TryParse(value, out PermissionLevel level)
-            ? level
-            : throw new InvalidOperationException($"unreachable: '--permission' accepted invalid value '{value}'");
 
     private static int ExitCodeFor(RunStatus status) => status switch
     {
