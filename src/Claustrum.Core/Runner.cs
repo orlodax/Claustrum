@@ -21,7 +21,13 @@ namespace Claustrum.Core;
 // cancel/timeout, no result at all (NOTES.md "Runner always yields a result after the process ran").
 public sealed partial class Runner(IPlatform platform, BackendRegistry backends, ProcessRunner processRunner)
 {
-    public async Task<RunResult> RunAsync(RunRequest request, ResolvedRole role, RunOptions options, CancellationToken cancellationToken)
+    public async Task<RunResult> RunAsync(RunRequest request, ResolvedRole role, RunOptions options, CancellationToken cancellationToken) =>
+        await RunAsync(request, role, options, JobDirectory.Create(platform), cancellationToken);
+
+    // MCP delegate_async (docs/PLAN.md §A6) needs the job id *before* the run finishes, so it must
+    // create the JobPaths itself and hand it in here rather than letting RunAsync create one — this
+    // overload is that seam; the CLI's synchronous `run` never needs it (the 4-arg overload above).
+    public async Task<RunResult> RunAsync(RunRequest request, ResolvedRole role, RunOptions options, JobPaths job, CancellationToken cancellationToken)
     {
         ValidateTimeout(request);
 
@@ -30,7 +36,6 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
         EnsureBlindGate(role, brief);
         brief = AppendReportTrailer(brief, role);
 
-        JobPaths job = JobDirectory.Create(platform);
         File.WriteAllText(job.SystemMd, role.SystemPrompt);
         File.WriteAllText(job.RequestJson, JsonSerializer.Serialize(request, ClaustrumJsonContext.Default.RunRequest));
 
