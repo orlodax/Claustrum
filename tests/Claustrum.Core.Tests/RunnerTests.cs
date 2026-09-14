@@ -165,6 +165,24 @@ public sealed class RunnerTests : IDisposable
         Assert.Equal(ReportStatus.Missing, result.ReportStatus);
     }
 
+    // Confirms the fix for the `BackendNotFoundException` that used to escape RunCoreAsync
+    // uncaught (NOTES.md "Runner always yields a result after the process ran", 2026-09-14 update):
+    // a registered backend resolving to no binary on PATH now yields the same BackendMissing
+    // status as the unregistered-name case below, not a thrown exception.
+    [Fact]
+    public async Task BackendNotOnPathYieldsStructuredBackendMissingResultAsync()
+    {
+        Runner runner = NewRunner(ScriptedBackend.NotOnPath());
+        RunRequest request = MakeRequest();
+
+        RunResult result = await runner.RunAsync(request, MakeRole(), DefaultOptions(), CancellationToken.None);
+
+        Assert.Equal(RunStatus.BackendMissing, result.Status);
+        Assert.Equal(ReportStatus.Missing, result.ReportStatus);
+        Assert.Contains("was not found on PATH", result.Error, StringComparison.Ordinal);
+        Assert.True(File.Exists(ResultJsonPath(result)));
+    }
+
     private Runner NewRunner(IBackend backend)
     {
         HomeRedirectPlatform platform = new(homeDir);

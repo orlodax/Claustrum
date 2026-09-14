@@ -172,6 +172,68 @@ public sealed class ClaustrumToolsTests
         await Assert.ThrowsAsync<McpException>(() => ClaustrumTools.JobResultAsync("does-not-exist-" + Guid.NewGuid()));
     }
 
+    // McpExceptionBoundary (2026-09-14): before this fix, an unknown role or a blind-gate violation
+    // both escaped as the MCP SDK's own generic "An error occurred invoking 'delegate'", with the
+    // real message only in the server's stderr log. RoleRenderException/BlindGateException must now
+    // surface as an McpException carrying that real message instead.
+    [Fact]
+    public async Task DelegateAsyncWithUnknownRoleThrowsMcpExceptionWithTheRealMessageAsync()
+    {
+        string cwd = Directory.CreateTempSubdirectory("claustrum-mcp-badrole-").FullName;
+        try
+        {
+            McpException exception = await Assert.ThrowsAsync<McpException>(
+                () => ClaustrumTools.DelegateAsync(role: "no-such-role", brief: "hi", cwd: cwd, cancellationToken: CancellationToken.None));
+
+            Assert.Contains("no-such-role", exception.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(cwd, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task DelegateAsyncWithBlindGateViolationThrowsMcpExceptionAsync()
+    {
+        string cwd = Directory.CreateTempSubdirectory("claustrum-mcp-blindgate-").FullName;
+        try
+        {
+            McpException exception = await Assert.ThrowsAsync<McpException>(
+                () => ClaustrumTools.DelegateAsync(role: "code-reviewer", brief: "## Plan\nstep 1", cwd: cwd, cancellationToken: CancellationToken.None));
+
+            Assert.Contains("blind", exception.Message, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            Directory.Delete(cwd, recursive: true);
+        }
+    }
+
+    // DelegateStart itself must NOT throw for a bad role: an async job's `Task<RunResult>` is a
+    // faulted task returned by DelegateEngine.RunAsync, not a synchronous throw at Start() — "returns
+    // immediately with a job id" (the tool's own description) has to hold even for a job that will
+    // fail. The role error surfaces later, via job_result.
+    [Fact]
+    public async Task DelegateStartWithUnknownRoleThenJobResultThrowsMcpExceptionWithTheRealMessageAsync()
+    {
+        string cwd = Directory.CreateTempSubdirectory("claustrum-mcp-badrole-async-").FullName;
+        try
+        {
+            string startJson = ClaustrumTools.DelegateStart(role: "no-such-role", brief: "hi", cwd: cwd);
+            using JsonDocument started = JsonDocument.Parse(startJson);
+            string jobId = started.RootElement.GetProperty("job_id").GetString()!;
+
+            McpException exception = await Assert.ThrowsAsync<McpException>(() => ClaustrumTools.JobResultAsync(jobId));
+
+            Assert.Contains("no-such-role", exception.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(cwd, recursive: true);
+        }
+    }
+
     [Fact]
     public void CastCreateThenCastListRoundTrips()
     {

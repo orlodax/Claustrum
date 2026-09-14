@@ -53,13 +53,25 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
         File.WriteAllText(job.RequestJson, JsonSerializer.Serialize(request, ClaustrumJsonContext.Default.RunRequest));
 
         if (!backends.TryGet(role.Backend, out IBackend? backend))
-            return WriteResult(job, MissingBackendResult(job, role));
+            return WriteResult(job, MissingBackendResult(job, role, $"backend '{role.Backend}' is not registered"));
 
         WorktreeState before = await WorktreeSnapshot.CaptureAsync(request.Cwd, cancellationToken);
         ResolvedRun run = new(role, brief, request.Cwd, request.BudgetUsd, request.ResumeSession, request.AttachFiles, request.Stream, job.SystemMd, job.Directory, request.Env);
         ProcessSpec spec = backend.Build(run);
 
-        ProcessOutcome outcome = await processRunner.RunAsync(spec, options.BackendConfig, job, options.EnvPassthroughAll, options.OnStreamLine, request.Timeout, cancellationToken);
+        ProcessOutcome outcome;
+        try
+        {
+            outcome = await processRunner.RunAsync(spec, options.BackendConfig, job, options.EnvPassthroughAll, options.OnStreamLine, request.Timeout, cancellationToken);
+        }
+        catch (BackendNotFoundException ex)
+        {
+            // Registered but not resolvable to a binary (docs/PLAN.md §A5 exit 3), as opposed to
+            // the unregistered-name branch above — same BackendMissing status either way, so a
+            // caller need not distinguish "no such backend" from "backend not on PATH".
+            DeleteTempFiles(spec.TempFiles);
+            return WriteResult(job, MissingBackendResult(job, role, ex.Message));
+        }
 
         try
         {
@@ -170,7 +182,7 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
     [GeneratedRegex(@"^[ \t]*`{3,}claustrum-report\b", RegexOptions.Multiline)]
     private static partial Regex ReportFencePattern();
 
-    private static RunResult MissingBackendResult(JobPaths job, ResolvedRole role) => new(
+    private static RunResult MissingBackendResult(JobPaths job, ResolvedRole role, string errorMessage) => new(
         SchemaVersion: "1",
         JobId: job.Id,
         Status: RunStatus.BackendMissing,
@@ -187,7 +199,7 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
         ExitCode: -1,
         LogPath: job.StdoutLog,
         DurationSeconds: 0,
-        Error: $"backend '{role.Backend}' is not registered",
+        Error: errorMessage,
         Raw: null,
         Report: null,
         ReportStatus: ReportStatus.Missing,

@@ -32,4 +32,9 @@ public sealed class ScriptedBackend(string exe, string[] args, ParsedOutput? par
     public static ScriptedBackend Sleep(int seconds) => OperatingSystem.IsWindows()
         ? new ScriptedBackend("cmd", ["/c", "ping", "-n", (seconds + 1).ToString(), "127.0.0.1"])
         : new ScriptedBackend("sh", ["-c", $"sleep {seconds}"]);
+
+    // A registered backend whose executable BinaryLocator will never resolve on PATH — distinct
+    // from the unregistered-backend-name case (BackendRegistry.TryGet returning false), this instead
+    // exercises ProcessRunner.RunAsync throwing BackendNotFoundException.
+    public static ScriptedBackend NotOnPath() => new("claustrum-test-does-not-exist-binary", []);
 }
