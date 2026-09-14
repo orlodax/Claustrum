@@ -51,4 +51,55 @@ public sealed class ClaustrumToolsTests
         Assert.Equal(1, backends.GetArrayLength());
         Assert.Equal("claude", backends[0].GetProperty("name").GetString());
     }
+
+    [Fact]
+    public async Task CastQuestionsIncludesEveryLibraryRoleAsync()
+    {
+        string cwd = Directory.CreateTempSubdirectory("claustrum-mcp-cast-").FullName;
+        try
+        {
+            string previous = Environment.CurrentDirectory;
+            Environment.CurrentDirectory = cwd;
+            try
+            {
+                string json = await ClaustrumTools.CastQuestionsAsync(CancellationToken.None);
+
+                using JsonDocument document = JsonDocument.Parse(json);
+                string[] keys = [.. document.RootElement.GetProperty("questions").EnumerateArray().Select(q => q.GetProperty("key").GetString()!)];
+                Assert.Contains("builder", keys);
+                Assert.Contains("budget", keys);
+            }
+            finally
+            {
+                Environment.CurrentDirectory = previous;
+            }
+        }
+        finally
+        {
+            Directory.Delete(cwd, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void CastCreateThenCastListRoundTrips()
+    {
+        string cwd = Directory.CreateTempSubdirectory("claustrum-mcp-cast-").FullName;
+        string previous = Environment.CurrentDirectory;
+        Environment.CurrentDirectory = cwd;
+        try
+        {
+            string createJson = ClaustrumTools.CastCreate(new Dictionary<string, string> { ["builder"] = "fast" });
+            using JsonDocument created = JsonDocument.Parse(createJson);
+            Assert.Equal("default", created.RootElement.GetProperty("name").GetString());
+
+            string listJson = ClaustrumTools.CastList();
+            using JsonDocument list = JsonDocument.Parse(listJson);
+            Assert.Contains(list.RootElement.EnumerateArray(), e => e.GetString() == "default");
+        }
+        finally
+        {
+            Environment.CurrentDirectory = previous;
+            Directory.Delete(cwd, recursive: true);
+        }
+    }
 }

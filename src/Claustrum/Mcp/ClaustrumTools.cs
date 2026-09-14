@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Text.Json;
+using Claustrum.Casts;
 using Claustrum.Core.Backends;
 using Claustrum.Core.Config;
 using Claustrum.Mcp.Json;
@@ -50,5 +51,36 @@ public sealed class ClaustrumTools
         }
 
         return JsonSerializer.Serialize(new DoctorReport([.. entries]), McpJsonContext.Default.DoctorReport);
+    }
+
+    [McpServerTool(Name = "cast_questions")]
+    [Description("Get the cast questionnaire (docs/PLAN.md §D2): one question per role in the library plus budget, with live options filtered to backends actually found on this machine.")]
+    public static async Task<string> CastQuestionsAsync(CancellationToken cancellationToken)
+    {
+        string cwd = Environment.CurrentDirectory;
+        Config config = Config.Load(AppServices.Platform, cwd);
+        CastQuestionnaireResult result = await CastQuestionnaire.BuildAsync(AppServices.RoleLibrary, AppServices.Backends, config, cwd, cancellationToken);
+
+        return JsonSerializer.Serialize(result, CastJsonContext.Default.CastQuestionnaireResult);
+    }
+
+    [McpServerTool(Name = "cast_create")]
+    [Description("Create a cast from answered cast_questions (docs/PLAN.md §D1/§D2): answers keys must match each question's key ('architect', 'builder', 'code-reviewer', ..., 'budget'); a role's value may be 'not needed', and budget may be 'no cap'.")]
+    public static string CastCreate(
+        [Description("Question key -> answer.")] Dictionary<string, string> answers,
+        [Description("Cast name (default: 'default', which run/delegate use automatically when no --cast/cast is given).")] string name = "default")
+    {
+        Cast cast = CastBuilder.FromAnswers(name, AppServices.RoleLibrary.Version, answers);
+        CastStore.Save(Environment.CurrentDirectory, cast);
+
+        return JsonSerializer.Serialize(cast, CastJsonContext.Default.Cast);
+    }
+
+    [McpServerTool(Name = "cast_list")]
+    [Description("List the names of every cast saved under .claustrum/casts/ in the current working directory.")]
+    public static string CastList()
+    {
+        string[] names = CastStore.ListNames(Environment.CurrentDirectory);
+        return JsonSerializer.Serialize(names, McpJsonContext.Default.StringArray);
     }
 }
