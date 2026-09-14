@@ -178,5 +178,81 @@ public sealed class McpConfigSyncTests : IDisposable
         Directory.Delete(movedCwd, recursive: true);
     }
 
+    // The other half of JSONC that VS Code documents for `.vscode/*.json` and that a hand-written
+    // file commonly has (finding #1's fix set AllowTrailingCommas alongside CommentHandling.Skip).
+    [Fact]
+    public void JsoncVsCodeMcpFileWithATrailingCommaSyncsCleanly()
+    {
+        string vscodePath = Path.Combine(cwd, ".vscode", "mcp.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(vscodePath)!);
+        File.WriteAllText(vscodePath, /*lang=json*/ """
+            {
+              "servers": {
+                "fetch": { "type": "stdio", "command": "uvx", "args": ["mcp-server-fetch"] },
+              },
+            }
+            """);
+
+        SyncResult result = NewSync().Sync(cwd, roles: ["builder"]);
+
+        Assert.Contains(vscodePath, result.Written);
+        JsonNode json = JsonNode.Parse(File.ReadAllText(vscodePath))!;
+        Assert.Equal("uvx", json["servers"]!["fetch"]!["command"]!.GetValue<string>());
+        Assert.Equal("claustrum", json["servers"]!["claustrum"]!["command"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public void MalformedVsCodeMcpJsonAlsoNamesItsOwnFile()
+    {
+        string vscodePath = Path.Combine(cwd, ".vscode", "mcp.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(vscodePath)!);
+        File.WriteAllText(vscodePath, "{ \"servers\": ");
+
+        RoleRenderException exception = Assert.Throws<RoleRenderException>(() => NewSync().Sync(cwd, roles: ["builder"]));
+
+        Assert.Contains("mcp.json", exception.Message, StringComparison.Ordinal);
+    }
+
+    // Finding #5's write half. ClaudeSyncTests only asserted the manifest mentions "builder.md",
+    // which an absolute path satisfies too — so the suite could not tell the fix from the defect.
+    [Fact]
+    public void ManifestStoresEveryPathRelativeToCwdWithForwardSlashes()
+    {
+        NewSync().Sync(cwd, roles: ["builder"]);
+
+        SyncManifest manifest = JsonSerializer.Deserialize(
+            File.ReadAllText(Path.Combine(cwd, ".claustrum", "sync-manifest.json")), RolesJsonContext.Default.SyncManifest)!;
+
+        Assert.NotEmpty(manifest.Files);
+        foreach (SyncManifestFile file in manifest.Files)
+        {
+            Assert.False(Path.IsPathRooted(file.Path), $"manifest path '{file.Path}' is absolute");
+            Assert.DoesNotContain('\\', file.Path);
+        }
+
+        Assert.Contains(manifest.Files, file => file.Path == ".mcp.json");
+    }
+
+    // The back-compat half of the same fix: Path.GetFullPath(stored, cwd) has to pass an
+    // already-absolute legacy entry through unchanged, so a manifest written before the fix keeps
+    // proving provenance instead of turning every target foreign on the next sync.
+    [Fact]
+    public void LegacyAbsoluteManifestEntryIsStillRecognizedAsOurs()
+    {
+        NewSync().Sync(cwd, roles: ["builder"]);
+
+        const string oldEntryJson = /*lang=json,strict*/ """{"command":"claustrum-old","args":["mcp"]}""";
+        string mcpJsonPath = Path.Combine(cwd, ".mcp.json");
+        File.WriteAllText(mcpJsonPath, """{"mcpServers":{"claustrum":""" + oldEntryJson + "}}");
+
+        SyncManifest legacy = new("test", [new SyncManifestFile(mcpJsonPath, "_mcp", "claude", Sha256Hex(oldEntryJson))]);
+        File.WriteAllText(Path.Combine(cwd, ".claustrum", "sync-manifest.json"), JsonSerializer.Serialize(legacy, RolesJsonContext.Default.SyncManifest));
+
+        SyncResult result = NewSync().Sync(cwd, roles: ["builder"], force: false);
+
+        Assert.Contains(mcpJsonPath, result.Written);
+        Assert.DoesNotContain(mcpJsonPath, result.Foreign);
+    }
+
     private static string Sha256Hex(string content) => Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(content)));
 }
