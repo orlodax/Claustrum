@@ -17,7 +17,7 @@ public sealed class ClaudeSync(RoleLibrary library, RoleRenderer renderer, strin
     private const string MarkerPrefix = "<!-- claustrum:generated";
     private static readonly string[] generatedTiers = ["xhigh", "max"];
 
-    public SyncResult Sync(string cwd, IReadOnlyList<string>? roles = null, bool global = false, bool force = false)
+    public SyncResult Sync(string cwd, IReadOnlyList<string>? roles = null, bool global = false, bool force = false, SyncMode mode = SyncMode.Write)
     {
         IReadOnlyList<string> targetRoles = roles is { Count: > 0 } ? roles : library.ListRoles();
         // `--global` targets `~/.claude/...` throughout, not just the agents dir (review finding #3:
@@ -28,36 +28,38 @@ public sealed class ClaudeSync(RoleLibrary library, RoleRenderer renderer, strin
             ? Path.Combine(homeDirectory, ".claude")
             : Path.Combine(cwd, ".claude");
         string agentsDir = Path.Combine(claudeRoot, "agents");
-        Directory.CreateDirectory(agentsDir);
+        if (mode == SyncMode.Write)
+            Directory.CreateDirectory(agentsDir);
 
         List<string> written = [];
         List<string> skipped = [];
         List<string> foreign = [];
         List<SyncManifestFile> manifestFiles = [];
+        Dictionary<string, string> proposedContent = [];
 
         foreach (string role in targetRoles)
         {
             LoadedRole loaded = library.LoadRole(role, cwd);
-            WriteBaseAgent(agentsDir, role, loaded, cwd, force, written, skipped, foreign, manifestFiles);
+            WriteBaseAgent(agentsDir, role, loaded, cwd, force, mode, written, skipped, foreign, manifestFiles, proposedContent);
 
             foreach (string tier in generatedTiers)
             {
                 if (loaded.Definition.Tiers.ContainsKey(tier))
-                    WriteTierStub(agentsDir, role, tier, loaded, cwd, force, written, skipped, foreign, manifestFiles);
+                    WriteTierStub(agentsDir, role, tier, loaded, cwd, force, mode, written, skipped, foreign, manifestFiles, proposedContent);
             }
         }
 
-        WriteSkill(claudeRoot, force, written, skipped, foreign, manifestFiles);
+        WriteSkill(claudeRoot, force, mode, written, skipped, foreign, manifestFiles, proposedContent);
 
-        if (!global)
+        if (!global && mode == SyncMode.Write)
             UpdateManifest(cwd, manifestFiles);
 
-        return new SyncResult(written, skipped, foreign);
+        return new SyncResult(written, skipped, foreign, mode == SyncMode.Write ? null : proposedContent);
     }
 
     private void WriteBaseAgent(
-        string agentsDir, string role, LoadedRole loaded, string cwd, bool force,
-        List<string> written, List<string> skipped, List<string> foreign, List<SyncManifestFile> manifestFiles)
+        string agentsDir, string role, LoadedRole loaded, string cwd, bool force, SyncMode mode,
+        List<string> written, List<string> skipped, List<string> foreign, List<SyncManifestFile> manifestFiles, Dictionary<string, string> proposedContent)
     {
         RoleDefinition definition = loaded.Definition;
         RoleTier tier = definition.Tiers["high"];
@@ -65,12 +67,12 @@ public sealed class ClaudeSync(RoleLibrary library, RoleRenderer renderer, strin
         string frontmatter = BuildFrontmatter(role, definition.Description, ClaudeModelFor(tier.Model), tier.Effort, definition.Color, tools, disallowedTools);
         string body = renderer.Render(role, "high", Harness, cwd).SystemBody;
         string path = Path.Combine(agentsDir, $"{role}.md");
-        WriteGenerated(path, role, frontmatter, body, force, written, skipped, foreign, manifestFiles);
+        WriteGenerated(path, role, frontmatter, body, force, mode, written, skipped, foreign, manifestFiles, proposedContent);
     }
 
     private void WriteTierStub(
-        string agentsDir, string role, string tier, LoadedRole loaded, string cwd, bool force,
-        List<string> written, List<string> skipped, List<string> foreign, List<SyncManifestFile> manifestFiles)
+        string agentsDir, string role, string tier, LoadedRole loaded, string cwd, bool force, SyncMode mode,
+        List<string> written, List<string> skipped, List<string> foreign, List<SyncManifestFile> manifestFiles, Dictionary<string, string> proposedContent)
     {
         RoleDefinition definition = loaded.Definition;
         RoleTier roleTier = definition.Tiers[tier];
@@ -79,13 +81,16 @@ public sealed class ClaudeSync(RoleLibrary library, RoleRenderer renderer, strin
         string frontmatter = BuildFrontmatter($"{role}-{tier}", description, ClaudeModelFor(roleTier.Model), roleTier.Effort, definition.Color, tools, disallowedTools);
         string body = renderer.RenderTierStub(role, tier, cwd);
         string path = Path.Combine(agentsDir, $"{role}-{tier}.md");
-        WriteGenerated(path, role, frontmatter, body, force, written, skipped, foreign, manifestFiles);
+        WriteGenerated(path, role, frontmatter, body, force, mode, written, skipped, foreign, manifestFiles, proposedContent);
     }
 
-    private void WriteSkill(string claudeRoot, bool force, List<string> written, List<string> skipped, List<string> foreign, List<SyncManifestFile> manifestFiles)
+    private void WriteSkill(
+        string claudeRoot, bool force, SyncMode mode,
+        List<string> written, List<string> skipped, List<string> foreign, List<SyncManifestFile> manifestFiles, Dictionary<string, string> proposedContent)
     {
         string skillDir = Path.Combine(claudeRoot, "skills", "delegate");
-        Directory.CreateDirectory(skillDir);
+        if (mode == SyncMode.Write)
+            Directory.CreateDirectory(skillDir);
         string frontmatter = """
             ---
             name: delegate
@@ -109,12 +114,12 @@ public sealed class ClaudeSync(RoleLibrary library, RoleRenderer renderer, strin
             permission?, ...}`, still with the brief written to a file first if you already have one.
             """;
         string path = Path.Combine(skillDir, "SKILL.md");
-        WriteGenerated(path, "delegate", frontmatter, body, force, written, skipped, foreign, manifestFiles);
+        WriteGenerated(path, "delegate", frontmatter, body, force, mode, written, skipped, foreign, manifestFiles, proposedContent);
     }
 
     private void WriteGenerated(
-        string path, string role, string frontmatter, string body, bool force,
-        List<string> written, List<string> skipped, List<string> foreign, List<SyncManifestFile> manifestFiles)
+        string path, string role, string frontmatter, string body, bool force, SyncMode mode,
+        List<string> written, List<string> skipped, List<string> foreign, List<SyncManifestFile> manifestFiles, Dictionary<string, string> proposedContent)
     {
         string trimmedBody = body.Trim();
         string sha256 = ComputeSha256(trimmedBody);
@@ -142,7 +147,13 @@ public sealed class ClaudeSync(RoleLibrary library, RoleRenderer renderer, strin
             }
         }
 
-        File.WriteAllText(path, content);
+        // SyncMode.DryRun/Check never touch disk: the content that would have been written is kept
+        // for the CLI to diff instead (SyncResult.ProposedContent).
+        if (mode == SyncMode.Write)
+            File.WriteAllText(path, content);
+        else
+            proposedContent[path] = content;
+
         written.Add(path);
         manifestFiles.Add(new SyncManifestFile(path, role, Harness, sha256));
     }
