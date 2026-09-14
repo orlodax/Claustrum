@@ -2,20 +2,7 @@ using System.CommandLine;
 using System.CommandLine.Parsing;
 using Claustrum.Cli;
 
-RootCommand root = new("Claustrum — harness-neutral coding-agent delegation.")
-{
-    RunCommand.Build(),
-    RolesCommands.Build(),
-    BackendsCommands.Build(),
-    JobsCommands.Build(),
-    SyncCommand.Build(),
-    CastCommands.Build(),
-    McpCommand.Build(),
-};
-
-Command splash = new("splash", "Show the terminal splash screen.") { Hidden = true };
-splash.SetAction(_ => Splash.Run(animate: Splash.IsWanted));
-root.Subcommands.Add(splash);
+RootCommand root = CliRoot.Build();
 
 if (args.Length == 0 && Splash.IsWanted)
     Splash.Run();
