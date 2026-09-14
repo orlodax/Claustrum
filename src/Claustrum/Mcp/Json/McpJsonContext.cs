@@ -7,4 +7,6 @@ namespace Claustrum.Mcp.Json;
 // neither of those projects/namespaces knows about these types.
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.SnakeCaseLower, WriteIndented = true)]
 [JsonSerializable(typeof(RoleSummary[]))]
+[JsonSerializable(typeof(string[]))]
+[JsonSerializable(typeof(DoctorReport))]
 public sealed partial class McpJsonContext : JsonSerializerContext;

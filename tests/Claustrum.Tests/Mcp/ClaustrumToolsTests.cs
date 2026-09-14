@@ -31,4 +31,24 @@ public sealed class ClaustrumToolsTests
 
         Assert.True(codeReviewer.GetProperty("blind").GetBoolean());
     }
+
+    [Fact]
+    public void ListBackendsIncludesClaude()
+    {
+        string json = ClaustrumTools.ListBackends();
+
+        using JsonDocument document = JsonDocument.Parse(json);
+        Assert.Contains(document.RootElement.EnumerateArray(), e => e.GetString() == "claude");
+    }
+
+    [Fact]
+    public async Task DoctorReportsOneEntryPerRegisteredBackendAsync()
+    {
+        string json = await ClaustrumTools.DoctorAsync(CancellationToken.None);
+
+        using JsonDocument document = JsonDocument.Parse(json);
+        JsonElement backends = document.RootElement.GetProperty("backends");
+        Assert.Equal(1, backends.GetArrayLength());
+        Assert.Equal("claude", backends[0].GetProperty("name").GetString());
+    }
 }
