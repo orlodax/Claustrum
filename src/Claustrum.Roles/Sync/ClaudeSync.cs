@@ -51,6 +51,12 @@ public sealed class ClaudeSync(RoleLibrary library, RoleRenderer renderer, strin
 
         WriteSkill(claudeRoot, force, mode, written, skipped, foreign, manifestFiles, proposedContent);
 
+        // .mcp.json/.vscode/mcp.json (docs/PLAN.md §B4/§D5) are repo-root files, not part of any
+        // --global target (B4's --global list is agent directories and the desktop app's own config
+        // file) — skipped entirely under --global, same as the manifest itself.
+        if (!global)
+            McpConfigSync.Sync(cwd, mode, force, written, skipped, foreign, manifestFiles, proposedContent, ReadManifest(cwd));
+
         if (!global && mode == SyncMode.Write)
             UpdateManifest(cwd, manifestFiles);
 
@@ -160,23 +166,32 @@ public sealed class ClaudeSync(RoleLibrary library, RoleRenderer renderer, strin
 
     private void UpdateManifest(string cwd, List<SyncManifestFile> manifestFiles)
     {
-        string manifestDir = Path.Combine(cwd, ".claustrum");
-        Directory.CreateDirectory(manifestDir);
-        string manifestPath = Path.Combine(manifestDir, "sync-manifest.json");
-
-        Dictionary<string, SyncManifestFile> merged = [];
-        if (File.Exists(manifestPath))
-        {
-            SyncManifest? existing = JsonSerializer.Deserialize(File.ReadAllText(manifestPath), RolesJsonContext.Default.SyncManifest);
-            foreach (SyncManifestFile file in existing?.Files ?? [])
-                merged[file.Path] = file;
-        }
-
+        Dictionary<string, SyncManifestFile> merged = ReadManifest(cwd);
         foreach (SyncManifestFile file in manifestFiles)
             merged[file.Path] = file;
 
+        string manifestDir = Path.Combine(cwd, ".claustrum");
+        Directory.CreateDirectory(manifestDir);
         SyncManifest manifest = new(library.Version, [.. merged.Values.OrderBy(f => f.Path, StringComparer.Ordinal)]);
-        File.WriteAllText(manifestPath, JsonSerializer.Serialize(manifest, RolesJsonContext.Default.SyncManifest));
+        File.WriteAllText(Path.Combine(manifestDir, "sync-manifest.json"), JsonSerializer.Serialize(manifest, RolesJsonContext.Default.SyncManifest));
+    }
+
+    // McpConfigSync's only way to tell "claustrum wrote this JSON key last time, safe to overwrite"
+    // apart from "a human put unrelated content there" — JSON has no room for the inline
+    // claustrum:generated marker WriteGenerated's Markdown targets carry (SyncManifestFile doc
+    // comment "so a future non-marker target ... is still idempotent").
+    private static Dictionary<string, SyncManifestFile> ReadManifest(string cwd)
+    {
+        string manifestPath = Path.Combine(cwd, ".claustrum", "sync-manifest.json");
+        if (!File.Exists(manifestPath))
+            return [];
+
+        SyncManifest? existing = JsonSerializer.Deserialize(File.ReadAllText(manifestPath), RolesJsonContext.Default.SyncManifest);
+        Dictionary<string, SyncManifestFile> byPath = [];
+        foreach (SyncManifestFile file in existing?.Files ?? [])
+            byPath[file.Path] = file;
+
+        return byPath;
     }
 
     private static string NormalizeLineEndings(string text) => text.Replace("\r\n", "\n");
