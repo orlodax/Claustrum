@@ -1,3 +1,4 @@
+using Claustrum.Casts;
 using Claustrum.Core.Config;
 
 namespace Claustrum.Delegation;
@@ -18,4 +19,5 @@ public sealed record DelegateRequest(
     Dictionary<string, string> Env,
     bool Stream,
     int DiffCapBytes,
+    CastBudget? CastBudget = null,
     Action<string>? OnStreamLine = null);
