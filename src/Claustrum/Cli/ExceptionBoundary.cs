@@ -1,3 +1,4 @@
+using Claustrum.Casts;
 using Claustrum.Core;
 using Claustrum.Core.Config;
 using Claustrum.Core.Process;
@@ -15,7 +16,7 @@ public static class ExceptionBoundary
     {
         switch (exception)
         {
-            case ConfigException or RoleRenderException or CliUsageException or BlindGateException or RunRequestException or ArgumentException:
+            case ConfigException or RoleRenderException or CliUsageException or BlindGateException or RunRequestException or CastException or ArgumentException:
                 Console.Error.WriteLine(exception.Message);
                 return ExitCodes.Usage;
             case BackendNotFoundException:
