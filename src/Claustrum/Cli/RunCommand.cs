@@ -93,11 +93,11 @@ public static class RunCommand
             // Config first, then the harness the role's tier model resolves to (--backend still wins),
             // then Render — Render must already know the harness it will run on (review finding #6),
             // not the "claude" placeholder this used to render against regardless of the real target.
-            Config config = Config.Load(CliServices.Platform, cwd);
-            string tierModelClass = CliServices.RoleRenderer.TierModelClass(roleName, tierValue, cwd);
+            Config config = Config.Load(AppServices.Platform, cwd);
+            string tierModelClass = AppServices.RoleRenderer.TierModelClass(roleName, tierValue, cwd);
             string harness = config.ResolveBackend(roleName, tierModelClass, overrides);
 
-            RenderedRole rendered = CliServices.RoleRenderer.Render(roleName, tierValue, harness, cwd);
+            RenderedRole rendered = AppServices.RoleRenderer.Render(roleName, tierValue, harness, cwd);
             ResolvedRole resolved = config.Resolve(rendered, overrides);
 
             decimal? budgetUsd = overrides.BudgetUsd ?? config.Merged.Defaults?.BudgetUsd;
@@ -130,7 +130,7 @@ public static class RunCommand
                 EnvPassthroughAll: config.Merged.Defaults?.EnvPassthrough == "all",
                 OnStreamLine: streamMode ? Console.Error.WriteLine : null);
 
-            RunResult result = await CliServices.Runner.RunAsync(request, resolved, options, cts.Token);
+            RunResult result = await AppServices.Runner.RunAsync(request, resolved, options, cts.Token);
             RunResult output = rawMode ? result : result with { Raw = null };
 
             if (jsonMode)

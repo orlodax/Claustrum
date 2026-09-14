@@ -38,7 +38,7 @@ public static class SyncCommand
             ? rolesOption.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
             : null;
 
-        ClaudeSync sync = new(CliServices.RoleLibrary, CliServices.RoleRenderer, CliServices.Platform.HomeDirectory);
+        ClaudeSync sync = new(AppServices.RoleLibrary, AppServices.RoleRenderer, AppServices.Platform.HomeDirectory);
         SyncResult result = sync.Sync(Environment.CurrentDirectory, roleFilter, global, force);
 
         PrintPaths("written", result.Written);
