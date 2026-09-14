@@ -1,4 +1,8 @@
 using System.Text.Json;
+using Claustrum.Core.Jobs;
+using Claustrum.Core.Json;
+using Claustrum.Core.Model;
+using Claustrum.Core.Platform;
 using Claustrum.Mcp;
 using ModelContextProtocol;
 
@@ -92,6 +96,35 @@ public sealed class ClaustrumToolsTests
             using JsonDocument document = JsonDocument.Parse(json);
             Assert.Equal("backend_missing", document.RootElement.GetProperty("status").GetString());
             Assert.Equal("builder", document.RootElement.GetProperty("role").GetString());
+        }
+        finally
+        {
+            Directory.Delete(cwd, recursive: true);
+        }
+    }
+
+    // Finding #4: delegate's timeoutSeconds used to default to DelegateEngine.DefaultTimeoutSeconds
+    // (a non-null 1800), which always populated ConfigOverrides.TimeoutSeconds and short-circuited
+    // DelegateEngine's "flag ?? config ?? 1800" fallback before the config layers were ever
+    // consulted. With the parameter now nullable, an unspecified timeout must fall through to a
+    // repo's claustrum.json defaults.timeout_seconds exactly like the CLI's --timeout does.
+    [Fact]
+    public async Task DelegateAsyncWithNoTimeoutFallsThroughToRepoConfigAsync()
+    {
+        string cwd = Directory.CreateTempSubdirectory("claustrum-mcp-timeout-").FullName;
+        try
+        {
+            Directory.CreateDirectory(Path.Combine(cwd, ".git"));
+            File.WriteAllText(Path.Combine(cwd, "claustrum.json"), /*lang=json,strict*/ """{"defaults":{"timeout_seconds":5400}}""");
+
+            string json = await ClaustrumTools.DelegateAsync(role: "builder", brief: "hi", cwd: cwd, backend: "nonexistent", cancellationToken: CancellationToken.None);
+            using JsonDocument document = JsonDocument.Parse(json);
+            string jobId = document.RootElement.GetProperty("job_id").GetString()!;
+
+            string requestPath = Path.Combine(JobDirectory.ResolveRoot(new RealPlatform()), jobId, "request.json");
+            RunRequest request = JsonSerializer.Deserialize(File.ReadAllText(requestPath), ClaustrumJsonContext.Default.RunRequest)!;
+
+            Assert.Equal(TimeSpan.FromSeconds(5400), request.Timeout);
         }
         finally
         {
