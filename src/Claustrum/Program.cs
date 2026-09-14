@@ -9,6 +9,7 @@ RootCommand root = new("Claustrum — harness-neutral coding-agent delegation.")
     BackendsCommands.Build(),
     JobsCommands.Build(),
     SyncCommand.Build(),
+    CastCommands.Build(),
 };
 
 // `claustrum mcp` is M2 — deliberately not registered yet (builder brief for #2).
