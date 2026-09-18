@@ -3,17 +3,17 @@ using Claustrum.Roles.Sync;
 
 namespace Claustrum.Cli;
 
-// docs/PLAN.md §A5/§B4 `claustrum sync [--only claude,opencode] [--roles a,b] [--global] [--force]
-// [--check|--dry-run]`. Bare `sync` (no --only) still targets only `claude`, matching M1/M2's
-// documented default; `--only` accepts any of supportedHarnesses, any other value is a usage error
-// (exit 2). cursor/copilot have no Sync implementation yet (fixture-only backends per NOTES.md).
+// docs/PLAN.md §A5/§B4 `claustrum sync [--only claude,opencode,copilot] [--roles a,b] [--global]
+// [--force] [--check|--dry-run]`. Bare `sync` (no --only) still targets only `claude`, matching
+// M1/M2's documented default; `--only` accepts any of supportedHarnesses, any other value is a usage
+// error (exit 2). cursor has no Sync implementation (fixture-only backend per NOTES.md).
 public static class SyncCommand
 {
-    private static readonly string[] supportedHarnesses = ["claude", "opencode"];
+    private static readonly string[] supportedHarnesses = ["claude", "opencode", "copilot"];
 
     public static Command Build()
     {
-        Option<string?> only = new("--only") { Description = "Comma-separated harnesses to sync (claude, opencode)." };
+        Option<string?> only = new("--only") { Description = "Comma-separated harnesses to sync (claude, opencode, copilot)." };
         Option<string?> roles = new("--roles") { Description = "Comma-separated role names (default: every role)." };
         Option<bool> global = new("--global") { Description = "Write to the user-global agent directories instead of the repo." };
         Option<bool> force = new("--force") { Description = "Overwrite hand-edited files that lack the claustrum:generated marker." };
@@ -60,6 +60,8 @@ public static class SyncCommand
         "claude" => new ClaudeSync(AppServices.RoleLibrary, AppServices.RoleRenderer, AppServices.Platform.HomeDirectory)
             .Sync(Environment.CurrentDirectory, roleFilter, global, force, mode),
         "opencode" => new OpencodeSync(AppServices.RoleLibrary, AppServices.RoleRenderer, AppServices.Platform.HomeDirectory)
+            .Sync(Environment.CurrentDirectory, roleFilter, global, force, mode),
+        "copilot" => new CopilotSync(AppServices.RoleLibrary, AppServices.RoleRenderer, AppServices.Platform.HomeDirectory)
             .Sync(Environment.CurrentDirectory, roleFilter, global, force, mode),
         _ => throw new ArgumentOutOfRangeException(nameof(harness), harness, "not in supportedHarnesses"),
     };
