@@ -666,3 +666,34 @@ against the same real `@github/copilot` 1.0.86 install as the copilot backend.
 `sync --only claude,opencode,copilot` (any comma-combination) all work through the same
 `SyncCommand.MergeResults`; cursor still has no Sync class (fixture-only backend, matches NOTES.md
 "The cursor backend").
+
+## claustrum init (2026-09-18, issue #4/M3)
+
+docs/PLAN.md §A5/§D5's `init` verb: scaffolds `.claustrum/{casts,briefs,worktrees}`, writes
+`claustrum.json` with the two model aliases the plan itself names (`frontier-coding -> claude:opus`,
+`cheap-coding -> opencode:openrouter/deepseek/deepseek-v4-flash`) if one doesn't already exist, appends
+`.claustrum/worktrees/`/`.claustrum/briefs/` to `.gitignore`, syncs the harnesses this repo already
+uses (or every supported one with `--all`), and appends a short pointer to an existing `AGENTS.md` —
+never creating one, and never touching `CLAUDE.md` at all, exactly as specified.
+
+- `claustrum.json` is built by hand with `Utf8JsonWriter` rather than serialized through
+  `ClaustrumJsonContext.Default.ConfigDocument`: that shared context also emits `RunResult`'s
+  machine-readable `--json` one-liner, whose explicit `null` fields (e.g. `"error":null`) are part of
+  the documented output shape, so serializing the *whole* `ConfigDocument` through it would litter
+  this hand-editable config file with `"roles": null, "backends": null, ...` for every field `init`
+  doesn't set.
+- **"claude" is always synced**, `--all` or not, even in a repo with no `.claude/` directory: it's the
+  only harness whose `Sync` also merges the `claustrum` MCP server into `.mcp.json`/`.vscode/mcp.json`
+  (`McpConfigSync` is `internal` to `Claustrum.Roles`, wired only through `ClaudeSync.Sync` — see
+  `OpencodeSync`'s own doc comment on why that merge wasn't generalized in this pass), and its agent
+  files are harmless to have even in a repo that hasn't adopted Claude Code. opencode/copilot are
+  detected from `opencode.json`/`.opencode/` and `.github/` respectively; cursor is detected
+  (`.cursor/`) but only reported, never synced (no `CursorSync` exists).
+- Idempotent by construction, same as `sync` itself: reruns skip an existing `claustrum.json`, skip a
+  `.gitignore` that already has the entries, skip an `AGENTS.md` that already has the pointer
+  (checked by the `## Claustrum delegation` heading), and each harness's own `Sync` already handles
+  its own marker-based idempotency.
+- Verified live end to end (not just unit-tested): ran against a real temp repo with a hand-written
+  `AGENTS.md` and a `.github/` directory — correctly detected and synced claude+copilot, wrote a clean
+  two-key `claustrum.json`, appended the AGENTS.md pointer once, and a second `init` run reported
+  everything already up to date with zero new writes.
