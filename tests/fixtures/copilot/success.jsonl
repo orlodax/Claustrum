@@ -1,0 +1,3 @@
+{"type":"assistant_message","session_id":"a1b2c3d4-e5f6-7890-abcd-ef1234567890","content":"No defects found. "}
+{"type":"assistant_message","session_id":"a1b2c3d4-e5f6-7890-abcd-ef1234567890","content":"No defects found. The change looks correct.\n\n```claustrum-report\n{\"status\":\"done\",\"findings\":[],\"would_change_if_broader\":[]}\n```"}
+{"type":"usage","session_id":"a1b2c3d4-e5f6-7890-abcd-ef1234567890","usage":{"input_tokens":1300,"output_tokens":110}}
