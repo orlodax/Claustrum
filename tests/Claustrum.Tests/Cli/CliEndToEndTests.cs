@@ -1,4 +1,6 @@
 using System.Diagnostics;
+using System.Text.Json;
+using Claustrum.Cli;
 
 namespace Claustrum.Tests.Cli;
 
@@ -194,6 +196,86 @@ public sealed class CliEndToEndTests : IDisposable
         Assert.Equal(Usage, exitCode);
         Assert.Contains("blind", stderr, StringComparison.OrdinalIgnoreCase);
         Assert.False(Directory.Exists(Path.Combine(home, "jobs")));
+    }
+
+    // docs/PLAN.md §D4 "claustrum jobs clean removes worktrees of finished jobs". backend
+    // "nonexistent" reaches Runner's registry check *after* DelegateEngine has already created the
+    // worktree (max_parallel > 1), so the job still finishes (status backend_missing, result.json
+    // written) with a real worktree on disk to clean up — no real backend install needed, same trick
+    // DelegateEngineTests uses in-process.
+    [Fact]
+    public async Task JobsCleanRemovesAFinishedWorktreeAndKeepsItsBranchAsync()
+    {
+        RunGit(cwd, "init", "-q");
+        RunGit(cwd, "config", "user.email", "test@example.com");
+        RunGit(cwd, "config", "user.name", "claustrum-tests");
+        File.WriteAllText(Path.Combine(cwd, "seed.txt"), "seed\n");
+        RunGit(cwd, "add", "-A");
+        RunGit(cwd, "commit", "-q", "-m", "seed");
+        Directory.CreateDirectory(Path.Combine(cwd, ".claustrum", "casts"));
+        File.WriteAllText(Path.Combine(cwd, ".claustrum", "casts", "default.json"), /*lang=json,strict*/
+            """{"name":"default","library":"1.0.0","architect":{"mode":"host"},"roles":{"builder":{"backend":"nonexistent","max_parallel":2}},"budget_usd":null}""");
+
+        (int runExit, string runOut, string runErr) = await RunAsync("run", "builder", "--brief", "hi", "--json");
+        Assert.Equal(ExitCodes.BackendMissing, runExit);
+        string jobId = JsonDocument.Parse(runOut).RootElement.GetProperty("job_id").GetString()!;
+        string worktreePath = Path.Combine(cwd, ".claustrum", "worktrees", jobId);
+        Assert.True(Directory.Exists(worktreePath), runErr);
+
+        (int cleanExit, string cleanOut, _) = await RunAsync("jobs", "clean");
+
+        Assert.Equal(Ok, cleanExit);
+        Assert.Contains(jobId, cleanOut, StringComparison.Ordinal);
+        Assert.False(Directory.Exists(worktreePath));
+        Assert.Contains($"claustrum/{jobId}", ListBranches(cwd));
+    }
+
+    [Fact]
+    public async Task JobsCleanOnARepoWithNoWorktreesIsANoOpAsync()
+    {
+        (int exitCode, string stdout, _) = await RunAsync("jobs", "clean");
+
+        Assert.Equal(Ok, exitCode);
+        Assert.Contains("no worktrees", stdout, StringComparison.Ordinal);
+    }
+
+    private static string[] ListBranches(string dir)
+    {
+        ProcessStartInfo startInfo = new("git")
+        {
+            WorkingDirectory = dir,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true,
+        };
+        startInfo.ArgumentList.Add("branch");
+        startInfo.ArgumentList.Add("--format=%(refname:short)");
+
+        using Process process = Process.Start(startInfo) ?? throw new InvalidOperationException("git failed to start");
+        string stdout = process.StandardOutput.ReadToEnd();
+        process.WaitForExit();
+        return stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+    }
+
+    private static void RunGit(string cwd, params string[] args)
+    {
+        ProcessStartInfo startInfo = new("git")
+        {
+            WorkingDirectory = cwd,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true,
+        };
+        foreach (string arg in args)
+            startInfo.ArgumentList.Add(arg);
+
+        using Process process = Process.Start(startInfo) ?? throw new InvalidOperationException("git failed to start");
+        string stderr = process.StandardError.ReadToEnd();
+        process.WaitForExit();
+        if (process.ExitCode != 0)
+            throw new InvalidOperationException($"git {string.Join(' ', args)} failed ({process.ExitCode}): {stderr}");
     }
 
     private async Task<(int ExitCode, string Stdout, string Stderr)> RunAsync(params string[] args)

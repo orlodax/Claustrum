@@ -1,11 +1,12 @@
 using System.CommandLine;
 using System.Text;
 using System.Text.Json;
+using Claustrum.Core.Git;
 using Claustrum.Core.Jobs;
 
 namespace Claustrum.Cli;
 
-// docs/PLAN.md §A5 `claustrum jobs list [--last N]|show <id>|logs <id> [--stderr]`, reading
+// docs/PLAN.md §A5 `claustrum jobs list [--last N]|show <id>|logs <id> [--stderr]|clean`, reading
 // `~/.claustrum/jobs` (`CLAUSTRUM_HOME` honoured via JobDirectory.ResolveRoot).
 public static class JobsCommands
 {
@@ -26,7 +27,11 @@ public static class JobsCommands
         Command logs = new("logs", "Print a job's captured output.") { logsId, stderrOption };
         logs.SetAction(parseResult => Logs(parseResult.GetRequiredValue(logsId), parseResult.GetValue(stderrOption)));
 
-        return new Command("jobs", "Inspect past and running jobs.") { list, show, logs };
+        Option<string?> cleanCwd = new("--cwd") { Description = "Working directory (default: current directory)." };
+        Command clean = new("clean", "Remove finished max_parallel jobs' worktrees (docs/PLAN.md §D4); their branches are kept.") { cleanCwd };
+        clean.SetAction(async parseResult => await CleanAsync(parseResult.GetValue(cleanCwd)));
+
+        return new Command("jobs", "Inspect past and running jobs.") { list, show, logs, clean };
     }
 
     private static int List(int last)
@@ -108,6 +113,40 @@ public static class JobsCommands
         }
 
         Console.Write(File.ReadAllText(logPath));
+        return ExitCodes.Ok;
+    }
+
+    // A worktree's directory name IS the job id that created it (JobWorktree.PathFor), so "finished"
+    // reuses the same signal Summarize/Show already trust: result.json exists once Runner has written
+    // a terminal RunResult (success, failure, or backend_missing) — a job still mid-run has none yet
+    // and is left alone. The branch itself is never touched here (JobWorktree.RemoveAsync only
+    // removes the working directory), so the architect can still rebase from it afterwards.
+    private static async Task<int> CleanAsync(string? cwdOption)
+    {
+        string cwd = Path.GetFullPath(cwdOption ?? Environment.CurrentDirectory);
+        string worktreesRoot = Path.Combine(cwd, ".claustrum", "worktrees");
+        if (!Directory.Exists(worktreesRoot))
+        {
+            Console.WriteLine("(no worktrees)");
+            return ExitCodes.Ok;
+        }
+
+        string jobsRoot = JobDirectory.ResolveRoot(AppServices.Platform);
+        int removed = 0;
+        foreach (string worktreeDirectory in Directory.EnumerateDirectories(worktreesRoot))
+        {
+            string jobId = Path.GetFileName(worktreeDirectory);
+            if (!File.Exists(Path.Combine(jobsRoot, jobId, "result.json")))
+                continue;
+
+            await JobWorktree.RemoveAsync(cwd, jobId, CancellationToken.None);
+            Console.WriteLine($"removed {jobId} (branch {JobWorktree.BranchFor(jobId)} kept)");
+            removed++;
+        }
+
+        if (removed == 0)
+            Console.WriteLine("(nothing to clean)");
+
         return ExitCodes.Ok;
     }
 
