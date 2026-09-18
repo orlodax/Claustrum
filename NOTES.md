@@ -634,3 +634,35 @@ detail, and it settled several things the original plan only guessed at:
   `ClaudeSync`'s own. With only two concrete Sync classes so far the right shared shape isn't obvious
   yet (`ClaudeSync`'s five-out-parameter methods are already a smell) — extracting it now would be
   guessing from two data points; the plan is to do that once Cursor/CopilotSync exist too.
+
+## CopilotSync: agent + skill files, verified against a real install (2026-09-18, issue #4/M3)
+
+`.github/agents/<role>.agent.md` (+ tier stubs) and `.github/skills/claustrum/SKILL.md`, checked
+against the same real `@github/copilot` 1.0.86 install as the copilot backend.
+
+- **No slash-command mechanism exists in Copilot CLI** (confirmed by its full `--help`: no `command`
+  subcommand, nothing resembling opencode's `.opencode/command/`). Its only reusable-instruction
+  mechanism is skills (`copilot skill list`/`add`/`enable`), which are auto-surfaced by relevance —
+  "Use when the user mentions..." is the *built-in* skills' own phrasing — not typed as `/name`. So
+  unlike Claude Code and opencode, `/claustrum` cannot be made a literal typeable command on this
+  harness; `CopilotSync.WriteSkill`'s description front-loads trigger phrasing instead, and this is a
+  real, confirmed limitation of the harness, not a gap in the implementation.
+- **Verified live**: a real `.github/skills/claustrum/SKILL.md` (`---`-delimited `name`/`description`
+  frontmatter, same shared body as every other harness's own `/claustrum`) was written into a temp
+  repo and `copilot skill list` printed it under "Project skills" with its exact description — no
+  authentication needed for this check, and it round-tripped byte-for-byte. This is the single
+  strongest live confirmation across all four non-claude backends/syncs, because it uses the *exact*
+  file this code writes, not an analogous probe.
+- **`.github/agents/*.agent.md` frontmatter stayed unconfirmed** (same caveat as the copilot backend's
+  own ephemeral agent files) — no authenticated session was reachable to check whether Copilot
+  actually loads a persisted project agent file the way `--add-dir`'s help text implies. `model: auto`
+  is used for every role/tier (`copilot --help`'s own "use 'auto' to let Copilot pick automatically"):
+  only one real model id (`gpt-5.4`, from a --help example) was ever confirmed, nowhere near enough to
+  build a tier catalog, so no id was invented the way ClaudeSync's/OpencodeSync's model mappings are.
+- Personal/global skill location (`~/.copilot/skills/`) is directly confirmed by `copilot skill
+  --help`'s own text; the personal *agent* location (`~/.copilot/agents/`, used for `--global`) is an
+  unconfirmed extrapolation from that same convention.
+
+`sync --only claude,opencode,copilot` (any comma-combination) all work through the same
+`SyncCommand.MergeResults`; cursor still has no Sync class (fixture-only backend, matches NOTES.md
+"The cursor backend").

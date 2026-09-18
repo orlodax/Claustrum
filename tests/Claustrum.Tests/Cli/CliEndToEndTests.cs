@@ -83,6 +83,17 @@ public sealed class CliEndToEndTests : IDisposable
     }
 
     [Fact]
+    public async Task SyncOnlyCopilotWritesGithubFilesAsync()
+    {
+        (int exitCode, _, _) = await RunAsync("sync", "--only", "copilot", "--roles", "builder");
+
+        Assert.Equal(Ok, exitCode);
+        Assert.True(File.Exists(Path.Combine(cwd, ".github", "agents", "builder.agent.md")));
+        Assert.True(File.Exists(Path.Combine(cwd, ".github", "skills", "claustrum", "SKILL.md")));
+        Assert.False(Directory.Exists(Path.Combine(cwd, ".claude")));
+    }
+
+    [Fact]
     public async Task SyncOnlyClaudeAndOpencodeWritesBothAsync()
     {
         (int exitCode, string stdout, _) = await RunAsync("sync", "--only", "claude,opencode", "--roles", "builder");
