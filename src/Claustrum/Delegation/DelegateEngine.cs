@@ -1,6 +1,7 @@
 using Claustrum.Casts;
 using Claustrum.Core;
 using Claustrum.Core.Config;
+using Claustrum.Core.Git;
 using Claustrum.Core.Jobs;
 using Claustrum.Core.Model;
 
@@ -38,22 +39,6 @@ public static class DelegateEngine
             ? new PermissionPolicy(RequirePermissionLevel(permissionValue), request.Overrides.Deny ?? [])
             : null;
 
-        RunRequest runRequest = new(
-            Role: request.Role,
-            Brief: request.Brief,
-            BriefFile: null,
-            Cwd: request.Cwd,
-            Backend: request.Overrides.Backend,
-            Model: request.Overrides.Model,
-            Effort: request.Overrides.Effort,
-            Permission: requestPermission,
-            BudgetUsd: budgetUsd,
-            Timeout: TimeSpan.FromSeconds(timeoutSeconds),
-            ResumeSession: request.ResumeSession,
-            AttachFiles: request.AttachFiles,
-            Env: request.Env,
-            Stream: request.Stream);
-
         BackendConfig? backendConfig = null;
         config.Merged.Backends?.TryGetValue(resolved.Backend, out backendConfig);
         RunOptions options = new(
@@ -62,10 +47,43 @@ public static class DelegateEngine
             EnvPassthroughAll: config.Merged.Defaults?.EnvPassthrough == "all",
             OnStreamLine: request.OnStreamLine);
 
+        // max_parallel > 1 (docs/PLAN.md §D4): the job runs isolated in its own git worktree/branch
+        // instead of directly in request.Cwd, gated by a cross-process cap so at most maxParallel
+        // builders for this role run at once, however many separate `claustrum run` processes a
+        // spawned architect fans them out as. Config/tier/harness resolution above still reads
+        // request.Cwd — only the backend's own working directory moves.
+        if (request.MaxParallel is { } maxParallel && maxParallel > 1)
+        {
+            job ??= JobDirectory.Create(AppServices.Platform);
+            await using RoleConcurrencyGate gate = await RoleConcurrencyGate.AcquireAsync(request.Cwd, request.Role, maxParallel, cancellationToken);
+            JobWorktreeInfo worktree = await JobWorktree.AddAsync(request.Cwd, job.Id, cancellationToken);
+
+            RunRequest isolatedRunRequest = BuildRunRequest(request, worktree.Path, requestPermission, budgetUsd, timeoutSeconds);
+            RunResult isolatedResult = await AppServices.Runner.RunAsync(isolatedRunRequest, resolved, options, job, cancellationToken);
+            return isolatedResult with { Worktree = worktree.Path, Branch = worktree.Branch };
+        }
+
+        RunRequest runRequest = BuildRunRequest(request, request.Cwd, requestPermission, budgetUsd, timeoutSeconds);
         return job is null
             ? await AppServices.Runner.RunAsync(runRequest, resolved, options, cancellationToken)
             : await AppServices.Runner.RunAsync(runRequest, resolved, options, job, cancellationToken);
     }
+
+    private static RunRequest BuildRunRequest(DelegateRequest request, string cwd, PermissionPolicy? permission, decimal? budgetUsd, int timeoutSeconds) => new(
+        Role: request.Role,
+        Brief: request.Brief,
+        BriefFile: null,
+        Cwd: cwd,
+        Backend: request.Overrides.Backend,
+        Model: request.Overrides.Model,
+        Effort: request.Overrides.Effort,
+        Permission: permission,
+        BudgetUsd: budgetUsd,
+        Timeout: TimeSpan.FromSeconds(timeoutSeconds),
+        ResumeSession: request.ResumeSession,
+        AttachFiles: request.AttachFiles,
+        Env: request.Env,
+        Stream: request.Stream);
 
     // The CLI's --permission option already validates against the known set (AcceptOnlyFromAmong)
     // before this ever runs; an MCP caller sending an invalid string is exactly the case this should

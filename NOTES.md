@@ -417,3 +417,41 @@ verification on a job that should have ended `backend_missing`: that probe put `
 hashed them. `JobManager.GetStatus`'s own mapping is not racy — a `Task` never goes `Faulted` →
 `RanToCompletion`. Not fixed here (it is M1 Core code, outside the M2 review's eleven findings); the
 fault shape is pinned by `JobManagerTests.AJobWhoseWorktreeSnapshotCannotRunReportsFailedAndRethrows…`.
+
+## Worktree isolation for max_parallel builders (2026-09-18, issue #4/M3)
+
+`docs/PLAN.md` §D4 needs two things a job with `max_parallel > 1` doesn't otherwise get: its own git
+working directory, and a cap on how many run at once. Both are cross-process concerns — a spawned
+architect fans builders out as separate `claustrum run` CLI processes (docs/PLAN.md §D3), not as
+calls inside one long-lived server — so neither could be an in-memory data structure scoped to a
+single `JobManager` instance the way a naive "per-cast semaphore" reading might suggest.
+
+- **Isolation**: `JobWorktree.AddAsync` (`Core/Git/JobWorktree.cs`) runs `git worktree add
+  .claustrum/worktrees/<job> -b claustrum/<job>` against the *request's* cwd, built on a new
+  `GitProcess` helper extracted from `WorktreeSnapshot`'s private git runner so the stdin-close and
+  30s-timeout fixes above are not re-risked at this second call site. `RemoveAsync` deletes the
+  working directory only (`git worktree remove --force`); the branch survives for the architect to
+  rebase from, per §D4's own wording — nothing yet calls `RemoveAsync` (that is `claustrum jobs
+  clean`, not built in this slice).
+- **Concurrency cap**: `RoleConcurrencyGate` (`Core/Jobs/RoleConcurrencyGate.cs`) is `maxParallel`
+  numbered lock files under `.claustrum/locks/<role>.<n>.lock`, each held open with `FileShare.None`
+  for the lifetime of one run; a caller that finds every slot taken polls every 50ms. This works
+  identically whether every caller is one process's `JobManager` or N separate CLI invocations,
+  because the OS — not the caller's process — is what's actually serializing the opens. The lock
+  files are deliberately never deleted: unlinking one while a second process races to reopen the same
+  path would let that process's lock land on an orphaned inode while a third process opens a *new*
+  file at the same path and takes the "same" slot, double-booking it. Left in place, the files are a
+  few bytes each and the exclusivity check keeps meaning what it says for the life of the repo.
+- **Wiring**: `DelegateEngine.RunAsync` only takes this path when `DelegateRequest.MaxParallel > 1`
+  (threaded from `CastRoleEntry.MaxParallel`, i.e. a cast's `"max_parallel"` — docs/PLAN.md §D1's
+  example). Config, tier, and harness resolution still read the request's original cwd; only the
+  `RunRequest` that actually reaches `Runner`/`ProcessRunner`/`WorktreeSnapshot` gets the worktree
+  path, so `changed_files`/`diff` are computed inside it as §D4 specifies. The gate is keyed on role
+  name alone, not role+cast: nothing in the acceptance criteria (3 parallel builders, no clobbering)
+  needed per-cast pools, and adding that axis now would be untested surface. `RunResult.Worktree`/
+  `Branch` are additive nullable fields (`schema_version` stays `"1"`), populated only on this path.
+
+Not done in this slice: the questionnaire (`cast_questions`/`cast new`) does not yet ask for
+`max_parallel` — a cast file has to set it by hand today. `budget_usd` enforcement across a job tree
+(§D4's second sentence) also waits for `coordinate` to exist (M4/issue #5); only the per-job cast
+budget already wired in M2 is in scope here.

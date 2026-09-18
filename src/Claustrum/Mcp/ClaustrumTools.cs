@@ -100,7 +100,7 @@ public sealed class ClaustrumTools
     {
         string resolvedCwd = cwd is { Length: > 0 } ? Path.GetFullPath(cwd) : Environment.CurrentDirectory;
         ConfigOverrides overrides = new(Backend: backend, Model: model, Effort: effort, Permission: permission, Deny: deny, BudgetUsd: budgetUsd, TimeoutSeconds: timeoutSeconds);
-        (string resolvedTier, ConfigOverrides resolvedOverrides, CastBudget? castBudget) = CastApplication.Resolve(resolvedCwd, role, cast, tier, overrides);
+        (string resolvedTier, ConfigOverrides resolvedOverrides, CastBudget? castBudget, int? maxParallel) = CastApplication.Resolve(resolvedCwd, role, cast, tier, overrides);
 
         return new DelegateRequest(
             Role: role,
@@ -113,7 +113,8 @@ public sealed class ClaustrumTools
             Env: [],
             Stream: false,
             DiffCapBytes: McpDiffCapBytes,
-            CastBudget: castBudget);
+            CastBudget: castBudget,
+            MaxParallel: maxParallel);
     }
 
     [McpServerTool(Name = "list_roles")]
