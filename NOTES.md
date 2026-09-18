@@ -455,3 +455,8 @@ Not done in this slice: the questionnaire (`cast_questions`/`cast new`) does not
 `max_parallel` — a cast file has to set it by hand today. `budget_usd` enforcement across a job tree
 (§D4's second sentence) also waits for `coordinate` to exist (M4/issue #5); only the per-job cast
 budget already wired in M2 is in scope here.
+
+Verified end-to-end (2026-09-18): three `claustrum run builder --cast default` CLI processes started
+concurrently against a real `claude` backend and a toy repo with `"max_parallel": 3` landed on three
+distinct branches/worktrees, each `status: success` with its own single-file `changed_files` entry,
+and the main checkout was untouched throughout — the exact §D4/M3 "done when" scenario.
