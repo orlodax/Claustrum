@@ -321,6 +321,97 @@ public sealed class CliEndToEndTests : IDisposable
             throw new InvalidOperationException($"git {string.Join(' ', args)} failed ({process.ExitCode}): {stderr}");
     }
 
+    [Fact]
+    public async Task InitScaffoldsClaustrumDirectoryAndClaudeSyncOnAFreshRepoAsync()
+    {
+        (int exitCode, string stdout, _) = await RunAsync("init");
+
+        Assert.Equal(Ok, exitCode);
+        Assert.True(Directory.Exists(Path.Combine(cwd, ".claustrum", "casts")));
+        Assert.True(Directory.Exists(Path.Combine(cwd, ".claustrum", "briefs")));
+        Assert.True(Directory.Exists(Path.Combine(cwd, ".claustrum", "worktrees")));
+        Assert.True(File.Exists(Path.Combine(cwd, "claustrum.json")));
+        Assert.Contains("cheap-coding", File.ReadAllText(Path.Combine(cwd, "claustrum.json")), StringComparison.Ordinal);
+        Assert.True(File.Exists(Path.Combine(cwd, ".claude", "agents", "builder.md")));
+        Assert.Contains(".claustrum/worktrees/", File.ReadAllText(Path.Combine(cwd, ".gitignore")), StringComparison.Ordinal);
+        Assert.Contains("claude:", stdout, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task InitDetectsGithubDirectoryAndAlsoSyncsCopilotAsync()
+    {
+        Directory.CreateDirectory(Path.Combine(cwd, ".github"));
+
+        (int exitCode, string stdout, _) = await RunAsync("init");
+
+        Assert.Equal(Ok, exitCode);
+        Assert.Contains("copilot:", stdout, StringComparison.Ordinal);
+        Assert.True(File.Exists(Path.Combine(cwd, ".github", "agents", "builder.agent.md")));
+        Assert.True(File.Exists(Path.Combine(cwd, ".github", "skills", "claustrum", "SKILL.md")));
+    }
+
+    [Fact]
+    public async Task InitWithAllSyncsEveryHarnessRegardlessOfDetectionAsync()
+    {
+        (int exitCode, string stdout, _) = await RunAsync("init", "--all");
+
+        Assert.Equal(Ok, exitCode);
+        Assert.Contains("claude:", stdout, StringComparison.Ordinal);
+        Assert.Contains("opencode:", stdout, StringComparison.Ordinal);
+        Assert.Contains("copilot:", stdout, StringComparison.Ordinal);
+        Assert.True(File.Exists(Path.Combine(cwd, ".opencode", "agent", "builder.md")));
+    }
+
+    [Fact]
+    public async Task InitAppendsAPointerToAnExistingAgentsMdButNeverCreatesOneAsync()
+    {
+        File.WriteAllText(Path.Combine(cwd, "AGENTS.md"), "# House rules\n");
+
+        (int exitCode, _, _) = await RunAsync("init");
+
+        Assert.Equal(Ok, exitCode);
+        string agentsMd = File.ReadAllText(Path.Combine(cwd, "AGENTS.md"));
+        Assert.Contains("# House rules", agentsMd, StringComparison.Ordinal);
+        Assert.Contains("Claustrum delegation", agentsMd, StringComparison.Ordinal);
+        Assert.False(File.Exists(Path.Combine(cwd, "CLAUDE.md")));
+    }
+
+    [Fact]
+    public async Task InitNeverCreatesAnAgentsMdThatDidNotExistAsync()
+    {
+        (int exitCode, _, _) = await RunAsync("init");
+
+        Assert.Equal(Ok, exitCode);
+        Assert.False(File.Exists(Path.Combine(cwd, "AGENTS.md")));
+    }
+
+    [Fact]
+    public async Task InitIsIdempotentOnRerunAsync()
+    {
+        Assert.Equal(Ok, (await RunAsync("init")).ExitCode);
+        string configBefore = File.ReadAllText(Path.Combine(cwd, "claustrum.json"));
+
+        (int exitCode, string stdout, _) = await RunAsync("init");
+
+        Assert.Equal(Ok, exitCode);
+        Assert.Equal(configBefore, File.ReadAllText(Path.Combine(cwd, "claustrum.json")));
+        Assert.Contains("already present", stdout, StringComparison.Ordinal);
+        Assert.Contains("0 written, 15 skipped", stdout, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task InitDoesNotDuplicateTheAgentsMdPointerOnRerunAsync()
+    {
+        File.WriteAllText(Path.Combine(cwd, "AGENTS.md"), "# House rules\n");
+        Assert.Equal(Ok, (await RunAsync("init")).ExitCode);
+
+        Assert.Equal(Ok, (await RunAsync("init")).ExitCode);
+
+        string agentsMd = File.ReadAllText(Path.Combine(cwd, "AGENTS.md"));
+        int occurrences = agentsMd.Split("## Claustrum delegation").Length - 1;
+        Assert.Equal(1, occurrences);
+    }
+
     private async Task<(int ExitCode, string Stdout, string Stderr)> RunAsync(params string[] args)
     {
         string binary = Path.Combine(AppContext.BaseDirectory, OperatingSystem.IsWindows() ? "claustrum.exe" : "claustrum");
