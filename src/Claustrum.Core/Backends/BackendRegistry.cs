@@ -1,4 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
+using Claustrum.Core.Backends.Api;
 using Claustrum.Core.Backends.Claude;
 using Claustrum.Core.Platform;
 
@@ -12,7 +13,7 @@ public sealed class BackendRegistry(IEnumerable<IBackend> backends)
 
     public IReadOnlyCollection<IBackend> All => byName.Values;
 
-    public static BackendRegistry CreateDefault(IPlatform platform) => new([new ClaudeBackend(platform)]);
+    public static BackendRegistry CreateDefault(IPlatform platform) => new([new ClaudeBackend(platform), new ApiBackend(platform)]);
 
     public bool TryGet(string name, [NotNullWhen(true)] out IBackend? backend) => byName.TryGetValue(name, out backend);
 }

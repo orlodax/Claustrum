@@ -1,0 +1,18 @@
+{
+  "id": "msg_01ABCDEF1234567890abcdef12",
+  "type": "message",
+  "role": "assistant",
+  "model": "claude-opus-4-5-20260101",
+  "content": [
+    {
+      "type": "text",
+      "text": "No defects found. The change looks correct.\n\n```claustrum-report\n{\"status\":\"done\",\"findings\":[],\"would_change_if_broader\":[]}\n```"
+    }
+  ],
+  "stop_reason": "end_turn",
+  "stop_sequence": null,
+  "usage": {
+    "input_tokens": 1240,
+    "output_tokens": 96
+  }
+}
