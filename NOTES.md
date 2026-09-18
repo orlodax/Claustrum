@@ -587,3 +587,50 @@ argv/permission table — with zero live confirmation. `tests/fixtures/cursor/*.
 from the plan's own guessed field names (`result`/`session_id`/`usage`/`is_error`). This is the one
 M3 backend that stays exactly as unconfirmed as the original plan already flagged it
 ("cursor validated by a teammate who has it") — nothing here upgrades that status.
+
+## OpencodeSync: agent + command files, verified against a real install (2026-09-18, issue #4/M3)
+
+opencode ships its own first-party "Customizing opencode" reference doc *inside the binary itself*
+(readable with `strings` on the unstripped executable — see NOTES.md "The opencode backend" for how
+that binary was obtained) — an authoritative source better than public docs for exactly this kind of
+detail, and it settled several things the original plan only guessed at:
+
+- **Commands, not skills, are the slash-command mechanism.** opencode has both `.opencode/skill(s)/
+  <name>/SKILL.md` (auto-surfaced reference material the model may or may not read, matching Claude
+  Code's own skill semantics) and `.opencode/command/<name>.md` (a literal `/name` slash command,
+  frontmatter `description`/`agent`/`model`/`variant` + a body template with `$ARGUMENTS`). Only the
+  second one makes `/claustrum` an actual typeable command, so `OpencodeSync.WriteCommand` writes
+  `.opencode/command/claustrum.md`, reusing the exact same shared body
+  (`roles/_shared/claustrum-skill.md`) ClaudeSync's own `SKILL.md` uses — the interview and
+  delegation steps are harness-neutral by construction.
+- **Project agents**: `.opencode/agent/<name>.md` (or `.opencode/agents/`), global:
+  `~/.config/opencode/agent(s)/<name>.md` (NOT `~/.opencode/`). Allowed frontmatter fields:
+  `name, model, variant, description, mode, hidden, color, steps, options, permission, disable,
+  temperature, top_p`; the file body becomes the agent's prompt. `model` always carries a provider
+  prefix (`"provider/model-id"`), confirmed by the same doc's own shape notes.
+- **Verified live, not just read**: synced `.opencode/agent/builder.md` (+ `-xhigh`/`-max` stubs) and
+  `.opencode/command/claustrum.md` were written into a real temp repo, then `opencode agent list`
+  (against the real opencode-ai 1.18.31 install) printed `builder (subagent)`, `builder-xhigh
+  (subagent)`, `builder-max (subagent)` — proof the frontmatter shape is genuinely accepted by
+  opencode's own strict config validation ("opencode hard-fails on invalid config"), not just
+  plausible-looking. The command file could not be verified the same way (no `commands list`
+  equivalent was found), so it rests on the same authoritative source, one notch less confirmed than
+  the agent files.
+- **One inference, not directly confirmed**: the doc's condensed examples never show `---` YAML
+  frontmatter delimiters (just `key: value` lines running straight into the body), which is almost
+  certainly the doc's own formatting shorthand rather than the real file syntax — `---`-delimited
+  frontmatter is what every other tool here uses (Claude Code's own agent files included) and is what
+  `WriteAgent`/`WriteCommand` emit. If a real sync round-trip ever shows opencode misparsing the
+  frontmatter, this is the first place to check.
+- **Model class -> concrete id mapping** (`OpencodeModelFor`) only uses the two model ids
+  docs/PLAN.md itself ever actually names (`openrouter/deepseek/deepseek-v4-pro` and `-flash`) rather
+  than inventing a third, unconfirmed id for `standard-coding`.
+- **Deliberately out of scope**: registering the claustrum MCP server in `opencode.json`'s own `mcp`
+  key (opencode has one, confirmed live in the same reference doc) — that merge needs the same
+  idempotency/foreign-key care `McpConfigSync` gave `.mcp.json`, and deserves its own dedicated pass
+  rather than being bolted onto this one.
+- **Duplication accepted for now**: `OpencodeSync`'s marker/idempotency machinery
+  (`WriteGenerated`/`ComputeSha256`/`HasMarker`/manifest-free by design) is a near-duplicate of
+  `ClaudeSync`'s own. With only two concrete Sync classes so far the right shared shape isn't obvious
+  yet (`ClaudeSync`'s five-out-parameter methods are already a smell) — extracting it now would be
+  guessing from two data points; the plan is to do that once Cursor/CopilotSync exist too.
