@@ -492,3 +492,42 @@ Fixtures (`tests/fixtures/api/`) are fabricated from OpenRouter's and Anthropic'
 shapes, not recorded from a live call — this environment has no `OPENROUTER_API_KEY`/
 `ANTHROPIC_API_KEY` to test against, so, like opencode/cursor/copilot, this backend is best-effort
 until validated against a real account (docs/PLAN.md's own M3 UNCONFIRMED list).
+
+## The opencode backend (2026-09-18, issue #4/M3)
+
+Verified against a real `opencode-ai` 1.18.31 install (`npm install -g opencode-ai`, available in this
+sandbox — unlike Cursor/Copilot's CLIs it installs cleanly with no account). No working provider
+credential was available (no `ANTHROPIC_API_KEY`/`OPENROUTER_API_KEY` reachable from here), so a
+genuine successful run could not be recorded, but everything short of that was confirmed live:
+
+- **`OPENCODE_CONFIG_CONTENT`** (JSON, `{"agent":{"<name>":{"mode":"primary","prompt":"{file:<path>}"}}}`)
+  really exists and is read by the binary, `{file:...}` substitution included — grepped straight out
+  of the installed executable's own source strings, not just inferred from docs.
+- **`OPENCODE_PERMISSION`** is a *separate*, simpler env var for the permission JSON — confirmed live
+  the same way. The original plan guessed permission had to live nested inside
+  `OPENCODE_CONFIG_CONTENT`; the real binary reads it standalone, which is what `OpencodeBackend.Build`
+  now does (`OpencodeBackend.cs`).
+- **`--variant`** (not guessed anywhere in the original plan) is opencode's reasoning-effort flag —
+  found via `opencode run --help`, now carrying `ResolvedRole.Effort` the way `--effort`/`--variant`
+  do for claude/copilot.
+- **`run --format json`** emits one JSON object per line, each with `type` and `sessionID`. A real
+  `type:"error"` event was captured (`tests/fixtures/opencode/error.jsonl` — genuine, not fabricated)
+  by pointing `run` at a real agent/config with no reachable model; the process exited 1, consistent
+  with claude/api's own exit-code-driven `IsError`, so `Parse` did not need special-casing there.
+  End-to-end verified too: a real `claustrum run builder --backend opencode` against this same
+  failure mode produced a correct `status:"failed"` RunResult with `error`/`session_id` pulled straight
+  out of that JSON event.
+- **Not independently confirmed**: the shape of a *successful* run's events. `message.part.updated`
+  and `step-finish` are real event/part-type strings found in the binary (opencode's public SDK
+  documents a part union including `text`/`step-finish`, and `step-finish` carries `cost`/`tokens`),
+  but no live success was captured to pin the exact field layout — `success.jsonl` is built from that
+  published shape, flagged the same way `tests/fixtures/api/`'s fixtures are. `Parse` treats a
+  repeated `message.part.updated` for the same part id as a full-state replacement, not an append,
+  because a *separate* `message.part.delta` event name also exists in the binary for incremental
+  chunks — if that assumption is wrong, this is the first place to look.
+
+Cursor's own CLI could not be probed the same way: the `cursor-agent` npm package is an unrelated
+third-party tool ("Task sequence creator for Cursor AI agents"), not Cursor's real CLI, which ships as
+a standalone installer script rather than an npm package — installing and then discarding it here so
+it doesn't get mistaken for the real thing later. Cursor stays fixture-only per the original plan
+("cursor validated by a teammate who has it").
