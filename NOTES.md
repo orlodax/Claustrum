@@ -531,3 +531,45 @@ third-party tool ("Task sequence creator for Cursor AI agents"), not Cursor's re
 a standalone installer script rather than an npm package — installing and then discarding it here so
 it doesn't get mistaken for the real thing later. Cursor stays fixture-only per the original plan
 ("cursor validated by a teammate who has it").
+
+## The copilot backend (2026-09-18, issue #4/M3)
+
+Verified against a real `@github/copilot` 1.0.86 install (`npm install -g @github/copilot`). No
+GitHub Copilot subscription token was reachable from here — the sandbox's own repo-scoped
+`GITHUB_TOKEN` is a narrower credential meant for something else and was deliberately not pressed
+into this instead — so, unlike opencode, not even an authenticated *error* shape could be recorded,
+only the pre-auth failure path. Still a large upgrade over the original plan's guesses:
+
+- **`-C`, `--agent`, `--output-format json` (JSONL), `--mode` (`interactive|plan|autopilot`),
+  `--reasoning-effort`** (not `--effort`; `high`/`xhigh`/`max` are valid values there, a lucky exact
+  match with Claustrum's own tier names) **all confirmed live** via `copilot --help`.
+- **`--add-dir <dir>` "loads that directory's `.github/skills` and `.github/agents` as trusted
+  configuration"** — confirmed live, and a real, cwd-relative mechanism rather than the `COPILOT_HOME`
+  relocation the original plan guessed (`copilot help environment` confirms `COPILOT_HOME` only
+  relocates config/state, nothing about `agents/`). `CopilotBackend.Build` writes
+  `<job>/copilot-agents/.github/agents/claustrum-<role>.agent.md` and passes `--add-dir
+  <job>/copilot-agents`, so the target repo itself never needs a Claustrum file committed into it.
+- **`--allow-tool`/`--deny-tool` with `shell(...)`/`write` tool names** confirmed live from `copilot
+  --help`'s own examples (`--allow-tool='shell(git:*)' --deny-tool='shell(git push)'`,
+  `--allow-tool='write'`). **`--allow-all`** (equivalent to `--allow-all-tools --allow-all-paths
+  --allow-all-urls`) is a real single flag, used for Full instead of the two-flag combination the
+  original plan guessed.
+- **Deliberate deviation from docs/PLAN.md §A3's ReadOnly/Edit rows**: `--help` states
+  `--allow-all-tools` is "required for non-interactive mode", so a mapping that omits it (as those two
+  rows originally did) risks `-p` hanging on a confirmation prompt nothing can ever answer headlessly
+  — a real, well-documented risk, not a hypothetical one. `PermissionArgs` instead grants broadly with
+  `--allow-all-tools`/`--allow-all-paths` at every level and narrows with `--deny-tool`, the same
+  allow-broad-deny-narrow shape `ClaudeBackend`'s own EditShell mapping already uses, and relies on
+  `--mode plan` (not tool denial) to keep ReadOnly's *effect* read-only.
+- **Confirmed live, and load-bearing for `Parse`**: an unauthenticated/fatal-startup failure prints a
+  human-readable message to stderr with **empty stdout**, exit code 1 — not a JSON error object the
+  way opencode's own startup failures are (`tests/fixtures/copilot/auth-failure-stderr.txt`, a genuine
+  capture). End-to-end verified too: a real `claustrum run builder --backend copilot` against this
+  same failure reached a correct `status:"failed"` RunResult with that exact message as `error`.
+- **Not confirmed at all**: the JSONL shape of a *successful* run, or the `.agent.md` frontmatter
+  schema — no authenticated session was reachable, and unlike opencode's binary, `@github/copilot`'s
+  is stripped (no useful event-name strings to recover). `Parse` therefore tries several plausible key
+  names (`content`/`text`, nested under `message`; `input_tokens`/`prompt_tokens` and their `output`
+  counterparts for usage) rather than committing to one guessed shape, and always keeps the raw JSON
+  in `Raw` so a real failure here is diagnosable rather than silently wrong. `success.jsonl` and the
+  `.agent.md` frontmatter are both flagged best-effort, same as the other M3 backends.
