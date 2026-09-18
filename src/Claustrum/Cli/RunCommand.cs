@@ -97,7 +97,7 @@ public static class RunCommand
             // open; its budget_usd (even null, meaning unlimited) is authoritative over
             // claustrum.json's default unless --budget was given (CastApplication.Resolve, shared
             // with MCP delegate/delegate_async).
-            (string tier, ConfigOverrides resolvedOverrides, CastBudget? castBudget) = CastApplication.Resolve(cwd, roleName, castName, tierFlag, overrides);
+            (string tier, ConfigOverrides resolvedOverrides, CastBudget? castBudget, int? maxParallel) = CastApplication.Resolve(cwd, roleName, castName, tierFlag, overrides);
 
             DelegateRequest request = new(
                 Role: roleName,
@@ -111,6 +111,7 @@ public static class RunCommand
                 Stream: streamMode,
                 DiffCapBytes: CliDiffCapBytes,
                 CastBudget: castBudget,
+                MaxParallel: maxParallel,
                 OnStreamLine: streamMode ? Console.Error.WriteLine : null);
 
             RunResult result = await DelegateEngine.RunAsync(request, cts.Token);

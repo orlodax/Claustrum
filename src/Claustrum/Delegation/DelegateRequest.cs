@@ -20,4 +20,5 @@ public sealed record DelegateRequest(
     bool Stream,
     int DiffCapBytes,
     CastBudget? CastBudget = null,
+    int? MaxParallel = null,
     Action<string>? OnStreamLine = null);

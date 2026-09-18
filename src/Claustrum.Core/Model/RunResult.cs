@@ -25,4 +25,9 @@ public sealed record RunResult(
     JsonElement? Raw,
     ClaustrumReport? Report,
     ReportStatus ReportStatus,
-    string[] Warnings);
+    string[] Warnings,
+    // Set only for a max_parallel > 1 job (docs/PLAN.md §D4): the job ran inside its own
+    // `.claustrum/worktrees/<job>` on branch Branch rather than directly in the request's cwd.
+    // Additive like ReportStatus/Warnings above — schema_version stays "1".
+    string? Worktree = null,
+    string? Branch = null);
