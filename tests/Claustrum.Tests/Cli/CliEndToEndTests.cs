@@ -72,6 +72,38 @@ public sealed class CliEndToEndTests : IDisposable
     }
 
     [Fact]
+    public async Task SyncOnlyOpencodeWritesOpencodeFilesNotClaudeAsync()
+    {
+        (int exitCode, _, _) = await RunAsync("sync", "--only", "opencode", "--roles", "builder");
+
+        Assert.Equal(Ok, exitCode);
+        Assert.True(File.Exists(Path.Combine(cwd, ".opencode", "agent", "builder.md")));
+        Assert.True(File.Exists(Path.Combine(cwd, ".opencode", "command", "claustrum.md")));
+        Assert.False(Directory.Exists(Path.Combine(cwd, ".claude")));
+    }
+
+    [Fact]
+    public async Task SyncOnlyClaudeAndOpencodeWritesBothAsync()
+    {
+        (int exitCode, string stdout, _) = await RunAsync("sync", "--only", "claude,opencode", "--roles", "builder");
+
+        Assert.Equal(Ok, exitCode);
+        Assert.True(File.Exists(Path.Combine(cwd, ".claude", "agents", "builder.md")));
+        Assert.True(File.Exists(Path.Combine(cwd, ".opencode", "agent", "builder.md")));
+        Assert.Contains("written:", stdout, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task SyncOnlyUnsupportedHarnessExitsTwoNamingItAsync()
+    {
+        (int exitCode, _, string stderr) = await RunAsync("sync", "--only", "cursor");
+
+        Assert.Equal(Usage, exitCode);
+        Assert.Contains("cursor", stderr, StringComparison.Ordinal);
+        Assert.False(Directory.Exists(Path.Combine(cwd, ".claude")));
+    }
+
+    [Fact]
     public async Task SyncRefusesBothCheckAndDryRunAsync()
     {
         (int exitCode, _, string stderr) = await RunAsync("sync", "--check", "--dry-run");
