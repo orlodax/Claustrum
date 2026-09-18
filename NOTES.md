@@ -573,3 +573,17 @@ only the pre-auth failure path. Still a large upgrade over the original plan's g
   counterparts for usage) rather than committing to one guessed shape, and always keeps the raw JSON
   in `Raw` so a real failure here is diagnosable rather than silently wrong. `success.jsonl` and the
   `.agent.md` frontmatter are both flagged best-effort, same as the other M3 backends.
+
+## The cursor backend (2026-09-18, issue #4/M3): fixture-only, as the plan already expected
+
+Unlike opencode/copilot, Cursor's real CLI could not be installed here at all — it ships as a
+standalone installer script (`curl https://cursor.com/install -fsS | bash`), not an npm package, and
+this environment's network policy plus the lack of a Cursor account make that install unverifiable
+either way. `CursorBackend.cs` implements docs/PLAN.md §A3's cursor row exactly as written — binary
+name `cursor-agent`, prompt-prefix injection (no system-prompt hook, so the rendered role body is
+prefixed onto the brief with `# Task`), the deny list turned into a `## Hard rules` prompt section
+(cursor has no native per-command deny flag), and the `-p --output-format json ... --workspace <cwd>`
+argv/permission table — with zero live confirmation. `tests/fixtures/cursor/*.json` are fabricated
+from the plan's own guessed field names (`result`/`session_id`/`usage`/`is_error`). This is the one
+M3 backend that stays exactly as unconfirmed as the original plan already flagged it
+("cursor validated by a teammate who has it") — nothing here upgrades that status.

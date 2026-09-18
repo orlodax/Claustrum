@@ -1,0 +1,9 @@
+{
+  "result": "No defects found. The change looks correct.\n\n```claustrum-report\n{\"status\":\"done\",\"findings\":[],\"would_change_if_broader\":[]}\n```",
+  "session_id": "fabricated-cursor-session-0001",
+  "is_error": false,
+  "usage": {
+    "input_tokens": 1150,
+    "output_tokens": 84
+  }
+}
