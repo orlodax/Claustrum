@@ -1,0 +1,23 @@
+{
+  "id": "gen-1758000000-abcdefghijklmnop",
+  "provider": "DeepSeek",
+  "model": "deepseek/deepseek-v4-pro",
+  "object": "chat.completion",
+  "created": 1758000000,
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "No defects found. The change looks correct.\n\n```claustrum-report\n{\"status\":\"done\",\"findings\":[],\"would_change_if_broader\":[]}\n```"
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 1240,
+    "completion_tokens": 96,
+    "total_tokens": 1336,
+    "cost": 0.00182
+  }
+}

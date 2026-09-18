@@ -460,3 +460,35 @@ Verified end-to-end (2026-09-18): three `claustrum run builder --cast default` C
 concurrently against a real `claude` backend and a toy repo with `"max_parallel": 3` landed on three
 distinct branches/worktrees, each `status: success` with its own single-file `changed_files` entry,
 and the main checkout was untouched throughout — the exact §D4/M3 "done when" scenario.
+
+## The api backend (2026-09-18, issue #4/M3)
+
+`curl` is the process this backend actually spawns — no HTTP client SDK, no extra dependency, and it
+fits `IBackend.Build -> ProcessSpec` (Core/Backends/Api/ApiBackend.cs) without any change to Core's
+architecture. Two things drove the shape:
+
+- **No tools at all** (docs/PLAN.md §A3): unlike every other backend, `api` cannot edit files or run
+  shell commands — it is a single chat completion. That is why only text-report roles list it in
+  `harnesses` (code-reviewer already did; builder/tester/ui-reviewer never will), and why `Build`
+  ignores `Permission`/`Deny` entirely — there is nothing to gate.
+- **Model spec is `api:<provider>:<model-id>`**, e.g. `api:openrouter:deepseek/deepseek-v4-pro` or
+  `api:anthropic:claude-opus-4-5`. `Config.SplitBackendModel` only strips the *first* colon, so the
+  provider segment survives inside `ResolvedRole.Model` for `Build` to split again. Passing
+  `--backend api` and `--model openrouter:...` as two *separate* flags does **not** work the same
+  way: `Config.Resolve` always runs the alias/backend split on the raw `--model` value regardless of
+  `--backend`, so `openrouter:` would be consumed as if it were a (wrong) backend name and lost.
+  Verified this end to end with the real CLI (2026-09-18): the two-flag form silently drops the
+  provider prefix and `Build` throws "got 'deepseek/deepseek-v4-pro'"; the single combined
+  `--model api:openrouter:deepseek/deepseek-v4-pro` form resolves and reaches `Build` correctly.
+
+The request body and the `Authorization`/`x-api-key` header go into two temp files under
+`run.JobDirectory` (`-d @file`, curl's `-K`/`--config` for headers) instead of argv, so neither the
+API key nor a possibly-large brief shows up in `ps`; both are in `ProcessSpec.TempFiles`, so
+`Runner`'s existing `finally` deletes them regardless of outcome. `--fail-with-body` makes curl exit
+nonzero on an HTTP error while still returning the body on stdout, so `Parse` can extract the
+provider's own error message either way.
+
+Fixtures (`tests/fixtures/api/`) are fabricated from OpenRouter's and Anthropic's published response
+shapes, not recorded from a live call — this environment has no `OPENROUTER_API_KEY`/
+`ANTHROPIC_API_KEY` to test against, so, like opencode/cursor/copilot, this backend is best-effort
+until validated against a real account (docs/PLAN.md's own M3 UNCONFIRMED list).
