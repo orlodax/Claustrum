@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 using Claustrum.Core.Model;
@@ -16,7 +15,7 @@ public static class WorktreeSnapshot
 {
     public static async Task<WorktreeState> CaptureAsync(string cwd, CancellationToken cancellationToken = default)
     {
-        (int exitCode, string stdout, _) = await RunGitAsync(cwd, ["status", "--porcelain=v1", "-z", "--untracked-files=all"], cancellationToken);
+        (int exitCode, string stdout, _) = await GitProcess.RunAsync(cwd, ["status", "--porcelain=v1", "-z", "--untracked-files=all"], cancellationToken);
         if (exitCode != 0)
             return new WorktreeState.FileScan(ScanFiles(cwd));
 
@@ -64,7 +63,7 @@ public static class WorktreeSnapshot
         StringBuilder diffBuilder = new();
         if (trackedPaths.Length > 0)
         {
-            (_, string trackedDiff, _) = await RunGitAsync(cwd, ["diff", "HEAD", "--", .. trackedPaths], cancellationToken);
+            (_, string trackedDiff, _) = await GitProcess.RunAsync(cwd, ["diff", "HEAD", "--", .. trackedPaths], cancellationToken);
             diffBuilder.Append(trackedDiff);
         }
 
@@ -72,7 +71,7 @@ public static class WorktreeSnapshot
         // "/dev/null" as a diff pseudo-path on every OS, including Windows.
         foreach (string path in untrackedPaths)
         {
-            (int exitCode, string stdout, _) = await RunGitAsync(cwd, ["diff", "--no-index", "--", "/dev/null", path], cancellationToken);
+            (int exitCode, string stdout, _) = await GitProcess.RunAsync(cwd, ["diff", "--no-index", "--", "/dev/null", path], cancellationToken);
             if (exitCode is 0 or 1)
                 diffBuilder.Append(stdout);
         }
@@ -192,55 +191,5 @@ public static class WorktreeSnapshot
             changed.Add(new ChangedFile(path, ChangeKind.Deleted));
 
         return new SnapshotDiff([.. changed], null, false);
-    }
-
-    // Defense-in-depth on top of the stdin fix below: with a child's stdin properly closed rather
-    // than inherited, this should never fire, but a stuck git must not be able to wedge a tool call
-    // forever the way it did before this fix (NOTES.md "MCP child stdin inheritance hung git").
-    private static readonly TimeSpan gitTimeout = TimeSpan.FromSeconds(30);
-
-    private static async Task<(int ExitCode, string Stdout, string Stderr)> RunGitAsync(string cwd, string[] args, CancellationToken cancellationToken)
-    {
-        ProcessStartInfo startInfo = new()
-        {
-            FileName = "git",
-            WorkingDirectory = cwd,
-            UseShellExecute = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            RedirectStandardInput = true,
-            CreateNoWindow = true,
-            StandardOutputEncoding = Encoding.UTF8,
-        };
-        foreach (string arg in args)
-            startInfo.ArgumentList.Add(arg);
-
-        using System.Diagnostics.Process process = new() { StartInfo = startInfo };
-        process.Start();
-
-        // Closed immediately: an inherited stdin would otherwise be the MCP host's own live
-        // JSON-RPC pipe, and git blocks reading from a pipe no one writes to (NOTES.md "MCP child
-        // stdin inheritance hung git").
-        process.StandardInput.Close();
-
-        Task<string> stdoutTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
-        Task<string> stderrTask = process.StandardError.ReadToEndAsync(cancellationToken);
-
-        using CancellationTokenSource timeoutSource = new(gitTimeout);
-        using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutSource.Token);
-        try
-        {
-            await process.WaitForExitAsync(linked.Token);
-        }
-        catch (OperationCanceledException)
-        {
-            process.Kill(entireProcessTree: true);
-            await process.WaitForExitAsync(CancellationToken.None);
-            if (timeoutSource.IsCancellationRequested)
-                throw new TimeoutException($"git {string.Join(' ', args)} timed out after {gitTimeout.TotalSeconds}s");
-            throw;
-        }
-
-        return (process.ExitCode, await stdoutTask, await stderrTask);
     }
 }
