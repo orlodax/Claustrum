@@ -697,3 +697,27 @@ never creating one, and never touching `CLAUDE.md` at all, exactly as specified.
   `AGENTS.md` and a `.github/` directory — correctly detected and synced claude+copilot, wrote a clean
   two-key `claustrum.json`, appended the AGENTS.md pointer once, and a second `init` run reported
   everything already up to date with zero new writes.
+
+## doctor --probe (2026-09-18, issue #4/M3): auth/mcp/os checks, the real probe call deferred
+
+docs/PLAN.md §B6 lists five checks: `binary` · `auth` · `probe` · `mcp` · `os`. Bare `doctor` already
+covered `binary` (M1) and the merged-config dump; `--probe` now adds three of the remaining four:
+
+- **`auth`**: env-var presence only ("value never printed" — only presence is reported), using this
+  repo's own already-confirmed variable names (`EnvAllowList.cs`'s prefixes, and copilot's documented
+  `COPILOT_GITHUB_TOKEN`/`GH_TOKEN`/`GITHUB_TOKEN` precedence from NOTES.md "The copilot backend").
+  Deliberately does **not** check any backend's login-file path: none of the four backends' actual
+  credential-storage location was independently confirmed during this work (opencode's and copilot's
+  own CLI *behavior* was verified live, not where they cache a token) and a wrong guess would report
+  "not set" for someone who is, in fact, logged in — worse than not checking at all.
+- **`mcp`**: reads `.mcp.json`/`.vscode/mcp.json` (JSONC-tolerant, same `CommentHandling.Skip` +
+  `AllowTrailingCommas` McpConfigSync's own `ParseExisting` uses) and reports whether each registers
+  a `claustrum` entry — read-only, `sync` remains the only thing that writes these files.
+- **`os`**: generalizes the plan's own example ("warns when a backend resolved from WSL is a
+  `/mnt/c/...` Windows exe") to any binary-path/cwd mismatch across the `/mnt/` boundary.
+- **`probe` itself — the actual "1-token reply OK, cost shown" round trip — is not implemented.**
+  It needs a real, authenticated call against whichever backend is being checked, which (a) this
+  environment cannot exercise for any of the five backends (no working credential for any provider
+  was available anywhere in this session) and (b) genuinely spends the user's own money/quota, which
+  is not something to wire up speculatively and leave untested. Left as a known, named gap rather than
+  a fabricated "always succeeds" or "always fails" placeholder.
