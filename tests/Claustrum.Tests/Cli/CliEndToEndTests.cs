@@ -322,6 +322,67 @@ public sealed class CliEndToEndTests : IDisposable
     }
 
     [Fact]
+    public async Task BareDoctorNeverPrintsProbeSectionsAsync()
+    {
+        (int exitCode, string stdout, _) = await RunAsync("backends", "doctor");
+
+        Assert.Equal(Ok, exitCode);
+        Assert.DoesNotContain("auth:", stdout, StringComparison.Ordinal);
+        Assert.DoesNotContain("os:", stdout, StringComparison.Ordinal);
+        Assert.DoesNotContain("mcp:", stdout, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task DoctorProbeAddsAuthOsAndMcpSectionsAsync()
+    {
+        (int exitCode, string stdout, _) = await RunAsync("backends", "doctor", "--probe");
+
+        Assert.Equal(Ok, exitCode);
+        Assert.Contains("auth:", stdout, StringComparison.Ordinal);
+        Assert.Contains("os:", stdout, StringComparison.Ordinal);
+        Assert.Contains("mcp:", stdout, StringComparison.Ordinal);
+        Assert.Contains(".mcp.json:", stdout, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task DoctorProbeReportsNoMcpFileOnAFreshRepoAsync()
+    {
+        (int exitCode, string stdout, _) = await RunAsync("backends", "doctor", "--probe");
+
+        Assert.Equal(Ok, exitCode);
+        Assert.Contains(".mcp.json:        not present", stdout, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task DoctorProbeDetectsAnExistingMcpRegistrationAsync()
+    {
+        File.WriteAllText(Path.Combine(cwd, ".mcp.json"), /*lang=json,strict*/
+            """{"mcpServers":{"claustrum":{"command":"claustrum","args":["mcp"]}}}""");
+
+        (int exitCode, string stdout, _) = await RunAsync("backends", "doctor", "--probe");
+
+        Assert.Equal(Ok, exitCode);
+        Assert.Contains(".mcp.json:        registers claustrum", stdout, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task DoctorProbeToleratesJsoncInVsCodeMcpFileAsync()
+    {
+        Directory.CreateDirectory(Path.Combine(cwd, ".vscode"));
+        File.WriteAllText(Path.Combine(cwd, ".vscode", "mcp.json"), /*lang=json*/ """
+            {
+              // hand-edited
+              "servers": { "claustrum": { "type": "stdio", "command": "claustrum", "args": ["mcp"] }, },
+            }
+            """);
+
+        (int exitCode, string stdout, _) = await RunAsync("backends", "doctor", "--probe");
+
+        Assert.Equal(Ok, exitCode);
+        Assert.Contains(".vscode/mcp.json: registers claustrum", stdout, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task InitScaffoldsClaustrumDirectoryAndClaudeSyncOnAFreshRepoAsync()
     {
         (int exitCode, string stdout, _) = await RunAsync("init");
