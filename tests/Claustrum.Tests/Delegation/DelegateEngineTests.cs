@@ -18,7 +18,8 @@ public sealed class DelegateEngineTests : IDisposable
 {
     private readonly string cwd = CreateRepo();
 
-    public void Dispose() => Directory.Delete(cwd, recursive: true);
+    // A real git repo: git's read-only loose objects defeat a plain recursive delete on Windows.
+    public void Dispose() => TempTree.Delete(cwd);
 
     private DelegateRequest MissingBackendRequest(int? maxParallel) => new(
         Role: "builder",

@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text.Json;
 using Claustrum.Cli;
+using Claustrum.Tests.Testing;
 
 namespace Claustrum.Tests.Cli;
 
@@ -19,8 +20,10 @@ public sealed class CliEndToEndTests : IDisposable
 
     public void Dispose()
     {
-        Directory.Delete(cwd, recursive: true);
-        Directory.Delete(home, recursive: true);
+        // cwd holds a real git repo in several of these: git's read-only loose objects defeat a
+        // plain recursive delete on Windows.
+        TempTree.Delete(cwd);
+        TempTree.Delete(home);
     }
 
     [Fact]
