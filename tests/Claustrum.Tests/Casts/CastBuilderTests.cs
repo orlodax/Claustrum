@@ -92,4 +92,60 @@ public sealed class CastBuilderTests
     {
         Assert.Throws<CastException>(() => CastBuilder.FromAnswers("default", "1.0.0", ["architect"], new Dictionary<string, string>()));
     }
+
+    // Review finding: docs/PLAN.md §D2 asks for "builder model + max_parallel", but CastBuilder never
+    // set MaxParallel, so worktree isolation was unreachable without hand-editing the cast JSON.
+    [Fact]
+    public void BuilderMaxParallelAnswerLandsOnTheBuilderEntry()
+    {
+        Dictionary<string, string> answers = new()
+        {
+            ["builder"] = "claude:opus",
+            ["code-reviewer"] = CastBuilder.NotNeeded,
+            ["tester"] = CastBuilder.NotNeeded,
+            [CastQuestionnaire.MaxParallelKey] = "3",
+            ["budget"] = CastBuilder.NoCap,
+        };
+
+        Cast cast = CastBuilder.FromAnswers("default", "1.0.0", roleNames, answers);
+
+        Assert.Equal(3, cast.Roles["builder"]!.MaxParallel);
+    }
+
+    // 1 means "no isolation", spelled as null so `cast show` does not imply a setting nobody made.
+    [Theory]
+    [InlineData("1")]
+    [InlineData("")]
+    public void OneOrNoAnswerLeavesMaxParallelUnset(string answer)
+    {
+        Dictionary<string, string> answers = new()
+        {
+            ["builder"] = "claude:opus",
+            ["code-reviewer"] = CastBuilder.NotNeeded,
+            ["tester"] = CastBuilder.NotNeeded,
+            [CastQuestionnaire.MaxParallelKey] = answer,
+            ["budget"] = CastBuilder.NoCap,
+        };
+
+        Cast cast = CastBuilder.FromAnswers("default", "1.0.0", roleNames, answers);
+
+        Assert.Null(cast.Roles["builder"]!.MaxParallel);
+    }
+
+    [Fact]
+    public void ANonNumericMaxParallelAnswerIsRejectedByName()
+    {
+        Dictionary<string, string> answers = new()
+        {
+            ["builder"] = "claude:opus",
+            ["code-reviewer"] = CastBuilder.NotNeeded,
+            ["tester"] = CastBuilder.NotNeeded,
+            [CastQuestionnaire.MaxParallelKey] = "lots",
+            ["budget"] = CastBuilder.NoCap,
+        };
+
+        CastException ex = Assert.Throws<CastException>(() => CastBuilder.FromAnswers("default", "1.0.0", roleNames, answers));
+
+        Assert.Contains("lots", ex.Message, StringComparison.Ordinal);
+    }
 }

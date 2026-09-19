@@ -9,6 +9,8 @@ namespace Claustrum.Casts;
 // `claude` install.
 public static class CastQuestionnaire
 {
+    public const string MaxParallelKey = "builder_max_parallel";
+
     public static async Task<CastQuestionnaireResult> BuildAsync(RoleLibrary roleLibrary, BackendRegistry backends, Config config, string cwd, CancellationToken cancellationToken)
     {
         HashSet<string> availableBackends = [];
@@ -60,6 +62,17 @@ public static class CastQuestionnaire
                 AllowNotNeeded: role != "builder",
                 AllowFreeForm: true));
         }
+
+        // docs/PLAN.md §D2 asks for "builder model + max_parallel" — without this question the only
+        // way to reach worktree isolation was hand-editing the cast JSON, since CastBuilder never
+        // set MaxParallel (review finding). Builder-only: it is the one role a cast fans out.
+        AddQuestion(new CastQuestion(
+            Key: MaxParallelKey,
+            Prompt: "builder: how many builders may run at once? More than 1 gives each job its own "
+                + "git worktree and branch (docs/PLAN.md §D4). '1' keeps every run in the repo itself.",
+            Options: ["1", "2", "3"],
+            AllowNotNeeded: false,
+            AllowFreeForm: true));
 
         AddQuestion(new CastQuestion(
             Key: "budget",
