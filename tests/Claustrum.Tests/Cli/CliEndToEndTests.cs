@@ -273,6 +273,90 @@ public sealed class CliEndToEndTests : IDisposable
         Assert.Contains($"claustrum/{jobId}", ListBranches(cwd));
     }
 
+    // Review finding: `jobs clean` only ever removed worktrees whose job wrote a result.json, so a
+    // worktree left by a hard kill (or one whose job directory jobs.keep_last later pruned) waited
+    // forever for a signal that could never arrive.
+    [Fact]
+    public async Task JobsCleanRemovesAWorktreeWhoseJobDirectoryIsGoneAsync()
+    {
+        SeedRepo();
+        RunGit(cwd, "worktree", "add", Path.Combine(".claustrum", "worktrees", "20260101-000000-deadbeef"), "-b", "claustrum/20260101-000000-deadbeef");
+
+        (int exitCode, string stdout, _) = await RunAsync("jobs", "clean");
+
+        Assert.Equal(Ok, exitCode);
+        Assert.Contains("20260101-000000-deadbeef", stdout, StringComparison.Ordinal);
+        Assert.False(Directory.Exists(Path.Combine(cwd, ".claustrum", "worktrees", "20260101-000000-deadbeef")));
+    }
+
+    // Review finding: one directory git no longer recognises used to abort the whole sweep, so every
+    // stale worktree after it survived — and every rerun stopped at the same one.
+    [Fact]
+    public async Task JobsCleanReportsAnUnremovableWorktreeAndStillClearsTheRestAsync()
+    {
+        SeedRepo();
+        RunGit(cwd, "worktree", "add", Path.Combine(".claustrum", "worktrees", "20260101-000000-99999999"), "-b", "claustrum/20260101-000000-99999999");
+
+        // Sorts before the real one, so an abort-on-first-failure sweep would never reach it.
+        Directory.CreateDirectory(Path.Combine(cwd, ".claustrum", "worktrees", "20250101-000000-00000000"));
+
+        (int exitCode, string stdout, string stderr) = await RunAsync("jobs", "clean");
+
+        Assert.Equal(ExitCodes.BackendFailure, exitCode);
+        Assert.Contains("20250101-000000-00000000", stderr, StringComparison.Ordinal);
+        Assert.Contains("20260101-000000-99999999", stdout, StringComparison.Ordinal);
+        Assert.False(Directory.Exists(Path.Combine(cwd, ".claustrum", "worktrees", "20260101-000000-99999999")));
+    }
+
+    // Review finding: RoleConcurrencyGate's slot files are untracked and WorktreeSnapshot runs
+    // `git status --untracked-files=all`, so an un-ignored .claustrum/locks/ put phantom lock files
+    // in every later job's changed_files/diff.
+    [Fact]
+    public async Task InitIgnoresLocksAsWellAsWorktreesAsync()
+    {
+        Assert.Equal(Ok, (await RunAsync("init")).ExitCode);
+
+        string gitignore = await File.ReadAllTextAsync(Path.Combine(cwd, ".gitignore"), TestContext.Current.CancellationToken);
+        Assert.Contains(".claustrum/worktrees/", gitignore, StringComparison.Ordinal);
+        Assert.Contains(".claustrum/locks/", gitignore, StringComparison.Ordinal);
+    }
+
+    // A repo initialised before a rule existed has to gain that one line, not a second copy of the
+    // whole block: the idempotency check used to key on `.claustrum/worktrees/` alone.
+    [Fact]
+    public async Task InitAddsOnlyTheMissingIgnoreLineToAnOlderGitignoreAsync()
+    {
+        await File.WriteAllTextAsync(
+            Path.Combine(cwd, ".gitignore"),
+            "bin/\n.claustrum/worktrees/\n.claustrum/briefs/\n",
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(Ok, (await RunAsync("init")).ExitCode);
+
+        string gitignore = await File.ReadAllTextAsync(Path.Combine(cwd, ".gitignore"), TestContext.Current.CancellationToken);
+        Assert.Contains(".claustrum/locks/", gitignore, StringComparison.Ordinal);
+        Assert.Equal(1, CountOccurrences(gitignore, ".claustrum/worktrees/"));
+        Assert.Equal(1, CountOccurrences(gitignore, ".claustrum/briefs/"));
+    }
+
+    private static int CountOccurrences(string haystack, string needle)
+    {
+        int count = 0;
+        for (int i = haystack.IndexOf(needle, StringComparison.Ordinal); i >= 0; i = haystack.IndexOf(needle, i + needle.Length, StringComparison.Ordinal))
+            count++;
+        return count;
+    }
+
+    private void SeedRepo()
+    {
+        RunGit(cwd, "init", "-q");
+        RunGit(cwd, "config", "user.email", "test@example.com");
+        RunGit(cwd, "config", "user.name", "claustrum-tests");
+        File.WriteAllText(Path.Combine(cwd, "seed.txt"), "seed\n");
+        RunGit(cwd, "add", "-A");
+        RunGit(cwd, "commit", "-q", "-m", "seed");
+    }
+
     [Fact]
     public async Task JobsCleanOnARepoWithNoWorktreesIsANoOpAsync()
     {

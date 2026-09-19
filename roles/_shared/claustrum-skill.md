@@ -10,8 +10,9 @@ differs.
 
 ## Delegating
 Write the brief to a file first — fixed H2 sections `## Task`, `## Scope`,
-`## Must still work`, `## Diff`, `## Context` (non-blind roles only); see this repo's
-`docs/PLAN.md` §B3 for the exact convention — then invoke:
+`## Must still work`, `## Diff`, `## Access` (ui-reviewer: how to start and reach the
+running app — command, URL, viewports, credentials), `## Context` (non-blind roles only);
+see this repo's `docs/PLAN.md` §B3 for the exact convention — then invoke:
 
 ```
 claustrum run <role> --brief-file <path> --json [--cast <name>]

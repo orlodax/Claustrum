@@ -23,9 +23,17 @@ public static class CastBuilder
 
         string architectMode = answers.TryGetValue("architect", out string? mode) && mode.Length > 0 ? mode : "host";
 
+        int? maxParallel = ParseMaxParallelAnswer(answers.GetValueOrDefault(CastQuestionnaire.MaxParallelKey));
+
         Dictionary<string, CastRoleEntry?> roles = [];
         foreach (string role in roleNames)
-            roles[role] = ParseRoleAnswer(answers.GetValueOrDefault(role));
+        {
+            CastRoleEntry? entry = ParseRoleAnswer(answers.GetValueOrDefault(role));
+
+            // Only builder carries max_parallel: it is the one role a cast fans out (docs/PLAN.md
+            // §D4). A cast whose builder was answered "not needed" has no entry to hang it on.
+            roles[role] = role == "builder" && entry is not null ? entry with { MaxParallel = maxParallel } : entry;
+        }
 
         return new Cast(name, library, new CastArchitect(architectMode), roles, ParseBudgetAnswer(answers.GetValueOrDefault("budget")));
     }
@@ -37,6 +45,19 @@ public static class CastBuilder
         string.IsNullOrWhiteSpace(answer) || answer.Equals(NotNeeded, StringComparison.OrdinalIgnoreCase)
             ? null
             : new CastRoleEntry(Model: answer, Backend: null, Tier: null);
+
+    // 1 (or an unanswered question) means "no isolation", which CastRoleEntry spells as null rather
+    // than 1 so `cast show` does not imply a setting the user never made.
+    private static int? ParseMaxParallelAnswer(string? answer)
+    {
+        if (string.IsNullOrWhiteSpace(answer) || answer.Equals(NotNeeded, StringComparison.OrdinalIgnoreCase))
+            return null;
+
+        if (!int.TryParse(answer, NumberStyles.Integer, CultureInfo.InvariantCulture, out int value) || value < 1)
+            throw new CastException($"max_parallel answer '{answer}' is not a whole number of 1 or more");
+
+        return value > 1 ? value : null;
+    }
 
     private static decimal? ParseBudgetAnswer(string? answer)
     {

@@ -13,14 +13,23 @@ namespace Claustrum.Cli;
 // a repo that has none of them yet.
 public static class InitCommand
 {
-    // .claustrum/casts/ is committable (docs/PLAN.md §D1); worktrees/ and briefs/ are not
+    // .claustrum/casts/ is committable (docs/PLAN.md §D1); worktrees/, briefs/ and locks/ are not
     // (docs/PLAN.md §D5 "the last two git-ignored") — briefs/ doesn't exist as a feature yet, but the
     // directory and its ignore rule are scaffolded now so a later feature has nothing left to wire up.
+    // locks/ matters most: RoleConcurrencyGate's slot files are untracked, and WorktreeSnapshot runs
+    // `git status --untracked-files=all`, so leaving them un-ignored puts phantom lock files in every
+    // subsequent job's changed_files/diff (review finding — this repo's own .gitignore already has it).
     private const string GitignoreBlock = """
-        # Claustrum: per-job worktrees and drafted briefs (casts/ is committable, these are not).
+        # Claustrum: per-job worktrees, drafted briefs and concurrency locks (casts/ is committable, these are not).
         .claustrum/worktrees/
         .claustrum/briefs/
+        .claustrum/locks/
         """;
+
+    // Every line GitignoreBlock contributes, checked individually: keying idempotency on one line
+    // meant a repo initialised by an earlier version never received a rule added later.
+    private static readonly string[] gitignoreEntries =
+        [".claustrum/worktrees/", ".claustrum/briefs/", ".claustrum/locks/"];
 
     private const string AgentsMdMarker = "## Claustrum delegation";
 
@@ -140,10 +149,17 @@ public static class InitCommand
         }
 
         string existing = File.ReadAllText(path);
-        if (existing.Contains(".claustrum/worktrees/", StringComparison.Ordinal))
+        string[] missing = [.. gitignoreEntries.Where(entry => !existing.Contains(entry, StringComparison.Ordinal))];
+        if (missing.Length == 0)
             return false;
 
-        File.AppendAllText(path, (existing.EndsWith('\n') ? "" : "\n") + "\n" + GitignoreBlock + "\n");
+        // Only what is actually missing is appended, so a repo initialised before a rule existed
+        // gains that one line instead of a second copy of the whole block.
+        string block = missing.Length == gitignoreEntries.Length
+            ? GitignoreBlock
+            : "# Claustrum (added by `claustrum init`).\n" + string.Join('\n', missing);
+
+        File.AppendAllText(path, (existing.EndsWith('\n') ? "" : "\n") + "\n" + block + "\n");
         return true;
     }
 
