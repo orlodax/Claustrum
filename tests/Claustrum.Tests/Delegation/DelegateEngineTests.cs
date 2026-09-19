@@ -73,6 +73,44 @@ public sealed class DelegateEngineTests : IDisposable
         Assert.NotEqual(first.Branch, second.Branch);
     }
 
+    // Review finding: the worktree and branch were created before Runner's own gates ran, and nothing
+    // removed them when the run never reached a result.json — which is exactly the state `jobs clean`
+    // refuses to touch, so the orphan was permanent.
+    [Fact]
+    public async Task ARunThatNeverProducesAResultLeavesNoWorktreeOrBranchBehindAsync()
+    {
+        DelegateRequest request = MissingBackendRequest(maxParallel: 3) with
+        {
+            // Rejected by Runner.ValidateTimeout, before any job output exists.
+            Overrides = new ConfigOverrides(Backend: "nonexistent", TimeoutSeconds: 0),
+        };
+
+        await Assert.ThrowsAnyAsync<Exception>(() => DelegateEngine.RunAsync(request, TestContext.Current.CancellationToken));
+
+        Assert.False(Directory.Exists(Path.Combine(cwd, ".claustrum", "worktrees")) &&
+            Directory.EnumerateDirectories(Path.Combine(cwd, ".claustrum", "worktrees")).Any());
+        Assert.DoesNotContain(ListBranches(cwd), branch => branch.StartsWith("claustrum/", StringComparison.Ordinal));
+    }
+
+    private static string[] ListBranches(string dir)
+    {
+        ProcessStartInfo startInfo = new("git")
+        {
+            WorkingDirectory = dir,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true,
+        };
+        startInfo.ArgumentList.Add("branch");
+        startInfo.ArgumentList.Add("--format=%(refname:short)");
+
+        using SystemProcess process = SystemProcess.Start(startInfo) ?? throw new InvalidOperationException("git failed to start");
+        string stdout = process.StandardOutput.ReadToEnd();
+        process.WaitForExit();
+        return stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+    }
+
     private static string CreateRepo()
     {
         string dir = Directory.CreateTempSubdirectory("claustrum-delegate-engine-").FullName;

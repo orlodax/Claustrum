@@ -55,12 +55,29 @@ public static class DelegateEngine
         if (request.MaxParallel is { } maxParallel && maxParallel > 1)
         {
             job ??= JobDirectory.Create(AppServices.Platform);
-            await using RoleConcurrencyGate gate = await RoleConcurrencyGate.AcquireAsync(request.Cwd, request.Role, maxParallel, cancellationToken);
+            string gateKey = RoleConcurrencyGate.KeyFor(request.CastName, request.Role);
+            await using RoleConcurrencyGate gate = await RoleConcurrencyGate.AcquireAsync(
+                request.Cwd, gateKey, maxParallel, TimeSpan.FromSeconds(timeoutSeconds), cancellationToken);
             JobWorktreeInfo worktree = await JobWorktree.AddAsync(request.Cwd, job.Id, cancellationToken);
 
-            RunRequest isolatedRunRequest = BuildRunRequest(request, worktree.Path, requestPermission, budgetUsd, timeoutSeconds);
-            RunResult isolatedResult = await AppServices.Runner.RunAsync(isolatedRunRequest, resolved, options, job, cancellationToken);
-            return isolatedResult with { Worktree = worktree.Path, Branch = worktree.Branch };
+            try
+            {
+                RunRequest isolatedRunRequest = BuildRunRequest(request, worktree.Path, requestPermission, budgetUsd, timeoutSeconds);
+                RunResult isolatedResult = await AppServices.Runner.RunAsync(isolatedRunRequest, resolved, options, job, cancellationToken);
+                return isolatedResult with { Worktree = worktree.Path, Branch = worktree.Branch };
+            }
+            catch (Exception ex)
+            {
+                // Runner writes a result.json for everything that fails once the backend process has
+                // run, so landing here means the run never produced one — a rejected blind gate, a
+                // non-positive --timeout, a cancel before the spawn. `jobs clean` only removes
+                // worktrees whose job wrote a result.json, so a worktree left behind here could never
+                // be cleaned again and its branch would accumulate forever (review finding). Undo it
+                // on the way out; the original failure is still what the caller gets.
+                if (await JobWorktree.TryRemoveAbandonedAsync(request.Cwd, job.Id, CancellationToken.None) is { } cleanupFailure)
+                    throw new AggregateException($"{ex.Message} (and cleaning up {worktree.Path} failed)", ex, cleanupFailure);
+                throw;
+            }
         }
 
         RunRequest runRequest = BuildRunRequest(request, request.Cwd, requestPermission, budgetUsd, timeoutSeconds);
