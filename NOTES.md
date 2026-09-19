@@ -781,3 +781,25 @@ way in short of hand-editing the cast JSON; `## Access` is in the shared `/claus
 brief ui-reviewer is told to read can actually be written; and ClaudeSync/OpencodeSync/CopilotSync's
 three verbatim copies of the marker machinery are now one `SyncWriter` + `SyncAccumulator` — the
 extraction OpencodeSync's own comment deferred until "CopilotSync exists too".
+
+## Development moved off WSL to native Windows + native Linux (2026-09-19)
+
+Until now the Linux half of "must work on Windows and Linux" was WSL, over a `/mnt/d` view of the
+same Windows clone — hence `AGENTS.md`'s separate-output-tree flag (one `obj/` reached from two path
+styles) and a scattering of acceptance criteria phrased as "green in WSL". Both OSes now have their
+own native clone, which is also what CI has always actually run (`windows-latest` + `ubuntu-latest`),
+so the criteria and the build notes were saying something narrower than the gate they stand for.
+
+Realigned: `docs/PLAN.md`'s owner decisions, machine facts, M0 and M3 acceptance rows, `AGENTS.md`'s
+build section, and issues #4/#10. "Green in WSL for every installed backend" became "`smoke.sh` green
+on Linux and `smoke.ps1` green on Windows" — the same bar, stated as the two platforms rather than
+one person's route to one of them.
+
+**What did NOT change, and must not be mistaken for stale:** WSL remains a first-class way to *run*
+Claustrum, and everything that exists for those users stays exactly as it is — the §A4 path policy
+(never translate `D:\` ↔ `/mnt/d`; a Windows binary spawns Windows harnesses, a Linux binary spawns
+Linux ones), `doctor --probe`'s `os` check warning when a backend resolved under WSL is a `/mnt/c/…`
+Windows exe, and the path-separator-agnostic assertions in ConfigTests/McpConfigSyncTests. The
+measured WSL datapoints in this file (the 2.6s git-stdin timing, the sync-manifest portability
+finding) are dated observations and stay as written. The change is about how *we* build, not about
+what Claustrum supports.
