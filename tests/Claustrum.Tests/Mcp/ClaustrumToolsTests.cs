@@ -55,8 +55,12 @@ public sealed class ClaustrumToolsTests
 
         using JsonDocument document = JsonDocument.Parse(json);
         JsonElement backends = document.RootElement.GetProperty("backends");
-        Assert.Equal(1, backends.GetArrayLength());
+        Assert.Equal(5, backends.GetArrayLength());
         Assert.Equal("claude", backends[0].GetProperty("name").GetString());
+        Assert.Equal("api", backends[1].GetProperty("name").GetString());
+        Assert.Equal("opencode", backends[2].GetProperty("name").GetString());
+        Assert.Equal("copilot", backends[3].GetProperty("name").GetString());
+        Assert.Equal("cursor", backends[4].GetProperty("name").GetString());
     }
 
     [Fact]

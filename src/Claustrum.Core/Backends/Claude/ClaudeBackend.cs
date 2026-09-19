@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Globalization;
 using System.Text.Json;
 using Claustrum.Core.Config;
@@ -26,69 +25,8 @@ public sealed class ClaudeBackend(IPlatform platform) : IBackend
 
     public string Name => "claude";
 
-    public async Task<Doctor> DetectAsync(BackendConfig? config, CancellationToken cancellationToken)
-    {
-        ResolvedBinary binary;
-        try
-        {
-            binary = BinaryLocator.Locate(Name, ["--version"], config, platform);
-        }
-        catch (BackendNotFoundException)
-        {
-            return new Doctor(false, null, null, [$"'{Name}' was not found on PATH"]);
-        }
-
-        ProcessStartInfo startInfo = new()
-        {
-            FileName = binary.Executable,
-            UseShellExecute = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            RedirectStandardInput = true,
-            CreateNoWindow = true,
-        };
-        foreach (string arg in binary.Args)
-            startInfo.ArgumentList.Add(arg);
-
-        using System.Diagnostics.Process process = new() { StartInfo = startInfo };
-        try
-        {
-            process.Start();
-
-            // Closed immediately, not inherited from the MCP host's own live stdio pipe (NOTES.md
-            // "MCP child stdin inheritance hung git").
-            process.StandardInput.Close();
-        }
-        catch (Exception ex)
-        {
-            return new Doctor(false, binary.Executable, null, [$"'{Name} --version' failed to start: {ex.Message}"]);
-        }
-
-        Task<string> stdoutTask = process.StandardOutput.ReadToEndAsync(CancellationToken.None);
-        Task<string> stderrTask = process.StandardError.ReadToEndAsync(CancellationToken.None);
-
-        using CancellationTokenSource timeoutSource = new(detectTimeout);
-        using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutSource.Token);
-        try
-        {
-            await process.WaitForExitAsync(linked.Token);
-        }
-        catch (OperationCanceledException)
-        {
-            process.Kill(entireProcessTree: true);
-            await process.WaitForExitAsync(CancellationToken.None);
-            if (timeoutSource.IsCancellationRequested)
-                return new Doctor(false, binary.Executable, null, [$"'{Name} --version' timed out after {detectTimeout.TotalSeconds}s"]);
-            throw;
-        }
-
-        string stdout = await stdoutTask;
-        string stderr = await stderrTask;
-
-        return process.ExitCode == 0
-            ? new Doctor(true, binary.Executable, stdout.Trim(), [])
-            : new Doctor(false, binary.Executable, null, [$"'{Name} --version' exited with code {process.ExitCode}: {stderr.Trim()}"]);
-    }
+    public Task<Doctor> DetectAsync(BackendConfig? config, CancellationToken cancellationToken) =>
+        VersionProbe.RunAsync(Name, ["--version"], config, platform, cancellationToken, detectTimeout);
 
     public ProcessSpec Build(ResolvedRun run)
     {
@@ -139,11 +77,23 @@ public sealed class ClaudeBackend(IPlatform platform) : IBackend
     private static List<string> PermissionArgs(PermissionPolicy permission) => permission.Level switch
     {
         PermissionLevel.ReadOnly => ["--permission-mode", "plan", "--permission-prompts", "none", "--allowedTools", ReadOnlyTools],
+        PermissionLevel.Shell => ShellArgs(permission.Deny),
         PermissionLevel.Edit => ["--permission-mode", "acceptEdits", "--permission-prompts", "none", "--disallowedTools", "Bash"],
         PermissionLevel.EditShell => EditShellArgs(permission.Deny),
         PermissionLevel.Full => ["--dangerously-skip-permissions", "--permission-prompts", "none"],
         _ => throw new ArgumentOutOfRangeException(nameof(permission)),
     };
+
+    // Shell keeps ReadOnly's plan mode (nothing may be written) but opens Bash and leaves MCP tools
+    // alone: --allowedTools names only the built-ins, so a Browser MCP server stays reachable, which
+    // is the whole point of the level (ui-reviewer's environment part requires one).
+    private static List<string> ShellArgs(string[] deny)
+    {
+        List<string> args = ["--permission-mode", "plan", "--permission-prompts", "none", "--disallowedTools", "Edit,Write,NotebookEdit"];
+        if (deny.Length > 0)
+            args.AddRange(["--disallowedTools", string.Join(',', deny.Select(pattern => $"Bash({pattern}*)"))]);
+        return args;
+    }
 
     private static List<string> EditShellArgs(string[] deny)
     {

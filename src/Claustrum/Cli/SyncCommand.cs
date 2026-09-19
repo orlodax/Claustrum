@@ -3,14 +3,17 @@ using Claustrum.Roles.Sync;
 
 namespace Claustrum.Cli;
 
-// docs/PLAN.md §A5/§B4 `claustrum sync [--only claude] [--roles a,b] [--global] [--force]
-// [--check|--dry-run]`. Only the `claude` harness is implemented in M1; any other `--only` value is
-// a usage error (exit 2).
+// docs/PLAN.md §A5/§B4 `claustrum sync [--only claude,opencode,copilot] [--roles a,b] [--global]
+// [--force] [--check|--dry-run]`. Bare `sync` (no --only) still targets only `claude`, matching
+// M1/M2's documented default; `--only` accepts any of supportedHarnesses, any other value is a usage
+// error (exit 2). cursor has no Sync implementation (fixture-only backend per NOTES.md).
 public static class SyncCommand
 {
+    private static readonly string[] supportedHarnesses = ["claude", "opencode", "copilot"];
+
     public static Command Build()
     {
-        Option<string?> only = new("--only") { Description = "Comma-separated harnesses to sync (only 'claude' exists)." };
+        Option<string?> only = new("--only") { Description = "Comma-separated harnesses to sync (claude, opencode, copilot)." };
         Option<string?> roles = new("--roles") { Description = "Comma-separated role names (default: every role)." };
         Option<bool> global = new("--global") { Description = "Write to the user-global agent directories instead of the repo." };
         Option<bool> force = new("--force") { Description = "Overwrite hand-edited files that lack the claustrum:generated marker." };
@@ -35,10 +38,10 @@ public static class SyncCommand
             throw new CliUsageException("use either --check or --dry-run, not both");
 
         string[] harnesses = only is { Length: > 0 } ? only.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries) : ["claude"];
-        string[] unsupported = [.. harnesses.Where(h => h != "claude")];
+        string[] unsupported = [.. harnesses.Where(h => !supportedHarnesses.Contains(h))];
         if (unsupported.Length > 0)
         {
-            Console.Error.WriteLine($"not yet supported: {string.Join(", ", unsupported)} (only 'claude' exists in M1)");
+            Console.Error.WriteLine($"not yet supported: {string.Join(", ", unsupported)} (supported: {string.Join(", ", supportedHarnesses)})");
             return ExitCodes.Usage;
         }
 
@@ -47,10 +50,46 @@ public static class SyncCommand
             : null;
 
         SyncMode mode = check ? SyncMode.Check : dryRun ? SyncMode.DryRun : SyncMode.Write;
-        ClaudeSync sync = new(AppServices.RoleLibrary, AppServices.RoleRenderer, AppServices.Platform.HomeDirectory);
-        SyncResult result = sync.Sync(Environment.CurrentDirectory, roleFilter, global, force, mode);
+        SyncResult result = MergeResults(harnesses.Select(harness => SyncOne(harness, roleFilter, global, force, mode)));
 
         return dryRun ? PrintDryRun(result) : check ? PrintCheck(result) : PrintWrite(result);
+    }
+
+    private static SyncResult SyncOne(string harness, string[]? roleFilter, bool global, bool force, SyncMode mode) => harness switch
+    {
+        "claude" => new ClaudeSync(AppServices.RoleLibrary, AppServices.RoleRenderer, AppServices.Platform.HomeDirectory)
+            .Sync(Environment.CurrentDirectory, roleFilter, global, force, mode),
+        "opencode" => new OpencodeSync(AppServices.RoleLibrary, AppServices.RoleRenderer, AppServices.Platform.HomeDirectory)
+            .Sync(Environment.CurrentDirectory, roleFilter, global, force, mode),
+        "copilot" => new CopilotSync(AppServices.RoleLibrary, AppServices.RoleRenderer, AppServices.Platform.HomeDirectory)
+            .Sync(Environment.CurrentDirectory, roleFilter, global, force, mode),
+        _ => throw new ArgumentOutOfRangeException(nameof(harness), harness, "not in supportedHarnesses"),
+    };
+
+    // Multiple --only harnesses report as one combined result: each list is a simple concatenation
+    // (there is no overlap in the paths two different harnesses touch), and ProposedContent (DryRun
+    // only) merges by path since no two harnesses ever propose the same one.
+    private static SyncResult MergeResults(IEnumerable<SyncResult> results)
+    {
+        List<string> written = [];
+        List<string> skipped = [];
+        List<string> foreign = [];
+        Dictionary<string, string>? proposedContent = null;
+
+        foreach (SyncResult result in results)
+        {
+            written.AddRange(result.Written);
+            skipped.AddRange(result.Skipped);
+            foreign.AddRange(result.Foreign);
+            if (result.ProposedContent is null)
+                continue;
+
+            proposedContent ??= [];
+            foreach (KeyValuePair<string, string> entry in result.ProposedContent)
+                proposedContent[entry.Key] = entry.Value;
+        }
+
+        return new SyncResult(written, skipped, foreign, proposedContent);
     }
 
     private static int PrintWrite(SyncResult result)

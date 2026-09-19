@@ -5,13 +5,15 @@
 The team is split across harnesses: some on Claude (desktop app / Claude Code), some on Cursor, some on opencode only, some on Copilot CLI. Today the owner's agent roster (`~/.claude/agents/`: architect → builder(s) → blind code-reviewer ‖ ui-reviewer → tester) only works inside Claude Code, because delegation is Claude's `Agent` tool and the role prompts are Claude-format files. The goal is one tool that lets an "architect" in **any** host delegate a task to a builder/reviewer/tester running on **any other** harness and model (e.g. DeepSeek via opencode + OpenRouter), get back a normalized result, and keep the existing pipeline discipline (blind review, honest builder reports, fixed order).
 
 Owner decisions already taken:
-- Name/repo: **Claustrum** — https://github.com/orlodax/Claustrum.git (created 2026-09-12, empty). Local clone `D:\Claustrum` (WSL `/mnt/d/Claustrum`). Must work from Windows and WSL.
+- Name/repo: **Claustrum** — https://github.com/orlodax/Claustrum.git (created 2026-09-12, empty). Must work from Windows **and** Linux. (Until 2026-09-19 the Linux side was WSL over a shared `/mnt/d` view of the Windows clone; development is now native on both, each with its own clone. This changes how *we* build, not what Claustrum supports — running under WSL is still a first-class user scenario, see the path policy in §A4.)
 - Stack: **.NET 10**, **NativeAOT single binary** per OS, cross-platform Win/mac/Linux (AOT can't cross-compile across OS → CI matrix).
 - Usable from anywhere, not just IDEs: Claude desktop app, VS Code, Cursor, Claude Code CLI, opencode, Copilot CLI. Hence **two front doors over one core**: a CLI (`claustrum run …`) and a stdio **MCP server** (`claustrum mcp`) — the two hooks every host has.
 - Backends v1: `claude`, `opencode`, `cursor`, `copilot`, `api` (direct chat completion, no tools). Adding a backend must be trivial.
 - Scope v1: runner + role library + per-harness glue. Standalone pipeline orchestrator = phase 2 (sketched, not built).
 
 Machine facts (2026-09-12): .NET SDK 10.0.401 (Win) / 10.0.112 (WSL); `claude` 2.1.269 (Win, WSL sees it via PATH interop); `copilot` 1.0.63 (WSL `~/.local/bin`); **opencode and Cursor `agent` not installed**; no `OPENROUTER_API_KEY`/`DEEPSEEK_API_KEY` set anywhere. One GitHub project board exists (`NeuralVibez` #4, NeuralVibez-only) → Claustrum gets its own board.
+
+Machine facts update (2026-09-19): development moved off WSL to native Windows and native Linux, one clone each. Anything below that reads "WSL" as shorthand for "the Linux side" now means native Linux; the WSL-specific *product* behaviour (§A4 path policy, `doctor`'s `/mnt/` warning) is unaffected and still shipped.
 
 ## Architecture in one picture
 
@@ -92,7 +94,8 @@ Role injection & argv per backend (representative: builder, EditShell, deny `git
 Permission → flags:
 | Level | claude | opencode (inline `permission`) | cursor | copilot |
 |---|---|---|---|---|
-| ReadOnly | `--permission-mode plan --permission-prompts none` | `{"edit":"deny","bash":"deny"}` | `--mode ask` (no `-f`) | `--mode plan`, no `--allow-all-tools` (non-interactive plan mode UNCONFIRMED) |
+| ReadOnly | `--permission-mode plan --permission-prompts none` | `{"edit":"deny","bash":"deny"}` | `-f` + read-only prompt rule (was `--mode ask`; `-p` cannot answer an approval prompt — NOTES.md "The cursor backend") | `--mode plan`, no `--allow-all-tools` (non-interactive plan mode UNCONFIRMED) |
+| Shell (ui-reviewer: run it, never edit it) | `plan` + `--disallowedTools Edit,Write,NotebookEdit` (MCP tools stay reachable) | `{"edit":"deny","bash":{"*":"allow","<deny>*":"deny"}}` | `-f` + read-only prompt rule | `--allow-all-tools --deny-tool write` |
 | Edit | `acceptEdits` + `--disallowedTools Bash` | `{"edit":"allow","bash":"deny"}` | `-f` + prompt rule | `--allow-all-paths --allow-tool write` (tool names UNCONFIRMED) |
 | EditShell (builder/tester default) | `acceptEdits --allowedTools "Edit,Write,Read,Glob,Grep,Bash(*)"` + `--disallowedTools "Bash(<deny>*)"` | `{"edit":"allow","bash":{"*":"allow","git push*":"deny"}}` | `-f` + prompt rule | `--allow-all-tools --deny-tool 'shell(git push)'` |
 | Full | `--dangerously-skip-permissions` | `--auto` | `-f --sandbox disabled` | `--allow-all-tools --allow-all-paths` |
@@ -105,12 +108,12 @@ Where a backend has no native deny mechanism (cursor), the deny list is appended
 - Timeout/Ctrl+C → `process.Kill(entireProcessTree: true)`; status `Timeout`/`Cancelled`. Job Objects deferred (NOTES.md).
 - Env allow-list (`PATH HOME USERPROFILE APPDATA LOCALAPPDATA TEMP TMP SystemRoot ComSpec LANG SHELL TERM XDG_* *_API_KEY ANTHROPIC_* OPENROUTER_* OPENCODE_* CURSOR_* COPILOT_* GH_TOKEN GITHUB_TOKEN NODE_*`) + `--env`; `--env-passthrough all` disables filtering.
 - Job dir `~/.claustrum/jobs/<yyyyMMdd-HHmmss-4hex>/{request.json,system.md,stdout.log,stderr.log,result.json}` (`CLAUSTRUM_HOME` override).
-- **Path policy: Claustrum spawns backends on the OS it runs on.** Windows binary → Windows harnesses, WSL binary → Linux harnesses. Never translate `D:\` ↔ `/mnt/d`. `doctor` warns when a backend resolved from WSL is a `/mnt/c/...` Windows exe.
+- **Path policy: Claustrum spawns backends on the OS it runs on.** Windows binary → Windows harnesses, Linux binary → Linux harnesses. Never translate `D:\` ↔ `/mnt/d`. Under WSL — still a supported way to *run* Claustrum, even though it is no longer how we develop it — both worlds are visible at once, so `doctor` warns when a backend resolved from WSL is a `/mnt/c/...` Windows exe.
 
 ### A5. CLI surface (System.CommandLine 2.0.12)
 ```
 claustrum run <role> [--brief <text> | --brief-file <path>] [--cwd] [--backend] [--model <alias|id>] [--effort]
-              [--permission readonly|edit|edit+shell|full] [--deny <pattern>]* [--budget <usd>] [--timeout <sec>]
+              [--permission readonly|shell|edit|edit+shell|full] [--deny <pattern>]* [--budget <usd>] [--timeout <sec>]
               [--resume <session>] [--file <path>]* [--env K=V]* [--json] [--stream] [--raw]
 claustrum roles list|show <name>        claustrum backends list|doctor [name]
 claustrum jobs list [--last N]|show <id>|logs <id> [--stderr]
@@ -175,7 +178,7 @@ roles/<role>/parts/<part>.<harness>.md   e.g. delegation.claude.md, delegation.d
  "report":"builder","harnesses":["claude","opencode","cursor","copilot"],
  "nonNegotiable":["…2-4 lines restated in tier stubs…"]}
 ```
-code-reviewer: `blind:true`, `permission:"readonly"`, tiers high→`standard-coding`, xhigh/max→`frontier-coding`, `harnesses` includes `api`. ui-reviewer: `harnesses:["claude"]` in v1 (needs the Browser MCP). Model classes resolve through `claustrum.json.models` (A7), so one role file serves a Claude user and a DeepSeek-only user.
+code-reviewer: `blind:true`, `permission:"readonly"`, tiers high→`standard-coding`, xhigh/max→`frontier-coding`, `harnesses` includes `api`. ui-reviewer: `harnesses:["claude"]` in v1 (needs the Browser MCP), `permission:"shell"` — it starts a dev server and drives a browser but never edits, which is exactly the rung between readonly and edit+shell. Model classes resolve through `claustrum.json.models` (A7), so one role file serves a Claude user and a DeepSeek-only user.
 
 **Templating**: plain `{{token}}` replacement, no engine. Tokens: `{{harness}} {{role}} {{tier}} {{effort}} {{house_rules}} {{report_format}} {{part:<name>}}` (loads `parts/<name>.<harness>.md`, falls back to `.default.md`) and `{{delegate.<role>}}` (one-line invocation for the target harness). Unknown token = render error. `parts/delegation.default.md` carries the new rule: *"If the target backend is your own harness and it has native subagents, use them; otherwise call Claustrum — MCP `delegate` if the `claustrum` server is connected, else shell `claustrum run --json …`."*
 
@@ -265,10 +268,10 @@ Any value may be an alias from `claustrum.json.models`. Every `delegate`/`run` a
 ## Milestones (execution order)
 | M | Lands | Done when |
 |---|---|---|
-| **M0 scaffold** | clone, `global.json`, props, `Claustrum.slnx`, 3 projects + 2 test projects, `AGENTS.md`, `NOTES.md`, `ci.yml`, board + issues | `dotnet build` and `dotnet publish -p:PublishAot=true` succeed on Windows **and** WSL with zero trim warnings; `claustrum --version` runs |
+| **M0 scaffold** | clone, `global.json`, props, `Claustrum.slnx`, 3 projects + 2 test projects, `AGENTS.md`, `NOTES.md`, `ci.yml`, board + issues | `dotnet build` and `dotnet publish -p:PublishAot=true` succeed on Windows **and** Linux with zero trim warnings; `claustrum --version` runs |
 | **M1 core + claude** | A2 model, A7 config, ProcessRunner + BinaryLocator, WorktreeSnapshot, `claude` backend, `run`/`jobs`/`backends doctor`; roles: library format, `builder` + `code-reviewer` ported, renderer, report extractor, blind gate, `sync --only claude`, `.claude/skills/delegate` | argv/parser/golden unit tests green; `scripts/smoke.ps1` passes for `claude` on Windows; `claustrum run builder --backend claude` on a toy repo returns a parsed report and `hello.txt` in `changed_files` |
 | **M2 MCP + casts** | all MCP tools incl. `cast_questions`/`cast_create`, `.mcp.json` + `.vscode/mcp.json` merge, `tester` role, cast file + `cast` CLI verbs + `/claustrum` skill (claude), `--cast` on `run`/`delegate`, `sync --check/--dry-run` | from Claude Code with the MCP server connected: `/claustrum` interviews → writes `.claustrum/casts/default.json` → `delegate` builder → blind `delegate` code-reviewer completes hands-off using the cast; AOT publish still zero warnings |
-| **M3 backends + parallel** | `opencode`, `cursor`, `copilot`, `api` backends with recorded fixtures; their renderers + `/claustrum` skills; `ui-reviewer` (claude only); worktree isolation + `max_parallel` semaphore + tree budget; `init`, `doctor`, `sync --global` | `backends doctor` + `smoke.sh` green in WSL for every installed backend (copilot, opencode after install); 3 parallel builders on a toy repo land on 3 branches with no clobbering; `sync --global --only claude` reproduces the owner's five files with only header diffs; cursor validated by a teammate who has it |
+| **M3 backends + parallel** | `opencode`, `cursor`, `copilot`, `api` backends with recorded fixtures; their renderers + `/claustrum` skills; `ui-reviewer` (claude only); worktree isolation + `max_parallel` semaphore + tree budget; `init`, `doctor`, `sync --global` | `backends doctor` + `smoke.sh` green on Linux and `smoke.ps1` green on Windows for every installed backend (copilot, opencode after install); 3 parallel builders on a toy repo land on 3 branches with no clobbering; `sync --global --only claude` reproduces the owner's five files with only header diffs; cursor validated by a teammate who has it |
 | **M4 coordinate + release** | `architect` role (last — it issues the delegations), `coordinate --cast --issues` (spawned architect, `gh` issue import, `Closes #n`), `INSTALL.md`, `release.yml` (5 RIDs + checksums + tool package), tier stubs generated | `claustrum coordinate --cast default --issues <n>` on a toy repo runs architect(opus) → 2 deepseek builders → opus review → flash tester unattended and leaves a rebased branch; tagged `v0.1.0` installs via binary on both OSes and via `dotnet tool install -g claustrum`; a fresh clone + INSTALL.md lets a teammate `/claustrum` from two different hosts |
 
 Phase 2 (not built now): `claustrum pipeline pipeline.json` — stages architect(api) → builders[] (parallel, git worktrees) → reviewer → tester, each stage a `RunRequest`; the runner feeds the reviewer only task + `RunResult.diff` (blind by construction), gates on `status`/verdict, aggregates one report.
@@ -277,7 +280,7 @@ Phase 2 (not built now): `claustrum pipeline pipeline.json` — stages architect
 1. **Build gate** on both OSes: `dotnet test` and `dotnet publish -c Release -r <rid> -p:PublishAot=true` → zero IL2026/IL3050 warnings; binary size and startup (<50 ms) sanity.
 2. **Unit**: per-backend golden argv on both platforms (injected `IPlatform`); parsers against `tests/fixtures/<backend>/{success.json|jsonl, error.txt, timeout.txt}`; `WorktreeSnapshot` on a temp git repo; config layering; `BinaryLocator` with a fake `.cmd` shim; renderer golden files (5 roles × 4 harnesses + api); sync idempotency (render twice → no diff; hand-edit → `--check` exit 2; foreign keys in `.mcp.json` preserved); blind gate; report extraction edge cases.
 3. **Smoke** (`scripts/smoke.ps1` / `smoke.sh`): temp `git init` → for each backend `doctor` finds: `claustrum run builder --brief "create hello.txt containing hi" --json --cwd <tmp>` → assert `status=="success"` and `hello.txt ∈ changed_files`; table output; nonzero exit on any failure.
-4. **In-chat**: from this very session (Claude desktop, Code tab) with `claustrum mcp` registered in `.mcp.json`: `/claustrum` → answer the 7 questions → cast written → `delegate` a builder to `claude:sonnet`, then (after opencode install + `OPENROUTER_API_KEY`) to `cheap-coding`, then blind-review via `api`. From WSL: same via `copilot --agent architect`. Then the spoken-sentence test: *"use claustrum to coordinate issues #1 #2 with an opus architect, 2 deepseek-v4-pro builders, opus review, flash tester"* → `coordinate` runs unattended.
+4. **In-chat**: from this very session (Claude desktop, Code tab) with `claustrum mcp` registered in `.mcp.json`: `/claustrum` → answer the 7 questions → cast written → `delegate` a builder to `claude:sonnet`, then (after opencode install + `OPENROUTER_API_KEY`) to `cheap-coding`, then blind-review via `api`. From Linux: same via `copilot --agent architect`. Then the spoken-sentence test: *"use claustrum to coordinate issues #1 #2 with an opus architect, 2 deepseek-v4-pro builders, opus review, flash tester"* → `coordinate` runs unattended.
 4b. **Cast questionnaire parity**: `claustrum cast questions --json` output is byte-identical whether called from CLI, MCP, or the synced skill in each host; option lists shrink correctly when a backend is missing or unauthenticated.
 5. **Sync round-trip**: `claustrum sync --global --only claude --dry-run` against the owner's real `~/.claude/agents/` shows header-only diffs for the five roles and does not touch `mc-*.md`.
 

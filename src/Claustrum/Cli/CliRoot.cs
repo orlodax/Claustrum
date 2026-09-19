@@ -18,6 +18,7 @@ public static class CliRoot
             SyncCommand.Build(),
             CastCommands.Build(),
             McpCommand.Build(),
+            InitCommand.Build(),
         };
 
         Command splash = new("splash", "Show the terminal splash screen.") { Hidden = true };

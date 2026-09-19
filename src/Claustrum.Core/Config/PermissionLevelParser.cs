@@ -14,6 +14,9 @@ public static class PermissionLevelParser
             case "readonly":
                 level = PermissionLevel.ReadOnly;
                 return true;
+            case "shell":
+                level = PermissionLevel.Shell;
+                return true;
             case "edit":
                 level = PermissionLevel.Edit;
                 return true;
@@ -32,6 +35,7 @@ public static class PermissionLevelParser
     public static string ToConfigString(PermissionLevel level) => level switch
     {
         PermissionLevel.ReadOnly => "readonly",
+        PermissionLevel.Shell => "shell",
         PermissionLevel.Edit => "edit",
         PermissionLevel.EditShell => "edit+shell",
         PermissionLevel.Full => "full",

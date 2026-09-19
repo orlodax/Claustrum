@@ -116,6 +116,7 @@ public sealed class ClaudeBackendBuildTests
 
     [Theory]
     [InlineData(PermissionLevel.ReadOnly)]
+    [InlineData(PermissionLevel.Shell)]
     [InlineData(PermissionLevel.Edit)]
     [InlineData(PermissionLevel.EditShell)]
     [InlineData(PermissionLevel.Full)]
@@ -196,5 +197,27 @@ public sealed class ClaudeBackendBuildTests
         ProcessSpec spec = backend.Build(MakeRun(new PermissionPolicy(PermissionLevel.Full, [])));
 
         Assert.Equal("do the thing", spec.Args[^1]);
+    }
+
+    // The rung ui-reviewer needs: run the app, never change it. ReadOnly withholds the shell it uses
+    // to start a dev server; EditShell hands it write access its own role rules forbid (review
+    // finding). --disallowedTools names only the write built-ins, so a Browser MCP tool stays
+    // reachable — without one the role cannot do its job at all.
+    [Fact]
+    public void ShellKeepsPlanModeAndBlocksOnlyTheWriteTools()
+    {
+        ProcessSpec spec = backend.Build(MakeRun(new PermissionPolicy(PermissionLevel.Shell, [])));
+
+        Assert.Equal("plan", spec.Args[Array.IndexOf(spec.Args, "--permission-mode") + 1]);
+        Assert.Equal("Edit,Write,NotebookEdit", spec.Args[Array.IndexOf(spec.Args, "--disallowedTools") + 1]);
+        Assert.DoesNotContain("--allowedTools", spec.Args);
+    }
+
+    [Fact]
+    public void ShellStillAppliesTheRolesDenyPatternsToBash()
+    {
+        ProcessSpec spec = backend.Build(MakeRun(new PermissionPolicy(PermissionLevel.Shell, ["git push"])));
+
+        Assert.Contains("Bash(git push*)", spec.Args);
     }
 }

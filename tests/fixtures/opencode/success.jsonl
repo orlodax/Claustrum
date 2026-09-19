@@ -1,0 +1,5 @@
+{"type":"session.created","timestamp":1789730000000,"sessionID":"ses_fabricated00001"}
+{"type":"message.part.updated","timestamp":1789730000100,"sessionID":"ses_fabricated00001","part":{"id":"prt_1","messageID":"msg_1","sessionID":"ses_fabricated00001","type":"text","text":"No defects found. "}}
+{"type":"message.part.updated","timestamp":1789730000200,"sessionID":"ses_fabricated00001","part":{"id":"prt_1","messageID":"msg_1","sessionID":"ses_fabricated00001","type":"text","text":"No defects found. The change looks correct.\n\n```claustrum-report\n{\"status\":\"done\",\"findings\":[],\"would_change_if_broader\":[]}\n```"}}
+{"type":"message.part.updated","timestamp":1789730000300,"sessionID":"ses_fabricated00001","part":{"id":"prt_2","messageID":"msg_1","sessionID":"ses_fabricated00001","type":"step-finish","cost":0.00094,"tokens":{"input":1180,"output":88,"reasoning":0,"cache":{"read":0,"write":0}}}}
+{"type":"session.idle","timestamp":1789730000400,"sessionID":"ses_fabricated00001"}

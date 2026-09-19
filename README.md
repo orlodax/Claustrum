@@ -118,7 +118,8 @@ never overwritten.
 
 Adding a backend is one class implementing `IBackend` (detect, build argv, parse output) and one
 registry line. Claustrum launches backends on the OS it runs on — the Windows binary talks to
-Windows harnesses, the WSL binary to Linux ones; it never translates paths.
+Windows harnesses, the Linux binary to Linux ones; it never translates paths. Under WSL, where both
+worlds are visible at once, `backends doctor --probe` warns when the two disagree.
 
 ## Enforced, not requested
 

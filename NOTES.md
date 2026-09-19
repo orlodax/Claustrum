@@ -417,3 +417,389 @@ verification on a job that should have ended `backend_missing`: that probe put `
 hashed them. `JobManager.GetStatus`'s own mapping is not racy — a `Task` never goes `Faulted` →
 `RanToCompletion`. Not fixed here (it is M1 Core code, outside the M2 review's eleven findings); the
 fault shape is pinned by `JobManagerTests.AJobWhoseWorktreeSnapshotCannotRunReportsFailedAndRethrows…`.
+
+## Worktree isolation for max_parallel builders (2026-09-18, issue #4/M3)
+
+`docs/PLAN.md` §D4 needs two things a job with `max_parallel > 1` doesn't otherwise get: its own git
+working directory, and a cap on how many run at once. Both are cross-process concerns — a spawned
+architect fans builders out as separate `claustrum run` CLI processes (docs/PLAN.md §D3), not as
+calls inside one long-lived server — so neither could be an in-memory data structure scoped to a
+single `JobManager` instance the way a naive "per-cast semaphore" reading might suggest.
+
+- **Isolation**: `JobWorktree.AddAsync` (`Core/Git/JobWorktree.cs`) runs `git worktree add
+  .claustrum/worktrees/<job> -b claustrum/<job>` against the *request's* cwd, built on a new
+  `GitProcess` helper extracted from `WorktreeSnapshot`'s private git runner so the stdin-close and
+  30s-timeout fixes above are not re-risked at this second call site. `RemoveAsync` deletes the
+  working directory only (`git worktree remove --force`); the branch survives for the architect to
+  rebase from, per §D4's own wording — nothing yet calls `RemoveAsync` (that is `claustrum jobs
+  clean`, not built in this slice).
+- **Concurrency cap**: `RoleConcurrencyGate` (`Core/Jobs/RoleConcurrencyGate.cs`) is `maxParallel`
+  numbered lock files under `.claustrum/locks/<role>.<n>.lock`, each held open with `FileShare.None`
+  for the lifetime of one run; a caller that finds every slot taken polls every 50ms. This works
+  identically whether every caller is one process's `JobManager` or N separate CLI invocations,
+  because the OS — not the caller's process — is what's actually serializing the opens. The lock
+  files are deliberately never deleted: unlinking one while a second process races to reopen the same
+  path would let that process's lock land on an orphaned inode while a third process opens a *new*
+  file at the same path and takes the "same" slot, double-booking it. Left in place, the files are a
+  few bytes each and the exclusivity check keeps meaning what it says for the life of the repo.
+- **Wiring**: `DelegateEngine.RunAsync` only takes this path when `DelegateRequest.MaxParallel > 1`
+  (threaded from `CastRoleEntry.MaxParallel`, i.e. a cast's `"max_parallel"` — docs/PLAN.md §D1's
+  example). Config, tier, and harness resolution still read the request's original cwd; only the
+  `RunRequest` that actually reaches `Runner`/`ProcessRunner`/`WorktreeSnapshot` gets the worktree
+  path, so `changed_files`/`diff` are computed inside it as §D4 specifies. The gate is keyed on role
+  name alone, not role+cast: nothing in the acceptance criteria (3 parallel builders, no clobbering)
+  needed per-cast pools, and adding that axis now would be untested surface. `RunResult.Worktree`/
+  `Branch` are additive nullable fields (`schema_version` stays `"1"`), populated only on this path.
+
+Not done in this slice: the questionnaire (`cast_questions`/`cast new`) does not yet ask for
+`max_parallel` — a cast file has to set it by hand today. `budget_usd` enforcement across a job tree
+(§D4's second sentence) also waits for `coordinate` to exist (M4/issue #5); only the per-job cast
+budget already wired in M2 is in scope here.
+
+Verified end-to-end (2026-09-18): three `claustrum run builder --cast default` CLI processes started
+concurrently against a real `claude` backend and a toy repo with `"max_parallel": 3` landed on three
+distinct branches/worktrees, each `status: success` with its own single-file `changed_files` entry,
+and the main checkout was untouched throughout — the exact §D4/M3 "done when" scenario.
+
+## The api backend (2026-09-18, issue #4/M3)
+
+`curl` is the process this backend actually spawns — no HTTP client SDK, no extra dependency, and it
+fits `IBackend.Build -> ProcessSpec` (Core/Backends/Api/ApiBackend.cs) without any change to Core's
+architecture. Two things drove the shape:
+
+- **No tools at all** (docs/PLAN.md §A3): unlike every other backend, `api` cannot edit files or run
+  shell commands — it is a single chat completion. That is why only text-report roles list it in
+  `harnesses` (code-reviewer already did; builder/tester/ui-reviewer never will), and why `Build`
+  ignores `Permission`/`Deny` entirely — there is nothing to gate.
+- **Model spec is `api:<provider>:<model-id>`**, e.g. `api:openrouter:deepseek/deepseek-v4-pro` or
+  `api:anthropic:claude-opus-4-5`. `Config.SplitBackendModel` only strips the *first* colon, so the
+  provider segment survives inside `ResolvedRole.Model` for `Build` to split again. Passing
+  `--backend api` and `--model openrouter:...` as two *separate* flags does **not** work the same
+  way: `Config.Resolve` always runs the alias/backend split on the raw `--model` value regardless of
+  `--backend`, so `openrouter:` would be consumed as if it were a (wrong) backend name and lost.
+  Verified this end to end with the real CLI (2026-09-18): the two-flag form silently drops the
+  provider prefix and `Build` throws "got 'deepseek/deepseek-v4-pro'"; the single combined
+  `--model api:openrouter:deepseek/deepseek-v4-pro` form resolves and reaches `Build` correctly.
+
+The request body and the `Authorization`/`x-api-key` header go into two temp files under
+`run.JobDirectory` (`-d @file`, curl's `-K`/`--config` for headers) instead of argv, so neither the
+API key nor a possibly-large brief shows up in `ps`; both are in `ProcessSpec.TempFiles`, so
+`Runner`'s existing `finally` deletes them regardless of outcome. `--fail-with-body` makes curl exit
+nonzero on an HTTP error while still returning the body on stdout, so `Parse` can extract the
+provider's own error message either way.
+
+Fixtures (`tests/fixtures/api/`) are fabricated from OpenRouter's and Anthropic's published response
+shapes, not recorded from a live call — this environment has no `OPENROUTER_API_KEY`/
+`ANTHROPIC_API_KEY` to test against, so, like opencode/cursor/copilot, this backend is best-effort
+until validated against a real account (docs/PLAN.md's own M3 UNCONFIRMED list).
+
+## The opencode backend (2026-09-18, issue #4/M3)
+
+Verified against a real `opencode-ai` 1.18.31 install (`npm install -g opencode-ai`, available in this
+sandbox — unlike Cursor/Copilot's CLIs it installs cleanly with no account). No working provider
+credential was available (no `ANTHROPIC_API_KEY`/`OPENROUTER_API_KEY` reachable from here), so a
+genuine successful run could not be recorded, but everything short of that was confirmed live:
+
+- **`OPENCODE_CONFIG_CONTENT`** (JSON, `{"agent":{"<name>":{"mode":"primary","prompt":"{file:<path>}"}}}`)
+  really exists and is read by the binary, `{file:...}` substitution included — grepped straight out
+  of the installed executable's own source strings, not just inferred from docs.
+- **`OPENCODE_PERMISSION`** is a *separate*, simpler env var for the permission JSON — confirmed live
+  the same way. The original plan guessed permission had to live nested inside
+  `OPENCODE_CONFIG_CONTENT`; the real binary reads it standalone, which is what `OpencodeBackend.Build`
+  now does (`OpencodeBackend.cs`).
+- **`--variant`** (not guessed anywhere in the original plan) is opencode's reasoning-effort flag —
+  found via `opencode run --help`, now carrying `ResolvedRole.Effort` the way `--effort`/`--variant`
+  do for claude/copilot.
+- **`run --format json`** emits one JSON object per line, each with `type` and `sessionID`. A real
+  `type:"error"` event was captured (`tests/fixtures/opencode/error.jsonl` — genuine, not fabricated)
+  by pointing `run` at a real agent/config with no reachable model; the process exited 1, consistent
+  with claude/api's own exit-code-driven `IsError`, so `Parse` did not need special-casing there.
+  End-to-end verified too: a real `claustrum run builder --backend opencode` against this same
+  failure mode produced a correct `status:"failed"` RunResult with `error`/`session_id` pulled straight
+  out of that JSON event.
+- **Not independently confirmed**: the shape of a *successful* run's events. `message.part.updated`
+  and `step-finish` are real event/part-type strings found in the binary (opencode's public SDK
+  documents a part union including `text`/`step-finish`, and `step-finish` carries `cost`/`tokens`),
+  but no live success was captured to pin the exact field layout — `success.jsonl` is built from that
+  published shape, flagged the same way `tests/fixtures/api/`'s fixtures are. `Parse` treats a
+  repeated `message.part.updated` for the same part id as a full-state replacement, not an append,
+  because a *separate* `message.part.delta` event name also exists in the binary for incremental
+  chunks — if that assumption is wrong, this is the first place to look.
+
+Cursor's own CLI could not be probed the same way: the `cursor-agent` npm package is an unrelated
+third-party tool ("Task sequence creator for Cursor AI agents"), not Cursor's real CLI, which ships as
+a standalone installer script rather than an npm package — installing and then discarding it here so
+it doesn't get mistaken for the real thing later. Cursor stays fixture-only per the original plan
+("cursor validated by a teammate who has it").
+
+## The copilot backend (2026-09-18, issue #4/M3)
+
+Verified against a real `@github/copilot` 1.0.86 install (`npm install -g @github/copilot`). No
+GitHub Copilot subscription token was reachable from here — the sandbox's own repo-scoped
+`GITHUB_TOKEN` is a narrower credential meant for something else and was deliberately not pressed
+into this instead — so, unlike opencode, not even an authenticated *error* shape could be recorded,
+only the pre-auth failure path. Still a large upgrade over the original plan's guesses:
+
+- **`-C`, `--agent`, `--output-format json` (JSONL), `--mode` (`interactive|plan|autopilot`),
+  `--reasoning-effort`** (not `--effort`; `high`/`xhigh`/`max` are valid values there, a lucky exact
+  match with Claustrum's own tier names) **all confirmed live** via `copilot --help`.
+- **`--add-dir <dir>` "loads that directory's `.github/skills` and `.github/agents` as trusted
+  configuration"** — confirmed live, and a real, cwd-relative mechanism rather than the `COPILOT_HOME`
+  relocation the original plan guessed (`copilot help environment` confirms `COPILOT_HOME` only
+  relocates config/state, nothing about `agents/`). `CopilotBackend.Build` writes
+  `<job>/copilot-agents/.github/agents/claustrum-<role>.agent.md` and passes `--add-dir
+  <job>/copilot-agents`, so the target repo itself never needs a Claustrum file committed into it.
+- **`--allow-tool`/`--deny-tool` with `shell(...)`/`write` tool names** confirmed live from `copilot
+  --help`'s own examples (`--allow-tool='shell(git:*)' --deny-tool='shell(git push)'`,
+  `--allow-tool='write'`). **`--allow-all`** (equivalent to `--allow-all-tools --allow-all-paths
+  --allow-all-urls`) is a real single flag, used for Full instead of the two-flag combination the
+  original plan guessed.
+- **Deliberate deviation from docs/PLAN.md §A3's ReadOnly/Edit rows**: `--help` states
+  `--allow-all-tools` is "required for non-interactive mode", so a mapping that omits it (as those two
+  rows originally did) risks `-p` hanging on a confirmation prompt nothing can ever answer headlessly
+  — a real, well-documented risk, not a hypothetical one. `PermissionArgs` instead grants broadly with
+  `--allow-all-tools`/`--allow-all-paths` at every level and narrows with `--deny-tool`, the same
+  allow-broad-deny-narrow shape `ClaudeBackend`'s own EditShell mapping already uses, and relies on
+  `--mode plan` (not tool denial) to keep ReadOnly's *effect* read-only.
+- **Confirmed live, and load-bearing for `Parse`**: an unauthenticated/fatal-startup failure prints a
+  human-readable message to stderr with **empty stdout**, exit code 1 — not a JSON error object the
+  way opencode's own startup failures are (`tests/fixtures/copilot/auth-failure-stderr.txt`, a genuine
+  capture). End-to-end verified too: a real `claustrum run builder --backend copilot` against this
+  same failure reached a correct `status:"failed"` RunResult with that exact message as `error`.
+- **Not confirmed at all**: the JSONL shape of a *successful* run, or the `.agent.md` frontmatter
+  schema — no authenticated session was reachable, and unlike opencode's binary, `@github/copilot`'s
+  is stripped (no useful event-name strings to recover). `Parse` therefore tries several plausible key
+  names (`content`/`text`, nested under `message`; `input_tokens`/`prompt_tokens` and their `output`
+  counterparts for usage) rather than committing to one guessed shape, and always keeps the raw JSON
+  in `Raw` so a real failure here is diagnosable rather than silently wrong. `success.jsonl` and the
+  `.agent.md` frontmatter are both flagged best-effort, same as the other M3 backends.
+
+## The cursor backend (2026-09-18, issue #4/M3): fixture-only, as the plan already expected
+
+Unlike opencode/copilot, Cursor's real CLI could not be installed here at all — it ships as a
+standalone installer script (`curl https://cursor.com/install -fsS | bash`), not an npm package, and
+this environment's network policy plus the lack of a Cursor account make that install unverifiable
+either way. `CursorBackend.cs` implements docs/PLAN.md §A3's cursor row exactly as written — binary
+name `cursor-agent`, prompt-prefix injection (no system-prompt hook, so the rendered role body is
+prefixed onto the brief with `# Task`), the deny list turned into a `## Hard rules` prompt section
+(cursor has no native per-command deny flag), and the `-p --output-format json ... --workspace <cwd>`
+argv/permission table — with zero live confirmation. `tests/fixtures/cursor/*.json` are fabricated
+from the plan's own guessed field names (`result`/`session_id`/`usage`/`is_error`). This is the one
+M3 backend that stays exactly as unconfirmed as the original plan already flagged it
+("cursor validated by a teammate who has it") — nothing here upgrades that status.
+
+One deliberate deviation from the plan's table landed in review: ReadOnly passes `-f` rather than
+`--mode ask`, and states the no-edit rule in the prompt instead. See "M3 review fixes" below for
+why, and treat it as the first thing the teammate validation should check.
+
+## OpencodeSync: agent + command files, verified against a real install (2026-09-18, issue #4/M3)
+
+opencode ships its own first-party "Customizing opencode" reference doc *inside the binary itself*
+(readable with `strings` on the unstripped executable — see NOTES.md "The opencode backend" for how
+that binary was obtained) — an authoritative source better than public docs for exactly this kind of
+detail, and it settled several things the original plan only guessed at:
+
+- **Commands, not skills, are the slash-command mechanism.** opencode has both `.opencode/skill(s)/
+  <name>/SKILL.md` (auto-surfaced reference material the model may or may not read, matching Claude
+  Code's own skill semantics) and `.opencode/command/<name>.md` (a literal `/name` slash command,
+  frontmatter `description`/`agent`/`model`/`variant` + a body template with `$ARGUMENTS`). Only the
+  second one makes `/claustrum` an actual typeable command, so `OpencodeSync.WriteCommand` writes
+  `.opencode/command/claustrum.md`, reusing the exact same shared body
+  (`roles/_shared/claustrum-skill.md`) ClaudeSync's own `SKILL.md` uses — the interview and
+  delegation steps are harness-neutral by construction.
+- **Project agents**: `.opencode/agent/<name>.md` (or `.opencode/agents/`), global:
+  `~/.config/opencode/agent(s)/<name>.md` (NOT `~/.opencode/`). Allowed frontmatter fields:
+  `name, model, variant, description, mode, hidden, color, steps, options, permission, disable,
+  temperature, top_p`; the file body becomes the agent's prompt. `model` always carries a provider
+  prefix (`"provider/model-id"`), confirmed by the same doc's own shape notes.
+- **Verified live, not just read**: synced `.opencode/agent/builder.md` (+ `-xhigh`/`-max` stubs) and
+  `.opencode/command/claustrum.md` were written into a real temp repo, then `opencode agent list`
+  (against the real opencode-ai 1.18.31 install) printed `builder (subagent)`, `builder-xhigh
+  (subagent)`, `builder-max (subagent)` — proof the frontmatter shape is genuinely accepted by
+  opencode's own strict config validation ("opencode hard-fails on invalid config"), not just
+  plausible-looking. The command file could not be verified the same way (no `commands list`
+  equivalent was found), so it rests on the same authoritative source, one notch less confirmed than
+  the agent files.
+- **One inference, not directly confirmed**: the doc's condensed examples never show `---` YAML
+  frontmatter delimiters (just `key: value` lines running straight into the body), which is almost
+  certainly the doc's own formatting shorthand rather than the real file syntax — `---`-delimited
+  frontmatter is what every other tool here uses (Claude Code's own agent files included) and is what
+  `WriteAgent`/`WriteCommand` emit. If a real sync round-trip ever shows opencode misparsing the
+  frontmatter, this is the first place to check.
+- **Model class -> concrete id mapping** (`OpencodeModelFor`) only uses the two model ids
+  docs/PLAN.md itself ever actually names (`openrouter/deepseek/deepseek-v4-pro` and `-flash`) rather
+  than inventing a third, unconfirmed id for `standard-coding`.
+- **Deliberately out of scope**: registering the claustrum MCP server in `opencode.json`'s own `mcp`
+  key (opencode has one, confirmed live in the same reference doc) — that merge needs the same
+  idempotency/foreign-key care `McpConfigSync` gave `.mcp.json`, and deserves its own dedicated pass
+  rather than being bolted onto this one.
+- **Duplication accepted for now**: `OpencodeSync`'s marker/idempotency machinery
+  (`WriteGenerated`/`ComputeSha256`/`HasMarker`/manifest-free by design) is a near-duplicate of
+  `ClaudeSync`'s own. With only two concrete Sync classes so far the right shared shape isn't obvious
+  yet (`ClaudeSync`'s five-out-parameter methods are already a smell) — extracting it now would be
+  guessing from two data points; the plan is to do that once Cursor/CopilotSync exist too.
+
+## CopilotSync: agent + skill files, verified against a real install (2026-09-18, issue #4/M3)
+
+`.github/agents/<role>.agent.md` (+ tier stubs) and `.github/skills/claustrum/SKILL.md`, checked
+against the same real `@github/copilot` 1.0.86 install as the copilot backend.
+
+- **No slash-command mechanism exists in Copilot CLI** (confirmed by its full `--help`: no `command`
+  subcommand, nothing resembling opencode's `.opencode/command/`). Its only reusable-instruction
+  mechanism is skills (`copilot skill list`/`add`/`enable`), which are auto-surfaced by relevance —
+  "Use when the user mentions..." is the *built-in* skills' own phrasing — not typed as `/name`. So
+  unlike Claude Code and opencode, `/claustrum` cannot be made a literal typeable command on this
+  harness; `CopilotSync.WriteSkill`'s description front-loads trigger phrasing instead, and this is a
+  real, confirmed limitation of the harness, not a gap in the implementation.
+- **Verified live**: a real `.github/skills/claustrum/SKILL.md` (`---`-delimited `name`/`description`
+  frontmatter, same shared body as every other harness's own `/claustrum`) was written into a temp
+  repo and `copilot skill list` printed it under "Project skills" with its exact description — no
+  authentication needed for this check, and it round-tripped byte-for-byte. This is the single
+  strongest live confirmation across all four non-claude backends/syncs, because it uses the *exact*
+  file this code writes, not an analogous probe.
+- **`.github/agents/*.agent.md` frontmatter stayed unconfirmed** (same caveat as the copilot backend's
+  own ephemeral agent files) — no authenticated session was reachable to check whether Copilot
+  actually loads a persisted project agent file the way `--add-dir`'s help text implies. `model: auto`
+  is used for every role/tier (`copilot --help`'s own "use 'auto' to let Copilot pick automatically"):
+  only one real model id (`gpt-5.4`, from a --help example) was ever confirmed, nowhere near enough to
+  build a tier catalog, so no id was invented the way ClaudeSync's/OpencodeSync's model mappings are.
+- Personal/global skill location (`~/.copilot/skills/`) is directly confirmed by `copilot skill
+  --help`'s own text; the personal *agent* location (`~/.copilot/agents/`, used for `--global`) is an
+  unconfirmed extrapolation from that same convention.
+
+`sync --only claude,opencode,copilot` (any comma-combination) all work through the same
+`SyncCommand.MergeResults`; cursor still has no Sync class (fixture-only backend, matches NOTES.md
+"The cursor backend").
+
+## claustrum init (2026-09-18, issue #4/M3)
+
+docs/PLAN.md §A5/§D5's `init` verb: scaffolds `.claustrum/{casts,briefs,worktrees}`, writes
+`claustrum.json` with the two model aliases the plan itself names (`frontier-coding -> claude:opus`,
+`cheap-coding -> opencode:openrouter/deepseek/deepseek-v4-flash`) if one doesn't already exist, appends
+`.claustrum/worktrees/`/`.claustrum/briefs/` to `.gitignore`, syncs the harnesses this repo already
+uses (or every supported one with `--all`), and appends a short pointer to an existing `AGENTS.md` —
+never creating one, and never touching `CLAUDE.md` at all, exactly as specified.
+
+- `claustrum.json` is built by hand with `Utf8JsonWriter` rather than serialized through
+  `ClaustrumJsonContext.Default.ConfigDocument`: that shared context also emits `RunResult`'s
+  machine-readable `--json` one-liner, whose explicit `null` fields (e.g. `"error":null`) are part of
+  the documented output shape, so serializing the *whole* `ConfigDocument` through it would litter
+  this hand-editable config file with `"roles": null, "backends": null, ...` for every field `init`
+  doesn't set.
+- **"claude" is always synced**, `--all` or not, even in a repo with no `.claude/` directory: it's the
+  only harness whose `Sync` also merges the `claustrum` MCP server into `.mcp.json`/`.vscode/mcp.json`
+  (`McpConfigSync` is `internal` to `Claustrum.Roles`, wired only through `ClaudeSync.Sync` — see
+  `OpencodeSync`'s own doc comment on why that merge wasn't generalized in this pass), and its agent
+  files are harmless to have even in a repo that hasn't adopted Claude Code. opencode/copilot are
+  detected from `opencode.json`/`.opencode/` and `.github/` respectively; cursor is detected
+  (`.cursor/`) but only reported, never synced (no `CursorSync` exists).
+- Idempotent by construction, same as `sync` itself: reruns skip an existing `claustrum.json`, skip a
+  `.gitignore` that already has the entries, skip an `AGENTS.md` that already has the pointer
+  (checked by the `## Claustrum delegation` heading), and each harness's own `Sync` already handles
+  its own marker-based idempotency.
+- Verified live end to end (not just unit-tested): ran against a real temp repo with a hand-written
+  `AGENTS.md` and a `.github/` directory — correctly detected and synced claude+copilot, wrote a clean
+  two-key `claustrum.json`, appended the AGENTS.md pointer once, and a second `init` run reported
+  everything already up to date with zero new writes.
+
+## doctor --probe (2026-09-18, issue #4/M3): auth/mcp/os checks, the real probe call deferred
+
+docs/PLAN.md §B6 lists five checks: `binary` · `auth` · `probe` · `mcp` · `os`. Bare `doctor` already
+covered `binary` (M1) and the merged-config dump; `--probe` now adds three of the remaining four:
+
+- **`auth`**: env-var presence only ("value never printed" — only presence is reported), using this
+  repo's own already-confirmed variable names (`EnvAllowList.cs`'s prefixes, and copilot's documented
+  `COPILOT_GITHUB_TOKEN`/`GH_TOKEN`/`GITHUB_TOKEN` precedence from NOTES.md "The copilot backend").
+  Deliberately does **not** check any backend's login-file path: none of the four backends' actual
+  credential-storage location was independently confirmed during this work (opencode's and copilot's
+  own CLI *behavior* was verified live, not where they cache a token) and a wrong guess would report
+  "not set" for someone who is, in fact, logged in — worse than not checking at all.
+- **`mcp`**: reads `.mcp.json`/`.vscode/mcp.json` (JSONC-tolerant, same `CommentHandling.Skip` +
+  `AllowTrailingCommas` McpConfigSync's own `ParseExisting` uses) and reports whether each registers
+  a `claustrum` entry — read-only, `sync` remains the only thing that writes these files.
+- **`os`**: generalizes the plan's own example ("warns when a backend resolved from WSL is a
+  `/mnt/c/...` Windows exe") to any binary-path/cwd mismatch across the `/mnt/` boundary.
+- **`probe` itself — the actual "1-token reply OK, cost shown" round trip — is not implemented.**
+  It needs a real, authenticated call against whichever backend is being checked, which (a) this
+  environment cannot exercise for any of the five backends (no working credential for any provider
+  was available anywhere in this session) and (b) genuinely spends the user's own money/quota, which
+  is not something to wire up speculatively and leave untested. Left as a known, named gap rather than
+  a fabricated "always succeeds" or "always fails" placeholder.
+
+## M3 review fixes (2026-09-19, issue #4/M3)
+
+Fifteen findings from the review of PR #8, plus the red Windows CI leg. The four that changed a
+documented decision rather than just the code:
+
+**`dotnet format` needs `end_of_line` spelled out, or Windows disagrees with `.gitattributes`.**
+`.gitattributes` says `* text=auto eol=lf`, so every checkout is LF — but `.editorconfig` said
+nothing about line endings, and `dotnet format` then takes the *platform* default. On
+windows-latest that is CRLF, so the formatter rewrites the endings of any line it normalises and
+`--verify-no-changes` fails. It only ever surfaced on four lines (`RunResult.cs`'s new record
+parameters, where comment trivia inside a parameter list makes the formatter rewrite that region);
+every other line was left alone, which is why ubuntu stayed green and this looked like a
+content problem rather than a settings one. `[*] end_of_line = lf` (plus `crlf` for `*.ps1`/`*.cmd`,
+mirroring `.gitattributes`) is the fix. Measured on SDK 10.0.401, run 35365332033.
+
+**A `shell` permission level now exists, between `readonly` and `edit`.** `ui-reviewer` shipped as
+`edit+shell` while its own ROLE.md says "You never modify code" — not carelessness: `readonly` maps
+to Claude's `--allowedTools Read,Glob,Grep,Bash(git …)`, an allow-list that also shuts out the
+Browser MCP tool the role requires and any dev-server command, so the role was unusable at that
+level and `edit+shell` was the only rung left. The missing rung is "read the tree, run commands,
+change nothing": `plan` mode plus `--disallowedTools Edit,Write,NotebookEdit`, which leaves MCP
+tools reachable because it names only built-ins. Mapped for all four backends; docs/PLAN.md §A3's
+permission table and §A5's `--permission` grammar updated with it.
+
+**cursor's ReadOnly no longer uses `--mode ask`.** docs/PLAN.md §A3's cursor column says
+`--mode ask` (no `-f`), but `-p` is headless and ProcessRunner closes the child's stdin, so an
+approval prompt is a guaranteed stall until `--timeout` kills the run — and readonly is the level
+the most likely cursor role (code-reviewer) uses. Same deviation, for the same reason, as the one
+`CopilotBackend` already documents for its own row. Nothing is given up: cursor has no native deny
+mechanism at *any* level, which is why the plan already routes its deny list through the prompt and
+has `doctor` mark it advisory — so the read-only rule goes there too. Still unverified against a
+real `cursor-agent`; it remains the one backend awaiting a teammate's validation.
+
+**A worktree left by a run that never finished used to be uncleanable.** `DelegateEngine` created
+the worktree and branch before `Runner`'s own gates ran (`ValidateTimeout`, the blind gate), and
+nothing removed them when the run never reached a `result.json` — which is precisely the signal
+`jobs clean` waits for, so the orphan was permanent and its `claustrum/<job>` branch accumulated.
+Two halves to the fix: the isolated path now undoes its own worktree *and branch* on any failure
+(`JobWorktree.TryRemoveAbandonedAsync`), and `jobs clean` additionally treats a worktree whose job
+directory is gone entirely as cleanable — the hard-kill case the first half cannot cover. `clean`
+also no longer aborts the whole sweep on the first directory git refuses to remove.
+
+Smaller, each with a regression test: opencode's own `type:"error"` event now marks the run failed
+regardless of exit code; the `api` backend's curl config (which holds the API key in clear text) is
+created owner-only and curl is spawned with `-q` so `~/.curlrc` cannot redirect the response;
+`claustrum init` ignores `.claustrum/locks/` as well as `worktrees/`, and adds only the lines an
+older `.gitignore` is missing; job ids carry 32 bits of entropy and claim their directory with an
+atomic `CreateNew`, since M3 is the first thing to create them concurrently; `RoleConcurrencyGate`
+keys its slot pool per cast (§D4 says per cast, not per role) and gives up with a named
+`TimeoutException` instead of polling forever; `cursor` refuses an over-long prompt by name rather
+than failing inside `execve`; the cast questionnaire finally asks for `max_parallel`, which had no
+way in short of hand-editing the cast JSON; `## Access` is in the shared `/claustrum` skill, so the
+brief ui-reviewer is told to read can actually be written; and ClaudeSync/OpencodeSync/CopilotSync's
+three verbatim copies of the marker machinery are now one `SyncWriter` + `SyncAccumulator` — the
+extraction OpencodeSync's own comment deferred until "CopilotSync exists too".
+
+## Development moved off WSL to native Windows + native Linux (2026-09-19)
+
+Until now the Linux half of "must work on Windows and Linux" was WSL, over a `/mnt/d` view of the
+same Windows clone — hence `AGENTS.md`'s separate-output-tree flag (one `obj/` reached from two path
+styles) and a scattering of acceptance criteria phrased as "green in WSL". Both OSes now have their
+own native clone, which is also what CI has always actually run (`windows-latest` + `ubuntu-latest`),
+so the criteria and the build notes were saying something narrower than the gate they stand for.
+
+Realigned: `docs/PLAN.md`'s owner decisions, machine facts, M0 and M3 acceptance rows, `AGENTS.md`'s
+build section, and issues #4/#10. "Green in WSL for every installed backend" became "`smoke.sh` green
+on Linux and `smoke.ps1` green on Windows" — the same bar, stated as the two platforms rather than
+one person's route to one of them.
+
+**What did NOT change, and must not be mistaken for stale:** WSL remains a first-class way to *run*
+Claustrum, and everything that exists for those users stays exactly as it is — the §A4 path policy
+(never translate `D:\` ↔ `/mnt/d`; a Windows binary spawns Windows harnesses, a Linux binary spawns
+Linux ones), `doctor --probe`'s `os` check warning when a backend resolved under WSL is a `/mnt/c/…`
+Windows exe, and the path-separator-agnostic assertions in ConfigTests/McpConfigSyncTests. The
+measured WSL datapoints in this file (the 2.6s git-stdin timing, the sync-manifest portability
+finding) are dated observations and stay as written. The change is about how *we* build, not about
+what Claustrum supports.

@@ -1,4 +1,7 @@
 using System.Diagnostics;
+using System.Text.Json;
+using Claustrum.Cli;
+using Claustrum.Tests.Testing;
 
 namespace Claustrum.Tests.Cli;
 
@@ -17,8 +20,10 @@ public sealed class CliEndToEndTests : IDisposable
 
     public void Dispose()
     {
-        Directory.Delete(cwd, recursive: true);
-        Directory.Delete(home, recursive: true);
+        // cwd holds a real git repo in several of these: git's read-only loose objects defeat a
+        // plain recursive delete on Windows.
+        TempTree.Delete(cwd);
+        TempTree.Delete(home);
     }
 
     [Fact]
@@ -66,6 +71,49 @@ public sealed class CliEndToEndTests : IDisposable
         Assert.Equal(Ok, exitCode);
         Assert.Contains("--- /dev/null", stdout, StringComparison.Ordinal);
         Assert.Contains("+++ b/", stdout, StringComparison.Ordinal);
+        Assert.False(Directory.Exists(Path.Combine(cwd, ".claude")));
+    }
+
+    [Fact]
+    public async Task SyncOnlyOpencodeWritesOpencodeFilesNotClaudeAsync()
+    {
+        (int exitCode, _, _) = await RunAsync("sync", "--only", "opencode", "--roles", "builder");
+
+        Assert.Equal(Ok, exitCode);
+        Assert.True(File.Exists(Path.Combine(cwd, ".opencode", "agent", "builder.md")));
+        Assert.True(File.Exists(Path.Combine(cwd, ".opencode", "command", "claustrum.md")));
+        Assert.False(Directory.Exists(Path.Combine(cwd, ".claude")));
+    }
+
+    [Fact]
+    public async Task SyncOnlyCopilotWritesGithubFilesAsync()
+    {
+        (int exitCode, _, _) = await RunAsync("sync", "--only", "copilot", "--roles", "builder");
+
+        Assert.Equal(Ok, exitCode);
+        Assert.True(File.Exists(Path.Combine(cwd, ".github", "agents", "builder.agent.md")));
+        Assert.True(File.Exists(Path.Combine(cwd, ".github", "skills", "claustrum", "SKILL.md")));
+        Assert.False(Directory.Exists(Path.Combine(cwd, ".claude")));
+    }
+
+    [Fact]
+    public async Task SyncOnlyClaudeAndOpencodeWritesBothAsync()
+    {
+        (int exitCode, string stdout, _) = await RunAsync("sync", "--only", "claude,opencode", "--roles", "builder");
+
+        Assert.Equal(Ok, exitCode);
+        Assert.True(File.Exists(Path.Combine(cwd, ".claude", "agents", "builder.md")));
+        Assert.True(File.Exists(Path.Combine(cwd, ".opencode", "agent", "builder.md")));
+        Assert.Contains("written:", stdout, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task SyncOnlyUnsupportedHarnessExitsTwoNamingItAsync()
+    {
+        (int exitCode, _, string stderr) = await RunAsync("sync", "--only", "cursor");
+
+        Assert.Equal(Usage, exitCode);
+        Assert.Contains("cursor", stderr, StringComparison.Ordinal);
         Assert.False(Directory.Exists(Path.Combine(cwd, ".claude")));
     }
 
@@ -194,6 +242,352 @@ public sealed class CliEndToEndTests : IDisposable
         Assert.Equal(Usage, exitCode);
         Assert.Contains("blind", stderr, StringComparison.OrdinalIgnoreCase);
         Assert.False(Directory.Exists(Path.Combine(home, "jobs")));
+    }
+
+    // docs/PLAN.md §D4 "claustrum jobs clean removes worktrees of finished jobs". backend
+    // "nonexistent" reaches Runner's registry check *after* DelegateEngine has already created the
+    // worktree (max_parallel > 1), so the job still finishes (status backend_missing, result.json
+    // written) with a real worktree on disk to clean up — no real backend install needed, same trick
+    // DelegateEngineTests uses in-process.
+    [Fact]
+    public async Task JobsCleanRemovesAFinishedWorktreeAndKeepsItsBranchAsync()
+    {
+        RunGit(cwd, "init", "-q");
+        RunGit(cwd, "config", "user.email", "test@example.com");
+        RunGit(cwd, "config", "user.name", "claustrum-tests");
+        File.WriteAllText(Path.Combine(cwd, "seed.txt"), "seed\n");
+        RunGit(cwd, "add", "-A");
+        RunGit(cwd, "commit", "-q", "-m", "seed");
+        Directory.CreateDirectory(Path.Combine(cwd, ".claustrum", "casts"));
+        File.WriteAllText(Path.Combine(cwd, ".claustrum", "casts", "default.json"), /*lang=json,strict*/
+            """{"name":"default","library":"1.0.0","architect":{"mode":"host"},"roles":{"builder":{"backend":"nonexistent","max_parallel":2}},"budget_usd":null}""");
+
+        (int runExit, string runOut, string runErr) = await RunAsync("run", "builder", "--brief", "hi", "--json");
+        Assert.Equal(ExitCodes.BackendMissing, runExit);
+        string jobId = JsonDocument.Parse(runOut).RootElement.GetProperty("job_id").GetString()!;
+        string worktreePath = Path.Combine(cwd, ".claustrum", "worktrees", jobId);
+        Assert.True(Directory.Exists(worktreePath), runErr);
+
+        (int cleanExit, string cleanOut, _) = await RunAsync("jobs", "clean");
+
+        Assert.Equal(Ok, cleanExit);
+        Assert.Contains(jobId, cleanOut, StringComparison.Ordinal);
+        Assert.False(Directory.Exists(worktreePath));
+        Assert.Contains($"claustrum/{jobId}", ListBranches(cwd));
+    }
+
+    // Review finding: `jobs clean` only ever removed worktrees whose job wrote a result.json, so a
+    // worktree left by a hard kill (or one whose job directory jobs.keep_last later pruned) waited
+    // forever for a signal that could never arrive.
+    [Fact]
+    public async Task JobsCleanRemovesAWorktreeWhoseJobDirectoryIsGoneAsync()
+    {
+        SeedRepo();
+        RunGit(cwd, "worktree", "add", Path.Combine(".claustrum", "worktrees", "20260101-000000-deadbeef"), "-b", "claustrum/20260101-000000-deadbeef");
+
+        // The job store exists but this job's directory does not — hard-killed before writing a
+        // result, or pruned by jobs.keep_last. (An absent store means "wrong CLAUSTRUM_HOME" and is
+        // deliberately not cleanable; JobsCleanLeavesWorktreesAloneWhenTheJobRootItselfIsMissing.)
+        Directory.CreateDirectory(Path.Combine(home, "jobs"));
+
+        (int exitCode, string stdout, _) = await RunAsync("jobs", "clean");
+
+        Assert.Equal(Ok, exitCode);
+        Assert.Contains("20260101-000000-deadbeef", stdout, StringComparison.Ordinal);
+        Assert.False(Directory.Exists(Path.Combine(cwd, ".claustrum", "worktrees", "20260101-000000-deadbeef")));
+    }
+
+    // The missing-job-directory rule must not fire when the job root itself is absent: a `jobs clean`
+    // pointed at a different CLAUSTRUM_HOME than the run used would otherwise find every job
+    // "missing" and force-remove a live worktree along with its uncommitted work.
+    [Fact]
+    public async Task JobsCleanLeavesWorktreesAloneWhenTheJobRootItselfIsMissingAsync()
+    {
+        SeedRepo();
+        RunGit(cwd, "worktree", "add", Path.Combine(".claustrum", "worktrees", "20260101-000000-cafecafe"), "-b", "claustrum/20260101-000000-cafecafe");
+
+        // No run has happened under this CLAUSTRUM_HOME, so the job root does not exist at all —
+        // exactly what a `clean` pointed at the wrong home looks like.
+        Assert.False(Directory.Exists(Path.Combine(home, "jobs")));
+
+        (int exitCode, string stdout, _) = await RunAsync("jobs", "clean");
+
+        Assert.Equal(Ok, exitCode);
+        Assert.Contains("nothing to clean", stdout, StringComparison.Ordinal);
+        Assert.True(Directory.Exists(Path.Combine(cwd, ".claustrum", "worktrees", "20260101-000000-cafecafe")));
+    }
+
+    // Review finding: one directory git no longer recognises used to abort the whole sweep, so every
+    // stale worktree after it survived — and every rerun stopped at the same one.
+    [Fact]
+    public async Task JobsCleanReportsAnUnremovableWorktreeAndStillClearsTheRestAsync()
+    {
+        SeedRepo();
+        RunGit(cwd, "worktree", "add", Path.Combine(".claustrum", "worktrees", "20260101-000000-99999999"), "-b", "claustrum/20260101-000000-99999999");
+
+        // The job store exists but this job's directory does not — hard-killed before writing a
+        // result, or pruned by jobs.keep_last. (An absent store means "wrong CLAUSTRUM_HOME" and is
+        // deliberately not cleanable; JobsCleanLeavesWorktreesAloneWhenTheJobRootItselfIsMissing.)
+        Directory.CreateDirectory(Path.Combine(home, "jobs"));
+
+        // Sorts before the real one, so an abort-on-first-failure sweep would never reach it.
+        Directory.CreateDirectory(Path.Combine(cwd, ".claustrum", "worktrees", "20250101-000000-00000000"));
+
+        (int exitCode, string stdout, string stderr) = await RunAsync("jobs", "clean");
+
+        Assert.Equal(ExitCodes.BackendFailure, exitCode);
+        Assert.Contains("20250101-000000-00000000", stderr, StringComparison.Ordinal);
+        Assert.Contains("20260101-000000-99999999", stdout, StringComparison.Ordinal);
+        Assert.False(Directory.Exists(Path.Combine(cwd, ".claustrum", "worktrees", "20260101-000000-99999999")));
+    }
+
+    // Review finding: RoleConcurrencyGate's slot files are untracked and WorktreeSnapshot runs
+    // `git status --untracked-files=all`, so an un-ignored .claustrum/locks/ put phantom lock files
+    // in every later job's changed_files/diff.
+    [Fact]
+    public async Task InitIgnoresLocksAsWellAsWorktreesAsync()
+    {
+        Assert.Equal(Ok, (await RunAsync("init")).ExitCode);
+
+        string gitignore = await File.ReadAllTextAsync(Path.Combine(cwd, ".gitignore"), TestContext.Current.CancellationToken);
+        Assert.Contains(".claustrum/worktrees/", gitignore, StringComparison.Ordinal);
+        Assert.Contains(".claustrum/locks/", gitignore, StringComparison.Ordinal);
+    }
+
+    // A repo initialised before a rule existed has to gain that one line, not a second copy of the
+    // whole block: the idempotency check used to key on `.claustrum/worktrees/` alone.
+    [Fact]
+    public async Task InitAddsOnlyTheMissingIgnoreLineToAnOlderGitignoreAsync()
+    {
+        await File.WriteAllTextAsync(
+            Path.Combine(cwd, ".gitignore"),
+            "bin/\n.claustrum/worktrees/\n.claustrum/briefs/\n",
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(Ok, (await RunAsync("init")).ExitCode);
+
+        string gitignore = await File.ReadAllTextAsync(Path.Combine(cwd, ".gitignore"), TestContext.Current.CancellationToken);
+        Assert.Contains(".claustrum/locks/", gitignore, StringComparison.Ordinal);
+        Assert.Equal(1, CountOccurrences(gitignore, ".claustrum/worktrees/"));
+        Assert.Equal(1, CountOccurrences(gitignore, ".claustrum/briefs/"));
+    }
+
+    private static int CountOccurrences(string haystack, string needle)
+    {
+        int count = 0;
+        for (int i = haystack.IndexOf(needle, StringComparison.Ordinal); i >= 0; i = haystack.IndexOf(needle, i + needle.Length, StringComparison.Ordinal))
+            count++;
+        return count;
+    }
+
+    private void SeedRepo()
+    {
+        RunGit(cwd, "init", "-q");
+        RunGit(cwd, "config", "user.email", "test@example.com");
+        RunGit(cwd, "config", "user.name", "claustrum-tests");
+        File.WriteAllText(Path.Combine(cwd, "seed.txt"), "seed\n");
+        RunGit(cwd, "add", "-A");
+        RunGit(cwd, "commit", "-q", "-m", "seed");
+    }
+
+    [Fact]
+    public async Task JobsCleanOnARepoWithNoWorktreesIsANoOpAsync()
+    {
+        (int exitCode, string stdout, _) = await RunAsync("jobs", "clean");
+
+        Assert.Equal(Ok, exitCode);
+        Assert.Contains("no worktrees", stdout, StringComparison.Ordinal);
+    }
+
+    private static string[] ListBranches(string dir)
+    {
+        ProcessStartInfo startInfo = new("git")
+        {
+            WorkingDirectory = dir,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true,
+        };
+        startInfo.ArgumentList.Add("branch");
+        startInfo.ArgumentList.Add("--format=%(refname:short)");
+
+        using Process process = Process.Start(startInfo) ?? throw new InvalidOperationException("git failed to start");
+        string stdout = process.StandardOutput.ReadToEnd();
+        process.WaitForExit();
+        return stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+    }
+
+    private static void RunGit(string cwd, params string[] args)
+    {
+        ProcessStartInfo startInfo = new("git")
+        {
+            WorkingDirectory = cwd,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true,
+        };
+        foreach (string arg in args)
+            startInfo.ArgumentList.Add(arg);
+
+        using Process process = Process.Start(startInfo) ?? throw new InvalidOperationException("git failed to start");
+        string stderr = process.StandardError.ReadToEnd();
+        process.WaitForExit();
+        if (process.ExitCode != 0)
+            throw new InvalidOperationException($"git {string.Join(' ', args)} failed ({process.ExitCode}): {stderr}");
+    }
+
+    [Fact]
+    public async Task BareDoctorNeverPrintsProbeSectionsAsync()
+    {
+        (int exitCode, string stdout, _) = await RunAsync("backends", "doctor");
+
+        Assert.Equal(Ok, exitCode);
+        Assert.DoesNotContain("auth:", stdout, StringComparison.Ordinal);
+        Assert.DoesNotContain("os:", stdout, StringComparison.Ordinal);
+        Assert.DoesNotContain("mcp:", stdout, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task DoctorProbeAddsAuthOsAndMcpSectionsAsync()
+    {
+        (int exitCode, string stdout, _) = await RunAsync("backends", "doctor", "--probe");
+
+        Assert.Equal(Ok, exitCode);
+        Assert.Contains("auth:", stdout, StringComparison.Ordinal);
+        Assert.Contains("os:", stdout, StringComparison.Ordinal);
+        Assert.Contains("mcp:", stdout, StringComparison.Ordinal);
+        Assert.Contains(".mcp.json:", stdout, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task DoctorProbeReportsNoMcpFileOnAFreshRepoAsync()
+    {
+        (int exitCode, string stdout, _) = await RunAsync("backends", "doctor", "--probe");
+
+        Assert.Equal(Ok, exitCode);
+        Assert.Contains(".mcp.json:        not present", stdout, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task DoctorProbeDetectsAnExistingMcpRegistrationAsync()
+    {
+        File.WriteAllText(Path.Combine(cwd, ".mcp.json"), /*lang=json,strict*/
+            """{"mcpServers":{"claustrum":{"command":"claustrum","args":["mcp"]}}}""");
+
+        (int exitCode, string stdout, _) = await RunAsync("backends", "doctor", "--probe");
+
+        Assert.Equal(Ok, exitCode);
+        Assert.Contains(".mcp.json:        registers claustrum", stdout, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task DoctorProbeToleratesJsoncInVsCodeMcpFileAsync()
+    {
+        Directory.CreateDirectory(Path.Combine(cwd, ".vscode"));
+        File.WriteAllText(Path.Combine(cwd, ".vscode", "mcp.json"), /*lang=json*/ """
+            {
+              // hand-edited
+              "servers": { "claustrum": { "type": "stdio", "command": "claustrum", "args": ["mcp"] }, },
+            }
+            """);
+
+        (int exitCode, string stdout, _) = await RunAsync("backends", "doctor", "--probe");
+
+        Assert.Equal(Ok, exitCode);
+        Assert.Contains(".vscode/mcp.json: registers claustrum", stdout, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task InitScaffoldsClaustrumDirectoryAndClaudeSyncOnAFreshRepoAsync()
+    {
+        (int exitCode, string stdout, _) = await RunAsync("init");
+
+        Assert.Equal(Ok, exitCode);
+        Assert.True(Directory.Exists(Path.Combine(cwd, ".claustrum", "casts")));
+        Assert.True(Directory.Exists(Path.Combine(cwd, ".claustrum", "briefs")));
+        Assert.True(Directory.Exists(Path.Combine(cwd, ".claustrum", "worktrees")));
+        Assert.True(File.Exists(Path.Combine(cwd, "claustrum.json")));
+        Assert.Contains("cheap-coding", File.ReadAllText(Path.Combine(cwd, "claustrum.json")), StringComparison.Ordinal);
+        Assert.True(File.Exists(Path.Combine(cwd, ".claude", "agents", "builder.md")));
+        Assert.Contains(".claustrum/worktrees/", File.ReadAllText(Path.Combine(cwd, ".gitignore")), StringComparison.Ordinal);
+        Assert.Contains("claude:", stdout, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task InitDetectsGithubDirectoryAndAlsoSyncsCopilotAsync()
+    {
+        Directory.CreateDirectory(Path.Combine(cwd, ".github"));
+
+        (int exitCode, string stdout, _) = await RunAsync("init");
+
+        Assert.Equal(Ok, exitCode);
+        Assert.Contains("copilot:", stdout, StringComparison.Ordinal);
+        Assert.True(File.Exists(Path.Combine(cwd, ".github", "agents", "builder.agent.md")));
+        Assert.True(File.Exists(Path.Combine(cwd, ".github", "skills", "claustrum", "SKILL.md")));
+    }
+
+    [Fact]
+    public async Task InitWithAllSyncsEveryHarnessRegardlessOfDetectionAsync()
+    {
+        (int exitCode, string stdout, _) = await RunAsync("init", "--all");
+
+        Assert.Equal(Ok, exitCode);
+        Assert.Contains("claude:", stdout, StringComparison.Ordinal);
+        Assert.Contains("opencode:", stdout, StringComparison.Ordinal);
+        Assert.Contains("copilot:", stdout, StringComparison.Ordinal);
+        Assert.True(File.Exists(Path.Combine(cwd, ".opencode", "agent", "builder.md")));
+    }
+
+    [Fact]
+    public async Task InitAppendsAPointerToAnExistingAgentsMdButNeverCreatesOneAsync()
+    {
+        File.WriteAllText(Path.Combine(cwd, "AGENTS.md"), "# House rules\n");
+
+        (int exitCode, _, _) = await RunAsync("init");
+
+        Assert.Equal(Ok, exitCode);
+        string agentsMd = File.ReadAllText(Path.Combine(cwd, "AGENTS.md"));
+        Assert.Contains("# House rules", agentsMd, StringComparison.Ordinal);
+        Assert.Contains("Claustrum delegation", agentsMd, StringComparison.Ordinal);
+        Assert.False(File.Exists(Path.Combine(cwd, "CLAUDE.md")));
+    }
+
+    [Fact]
+    public async Task InitNeverCreatesAnAgentsMdThatDidNotExistAsync()
+    {
+        (int exitCode, _, _) = await RunAsync("init");
+
+        Assert.Equal(Ok, exitCode);
+        Assert.False(File.Exists(Path.Combine(cwd, "AGENTS.md")));
+    }
+
+    [Fact]
+    public async Task InitIsIdempotentOnRerunAsync()
+    {
+        Assert.Equal(Ok, (await RunAsync("init")).ExitCode);
+        string configBefore = File.ReadAllText(Path.Combine(cwd, "claustrum.json"));
+
+        (int exitCode, string stdout, _) = await RunAsync("init");
+
+        Assert.Equal(Ok, exitCode);
+        Assert.Equal(configBefore, File.ReadAllText(Path.Combine(cwd, "claustrum.json")));
+        Assert.Contains("already present", stdout, StringComparison.Ordinal);
+        Assert.Contains("0 written, 15 skipped", stdout, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task InitDoesNotDuplicateTheAgentsMdPointerOnRerunAsync()
+    {
+        File.WriteAllText(Path.Combine(cwd, "AGENTS.md"), "# House rules\n");
+        Assert.Equal(Ok, (await RunAsync("init")).ExitCode);
+
+        Assert.Equal(Ok, (await RunAsync("init")).ExitCode);
+
+        string agentsMd = File.ReadAllText(Path.Combine(cwd, "AGENTS.md"));
+        int occurrences = agentsMd.Split("## Claustrum delegation").Length - 1;
+        Assert.Equal(1, occurrences);
     }
 
     private async Task<(int ExitCode, string Stdout, string Stderr)> RunAsync(params string[] args)
