@@ -117,6 +117,7 @@ public sealed class CopilotBackend(IPlatform platform) : IBackend
     private static List<string> PermissionArgs(PermissionPolicy permission) => permission.Level switch
     {
         PermissionLevel.ReadOnly => ["--allow-all-tools", "--mode", "plan", "--deny-tool", "write", "--deny-tool", "shell"],
+        PermissionLevel.Shell => ["--allow-all-tools", "--deny-tool", "write"],
         PermissionLevel.Edit => ["--allow-all-tools", "--allow-all-paths", "--deny-tool", "shell"],
         PermissionLevel.EditShell => EditShellArgs(permission.Deny),
         PermissionLevel.Full => ["--allow-all"],

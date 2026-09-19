@@ -8,7 +8,7 @@
     "xhigh": { "model": "frontier-coding", "effort": "xhigh" },
     "max": { "model": "frontier-coding", "effort": "max" }
   },
-  "permission": "edit+shell",
+  "permission": "shell",
   "deny": ["git push"],
   "mayDelegate": [],
   "report": "code-reviewer",

@@ -129,4 +129,18 @@ public sealed class OpencodeBackendBuildTests
         int index = Array.IndexOf(spec.Args, "--agent");
         Assert.Equal("claustrum-builder", spec.Args[index + 1]);
     }
+
+    [Fact]
+    public void ShellDeniesEditButAllowsBashWithTheRolesDenyPatterns()
+    {
+        ProcessSpec spec = backend.Build(MakeRun(new PermissionPolicy(PermissionLevel.Shell, ["git push"])));
+
+        using JsonDocument permission = JsonDocument.Parse(spec.Env["OPENCODE_PERMISSION"]);
+        Assert.Equal("deny", permission.RootElement.GetProperty("edit").GetString());
+
+        JsonElement bash = permission.RootElement.GetProperty("bash");
+        Assert.Equal("allow", bash.GetProperty("*").GetString());
+        Assert.Equal("deny", bash.GetProperty("git push*").GetString());
+        Assert.DoesNotContain("--auto", spec.Args);
+    }
 }
