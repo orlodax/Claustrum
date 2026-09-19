@@ -75,6 +75,36 @@ public sealed class ApiBackendBuildTests : IDisposable
         Assert.Equal("you are a reviewer", document.RootElement.GetProperty("system").GetString());
     }
 
+    // Review finding: without -q, curl also reads ~/.curlrc, and one `output = ...` line there sends
+    // the response somewhere else — Parse then sees empty stdout and reports a failure with no cause.
+    [Fact]
+    public void CurlIsSpawnedWithConfigFileReadingDisabled()
+    {
+        platform.EnvironmentVariables["OPENROUTER_API_KEY"] = "sk-or-test-123";
+
+        ProcessSpec spec = Backend().Build(MakeRun("openrouter:deepseek/deepseek-v4-pro"));
+
+        Assert.Equal("-q", spec.Args[0]);
+    }
+
+    // Review finding: the file holds the API key in clear text and File.WriteAllText left it 0644,
+    // world-readable for the life of the run.
+    [Fact]
+    public void TheCurlConfigHoldingTheKeyIsOwnerOnly()
+    {
+        if (OperatingSystem.IsWindows())
+            return;
+
+        platform.EnvironmentVariables["ANTHROPIC_API_KEY"] = "sk-ant-test-456";
+
+        ProcessSpec spec = Backend().Build(MakeRun("anthropic:claude-opus-4-5"));
+
+        string configPath = spec.TempFiles.Single(f => f.EndsWith("api-curl-config", StringComparison.Ordinal));
+        UnixFileMode mode = File.GetUnixFileMode(configPath);
+
+        Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, mode);
+    }
+
     [Fact]
     public void MissingApiKeyThrowsBeforeSpawning()
     {
