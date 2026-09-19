@@ -13,9 +13,8 @@ public static class JobDirectory
     public static JobPaths Create(IPlatform platform)
     {
         string root = ResolveRoot(platform);
-        string id = $"{DateTime.UtcNow:yyyyMMdd-HHmmss}-{Random.Shared.Next(0, 0x10000):x4}";
-        string directory = Path.Combine(root, id);
-        Directory.CreateDirectory(directory);
+        Directory.CreateDirectory(root);
+        (string id, string directory) = CreateUniqueDirectory(root);
 
         Prune(platform, root);
 
@@ -27,6 +26,39 @@ public static class JobDirectory
             Path.Combine(directory, "stdout.log"),
             Path.Combine(directory, "stderr.log"),
             Path.Combine(directory, "result.json"));
+    }
+
+    // The id must be unique across *processes*, not just within one: M3 fans builders out as N
+    // concurrent `claustrum run` processes that all start inside the same wall-clock second, and the
+    // id names the job directory, the `claustrum/<id>` branch and the `.claustrum/worktrees/<id>`
+    // path. The old 16-bit suffix collided at ~1-in-65536 per same-second pair, and
+    // Directory.CreateDirectory is idempotent, so a collision silently gave two jobs one directory to
+    // clobber each other's result.json in (review finding). 32 bits plus an atomic CreateNew claim on
+    // a marker file inside the candidate directory makes it a retry instead of a corruption.
+    private static (string Id, string Directory) CreateUniqueDirectory(string root)
+    {
+        for (int attempt = 0; attempt < 16; attempt++)
+        {
+            string id = $"{DateTime.UtcNow:yyyyMMdd-HHmmss}-{Random.Shared.Next():x8}";
+            string directory = Path.Combine(root, id);
+            Directory.CreateDirectory(directory);
+            try
+            {
+                // CreateNew is the only filesystem primitive here that is atomic across processes:
+                // whoever creates .claim owns the directory, everyone else retries with a new id.
+                using (new FileStream(Path.Combine(directory, ".claim"), FileMode.CreateNew, FileAccess.Write, FileShare.None))
+                {
+                }
+
+                return (id, directory);
+            }
+            catch (IOException)
+            {
+                // Another process already claimed this id; leave its directory alone and re-roll.
+            }
+        }
+
+        throw new IOException($"could not allocate a unique job id under '{root}' after 16 attempts");
     }
 
     // jobs.keep_last (docs/PLAN.md A7, review finding #5). The job store is one global
