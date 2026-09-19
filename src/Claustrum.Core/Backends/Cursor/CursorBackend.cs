@@ -27,7 +27,8 @@ public sealed class CursorBackend(IPlatform platform) : IBackend
     public ProcessSpec Build(ResolvedRun run)
     {
         string systemPrompt = File.ReadAllText(run.SystemPromptFilePath);
-        string prompt = BuildPrompt(systemPrompt, run.Brief, run.Role.Permission.Deny);
+        string prompt = BuildPrompt(systemPrompt, run.Brief, run.Role.Permission.Level, run.Role.Permission.Deny);
+        EnsureArgumentFits(prompt);
 
         List<string> args = ["-p", "--output-format", "json", "--model", run.Role.Model];
         args.AddRange(PermissionArgs(run.Role.Permission));
@@ -69,26 +70,56 @@ public sealed class CursorBackend(IPlatform platform) : IBackend
         }
     }
 
+    // execve caps a SINGLE argument at 128 KiB on Linux (MAX_ARG_STRLEN) and the whole block at
+    // ~32 KiB on Windows; cursor-agent is the one backend that has to put the rendered role body AND
+    // the brief in one argv element, so a long diff in `## Diff` hits that ceiling as a bare spawn
+    // failure with nothing pointing at the cause (review finding). Refuse early, by name, instead.
+    private const int MaxPromptBytes = 96 * 1024;
+
+    private static void EnsureArgumentFits(string prompt)
+    {
+        int bytes = Encoding.UTF8.GetByteCount(prompt);
+        if (bytes > MaxPromptBytes)
+            throw new InvalidOperationException(
+                $"cursor backend: system prompt + brief is {bytes / 1024}KB, over the {MaxPromptBytes / 1024}KB "
+                + "single-argument limit (cursor-agent has no prompt-file flag, unlike claude/opencode/copilot) — "
+                + "shorten the brief, or point `## Diff` at a command that reproduces the diff instead of pasting it");
+    }
+
     // No native deny mechanism (docs/PLAN.md §A3: "the deny list is appended to the system prompt as
     // a hard rule and doctor marks it advisory") — cursor-agent has no per-command allow/deny flag the
     // way claude/opencode/copilot do, so this is enforcement by instruction, not by the process.
-    private static string BuildPrompt(string systemPrompt, string brief, string[] deny)
+    private static string BuildPrompt(string systemPrompt, string brief, PermissionLevel level, string[] deny)
     {
         StringBuilder prompt = new(systemPrompt);
-        if (deny.Length > 0)
-        {
+
+        // ReadOnly has no flag behind it here (see PermissionArgs), so the whole level is carried by
+        // this rule. Stated first and absolutely, ahead of the per-pattern deny list.
+        if (level == PermissionLevel.ReadOnly)
+            prompt.Append("\n\n## Hard rules (never violate)\n")
+                .Append("- This run is READ-ONLY: never create, edit or delete a file, and never run a command that changes anything.\n")
+                .Append("- Report what you found; if a fix is needed, describe it instead of applying it.\n");
+        else if (deny.Length > 0)
             prompt.Append("\n\n## Hard rules (never violate)\n");
-            foreach (string pattern in deny)
-                prompt.Append("- Never run: ").Append(pattern).Append('\n');
-        }
+
+        foreach (string pattern in deny)
+            prompt.Append("- Never run: ").Append(pattern).Append('\n');
 
         prompt.Append("\n\n# Task\n").Append(brief);
         return prompt.ToString();
     }
 
+    // ReadOnly diverges from docs/PLAN.md §A3's cursor column ("--mode ask (no -f)") for the reason
+    // CopilotBackend's own table diverges: `-p` is headless and ProcessRunner closes the child's
+    // stdin, so an approval prompt nobody can answer is a guaranteed stall until the run's --timeout
+    // kills it — and readonly is the level the most likely cursor role (code-reviewer) uses. cursor
+    // has no native deny mechanism at any level, so nothing is actually given up by passing -f: the
+    // plan already routes cursor's enforcement through the prompt ("doctor marks it advisory"), and
+    // BuildPrompt states the read-only rule there. See NOTES.md "The cursor backend".
     private static List<string> PermissionArgs(PermissionPolicy permission) => permission.Level switch
     {
-        PermissionLevel.ReadOnly => ["--mode", "ask"],
+        PermissionLevel.ReadOnly => ["-f"],
+        PermissionLevel.Shell => ["-f"],
         PermissionLevel.Edit => ["-f"],
         PermissionLevel.EditShell => ["-f"],
         PermissionLevel.Full => ["-f", "--sandbox", "disabled"],

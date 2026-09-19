@@ -70,14 +70,46 @@ public sealed class CursorBackendBuildTests
         Assert.DoesNotContain("Hard rules", spec.Args[^1], StringComparison.Ordinal);
     }
 
+    // Deliberate divergence from docs/PLAN.md §A3's cursor column ("--mode ask (no -f)"): `-p` is
+    // headless and ProcessRunner closes the child's stdin, so an approval prompt nobody can answer
+    // stalls the run until --timeout kills it — and readonly is the level the most likely cursor
+    // role (code-reviewer) uses (review finding). cursor has no native deny mechanism at any level,
+    // so the read-only rule goes where cursor's deny list already goes: the prompt.
+    [Theory]
+    [InlineData(PermissionLevel.ReadOnly)]
+    [InlineData(PermissionLevel.Shell)]
+    public void ReadOnlyAndShellForceHeadlessApprovalRatherThanAskMode(PermissionLevel level)
+    {
+        ProcessSpec spec = backend.Build(MakeRunWithSystemPrompt(new PermissionPolicy(level, [])));
+
+        Assert.Contains("-f", spec.Args);
+        Assert.DoesNotContain("--mode", spec.Args);
+    }
+
     [Fact]
-    public void ReadOnlyUsesAskModeWithoutForceFlag()
+    public void ReadOnlyStatesTheNoEditRuleInThePromptSinceCursorHasNoFlagForIt()
     {
         ProcessSpec spec = backend.Build(MakeRunWithSystemPrompt(new PermissionPolicy(PermissionLevel.ReadOnly, [])));
 
-        Assert.Contains("--mode", spec.Args);
-        Assert.Equal("ask", spec.Args[Array.IndexOf(spec.Args, "--mode") + 1]);
-        Assert.DoesNotContain("-f", spec.Args);
+        string prompt = spec.Args[^1];
+        Assert.Contains("READ-ONLY", prompt, StringComparison.Ordinal);
+        Assert.Contains("Hard rules", prompt, StringComparison.Ordinal);
+    }
+
+    // Review finding: the whole system prompt + brief go in ONE argv element, and execve caps a
+    // single argument at 128KB on Linux. Over the limit this used to be a bare spawn failure.
+    [Fact]
+    public void AnOversizedPromptIsRefusedByNameInsteadOfFailingInExecve()
+    {
+        ResolvedRun run = MakeRunWithSystemPrompt(new PermissionPolicy(PermissionLevel.EditShell, [])) with
+        {
+            Brief = new string('x', 200 * 1024),
+        };
+
+        InvalidOperationException ex = Assert.Throws<InvalidOperationException>(() => backend.Build(run));
+
+        Assert.Contains("single-argument limit", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("shorten the brief", ex.Message, StringComparison.Ordinal);
     }
 
     [Theory]
