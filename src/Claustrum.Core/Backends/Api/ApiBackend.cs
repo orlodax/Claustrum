@@ -63,9 +63,13 @@ public sealed class ApiBackend(IPlatform platform) : IBackend
         string bodyPath = Path.Combine(run.JobDirectory, "api-request-body.json");
         string configPath = Path.Combine(run.JobDirectory, "api-curl-config");
         File.WriteAllText(bodyPath, body);
-        File.WriteAllText(configPath, BuildCurlConfig(authHeader, provider));
+        WritePrivate(configPath, BuildCurlConfig(authHeader, provider));
 
-        string[] args = ["--fail-with-body", "--silent", "--show-error", "-K", configPath, "-d", $"@{bodyPath}", url];
+        // -q FIRST: without it curl also reads ~/.curlrc, and one `output = …`/`proxy = …` line
+        // there silently redirects the response — Parse then sees empty stdout and reports a
+        // failure with nothing to explain it. The spawn has to be hermetic for the same reason
+        // ProcessRunner clears the inherited environment (review finding).
+        string[] args = ["-q", "--fail-with-body", "--silent", "--show-error", "-K", configPath, "-d", $"@{bodyPath}", url];
         return new ProcessSpec("curl", args, run.Cwd, run.Env, [bodyPath, configPath]);
     }
 
@@ -110,6 +114,24 @@ public sealed class ApiBackend(IPlatform platform) : IBackend
         platform.GetEnvironmentVariable(envVarName) is { Length: > 0 } key
             ? key
             : throw new InvalidOperationException($"api backend needs {envVarName} set");
+
+    // The curl config file holds the API key in clear text, so it is created owner-only before a
+    // byte of it is written — File.WriteAllText would have left it 0644 under the default umask,
+    // world-readable for the life of the run in ~/.claustrum/jobs/<id>/ (review finding). Keeping
+    // the key off argv is only half the job if the file it moves to is readable by everyone.
+    // UnixFileMode is a no-op on Windows, where the job directory inherits the user profile's ACL.
+    private static void WritePrivate(string path, string contents)
+    {
+        FileStreamOptions options = new() { Mode = FileMode.Create, Access = FileAccess.Write, Share = FileShare.None };
+
+        // Setting UnixCreateMode at all throws on Windows (CA1416), where the job directory already
+        // inherits the user profile's ACL and no other account can read it anyway.
+        if (!OperatingSystem.IsWindows())
+            options.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+
+        using StreamWriter writer = new(path, options);
+        writer.Write(contents);
+    }
 
     // curl's -K/--config file syntax: bare long-option name, "= value" (quoted so the ": " inside an
     // HTTP header value isn't mistaken for another option). Kept out of argv/`ps` unlike -H would be.
