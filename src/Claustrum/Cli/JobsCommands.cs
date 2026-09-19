@@ -116,11 +116,9 @@ public static class JobsCommands
         return ExitCodes.Ok;
     }
 
-    // A worktree's directory name IS the job id that created it (JobWorktree.PathFor), so "finished"
-    // reuses the same signal Summarize/Show already trust: result.json exists once Runner has written
-    // a terminal RunResult (success, failure, or backend_missing) — a job still mid-run has none yet
-    // and is left alone. The branch itself is never touched here (JobWorktree.RemoveAsync only
-    // removes the working directory), so the architect can still rebase from it afterwards.
+    // A worktree's directory name IS the job id that created it (JobWorktree.PathFor); IsCleanable
+    // below decides which ones are done with. The branch is never touched here (JobWorktree.RemoveAsync
+    // only removes the working directory), so the architect can still rebase from it afterwards.
     private static async Task<int> CleanAsync(string? cwdOption)
     {
         string cwd = Path.GetFullPath(cwdOption ?? Environment.CurrentDirectory);
@@ -133,22 +131,48 @@ public static class JobsCommands
 
         string jobsRoot = JobDirectory.ResolveRoot(AppServices.Platform);
         int removed = 0;
+        List<string> failures = [];
         foreach (string worktreeDirectory in Directory.EnumerateDirectories(worktreesRoot))
         {
             string jobId = Path.GetFileName(worktreeDirectory);
-            if (!File.Exists(Path.Combine(jobsRoot, jobId, "result.json")))
+            if (!IsCleanable(jobsRoot, jobId))
                 continue;
 
-            await JobWorktree.RemoveAsync(cwd, jobId, CancellationToken.None);
-            Console.WriteLine($"removed {jobId} (branch {JobWorktree.BranchFor(jobId)} kept)");
-            removed++;
+            // Per entry, not per sweep: one directory git no longer recognises as a worktree (removed
+            // by hand, or left by a hard kill) used to abort the whole command, so every stale
+            // worktree after it stayed forever — and every rerun stopped at the same one (review
+            // finding). Report it and keep going.
+            try
+            {
+                await JobWorktree.RemoveAsync(cwd, jobId, CancellationToken.None);
+                Console.WriteLine($"removed {jobId} (branch {JobWorktree.BranchFor(jobId)} kept)");
+                removed++;
+            }
+            catch (Exception ex) when (ex is InvalidOperationException or IOException or TimeoutException)
+            {
+                failures.Add($"{jobId}: {ex.Message}");
+            }
         }
 
-        if (removed == 0)
+        if (removed == 0 && failures.Count == 0)
             Console.WriteLine("(nothing to clean)");
 
-        return ExitCodes.Ok;
+        foreach (string failure in failures)
+            Console.Error.WriteLine($"could not remove {failure}");
+
+        // Exit 1 when anything was left behind so a script does not read a partial sweep as a full
+        // one; the worktrees that did come off are still gone.
+        return failures.Count == 0 ? ExitCodes.Ok : ExitCodes.BackendFailure;
     }
+
+    // "Finished" is result.json existing, the same signal Summarize/Show already trust — a job still
+    // mid-run has none yet and its worktree is in use. A job directory that is gone entirely is the
+    // other cleanable case: the run was hard-killed before writing one, or jobs.keep_last pruned the
+    // directory out from under a worktree nobody ever cleaned. Without it such a worktree is
+    // unreachable forever, since the signal it is waiting for can never appear.
+    private static bool IsCleanable(string jobsRoot, string jobId) =>
+        !Directory.Exists(Path.Combine(jobsRoot, jobId))
+        || File.Exists(Path.Combine(jobsRoot, jobId, "result.json"));
 
     // Plain JsonDocument.WriteTo, not JsonSerializer: this only re-formats bytes already on disk,
     // so it needs no JsonTypeInfo and stays AOT-safe without touching ClaustrumJsonContext.

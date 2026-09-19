@@ -34,6 +34,33 @@ public static class JobWorktree
         if (exitCode != 0)
             throw new InvalidOperationException($"git worktree remove {path} failed: {stderr}");
     }
+
+    /// <summary>
+    /// Undoes <see cref="AddAsync"/> for a job that never ran: removes the worktree *and* deletes the
+    /// branch, unlike <see cref="RemoveAsync"/>, which keeps the branch because a finished job's
+    /// commits live on it. Best-effort by design — this runs on a failure path whose own exception is
+    /// the one worth surfacing, and `jobs clean` cannot pick the leftovers up later (it only removes
+    /// worktrees whose job wrote a result.json, which a never-run job never does).
+    /// </summary>
+    /// <returns>Whatever went wrong while cleaning up, or null on success.</returns>
+    public static async Task<Exception?> TryRemoveAbandonedAsync(string cwd, string jobId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await RemoveAsync(cwd, jobId, cancellationToken);
+
+            // -D, not -d: the branch was cut from HEAD and never merged anywhere, so git's
+            // merged-check would refuse the plain delete every time.
+            (int exitCode, _, string stderr) = await GitProcess.RunAsync(cwd, ["branch", "-D", BranchFor(jobId)], cancellationToken);
+            return exitCode == 0
+                ? null
+                : new InvalidOperationException($"git branch -D {BranchFor(jobId)} failed: {stderr}");
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or IOException or TimeoutException)
+        {
+            return ex;
+        }
+    }
 }
 
 public sealed record JobWorktreeInfo(string Path, string Branch);
