@@ -588,6 +588,10 @@ from the plan's own guessed field names (`result`/`session_id`/`usage`/`is_error
 M3 backend that stays exactly as unconfirmed as the original plan already flagged it
 ("cursor validated by a teammate who has it") — nothing here upgrades that status.
 
+One deliberate deviation from the plan's table landed in review: ReadOnly passes `-f` rather than
+`--mode ask`, and states the no-edit rule in the prompt instead. See "M3 review fixes" below for
+why, and treat it as the first thing the teammate validation should check.
+
 ## OpencodeSync: agent + command files, verified against a real install (2026-09-18, issue #4/M3)
 
 opencode ships its own first-party "Customizing opencode" reference doc *inside the binary itself*
@@ -721,3 +725,59 @@ covered `binary` (M1) and the merged-config dump; `--probe` now adds three of th
   was available anywhere in this session) and (b) genuinely spends the user's own money/quota, which
   is not something to wire up speculatively and leave untested. Left as a known, named gap rather than
   a fabricated "always succeeds" or "always fails" placeholder.
+
+## M3 review fixes (2026-09-19, issue #4/M3)
+
+Fifteen findings from the review of PR #8, plus the red Windows CI leg. The four that changed a
+documented decision rather than just the code:
+
+**`dotnet format` needs `end_of_line` spelled out, or Windows disagrees with `.gitattributes`.**
+`.gitattributes` says `* text=auto eol=lf`, so every checkout is LF — but `.editorconfig` said
+nothing about line endings, and `dotnet format` then takes the *platform* default. On
+windows-latest that is CRLF, so the formatter rewrites the endings of any line it normalises and
+`--verify-no-changes` fails. It only ever surfaced on four lines (`RunResult.cs`'s new record
+parameters, where comment trivia inside a parameter list makes the formatter rewrite that region);
+every other line was left alone, which is why ubuntu stayed green and this looked like a
+content problem rather than a settings one. `[*] end_of_line = lf` (plus `crlf` for `*.ps1`/`*.cmd`,
+mirroring `.gitattributes`) is the fix. Measured on SDK 10.0.401, run 35365332033.
+
+**A `shell` permission level now exists, between `readonly` and `edit`.** `ui-reviewer` shipped as
+`edit+shell` while its own ROLE.md says "You never modify code" — not carelessness: `readonly` maps
+to Claude's `--allowedTools Read,Glob,Grep,Bash(git …)`, an allow-list that also shuts out the
+Browser MCP tool the role requires and any dev-server command, so the role was unusable at that
+level and `edit+shell` was the only rung left. The missing rung is "read the tree, run commands,
+change nothing": `plan` mode plus `--disallowedTools Edit,Write,NotebookEdit`, which leaves MCP
+tools reachable because it names only built-ins. Mapped for all four backends; docs/PLAN.md §A3's
+permission table and §A5's `--permission` grammar updated with it.
+
+**cursor's ReadOnly no longer uses `--mode ask`.** docs/PLAN.md §A3's cursor column says
+`--mode ask` (no `-f`), but `-p` is headless and ProcessRunner closes the child's stdin, so an
+approval prompt is a guaranteed stall until `--timeout` kills the run — and readonly is the level
+the most likely cursor role (code-reviewer) uses. Same deviation, for the same reason, as the one
+`CopilotBackend` already documents for its own row. Nothing is given up: cursor has no native deny
+mechanism at *any* level, which is why the plan already routes its deny list through the prompt and
+has `doctor` mark it advisory — so the read-only rule goes there too. Still unverified against a
+real `cursor-agent`; it remains the one backend awaiting a teammate's validation.
+
+**A worktree left by a run that never finished used to be uncleanable.** `DelegateEngine` created
+the worktree and branch before `Runner`'s own gates ran (`ValidateTimeout`, the blind gate), and
+nothing removed them when the run never reached a `result.json` — which is precisely the signal
+`jobs clean` waits for, so the orphan was permanent and its `claustrum/<job>` branch accumulated.
+Two halves to the fix: the isolated path now undoes its own worktree *and branch* on any failure
+(`JobWorktree.TryRemoveAbandonedAsync`), and `jobs clean` additionally treats a worktree whose job
+directory is gone entirely as cleanable — the hard-kill case the first half cannot cover. `clean`
+also no longer aborts the whole sweep on the first directory git refuses to remove.
+
+Smaller, each with a regression test: opencode's own `type:"error"` event now marks the run failed
+regardless of exit code; the `api` backend's curl config (which holds the API key in clear text) is
+created owner-only and curl is spawned with `-q` so `~/.curlrc` cannot redirect the response;
+`claustrum init` ignores `.claustrum/locks/` as well as `worktrees/`, and adds only the lines an
+older `.gitignore` is missing; job ids carry 32 bits of entropy and claim their directory with an
+atomic `CreateNew`, since M3 is the first thing to create them concurrently; `RoleConcurrencyGate`
+keys its slot pool per cast (§D4 says per cast, not per role) and gives up with a named
+`TimeoutException` instead of polling forever; `cursor` refuses an over-long prompt by name rather
+than failing inside `execve`; the cast questionnaire finally asks for `max_parallel`, which had no
+way in short of hand-editing the cast JSON; `## Access` is in the shared `/claustrum` skill, so the
+brief ui-reviewer is told to read can actually be written; and ClaudeSync/OpencodeSync/CopilotSync's
+three verbatim copies of the marker machinery are now one `SyncWriter` + `SyncAccumulator` — the
+extraction OpencodeSync's own comment deferred until "CopilotSync exists too".
