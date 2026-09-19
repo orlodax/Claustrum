@@ -7,13 +7,17 @@ namespace Claustrum.Casts;
 // role entry into the tier/overrides a caller already built from its own flags/parameters.
 public static class CastApplication
 {
-    public static (string Tier, ConfigOverrides Overrides, CastBudget? CastBudget, int? MaxParallel) Resolve(
+    // CastName is the cast that actually applied (the --cast argument, or "default" when
+    // default.json applied itself), null when no cast was in play at all. RoleConcurrencyGate keys
+    // its slot pool on it: docs/PLAN.md §D4 caps per cast, and a pool keyed on the role alone is
+    // shared by every cast in the repo.
+    public static (string Tier, ConfigOverrides Overrides, CastBudget? CastBudget, int? MaxParallel, string? CastName) Resolve(
         string cwd, string role, string? castName, string? tierFlag, ConfigOverrides overrides)
     {
         Cast? cast = castName is { Length: > 0 } ? CastStore.Load(cwd, castName) : CastStore.TryLoadDefault(cwd);
         CastRoleEntry? castRole = cast?.Roles.GetValueOrDefault(role);
         (string tier, ConfigOverrides resolvedOverrides) = CastResolution.ApplyRole(tierFlag, overrides, castRole);
 
-        return (tier, resolvedOverrides, cast is null ? null : new CastBudget(cast.BudgetUsd), castRole?.MaxParallel);
+        return (tier, resolvedOverrides, cast is null ? null : new CastBudget(cast.BudgetUsd), castRole?.MaxParallel, cast?.Name);
     }
 }

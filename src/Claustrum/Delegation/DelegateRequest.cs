@@ -21,4 +21,7 @@ public sealed record DelegateRequest(
     int DiffCapBytes,
     CastBudget? CastBudget = null,
     int? MaxParallel = null,
+    // The cast MaxParallel came from (CastApplication.Resolve). Only RoleConcurrencyGate reads it:
+    // its slot pool has to be per cast, not per role (docs/PLAN.md §D4).
+    string? CastName = null,
     Action<string>? OnStreamLine = null);
