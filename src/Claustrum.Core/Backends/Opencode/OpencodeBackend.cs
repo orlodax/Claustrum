@@ -117,10 +117,16 @@ public sealed class OpencodeBackend(IPlatform platform) : IBackend
         }
 
         string finalMessage = string.Join("", textParts.OrderBy(entry => entry.Value.Order).Select(entry => entry.Value.Text));
-        if (finalMessage.Length == 0 && errorMessage is not null)
-            finalMessage = errorMessage;
 
-        return new ParsedOutput(finalMessage, sessionId, cost, usage, [], lastEvent, IsError: exitCode != 0);
+        // A `type:"error"` event is the run failing, whatever the exit code says: opencode is not
+        // contractually bound to also exit non-zero, and trusting the exit code alone reported a
+        // failed run as Success with the error text sitting in final_message (review finding). The
+        // message is appended rather than only used as a fallback so a run that produced partial
+        // text before failing does not silently drop the reason.
+        if (errorMessage is not null)
+            finalMessage = finalMessage.Length == 0 ? errorMessage : $"{finalMessage}\n\n{errorMessage}";
+
+        return new ParsedOutput(finalMessage, sessionId, cost, usage, [], lastEvent, IsError: exitCode != 0 || errorMessage is not null);
     }
 
     private static string ExtractErrorMessage(JsonElement root, string rawLine) =>
@@ -187,6 +193,14 @@ public sealed class OpencodeBackend(IPlatform platform) : IBackend
                 case PermissionLevel.ReadOnly:
                     writer.WriteString("edit", "deny");
                     writer.WriteString("bash", "deny");
+                    break;
+                case PermissionLevel.Shell:
+                    writer.WriteString("edit", "deny");
+                    writer.WriteStartObject("bash");
+                    writer.WriteString("*", "allow");
+                    foreach (string pattern in permission.Deny)
+                        writer.WriteString($"{pattern}*", "deny");
+                    writer.WriteEndObject();
                     break;
                 case PermissionLevel.Edit:
                     writer.WriteString("edit", "allow");
