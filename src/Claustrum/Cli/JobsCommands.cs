@@ -170,9 +170,13 @@ public static class JobsCommands
     // other cleanable case: the run was hard-killed before writing one, or jobs.keep_last pruned the
     // directory out from under a worktree nobody ever cleaned. Without it such a worktree is
     // unreachable forever, since the signal it is waiting for can never appear.
+    //
+    // That second rule only applies when the job root itself exists: `jobs clean` run with a
+    // different CLAUSTRUM_HOME than the run used (or on a fresh machine) would otherwise find every
+    // job directory "missing" and force-remove a live worktree along with its uncommitted work.
     private static bool IsCleanable(string jobsRoot, string jobId) =>
-        !Directory.Exists(Path.Combine(jobsRoot, jobId))
-        || File.Exists(Path.Combine(jobsRoot, jobId, "result.json"));
+        File.Exists(Path.Combine(jobsRoot, jobId, "result.json"))
+        || (Directory.Exists(jobsRoot) && !Directory.Exists(Path.Combine(jobsRoot, jobId)));
 
     // Plain JsonDocument.WriteTo, not JsonSerializer: this only re-formats bytes already on disk,
     // so it needs no JsonTypeInfo and stays AOT-safe without touching ClaustrumJsonContext.
