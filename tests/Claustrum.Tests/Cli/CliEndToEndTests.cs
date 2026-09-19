@@ -282,11 +282,36 @@ public sealed class CliEndToEndTests : IDisposable
         SeedRepo();
         RunGit(cwd, "worktree", "add", Path.Combine(".claustrum", "worktrees", "20260101-000000-deadbeef"), "-b", "claustrum/20260101-000000-deadbeef");
 
+        // The job store exists but this job's directory does not — hard-killed before writing a
+        // result, or pruned by jobs.keep_last. (An absent store means "wrong CLAUSTRUM_HOME" and is
+        // deliberately not cleanable; JobsCleanLeavesWorktreesAloneWhenTheJobRootItselfIsMissing.)
+        Directory.CreateDirectory(Path.Combine(home, "jobs"));
+
         (int exitCode, string stdout, _) = await RunAsync("jobs", "clean");
 
         Assert.Equal(Ok, exitCode);
         Assert.Contains("20260101-000000-deadbeef", stdout, StringComparison.Ordinal);
         Assert.False(Directory.Exists(Path.Combine(cwd, ".claustrum", "worktrees", "20260101-000000-deadbeef")));
+    }
+
+    // The missing-job-directory rule must not fire when the job root itself is absent: a `jobs clean`
+    // pointed at a different CLAUSTRUM_HOME than the run used would otherwise find every job
+    // "missing" and force-remove a live worktree along with its uncommitted work.
+    [Fact]
+    public async Task JobsCleanLeavesWorktreesAloneWhenTheJobRootItselfIsMissingAsync()
+    {
+        SeedRepo();
+        RunGit(cwd, "worktree", "add", Path.Combine(".claustrum", "worktrees", "20260101-000000-cafecafe"), "-b", "claustrum/20260101-000000-cafecafe");
+
+        // No run has happened under this CLAUSTRUM_HOME, so the job root does not exist at all —
+        // exactly what a `clean` pointed at the wrong home looks like.
+        Assert.False(Directory.Exists(Path.Combine(home, "jobs")));
+
+        (int exitCode, string stdout, _) = await RunAsync("jobs", "clean");
+
+        Assert.Equal(Ok, exitCode);
+        Assert.Contains("nothing to clean", stdout, StringComparison.Ordinal);
+        Assert.True(Directory.Exists(Path.Combine(cwd, ".claustrum", "worktrees", "20260101-000000-cafecafe")));
     }
 
     // Review finding: one directory git no longer recognises used to abort the whole sweep, so every
@@ -296,6 +321,11 @@ public sealed class CliEndToEndTests : IDisposable
     {
         SeedRepo();
         RunGit(cwd, "worktree", "add", Path.Combine(".claustrum", "worktrees", "20260101-000000-99999999"), "-b", "claustrum/20260101-000000-99999999");
+
+        // The job store exists but this job's directory does not — hard-killed before writing a
+        // result, or pruned by jobs.keep_last. (An absent store means "wrong CLAUSTRUM_HOME" and is
+        // deliberately not cleanable; JobsCleanLeavesWorktreesAloneWhenTheJobRootItselfIsMissing.)
+        Directory.CreateDirectory(Path.Combine(home, "jobs"));
 
         // Sorts before the real one, so an abort-on-first-failure sweep would never reach it.
         Directory.CreateDirectory(Path.Combine(cwd, ".claustrum", "worktrees", "20250101-000000-00000000"));
