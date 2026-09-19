@@ -1,4 +1,3 @@
-using System.Security.Cryptography;
 using System.Text;
 
 namespace Claustrum.Roles.Sync;
@@ -21,15 +20,16 @@ namespace Claustrum.Roles.Sync;
 /// automatically"): only one real model id (`gpt-5.4`, from a --help example) was ever confirmed, not
 /// a tier catalog, so no model class -> id table was invented the way ClaudeSync's/OpencodeSync's are.
 ///
-/// Duplicates ClaudeSync's/OpencodeSync's marker/idempotency machinery rather than sharing it — same
-/// "extract once the real common shape is known, not guessed early" reasoning as OpencodeSync's own
-/// doc comment.
+/// Marker/idempotency machinery comes from <see cref="SyncWriter"/> and the result lists from
+/// <see cref="SyncAccumulator"/>, shared with ClaudeSync and OpencodeSync; only the file layout and
+/// the frontmatter format are this harness's own.
 /// </summary>
 public sealed class CopilotSync(RoleLibrary library, RoleRenderer renderer, string homeDirectory)
 {
     private const string Harness = "copilot";
-    private const string MarkerPrefix = "<!-- claustrum:generated";
     private static readonly string[] generatedTiers = ["xhigh", "max"];
+
+    private readonly SyncWriter writer = new(Harness, library.Version);
 
     public SyncResult Sync(string cwd, IReadOnlyList<string>? roles = null, bool global = false, bool force = false, SyncMode mode = SyncMode.Write)
     {
@@ -49,49 +49,40 @@ public sealed class CopilotSync(RoleLibrary library, RoleRenderer renderer, stri
         if (mode == SyncMode.Write)
             Directory.CreateDirectory(agentDir);
 
-        List<string> written = [];
-        List<string> skipped = [];
-        List<string> foreign = [];
-        Dictionary<string, string> proposedContent = [];
+        SyncAccumulator into = new();
 
         foreach (string role in targetRoles)
         {
             LoadedRole loaded = library.LoadRole(role, cwd);
-            WriteAgent(agentDir, role, loaded, cwd, force, mode, written, skipped, foreign, proposedContent);
+            WriteAgent(agentDir, role, loaded, cwd, force, mode, into);
 
             foreach (string tier in generatedTiers)
                 if (loaded.Definition.Tiers.ContainsKey(tier))
-                    WriteTierStub(agentDir, role, tier, cwd, force, mode, written, skipped, foreign, proposedContent);
+                    WriteTierStub(agentDir, role, tier, cwd, force, mode, into);
         }
 
-        WriteSkill(githubRoot, force, mode, written, skipped, foreign, proposedContent);
+        WriteSkill(githubRoot, force, mode, into);
 
-        return new SyncResult(written, skipped, foreign, mode == SyncMode.Write ? null : proposedContent);
+        return into.ToResult(mode);
     }
 
-    private void WriteAgent(
-        string agentDir, string role, LoadedRole loaded, string cwd, bool force, SyncMode mode,
-        List<string> written, List<string> skipped, List<string> foreign, Dictionary<string, string> proposedContent)
+    private void WriteAgent(string agentDir, string role, LoadedRole loaded, string cwd, bool force, SyncMode mode, SyncAccumulator into)
     {
         string frontmatter = BuildAgentFrontmatter(role, loaded.Definition.Description);
         string body = renderer.Render(role, "high", Harness, cwd).SystemBody;
         string path = Path.Combine(agentDir, $"{role}.agent.md");
-        WriteGenerated(path, role, frontmatter, body, force, mode, written, skipped, foreign, proposedContent);
+        writer.Write(path, role, frontmatter, body, force, mode, into);
     }
 
-    private void WriteTierStub(
-        string agentDir, string role, string tier, string cwd, bool force, SyncMode mode,
-        List<string> written, List<string> skipped, List<string> foreign, Dictionary<string, string> proposedContent)
+    private void WriteTierStub(string agentDir, string role, string tier, string cwd, bool force, SyncMode mode, SyncAccumulator into)
     {
-        string frontmatter = BuildAgentFrontmatter($"{role}-{tier}", TierDescription(role, tier));
+        string frontmatter = BuildAgentFrontmatter($"{role}-{tier}", SyncWriter.TierDescription(role, tier));
         string body = renderer.RenderTierStub(role, tier, cwd);
         string path = Path.Combine(agentDir, $"{role}-{tier}.agent.md");
-        WriteGenerated(path, role, frontmatter, body, force, mode, written, skipped, foreign, proposedContent);
+        writer.Write(path, role, frontmatter, body, force, mode, into);
     }
 
-    private void WriteSkill(
-        string githubRoot, bool force, SyncMode mode,
-        List<string> written, List<string> skipped, List<string> foreign, Dictionary<string, string> proposedContent)
+    private void WriteSkill(string githubRoot, bool force, SyncMode mode, SyncAccumulator into)
     {
         string skillDir = Path.Combine(githubRoot, "skills", "claustrum");
         if (mode == SyncMode.Write)
@@ -107,48 +98,8 @@ public sealed class CopilotSync(RoleLibrary library, RoleRenderer renderer, stri
             """;
         string body = library.ReadShared("_shared/claustrum-skill.md");
         string path = Path.Combine(skillDir, "SKILL.md");
-        WriteGenerated(path, "claustrum", frontmatter, body, force, mode, written, skipped, foreign, proposedContent);
+        writer.Write(path, "claustrum", frontmatter, body, force, mode, into);
     }
-
-    private void WriteGenerated(
-        string path, string role, string frontmatter, string body, bool force, SyncMode mode,
-        List<string> written, List<string> skipped, List<string> foreign, Dictionary<string, string> proposedContent)
-    {
-        string trimmedBody = body.Trim();
-        string sha256 = ComputeSha256(trimmedBody);
-        string marker = $"{MarkerPrefix} role={role} harness={Harness} library={library.Version} sha256={sha256} -->";
-        string content = $"{frontmatter.Trim()}\n{marker}\n\n{trimmedBody}\n";
-
-        if (File.Exists(path))
-        {
-            string existing = File.ReadAllText(path);
-            if (NormalizeLineEndings(existing) == NormalizeLineEndings(content))
-            {
-                skipped.Add(path);
-                return;
-            }
-
-            if (!HasMarker(existing) && !force)
-            {
-                foreign.Add(path);
-                return;
-            }
-        }
-
-        if (mode == SyncMode.Write)
-            File.WriteAllText(path, content);
-        else
-            proposedContent[path] = content;
-
-        written.Add(path);
-    }
-
-    private static string NormalizeLineEndings(string text) => text.Replace("\r\n", "\n");
-
-    private static bool HasMarker(string content) =>
-        content.Split('\n').Take(15).Any(line => line.TrimEnd('\r').StartsWith(MarkerPrefix, StringComparison.Ordinal));
-
-    private static string ComputeSha256(string content) => Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(content)));
 
     private static string BuildAgentFrontmatter(string name, string description)
     {
@@ -159,19 +110,5 @@ public sealed class CopilotSync(RoleLibrary library, RoleRenderer renderer, stri
         builder.Append("model: auto\n");
         builder.Append("---");
         return builder.ToString();
-    }
-
-    private static string TierDescription(string role, string tier)
-    {
-        string capitalized = char.ToUpperInvariant(role[0]) + role[1..];
-        return tier switch
-        {
-            "xhigh" => $"{capitalized} at EXTRA (xhigh) reasoning effort — identical role, model, and rules as the "
-                + $"`{role}` agent, but thinks harder. Routine work -> `{role}`; the hardest cases -> `{role}-max`.",
-            "max" => $"{capitalized} at MAX reasoning effort — identical role, model, and rules as the `{role}` "
-                + "agent, with the deepest reasoning and no token-spend constraint. Reserve for genuinely hard, "
-                + $"high-stakes, or previously-stuck cases. For everyday work use `{role}`; for a step up use `{role}-xhigh`.",
-            _ => throw new RoleRenderException($"no stub description template for tier '{tier}'"),
-        };
     }
 }
