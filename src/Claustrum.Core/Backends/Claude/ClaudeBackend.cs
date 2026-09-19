@@ -77,11 +77,23 @@ public sealed class ClaudeBackend(IPlatform platform) : IBackend
     private static List<string> PermissionArgs(PermissionPolicy permission) => permission.Level switch
     {
         PermissionLevel.ReadOnly => ["--permission-mode", "plan", "--permission-prompts", "none", "--allowedTools", ReadOnlyTools],
+        PermissionLevel.Shell => ShellArgs(permission.Deny),
         PermissionLevel.Edit => ["--permission-mode", "acceptEdits", "--permission-prompts", "none", "--disallowedTools", "Bash"],
         PermissionLevel.EditShell => EditShellArgs(permission.Deny),
         PermissionLevel.Full => ["--dangerously-skip-permissions", "--permission-prompts", "none"],
         _ => throw new ArgumentOutOfRangeException(nameof(permission)),
     };
+
+    // Shell keeps ReadOnly's plan mode (nothing may be written) but opens Bash and leaves MCP tools
+    // alone: --allowedTools names only the built-ins, so a Browser MCP server stays reachable, which
+    // is the whole point of the level (ui-reviewer's environment part requires one).
+    private static List<string> ShellArgs(string[] deny)
+    {
+        List<string> args = ["--permission-mode", "plan", "--permission-prompts", "none", "--disallowedTools", "Edit,Write,NotebookEdit"];
+        if (deny.Length > 0)
+            args.AddRange(["--disallowedTools", string.Join(',', deny.Select(pattern => $"Bash({pattern}*)"))]);
+        return args;
+    }
 
     private static List<string> EditShellArgs(string[] deny)
     {

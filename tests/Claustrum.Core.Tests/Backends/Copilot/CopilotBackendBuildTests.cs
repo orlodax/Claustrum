@@ -151,4 +151,15 @@ public sealed class CopilotBackendBuildTests : IDisposable
         Assert.Equal("-p", spec.Args[^2]);
         Assert.Equal("do the thing", spec.Args[^1]);
     }
+
+    [Fact]
+    public void ShellAllowsToolsButDeniesWriteOnly()
+    {
+        ProcessSpec spec = backend.Build(MakeRun(new PermissionPolicy(PermissionLevel.Shell, [])));
+
+        Assert.Contains("--allow-all-tools", spec.Args);
+        Assert.Contains("write", spec.Args);
+        Assert.DoesNotContain("--allow-all-paths", spec.Args);
+        Assert.Equal(1, spec.Args.Count(a => a == "--deny-tool"));
+    }
 }
