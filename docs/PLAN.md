@@ -92,7 +92,8 @@ Role injection & argv per backend (representative: builder, EditShell, deny `git
 Permission → flags:
 | Level | claude | opencode (inline `permission`) | cursor | copilot |
 |---|---|---|---|---|
-| ReadOnly | `--permission-mode plan --permission-prompts none` | `{"edit":"deny","bash":"deny"}` | `--mode ask` (no `-f`) | `--mode plan`, no `--allow-all-tools` (non-interactive plan mode UNCONFIRMED) |
+| ReadOnly | `--permission-mode plan --permission-prompts none` | `{"edit":"deny","bash":"deny"}` | `-f` + read-only prompt rule (was `--mode ask`; `-p` cannot answer an approval prompt — NOTES.md "The cursor backend") | `--mode plan`, no `--allow-all-tools` (non-interactive plan mode UNCONFIRMED) |
+| Shell (ui-reviewer: run it, never edit it) | `plan` + `--disallowedTools Edit,Write,NotebookEdit` (MCP tools stay reachable) | `{"edit":"deny","bash":{"*":"allow","<deny>*":"deny"}}` | `-f` + read-only prompt rule | `--allow-all-tools --deny-tool write` |
 | Edit | `acceptEdits` + `--disallowedTools Bash` | `{"edit":"allow","bash":"deny"}` | `-f` + prompt rule | `--allow-all-paths --allow-tool write` (tool names UNCONFIRMED) |
 | EditShell (builder/tester default) | `acceptEdits --allowedTools "Edit,Write,Read,Glob,Grep,Bash(*)"` + `--disallowedTools "Bash(<deny>*)"` | `{"edit":"allow","bash":{"*":"allow","git push*":"deny"}}` | `-f` + prompt rule | `--allow-all-tools --deny-tool 'shell(git push)'` |
 | Full | `--dangerously-skip-permissions` | `--auto` | `-f --sandbox disabled` | `--allow-all-tools --allow-all-paths` |
@@ -110,7 +111,7 @@ Where a backend has no native deny mechanism (cursor), the deny list is appended
 ### A5. CLI surface (System.CommandLine 2.0.12)
 ```
 claustrum run <role> [--brief <text> | --brief-file <path>] [--cwd] [--backend] [--model <alias|id>] [--effort]
-              [--permission readonly|edit|edit+shell|full] [--deny <pattern>]* [--budget <usd>] [--timeout <sec>]
+              [--permission readonly|shell|edit|edit+shell|full] [--deny <pattern>]* [--budget <usd>] [--timeout <sec>]
               [--resume <session>] [--file <path>]* [--env K=V]* [--json] [--stream] [--raw]
 claustrum roles list|show <name>        claustrum backends list|doctor [name]
 claustrum jobs list [--last N]|show <id>|logs <id> [--stderr]
@@ -175,7 +176,7 @@ roles/<role>/parts/<part>.<harness>.md   e.g. delegation.claude.md, delegation.d
  "report":"builder","harnesses":["claude","opencode","cursor","copilot"],
  "nonNegotiable":["…2-4 lines restated in tier stubs…"]}
 ```
-code-reviewer: `blind:true`, `permission:"readonly"`, tiers high→`standard-coding`, xhigh/max→`frontier-coding`, `harnesses` includes `api`. ui-reviewer: `harnesses:["claude"]` in v1 (needs the Browser MCP). Model classes resolve through `claustrum.json.models` (A7), so one role file serves a Claude user and a DeepSeek-only user.
+code-reviewer: `blind:true`, `permission:"readonly"`, tiers high→`standard-coding`, xhigh/max→`frontier-coding`, `harnesses` includes `api`. ui-reviewer: `harnesses:["claude"]` in v1 (needs the Browser MCP), `permission:"shell"` — it starts a dev server and drives a browser but never edits, which is exactly the rung between readonly and edit+shell. Model classes resolve through `claustrum.json.models` (A7), so one role file serves a Claude user and a DeepSeek-only user.
 
 **Templating**: plain `{{token}}` replacement, no engine. Tokens: `{{harness}} {{role}} {{tier}} {{effort}} {{house_rules}} {{report_format}} {{part:<name>}}` (loads `parts/<name>.<harness>.md`, falls back to `.default.md`) and `{{delegate.<role>}}` (one-line invocation for the target harness). Unknown token = render error. `parts/delegation.default.md` carries the new rule: *"If the target backend is your own harness and it has native subagents, use them; otherwise call Claustrum — MCP `delegate` if the `claustrum` server is connected, else shell `claustrum run --json …`."*
 
