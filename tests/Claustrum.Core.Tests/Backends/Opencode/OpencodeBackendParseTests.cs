@@ -44,6 +44,36 @@ public sealed class OpencodeBackendParseTests
         Assert.Equal("ses_f4bc88058ffeoEALuwpU2XsjoV", parsed.SessionId);
     }
 
+    // Review finding: IsError used to be `exitCode != 0` alone, so opencode's own captured error
+    // event on a zero exit reported RunStatus.Success with the error text as the final message.
+    [Fact]
+    public void AnErrorEventIsAFailureEvenWhenTheProcessExitsZero()
+    {
+        string stdout = File.ReadAllText(FixturePath("error.jsonl"));
+
+        ParsedOutput parsed = backend.Parse(stdout, stderr: "", exitCode: 0);
+
+        Assert.True(parsed.IsError);
+        Assert.Equal("Unexpected server error. Check server logs for details.", parsed.FinalMessage);
+    }
+
+    // Partial text before the failure is kept, so the reason is never silently dropped.
+    [Fact]
+    public void TextProducedBeforeAnErrorEventIsKeptAlongsideTheReason()
+    {
+        string stdout = string.Join('\n',
+        [
+            /*lang=json,strict*/ """{"type":"message.part.updated","sessionID":"ses_1","part":{"id":"p1","type":"text","text":"got this far"}}""",
+            /*lang=json,strict*/ """{"type":"error","sessionID":"ses_1","error":{"name":"UnknownError","data":{"message":"boom"}}}""",
+        ]);
+
+        ParsedOutput parsed = backend.Parse(stdout, stderr: "", exitCode: 0);
+
+        Assert.True(parsed.IsError);
+        Assert.Contains("got this far", parsed.FinalMessage, StringComparison.Ordinal);
+        Assert.Contains("boom", parsed.FinalMessage, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void EmptyStdoutFallsBackToStderrAsFinalMessage()
     {
