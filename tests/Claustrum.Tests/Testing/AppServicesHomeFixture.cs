@@ -11,7 +11,17 @@ public sealed class AppServicesHomeFixture : IDisposable
 {
     public string HomeDirectory { get; } = Directory.CreateTempSubdirectory("claustrum-appservices-home-").FullName;
 
-    public AppServicesHomeFixture() => AppServices.OverrideForTests(new HomeRedirectPlatform(HomeDirectory));
+    // Exposed so a test can set e.g. Platform.Environment["CLAUSTRUM_PARENT_JOB"] for its own
+    // duration — one instance for the whole collection (this class's own doc comment above), so a
+    // test that sets it must put it back (null, the default) before it finishes, not just when it
+    // happens to pass, or a sibling test in another class of this collection inherits it.
+    public HomeRedirectPlatform Platform { get; }
+
+    public AppServicesHomeFixture()
+    {
+        Platform = new HomeRedirectPlatform(HomeDirectory);
+        AppServices.OverrideForTests(Platform);
+    }
 
     public void Dispose()
     {

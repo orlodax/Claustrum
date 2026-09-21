@@ -13,8 +13,13 @@ namespace Claustrum.Tests.Mcp;
 // see NOTES.md), so they are testable directly without a transport. AppServicesHomeFixture (the
 // "AppServices home" collection) keeps every job these tools start out of the real ~/.claustrum/jobs.
 [Collection(AppServicesHomeCollectionDefinition.Name)]
-public sealed class ClaustrumToolsTests
+public sealed class ClaustrumToolsTests(AppServicesHomeFixture fixture) : IDisposable
 {
+    // Reset on every test regardless of whether it set one — the fixture's HomeRedirectPlatform is
+    // one instance shared by every class in this collection (AppServicesHomeFixture's own doc
+    // comment), so a tree id left behind here would leak into DelegateEngineTests/JobManagerTests.
+    public void Dispose() => fixture.Platform.Environment["CLAUSTRUM_PARENT_JOB"] = null;
+
     [Fact]
     public void ListRolesReturnsValidJsonNamingEveryLibraryRole()
     {
@@ -300,5 +305,63 @@ public sealed class ClaustrumToolsTests
             Environment.CurrentDirectory = previous;
             Directory.Delete(cwd, recursive: true);
         }
+    }
+
+    // §D4/NOTES.md "Nothing was needed for MCP": RunStatus already serializes snake_case, so delegate
+    // returns "status":"budget_exceeded" from the same DelegateEngine the CLI uses — no exception, no
+    // McpException, just a normal RunResult document.
+    [Fact]
+    public async Task DelegateOnAnExhaustedTreeReturnsBudgetExceededJsonWithoutThrowingAsync()
+    {
+        string treeId = $"tree-{Guid.NewGuid():N}";
+        fixture.Platform.Environment["CLAUSTRUM_PARENT_JOB"] = treeId;
+        string cwd = Directory.CreateTempSubdirectory("claustrum-mcp-budget-").FullName;
+        try
+        {
+            SeedExhaustedLedger(treeId);
+
+            string json = await ClaustrumTools.DelegateAsync(role: "builder", brief: "hi", cwd: cwd, backend: "nonexistent", cancellationToken: CancellationToken.None);
+
+            using JsonDocument document = JsonDocument.Parse(json);
+            Assert.Equal("budget_exceeded", document.RootElement.GetProperty("status").GetString());
+        }
+        finally
+        {
+            Directory.Delete(cwd, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task DelegateAsyncStartThenJobResultOnAnExhaustedTreeReturnsBudgetExceededJsonWithoutThrowingAsync()
+    {
+        string treeId = $"tree-{Guid.NewGuid():N}";
+        fixture.Platform.Environment["CLAUSTRUM_PARENT_JOB"] = treeId;
+        string cwd = Directory.CreateTempSubdirectory("claustrum-mcp-budget-async-").FullName;
+        try
+        {
+            SeedExhaustedLedger(treeId);
+
+            string startJson = ClaustrumTools.DelegateStart(role: "builder", brief: "hi", cwd: cwd, backend: "nonexistent");
+            using JsonDocument started = JsonDocument.Parse(startJson);
+            string jobId = started.RootElement.GetProperty("job_id").GetString()!;
+
+            string resultJson = await ClaustrumTools.JobResultAsync(jobId);
+            using JsonDocument result = JsonDocument.Parse(resultJson);
+            Assert.Equal("budget_exceeded", result.RootElement.GetProperty("status").GetString());
+        }
+        finally
+        {
+            Directory.Delete(cwd, recursive: true);
+        }
+    }
+
+    // Written directly, like DelegateEngineTests' own seed — the on-disk shape NOTES.md "Tree budget
+    // accounting is a file ledger" documents, already spent down to its own cap.
+    private void SeedExhaustedLedger(string treeId)
+    {
+        string directory = BudgetLedger.DirectoryFor(fixture.Platform, treeId);
+        Directory.CreateDirectory(directory);
+        BudgetLedgerEntry entry = new("seed", "builder", 5.00m, 5.00m, DateTimeOffset.UtcNow.AddMinutes(-5), DateTimeOffset.UtcNow);
+        File.WriteAllText(Path.Combine(directory, "seed.json"), JsonSerializer.Serialize(entry, ClaustrumJsonContext.Default.BudgetLedgerEntry));
     }
 }
