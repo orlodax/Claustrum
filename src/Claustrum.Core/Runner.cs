@@ -50,11 +50,13 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
         JobPaths job = jobOverride ?? JobDirectory.Create(platform);
 
         // docs/PLAN.md §D4: in a job tree the budget belongs to the tree, not to this run, so the
-        // ledger decides before anything is written or spawned — a refusal must cost nothing. A ledger
-        // that cannot be reached at all is the symmetric case to ChargeAsync's below: it leaves through
-        // the same funnel as a Failed result rather than escaping RunCoreAsync as a throw.
-        BudgetAdmission? admission = null;
-        if (options.Tree is { } tree)
+        // ledger decides before anything is written or spawned — a refusal must cost nothing. A caller
+        // that had to decide even earlier, because it pays for isolation first (DelegateEngine's
+        // max_parallel path), admits itself and hands the answer in; admitting a second time here would
+        // reserve the same job twice. A ledger that cannot be reached at all is the symmetric case to
+        // ChargeAsync's below: it leaves through the same funnel as a Failed result, not as a throw.
+        BudgetAdmission? admission = options.Admission;
+        if (admission is null && options.Tree is { } tree)
         {
             try
             {
@@ -66,8 +68,9 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
             }
         }
 
-        // Held for the rest of this method: while this handle is open a sibling's admission reserves
-        // this job's cap instead of handing the same dollars out twice (review finding F2).
+        // Held for the rest of this method, whoever claimed it: while this handle is open a sibling's
+        // admission reserves this job's cap instead of handing the same dollars out twice (F2), and
+        // from here on closing it is FinishAsync's job on every path.
         await using BudgetReservation? reservation = admission?.Reservation;
 
         if (admission is { Admitted: false })

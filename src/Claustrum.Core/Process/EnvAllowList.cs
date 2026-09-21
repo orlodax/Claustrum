@@ -16,11 +16,14 @@ public static class EnvAllowList
         "PATHEXT", "windir", "SystemDrive", "ProgramFiles", "ProgramFiles(x86)", "ProgramData",
     ];
 
-    // CLAUSTRUM_ because a spawned architect is itself a claustrum caller: its own `claustrum run`
-    // children must inherit CLAUSTRUM_PARENT_JOB and CLAUSTRUM_HOME, or they open a second ledger
-    // under a different home and the tree budget of docs/PLAN.md §D4 caps nothing.
+    // ⚠ Deliberately no CLAUSTRUM_ prefix (2026-09-21): membership in a job tree is handed out by a
+    // coordinator, never forwarded by a member. A member holds its §D4 reservation for its whole
+    // lifetime, so a `claustrum run` that inherited its CLAUSTRUM_PARENT_JOB would be refused by the
+    // ledger — measured: `$0.00 remaining`. §D3's `coordinate` instead puts CLAUSTRUM_PARENT_JOB (and
+    // CLAUSTRUM_HOME when set) on its architect's request env, where caller-supplied values win over
+    // this list, and that architect's own children inherit both from the backend's shell.
     private static readonly string[] prefixes =
-        ["XDG_", "ANTHROPIC_", "OPENROUTER_", "OPENCODE_", "CURSOR_", "COPILOT_", "NODE_", "CLAUSTRUM_"];
+        ["XDG_", "ANTHROPIC_", "OPENROUTER_", "OPENCODE_", "CURSOR_", "COPILOT_", "NODE_"];
 
     private const string ApiKeySuffix = "_API_KEY";
 

@@ -51,9 +51,11 @@ public static class BudgetLedger
     /// Claims this job's slice of the tree budget, or refuses it. Everything happens under the ledger
     /// lock: a live sibling's granted cap counts against the tree exactly like a finished one's cost,
     /// and the cap granted here is <paramref name="requestedCap"/> — or an equal share of what is
-    /// left, for a role that fans out — clamped to the remainder. The admission owns a
-    /// <see cref="BudgetReservation"/> that must be completed and disposed: while it is open, this
-    /// job's cap stays reserved against every other child of the tree.
+    /// left, for a role that fans out — clamped to the remainder and floored to whole cents. The
+    /// admission owns a <see cref="BudgetReservation"/> that must be completed and disposed: while it
+    /// is open, this job's cap stays reserved against every other child of the tree. This is the only
+    /// binding call: whoever must decide before spending anything (a worktree, a branch) calls it
+    /// itself and hands the outcome on, rather than peeking and asking again later.
     /// </summary>
     public static async Task<BudgetAdmission> AdmitAsync(IPlatform platform, JobTreeBudget tree, string jobId, string role, decimal? requestedCap)
     {
@@ -67,18 +69,27 @@ public static class BudgetLedger
         string summary = $"tree '{tree.TreeId}': {Dollars(state.Spent)} spent + {Dollars(state.Reserved)} reserved "
             + $"of {Dollars(tree.BudgetUsd)}, {Dollars(remaining)} remaining";
 
+        // A role without max_parallel divides by 1, so its first child reserves the whole remainder and
+        // its second finds nothing: the way out is the caller's own ceiling, so the refusal names it.
+        string siblingHint = state.Reserved > 0 ? "; pass --budget to reserve a smaller slice for concurrent siblings" : "";
+        string exhausted = $"{summary}; nothing left for role '{role}'{siblingHint}";
+
         if (remaining <= 0)
-            return new BudgetAdmission(Admitted: false, state.Spent, state.Reserved, remaining,
-                EffectiveCap: null, Reason: $"{summary}; nothing left for role '{role}'", Reservation: null);
+            return Refused(state, remaining, exhausted);
 
         if (requestedCap is { } cap && cap > remaining)
-            return new BudgetAdmission(Admitted: false, state.Spent, state.Reserved, remaining,
-                EffectiveCap: null, Reason: $"{summary}; --budget {Money(cap)} exceeds it", Reservation: null);
+            return Refused(state, remaining, $"{summary}; --budget {Money(cap)} exceeds it");
 
         // Share is the role's max_parallel: siblings that start together each take a slice of the
         // remainder instead of the whole of it, so none can starve the others before it even runs. An
-        // explicit --budget is the caller's own ceiling and is never divided, only clamped.
-        decimal effectiveCap = Math.Min(requestedCap ?? remaining / tree.Share, remaining);
+        // explicit --budget is the caller's own ceiling and is never divided, only clamped. Cents,
+        // floored: the exact quotient (`0.6666666666666666666666666667`) used to reach
+        // --max-budget-usd and request.json verbatim, and rounding *down* is the only direction that
+        // cannot over-grant. A slice that floors to $0 is the same answer as an empty tree.
+        decimal effectiveCap = Cents(Math.Min(requestedCap ?? remaining / tree.Share, remaining));
+        if (effectiveCap <= 0)
+            return Refused(state, remaining, exhausted);
+
         BudgetReservation reservation = Claim(directory, tree.TreeId, jobId, role, effectiveCap);
 
         return new BudgetAdmission(Admitted: true, state.Spent, state.Reserved, remaining, effectiveCap, Reason: null, reservation);
@@ -86,8 +97,11 @@ public static class BudgetLedger
 
     /// <summary>
     /// What the tree has left right now: the admission's arithmetic without its decision, and without
-    /// writing anything at all. DelegateEngine peeks with it to skip worktree isolation for a child a
-    /// spent tree is about to refuse anyway; the binding call is still AdmitAsync's, under the lock.
+    /// writing anything at all — a report, for a caller that only wants to show the number.
+    /// ⚠ Read-only means non-binding: a sibling's reservation is released the moment it finishes, so a
+    /// remainder read here can climb back before the next <see cref="AdmitAsync"/>. Nothing may be
+    /// skipped on the strength of it (2026-09-21: gating worktree isolation on a `&lt;= 0` peek ran a
+    /// job directly in the caller's cwd, un-isolated and outside the concurrency cap, in that window).
     /// </summary>
     public static async Task<decimal> PeekRemainingAsync(IPlatform platform, JobTreeBudget tree)
     {
@@ -230,6 +244,13 @@ public static class BudgetLedger
         File.WriteAllText(path, JsonSerializer.Serialize(entry, ClaustrumJsonContext.Default.BudgetLedgerEntry));
 
     private static string EntryPath(string directory, string jobId) => Path.Combine(directory, $"{Sanitize(jobId)}.json");
+
+    private static BudgetAdmission Refused(BudgetLedgerState state, decimal remaining, string reason) =>
+        new(Admitted: false, state.Spent, state.Reserved, remaining, EffectiveCap: null, Reason: reason, Reservation: null);
+
+    // Whole cents, always downwards: Math.Round would hand out a cent nobody has on a sub-cent
+    // remainder, and every number the ledger writes is also a number `jobs budget` prints as `0.00`.
+    private static decimal Cents(decimal value) => Math.Floor(value * 100m) / 100m;
 
     private static string Money(decimal value) => value.ToString("0.00", CultureInfo.InvariantCulture);
 

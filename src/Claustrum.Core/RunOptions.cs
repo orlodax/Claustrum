@@ -8,6 +8,13 @@ namespace Claustrum.Core;
 // reaches Claustrum's own stderr (A4) — both are call-site concerns, not request data. BackendConfig
 // and EnvPassthroughAll are the caller's resolved `claustrum.json` values (`backends.<name>.path`,
 // `defaults.env_passthrough`) for the same reason: Runner does not read Config itself (NOTES.md
-// "Backend config and env passthrough are call-site data, not RunRequest fields").
-// `Tree` is the same category, documented on JobTreeBudget: the job tree this run belongs to (§D4).
-public sealed record RunOptions(int DiffByteCapBytes, BackendConfig? BackendConfig = null, bool EnvPassthroughAll = false, Action<string>? OnStreamLine = null, JobTreeBudget? Tree = null);
+// "Backend config and env passthrough are call-site data, not RunRequest fields"). `Tree` and
+// `Admission` are the same category and carry §D4: the job tree this run belongs to, and — when the
+// caller had to admit before Runner — the answer it already holds, documented where they live.
+public sealed record RunOptions(
+    int DiffByteCapBytes,
+    BackendConfig? BackendConfig = null,
+    bool EnvPassthroughAll = false,
+    Action<string>? OnStreamLine = null,
+    JobTreeBudget? Tree = null,
+    BudgetAdmission? Admission = null);
