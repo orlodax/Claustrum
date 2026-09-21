@@ -1,9 +1,1 @@
-{
-  "result": "No defects found. The change looks correct.\n\n```claustrum-report\n{\"status\":\"done\",\"findings\":[],\"would_change_if_broader\":[]}\n```",
-  "session_id": "fabricated-cursor-session-0001",
-  "is_error": false,
-  "usage": {
-    "input_tokens": 1150,
-    "output_tokens": 84
-  }
-}
+{"type":"result","subtype":"success","is_error":false,"duration_ms":8623,"duration_api_ms":8623,"result":"Created `hello.txt` with the contents `hi`.","session_id":"79f194af-4fcb-4d3b-8201-6c9caa501e27","request_id":"b3f491c8-88c0-4292-a228-43d3f510f378","usage":{"inputTokens":9277,"outputTokens":110,"cacheReadTokens":26240,"cacheWriteTokens":0}}
