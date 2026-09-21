@@ -142,13 +142,36 @@ public sealed class ClaudeBackend(IPlatform platform) : IBackend
 
     private static ParsedOutput BuildFromResult(JsonElement root, int exitCode, List<ChangedFile> reportedEdits)
     {
-        string finalMessage = root.TryGetProperty("result", out JsonElement resultProp) ? resultProp.GetString() ?? "" : "";
+        string finalMessage = FinalMessage(root);
         string? sessionId = root.TryGetProperty("session_id", out JsonElement sessionProp) ? sessionProp.GetString() : null;
         decimal? cost = root.TryGetProperty("total_cost_usd", out JsonElement costProp) && costProp.TryGetDecimal(out decimal costValue) ? costValue : null;
         bool isError = root.TryGetProperty("is_error", out JsonElement errorProp) && errorProp.ValueKind == JsonValueKind.True;
         Usage? usage = root.TryGetProperty("usage", out JsonElement usageProp) ? ParseUsage(usageProp) : null;
 
         return new ParsedOutput(finalMessage, sessionId, cost, usage, [.. reportedEdits], root, isError || exitCode != 0);
+    }
+
+    // 2026-09-21 (issue #12): a result document that claude terminated on its own budget flag carries
+    // no `result` at all — the text sits in an `errors` array — so reading `result` alone left
+    // FinalMessage and Error empty and `doctor --probe` printed "failed (no error message)".
+    private static string FinalMessage(JsonElement root)
+    {
+        if (TryGetString(root, "result") is { Length: > 0 } result)
+            return result;
+
+        if (root.TryGetProperty("errors", out JsonElement errorsProp) && errorsProp.ValueKind == JsonValueKind.Array)
+        {
+            string joined = string.Join("; ", errorsProp.EnumerateArray()
+                .Where(error => error.ValueKind == JsonValueKind.String)
+                .Select(error => error.GetString())
+                .Where(text => text is { Length: > 0 }));
+
+            if (joined.Length > 0)
+                return joined;
+        }
+
+        // Last resort: the machine-readable reason, which at least names the failure class.
+        return TryGetString(root, "subtype") is { } subtype && subtype.StartsWith("error_", StringComparison.Ordinal) ? subtype : "";
     }
 
     private static Usage ParseUsage(JsonElement usage) => new(
@@ -159,6 +182,9 @@ public sealed class ClaudeBackend(IPlatform platform) : IBackend
 
     private static int? TryGetInt(JsonElement parent, string propertyName) =>
         parent.TryGetProperty(propertyName, out JsonElement property) && property.TryGetInt32(out int value) ? value : null;
+
+    private static string? TryGetString(JsonElement parent, string propertyName) =>
+        parent.TryGetProperty(propertyName, out JsonElement property) && property.ValueKind == JsonValueKind.String ? property.GetString() : null;
 
     private static void CollectToolUseEdits(JsonElement root, List<ChangedFile> edits)
     {

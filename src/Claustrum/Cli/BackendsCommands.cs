@@ -1,4 +1,5 @@
 using System.CommandLine;
+using System.Globalization;
 using System.Text.Json;
 using Claustrum.Core.Backends;
 using Claustrum.Core.Config;
@@ -59,7 +60,7 @@ public static class BackendsCommands
         {
             Console.WriteLine(probeSkipped
                 ? "probe: skipped for every backend (CLAUSTRUM_SKIP_PROBE set; no paid request made)"
-                : "probe: one minimal paid request per installed backend (cap $0.05 each; role doctor-probe under ~/.claustrum/jobs)");
+                : $"probe: one minimal paid request per installed backend (cap ${DoctorProbe.ProbeBudgetUsd.ToString("0.00", CultureInfo.InvariantCulture)} each; role doctor-probe under ~/.claustrum/jobs)");
             Console.WriteLine();
         }
 

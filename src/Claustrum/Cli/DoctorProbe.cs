@@ -21,7 +21,11 @@ internal static class DoctorProbe
     // bare failure: telling "not logged in" apart from "broken" is the probe's whole point.
     private static readonly string[] authMarkers = ["auth", "login", "unauthorized", "401", "403", "api key", "credential", "token"];
 
-    private const decimal ProbeBudgetUsd = 0.05m;
+    // Raised from $0.05 on 2026-09-21: a real one-word probe cost $0.1200704 on Claude Code 2.1.278,
+    // because a cold cache bills the system prompt and tool definitions as cache creation, and claude
+    // killed it with subtype error_max_budget_usd. Still a guard against a runaway backend that starts
+    // working, not an estimate of the round trip.
+    public const decimal ProbeBudgetUsd = 0.50m;
     private const int ProbeTimeoutSeconds = 120;
     private const int ProbeDiffCapBytes = 4 * 1024;
 

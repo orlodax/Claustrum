@@ -164,16 +164,50 @@ public static class WorktreeSnapshot
         return Encoding.UTF8.GetString(bytes, 0, end);
     }
 
+    // Walked by hand rather than with SearchOption.AllDirectories because 2026-09-21 (issue #12) one
+    // unreadable subdirectory in a probe's cwd threw UnauthorizedAccessException out of the *after*
+    // snapshot and turned a finished run into Failed. Same convention as HashWorktreeFile: an entry
+    // that cannot be read is skipped, so a change under it is missed rather than fatal.
     private static Dictionary<string, (long Size, DateTime ModifiedUtc)> ScanFiles(string cwd)
     {
         Dictionary<string, (long, DateTime)> result = [];
-        foreach (string path in Directory.EnumerateFiles(cwd, "*", SearchOption.AllDirectories))
+        Stack<string> pending = new();
+        pending.Push(cwd);
+
+        while (pending.TryPop(out string? directory))
         {
-            FileInfo info = new(path);
-            result[Path.GetRelativePath(cwd, path)] = (info.Length, info.LastWriteTimeUtc);
+            foreach (string subdirectory in ReadableEntries(() => Directory.GetDirectories(directory)))
+                pending.Push(subdirectory);
+
+            foreach (string path in ReadableEntries(() => Directory.GetFiles(directory)))
+            {
+                try
+                {
+                    FileInfo info = new(path);
+                    result[Path.GetRelativePath(cwd, path)] = (info.Length, info.LastWriteTimeUtc);
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    // A file that vanished mid-scan, or whose metadata is unreadable, contributes no entry.
+                }
+            }
         }
 
         return result;
+    }
+
+    // Eager Get* rather than Enumerate*: a lazy enumerator throws on MoveNext, which a try around the
+    // call site would not catch.
+    private static string[] ReadableEntries(Func<string[]> read)
+    {
+        try
+        {
+            return read();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return [];
+        }
     }
 
     private static SnapshotDiff DiffFileScans(Dictionary<string, (long Size, DateTime ModifiedUtc)> before, Dictionary<string, (long Size, DateTime ModifiedUtc)> after)
