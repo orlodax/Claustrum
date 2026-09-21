@@ -576,6 +576,9 @@ only the pre-auth failure path. Still a large upgrade over the original plan's g
 
 ## The cursor backend (2026-09-18, issue #4/M3): fixture-only, as the plan already expected
 
+*Superseded 2026-09-21 by "The cursor backend, validated against a real install" below — kept as the
+record of what was guessed and why.*
+
 Unlike opencode/copilot, Cursor's real CLI could not be installed here at all — it ships as a
 standalone installer script (`curl https://cursor.com/install -fsS | bash`), not an npm package, and
 this environment's network policy plus the lack of a Cursor account make that install unverifiable
@@ -720,6 +723,8 @@ covered `binary` (M1) and the merged-config dump; `--probe` now adds three of th
 - **`os`**: generalizes the plan's own example ("warns when a backend resolved from WSL is a
   `/mnt/c/...` Windows exe") to any binary-path/cwd mismatch across the `/mnt/` boundary.
 - **`probe` itself — the actual "1-token reply OK, cost shown" round trip — is not implemented.**
+  *(Implemented 2026-09-21, issue #12 — see "doctor --probe really calls a backend now" below; the
+  paragraph that follows is the receipt for why it was deferred.)*
   It needs a real, authenticated call against whichever backend is being checked, which (a) this
   environment cannot exercise for any of the five backends (no working credential for any provider
   was available anywhere in this session) and (b) genuinely spends the user's own money/quota, which
@@ -803,3 +808,608 @@ Windows exe, and the path-separator-agnostic assertions in ConfigTests/McpConfig
 measured WSL datapoints in this file (the 2.6s git-stdin timing, the sync-manifest portability
 finding) are dated observations and stay as written. The change is about how *we* build, not about
 what Claustrum supports.
+
+## Tree budget accounting is a file ledger (2026-09-21, issue #9/M3)
+
+`docs/PLAN.md` §D4's second sentence — "`budget_usd` is enforced across the job tree: a child that
+would exceed the remaining budget is refused with status `BudgetExceeded`" — was the last unbuilt
+half of M3. Until now `ResolvedRun.BudgetUsd` reached the backend as `--max-budget-usd` and nothing
+else: `RunStatus.BudgetExceeded` and its exit-5 row in `RunCommand.ExitCodeFor` were the only
+references to the concept in the repo, so N children of one cast could each spend the *whole* cast
+budget.
+
+**A tree exists only when `CLAUSTRUM_PARENT_JOB` says so.** §D2/§D3 already reserve that variable to
+"link child jobs to the coordinate job", so it is also the tree's identity here: trimmed and
+non-empty, its value *is* the tree id (`BudgetLedger.TreeIdFor`). No variable ⇒ no tree ⇒ behaviour
+is exactly what it was before this slice — the per-run cap `--budget ?? cast budget_usd ??
+defaults.budget_usd`, and no cap at all for a cast that says `budget_usd: null`. Measured
+2026-09-21 on a fresh home: no tree ⇒ `success`, the explicit `--budget 0.10` reaches `request.json`
+unchanged, no warnings, and **no `budget/` directory is created at all**. The value is never checked
+against the job store: a tree is an accounting bucket, not a job that has to exist, which is what
+lets a *host* architect (§D3's other mode, where no `coordinate` job exists at all) export one by
+hand and get the same accounting.
+
+**The total has to survive across processes**, for the reason `RoleConcurrencyGate` already exists:
+a spawned architect fans children out as separate `claustrum run` CLI processes, so an in-memory sum
+in `JobManager` would cap nothing. Hence a ledger on disk, deliberately in the same shape as the
+gate's slot files — `JobDirectory.ResolveHome` was extracted from `ResolveRoot` so that `jobs/` and
+`budget/` hang off one root and `CLAUSTRUM_HOME` relocates both together (a test that isolates one
+and not the other would be worse than no isolation).
+
+```
+<claustrum home>/budget/<sanitized tree id>/
+  .lock                 # exclusive-open mutex, never deleted
+  <jobId>.json          # one BudgetLedgerEntry per job
+  <jobId>.live          # held FileShare.None while that job runs; deleted when it completes
+```
+```json
+{"job_id":"20260921-160924-6e3a9f88","role":"builder","cap":0.10,"cost":0.10,
+ "started_at":"2026-09-21T16:09:24.4730809+00:00","finished_at":"2026-09-21T16:09:24.4733942+00:00",
+ "abandoned":false}
+```
+
+`BudgetLedgerEntry` goes through `ClaustrumJsonContext` like every other DTO (AGENTS.md), so the
+files are snake_case and the AOT publish stays at zero trim warnings. `cap` is the slice admission
+granted — and what the job *reserves* while it is still live; `cost` is what it was finally charged
+and stays `null` until it finishes. `abandoned` is additive and defaults to `false`, so an entry
+written before this revision still deserializes (measured: a hand-seeded entry with no `abandoned`
+key reads back as `done`).
+
+### The admission rule
+
+`BudgetLedger.AdmitAsync`, entirely under the lock:
+
+1. **Survey.** For every entry: a finished one contributes its `cost`; an unfinished one is probed by
+   trying to open its `<jobId>.live` exclusively. The open *failing* means a live holder ⇒ its `cap`
+   is added to `reserved`. The open *succeeding*, or no such file, means the holder is gone ⇒ the
+   entry is rewritten `cost: null, abandoned: true, finished_at: now` and counts $0 from then on.
+2. `remaining = treeBudget - spent - reserved`.
+3. `remaining <= 0` ⇒ refused, "nothing left for role '<role>'".
+4. an explicit `requestedCap > remaining` ⇒ refused, `--budget 0.50 exceeds it`.
+5. otherwise `effectiveCap = min(requestedCap ?? remaining / share, remaining)`, the `.live` handle
+   is taken, the entry is written with `cost: null`, and the job is admitted.
+
+`share` is `JobTreeBudget.Share` = `max(1, the role's max_parallel ?? 1)`, set by `DelegateEngine`: a
+fan-out role takes a slice of what is left rather than all of it, a sequential role takes the whole
+remainder. An explicit `--budget` is the caller's own ceiling and is never divided, only clamped.
+
+The refusal message names the tree, the two sums, the budget and the remainder, because it is the
+only thing the caller sees: `tree 'tree-abc': $4.90 spent + $0.00 reserved of $5.00, $0.10 remaining;
+--budget 0.50 exceeds it`. A negative remainder prints as `-$0.50`, not `$-0.50` — it is a normal
+state, not an anomaly (step 3's own message shows it), since a backend can overshoot the
+`--max-budget-usd` it was given.
+
+**Step 5's clamp is what makes the cap hard per child.** `Runner` rewrites the request with the
+granted cap (`request = request with { BudgetUsd = granted }`) *before* `request.json` is written, so
+both the persisted request and the backend's own `--max-budget-usd` carry the slice, not what the
+caller asked for. Measured through the real binary, tree seeded with $4.90 of a $5.00 budget:
+`--budget 0.5` ⇒ exit 5 and `"status":"budget_exceeded"`; no `--budget` ⇒ admitted with
+`"budget_usd":0.10` in `request.json`. Correspondingly, `DelegateEngine` passes only an *explicit*
+`--budget` as the per-run cap once a tree is in play — the cast's number is the tree's, and handing
+it to the child as well would ask the ledger "may this child spend the whole tree budget?" on every
+single call.
+
+### Reserving is what the first cut got wrong
+
+The first cut summed only *finished* costs, so `remaining` ignored everything still in flight. Review
+measurement, three concurrent children of a $2.00 cast: `A cap=2, B cap=2, C cap=2` — the tree cap
+was hard per child and did nothing at all across a wave of siblings, which is the one case §D4 exists
+for. The fix is the `.live` file, and it is `RoleConcurrencyGate`'s exclusive-open trick read
+backwards: the gate opens a file *to claim* a slot, the ledger tries to open one *to ask whether
+somebody else still holds it*. Measured 2026-09-21 with an unrelated `flock -x` holding
+`sibling.live` for an entry with `cap 2.50` on a $5.00 tree: `jobs budget` reports it `running` with
+`reserved $2.50`, the next admission is granted exactly $1.25 (`share 2`), and `--reset` refuses with
+exit 2 naming the job. Release the handle without completing and the next admission rewrites that
+entry `abandoned: true` and hands out the full $5.00.
+
+**The probe must be instantaneous, and it is**: an exclusive open against a live holder fails at once
+rather than waiting, which is what makes it safe to run inside the ledger lock. `FileNotFoundException`
+is caught *before* `IOException` (it derives from it) because "no file" and "file I could open" are
+the same answer — the holder is gone.
+
+**`.live` is opened before the entry is written**, inside the same critical section, so no rival can
+read an entry whose holder has not yet claimed its handle and mistake it for a dead one.
+`CompleteAsync` runs the other way round: the final entry first, then the handle is closed and the
+file best-effort deleted — safe, because a finished entry is never probed again.
+
+### Cost-less backends are charged their cap
+
+cursor and copilot report no cost at all, so their entries closed at $0 and the cap was a no-op: a
+tree could run forever on backends that never bill it (review finding). `Reservation.CompleteAsync`
+therefore charges `cost ?? (ran ? cap : 0)`, where `ran` is `Runner`'s "the backend process actually
+came back with a `ProcessOutcome`". Measured with a stub backend that exits 0 printing
+`{"result":"OK"}`: the entry closes at the granted `$0.10` and the result carries one warning,
+`cost not reported by backend 'claude'; charged the granted cap $0.10 to tree 'tree-costless'` — a
+caller reading `cost_usd: null` has to be told the tree was charged anyway.
+
+⚠ The same rule charges the full cap for a `Timeout` or `Cancelled` run on a cost-less backend. That
+is deliberate: the process did burn whatever it burned, and the only two alternatives were to charge
+$0 (the bug above, back again through a side door) or to guess.
+
+The paths where **nothing** ran still charge $0 — `BackendMissing`, a bad `cwd`, a `backend.Build`
+throw. Measured: `--backend nonexistent` inside a tree writes `cost: 0` and leaves the remainder
+untouched, so a wave of typos cannot spend a tree.
+
+### One funnel closes the entry
+
+Every return after admission goes through `Runner.FinishAsync`, which writes `result.json` and — only
+for a job the ledger admitted — completes its reservation. Routing all of them through one place is
+the point: a new `return` added later cannot forget to record, and it is also where `ran` is decided
+per path. `MissingBackendResult` delegates to a shared `NoProcessResult` builder (status + message are
+the only difference between it and the refusal result), so the refusal's "nothing ran" shape is not a
+third copy of the same 20 fields.
+
+**Where the accounting lives, and why not `JobManager`.** The issue suggested `JobManager` "already
+owns the async job tree", but it owns only the jobs *this MCP server* started; the CLI door never
+touches it. Admission therefore sits in `Runner.RunCoreAsync`, the one place both doors reach, right
+after the job directory exists and before anything is written or spawned — a refusal costs one job
+directory with a `result.json` in it and nothing else (no `system.md`, no `request.json`, no process,
+no temp files). `RunOptions.Tree` (`JobTreeBudget`) is how the tree reaches Core: call-site data,
+like `BackendConfig` and `EnvPassthroughAll`, so Core still never reads a cast or an env var of its
+own (NOTES.md "Backend config and env passthrough are call-site data, not RunRequest fields").
+
+**A ledger error at admission time is a `Failed` result, not a throw.** It is the symmetric case to
+the one `CompleteAsync` already had: `TimeoutException`/`IOException`/`UnauthorizedAccessException`
+around `AdmitAsync` leaves through the same funnel with `RunStatus.Failed`, the message in `Error`,
+and nothing spawned. Measured by making the tree's ledger path a *file*: `failed`, exit 1, one
+`result.json` in the job directory and no `request.json` beside it.
+
+### The gaps this shape still accepts, deliberately
+
+- **The slice decays across an overlapping wave.** `remaining / share` divides what is left *after*
+  live siblings are subtracted, so siblings admitted back to back on a $5.00 tree with `share 2` get
+  $2.50 and then $1.25, not $2.50 twice (both numbers measured). It is monotone and can never
+  over-commit, which is the property that matters; "equal slices" only holds for the first admission
+  of a wave. Dividing by `share` before subtracting reservations would over-commit instead, and
+  nothing at admission time knows how many siblings are actually coming.
+- **A holder that closes its handle and completes anyway wins.** If a sibling has already rewritten
+  the entry as `abandoned` (worth $0) and the real holder then calls `CompleteAsync`, the entry is
+  reopened with its true cost and `abandoned: false` — a real completion outranks a guess, at the
+  price of the sibling having decided on a stale $0. In `Runner` this cannot happen (Complete always
+  precedes Dispose); it is reachable only by a caller that drops the reservation by hand.
+- **An abandoned job's `.live` file is left on disk.** It is empty, its entry is finished so nobody
+  probes it again, and deleting a file while holding an open handle to it is not portable. `jobs
+  budget --reset` is the broom.
+- **A `CompleteAsync` that genuinely cannot write** (lock timeout, read-only mount) does not throw
+  over an already-finished run — NOTES.md "Runner always yields a result after the process ran" — but
+  it does not vanish either: the failure rides out as a warning on the `RunResult`, because a silently
+  unrecorded cost is exactly the error that overstates what is left.
+
+### Decisions worth knowing
+
+- **`CLAUSTRUM_` is on `EnvAllowList.prefixes`.** Without it the tree id died at the first process
+  hop: a spawned architect *is* a claustrum caller, and its own `claustrum run` children have to
+  inherit `CLAUSTRUM_PARENT_JOB` and `CLAUSTRUM_HOME` or they open a second ledger under a different
+  home and cap nothing. A prefix rather than two exact names, because every other tool family on that
+  list is a prefix and none of Claustrum's own variables is a secret. ⚠ It follows that anything
+  named `CLAUSTRUM_*` now reaches a backend process — `ProcessRunnerTests`' "filtered variable" marker
+  was named `CLAUSTRUM_TEST_SECRET_<guid>` and had to move off the prefix to keep testing filtering.
+- **The whole ledger API is async** (`AdmitAsync`/`CompleteAsync`/`PeekRemainingAsync`/`ReadAsync`):
+  `Runner` is async and the first cut blocked a pool thread on `Thread.Sleep` while polling the lock.
+  The poll takes no `CancellationToken` on purpose — the wait is already bounded at 5s, and the one
+  caller that must write whatever happens is the finish path, whose token has usually already fired.
+  A concurrency test still has to put two admits on two threads: the lock serializes them, so what it
+  observes is the *second* admission seeing the first one's reservation.
+- **The lock is the gate's trick, and the same reasoning applies to not deleting it**: unlinking it
+  while a rival races to reopen the same path lets that lock land on an orphaned inode while a third
+  process opens a fresh file at the same path and believes it holds the same lock. The wait is
+  bounded at 5s with a `TimeoutException` naming the directory, so one stuck holder cannot turn every
+  other child of the tree into a run with no output and no end.
+- **The tree id is sanitized into a directory name** the way the gate sanitizes its slot keys, and
+  the sanitizer is a second copy rather than a shared helper: this slice deliberately left
+  `RoleConcurrencyGate` untouched. Two ids differing only in unsafe characters therefore share one
+  ledger, which is the same trade the gate already makes for cast/role names; a bare `.` or `..`
+  additionally loses its dots, because it would otherwise name the `budget/` root or the home above
+  it instead of a tree. Since `/` and `\` collapse to `_`, `jobs budget --reset` can never be talked
+  into deleting anything outside `budget/`.
+- **`claustrum jobs budget <tree> [--reset]` exists because exporting a tree id makes the ledger
+  permanent.** It prints the directory, one line per entry (job id, role, cap, cost,
+  `running|done|abandoned` from the same probe) and then `spent`/`reserved`; `--reset` deletes the
+  tree's directory and refuses with exit 2, naming the job, while any entry is still live. The read
+  path is genuinely read-only: a dead holder is *reported* abandoned without rewriting the file, which
+  stays the next admission's job. The delete happens after the lock is released, because the directory
+  being removed contains the lock file and Windows will not unlink a directory with an open handle in
+  it; a child admitted in that gap is the race any explicit reset has.
+- **A refused child in the `max_parallel > 1` path never takes a slot.** The isolated path acquires
+  the concurrency gate and creates a worktree + branch *before* `Runner` ever sees the request, so a
+  tree with nothing left was paying for isolation it would immediately throw away.
+  `DelegateEngine.WorthIsolatingAsync` peeks with `BudgetLedger.PeekRemainingAsync` first and falls
+  through to the direct path when the remainder is `<= 0`; the binding decision still happens inside
+  `Runner` under the lock, and a peek that cannot read the ledger isolates rather than guessing.
+  Measured with a spent tree, `max_parallel: 2` and a cwd that is *not* a git repo — which would have
+  failed loudly on any attempt to isolate: exit 5, no `worktree`/`branch` on the result, no
+  `.claustrum/locks` and no `.claustrum/worktrees` created.
+- **A refused job that did get isolated is cleaned the normal way.** A refusal is a *returned* result
+  with a `result.json` on disk, not a throw, so `JobWorktree.TryRemoveAbandonedAsync` (which exists
+  for throws) does not fire and `jobs clean` — which treats `result.json` as "finished" — removes the
+  worktree and keeps the branch, exactly as it does for a `backend_missing` job.
+- **Nothing was needed for MCP.** `RunStatus` already serializes snake_case, so `delegate` and
+  `job_result` return `"status":"budget_exceeded"` from the same `DelegateEngine`; only the CLI has
+  an exit code to map, and `RunCommand.ExitCodeFor` already mapped it to 5.
+- **`remaining / share` is not rounded.** A three-way split of $5.00 grants
+  `1.6666666666666666666666666667` and that string reaches `--max-budget-usd` verbatim. Truncating
+  would be prettier but would either over-grant or, on a sub-cent remainder, hand out a $0 cap; the
+  exact decimal is the honest number and only `claude` ever parses it.
+
+## The claustrum MCP server is registered in opencode.json too (2026-09-21, issue #15/M3)
+
+`OpencodeSync` wrote only `.opencode/agent/*.md` + `.opencode/command/claustrum.md`; the MCP server
+that makes `delegate` available inside an opencode session had to be registered by hand. It now
+merges a `claustrum` entry into the config's own top-level `mcp` key, through the *same*
+`McpConfigSync` that already handles `.mcp.json`/`.vscode/mcp.json` — so the idempotency and
+foreign-key rules are one implementation, not two that drift.
+
+**Documented target shape** (opencode.ai/docs/mcp-servers, checked 2026-09-21):
+
+```json
+{ "$schema": "https://opencode.ai/config.json",
+  "mcp": { "claustrum": { "type": "local", "command": ["claustrum", "mcp"] } } }
+```
+
+`command` is an **array** here, unlike the `command` + `args` split `.mcp.json` and
+`.vscode/mcp.json` use — the one real shape difference between the two sides. The optional
+`enabled`/`environment`/`timeout`/`cwd` fields are deliberately omitted so opencode's own defaults
+apply.
+
+**Three decisions the shape forced:**
+
+- **`$schema` only on creation.** A file created from nothing gets `$schema` as its first property
+  (it is what opencode's docs show, and opencode's editor tooling keys off it); a config a human
+  already has is never given one, and an existing one is never rewritten. Implemented as
+  `McpConfigTarget.RootOnCreate`, which seeds the root object only on the `!File.Exists` path.
+- **`opencode.jsonc` is targeted only when `opencode.json` is absent.** opencode reads either name.
+  Writing back through `JsonNode` drops comments (the trade-off `McpConfigSync` already documents for
+  `.vscode/mcp.json`), so preferring `.json` means a repo with neither gets the documented plain-JSON
+  name, and a repo that deliberately chose JSONC is not given a second, shadowing config file.
+- **`--global` never touches it.** `opencode.json` is a repo-root file, not one of docs/PLAN.md §B4's
+  `--global` targets (agent directories, the desktop app's own config) — the same rule ClaudeSync
+  applies to `.mcp.json`, and the same reason the manifest is skipped there too.
+
+### Two refactors this needed, and why they are not incidental
+
+**`McpConfigSync` now merges one harness-declared target, not two hardcoded claude ones.** It takes a
+`McpConfigTarget(Harness, Path, SectionKey, Entry, RootOnCreate)` and the `SyncAccumulator` the
+harnesses already thread around, instead of the five parallel out-lists it had — which is exactly the
+smell `SyncAccumulator`'s own doc comment says it was created to end (it had been copied into
+`OpencodeSync` and `CopilotSync` before that extraction; `McpConfigSync` was the last holdout). The
+claude entries moved to `ClaudeSync.MergeMcpConfigs`, next to the harness that owns them: where the
+file lives and what the entry looks like is precisely what differs per harness, everything else is
+shared. The manifest record's harness field is now the target's, so an `opencode.json` entry is
+attributed to `opencode` rather than to `claude`.
+
+**`ReadManifest`/`UpdateManifest` moved out of `ClaudeSync` into `SyncManifestStore`.** Two harnesses
+now both write `.claustrum/sync-manifest.json` in a single `sync --only claude,opencode` run.
+`Update` already merged into what was on disk keyed by path rather than replacing the file, which is
+what makes that safe — the second harness's write preserves the first's entries. Verified live: one
+run of `sync --only claude,opencode --roles builder` produces a manifest holding all eleven paths
+(four `.claude/…`, `.mcp.json`, `.vscode/mcp.json`, four `.opencode/…`, `opencode.json`), and the
+rerun reports every one of them skipped.
+
+A side effect worth knowing: `sync --only opencode` now creates `.claustrum/sync-manifest.json` where
+before it created nothing, and records opencode's *agent and command* files in it as well — those
+were previously written with no manifest trace at all, despite `SyncManifest`'s doc comment claiming
+it holds "every file the last `sync` run wrote, across roles/harnesses". `CopilotSync` still writes
+no manifest; it has no JSON target that needs one, so it was left alone.
+
+## doctor --probe really calls a backend now (2026-09-21, issue #12/M3)
+
+docs/PLAN.md §B6's fourth check — "`probe` (1-token 'reply OK' call, cost shown)" — was the one
+bullet PR #8 left out ("doctor --probe (2026-09-18, issue #4/M3)" above says why: no working
+provider credential was reachable then). It is now implemented in `src/Claustrum/Cli/DoctorProbe.cs`,
+wired into `backends doctor --probe` only. The MCP `doctor` tool (`ClaustrumTools.DoctorAsync`) is
+deliberately untouched: no MCP tool may spend the user's money without a `--probe` typed by hand.
+
+**The probe is a real role run, not a bespoke HTTP call.** It goes through the same
+`Config.Resolve` → `Runner.RunAsync` pipeline every other run uses, so whatever `claustrum.json`,
+`backends.<name>.path` and `defaults.env_passthrough` say about a backend is exactly what the probe
+exercises. A hand-rolled call would test a code path no real run takes — the failure mode worth
+catching here is "this machine's configured backend cannot reach its provider", not "the network is
+up". Consequences of reusing the pipeline, all deliberate:
+
+- **`ReportSchema: ""`** makes `ResolvedRole.HasReport` false, so `Runner.AppendReportTrailer` adds
+  nothing and the brief stays the single sentence. A probe that demanded a ```claustrum-report fence
+  would cost several hundred output tokens instead of one.
+- **A `Directory.CreateTempSubdirectory("claustrum-probe-")` cwd**, deleted in `finally`. `Runner`
+  snapshots its cwd before and after every run; pointing the probe at the user's repo would hash a
+  whole worktree twice to learn nothing. The temp dir is not a git repo, so `WorktreeSnapshot` takes
+  its file-scan branch over an empty directory.
+- **`BudgetUsd: 0.05`, `Timeout: 120s`, `Effort: "high"`, `Permission: "readonly"`.** The cap is per
+  backend and is passed to the backend's own budget flag where it has one (`claude
+  --max-budget-usd`). It is a guard against a backend that ignores the brief and starts working, not
+  an estimate: a haiku-class "reply OK" is orders of magnitude under it.
+- **The job is a normal job** under `~/.claustrum/jobs/<id>/` with `system.md`, `request.json`,
+  `result.json` and the stdout log — which is what makes the failure lines able to point at a log
+  path worth opening.
+
+**Cheapest alias first, and only a configured alias.** `SelectModelAlias` walks
+`["fast", "cheap-coding", "standard-coding", "frontier-coding", "frontier-reasoning"]` over
+`config.Merged.Models` and takes the first whose `ResolveModelBackend` equals the backend being
+checked. Two traps are baked into that loop:
+
+- **The `models.ContainsKey(alias)` guard is load-bearing.** `Config.ResolveModel` falls through to
+  `SplitBackendModel` for anything it does not find in `Models`, and a bare word with no colon
+  splits to `("claude", word)`. Without the guard, `"fast"` would "resolve" to backend `claude` even
+  in a config that defines no aliases at all — every backend would then probe claude's model name.
+- **A `ConfigException` from a cyclic or too-deep alias is swallowed per alias.** The merged-config
+  dump printed by the same command already shows the broken key; a diagnostic command that dies on
+  the thing it is diagnosing is worse than one that reports "no alias".
+
+With no `claustrum.json` at all, the built-in defaults map every class to `claude`, so on a stock
+machine `claude` is the only backend that probes and every other installed backend prints
+`skipped (no model alias in claustrum.json resolves to this backend; add e.g. "fast": "<name>:<model>")`.
+Measured 2026-09-21 on the owner's Fedora box: `claude` and `cursor` and `api`(curl) all report
+`found: True`, and a bare `--probe` makes exactly **one** paid call — `cursor` takes the no-alias
+skip, `api` the "neither OPENROUTER_API_KEY nor ANTHROPIC_API_KEY is set" skip.
+
+**Four gates before any money is spent, in this order:** `CLAUSTRUM_SKIP_PROBE`, then
+`doctor.Found`, then `doctor.Problems` non-empty (its first problem is printed as the skip reason),
+then the alias. Ordering the flag first means the reason reported on the owner's box is his own
+skip, while CI — where no backend is installed — still reports `binary not found`.
+
+### CLAUSTRUM_SKIP_PROBE exists because `--probe` is now inside the test suite
+
+`tests/Claustrum.Tests/Cli/CliEndToEndTests.cs` spawns the real built binary with
+`backends doctor --probe` in four tests that only assert on the free `auth:`/`os:`/`mcp:` lines.
+Before this change those were free; after it, on any machine with a backend logged in, each one
+would make a real paid call inside `dotnet test` — and a network round trip inside that test's 60s
+process timeout is a flakiness source on top of the cost. `CLAUSTRUM_SKIP_PROBE=1` (or `true`, case
+insensitive; anything else, including empty, probes for real) turns every probe into
+`skipped (CLAUSTRUM_SKIP_PROBE set)` and replaces the pre-loop banner, so the banner never promises
+a paid request it will not make.
+
+It is read straight from `IPlatform.GetEnvironmentVariable` in `DoctorProbe.IsSkipped`, **not**
+added to `Config.ReadEnvLayer`. It is a CLI escape hatch, not a config key: it has no
+`claustrum.json` counterpart, so it has no winning layer to show in the `merged config:` dump, and
+putting it there would invent one. `CLAUSTRUM_HOME` is the precedent for a `CLAUSTRUM_*` variable
+read outside the merged layer.
+
+Rejected alternatives: blanking `PATH` in the test harness (a fifth backend or a resolver change
+silently re-enables paid calls, and an empty `PATH` on the Windows runner is a gamble), and
+`CLAUSTRUM_BUDGET_USD=0` (muddles budget semantics — "no money" would have to mean "no call").
+
+### "no credential" vs "failed" is a text heuristic, and says so
+
+The issue asks the probe to "degrade to a clear 'no credential' line rather than an error for
+backends it cannot reach". No backend reports "you are not authenticated" in a machine-readable
+field — `RunResult` carries only `Error`/`FinalMessage` text — so `LooksLikeMissingCredential`
+matches `auth`, `login`, `unauthorized`, `401`, `403`, `api key`, `credential`, `token`
+case-insensitively across both. This is loose on purpose and safe in both directions: a false
+positive still prints the backend's own first error line and the log path, and a false negative
+prints the same text under `failed (...)`. The word `token` is the widest of the seven (a
+token-limit error would read as a credential problem) and is the first one to drop if that shows up
+in practice. Nothing here is a substitute for the `auth:` line, which reports env-var presence only
+and never a value.
+
+## The cursor backend, validated against a real install (2026-09-21, issues #13/#14)
+
+Supersedes "The cursor backend (2026-09-18, issue #4/M3): fixture-only, as the plan already
+expected". `cursor-agent 2026.09.18-9a7762b` is installed at `~/.local/bin/cursor-agent` and logged
+in, so every line of docs/PLAN.md §A3's cursor row was checked against the real CLI. **10 paid agent
+invocations**, all of them in throwaway `git init` repos under a scratch directory (`<tmp>` below),
+always as `timeout 180 cursor-agent … < /dev/null`, never in a real checkout. Two further runs cost
+nothing because the CLI refused before reaching the API.
+
+Everything that was a guess is now measured, and three of the guesses were wrong: `usage` uses
+camelCase keys, the prompt does not have to be on argv at all, and `readonly` has a native mode after
+all.
+
+- **The account is on Cursor's Free plan, so `auto` is the only model id that works** — every probe
+  below therefore ran `--model auto`. `cursor-agent --model gemini-3.6-flash-low --trust -p
+  --output-format json "reply with the single word PINEAPPLE"` exits **1** in 5.4s with **empty
+  stdout** and one stderr line: `ActionRequiredError: Named models unavailable Free plans can only
+  use Auto. Switch to Auto or upgrade plans to continue.` Identical output for `--model opus`, which
+  is exactly what `claustrum run <role> --backend cursor` sends today (see the model-naming bullet).
+  `cursor-agent models` lists ~230 ids (`gpt-5.4-nano-*` and `gemini-3.6-flash-minimal` are the
+  cheapest named ones, `auto` is the default); nominal cheapness was moot here.
+
+1. **Doctor — confirmed.** `cursor-agent --version` prints the bare string `2026.09.18-9a7762b`
+   (exit 0), which `VersionProbe` passes through unchanged: `claustrum backends doctor cursor` →
+   `found: True`, `path: /home/…/.local/bin/cursor-agent`, `version: 2026.09.18-9a7762b`, no
+   problems. No code change was needed here.
+
+2. **Headless spawn shape — the stall question answered, and it is not a stall.** In an untrusted
+   directory with stdin closed, `cursor-agent -p --output-format json --workspace <tmp>/r8 "say hi"`
+   returns in **~1s with exit 1**, empty stdout, and a stderr block: `⚠ Workspace Trust Required …
+   To proceed, you can either: • Run 'agent' interactively to decide • Pass --trust, --yolo, or -f
+   if you trust this directory`. So the trust gate is a **fast refusal, never a hang** — the M3
+   review's worry ("`-p` cannot answer an approval prompt, so it stalls until `--timeout`") does not
+   reproduce; cursor-agent notices stdin is not a TTY and gives up. What it *does* mean is that one
+   of `--trust`/`-f`/`--yolo` is **mandatory** for every headless run, which is why `-f` is in every
+   permission row below. Measured separately: `--trust` alone is enough for a read-only run (probe 6a
+   returned fine without `-f`), and `-f` alone satisfies the trust gate *and* allows writes (probe 3),
+   so `--trust` never has to be passed alongside `-f`.
+
+3. **Success JSON — captured, one single-line document.** `cursor-agent -p --output-format json
+   --model auto -f --workspace <tmp>/r2 "create hello.txt containing hi"` → exit 0 in 13.2s, empty
+   stderr, `hello.txt` really created with `hi`, and stdout = exactly one 349-byte line, now
+   `tests/fixtures/cursor/success.json`:
+   `{"type":"result","subtype":"success","is_error":false,"duration_ms":8623,"duration_api_ms":8623,`
+   `"result":"Created `hello.txt` with the contents `hi`.","session_id":"79f194af-…",`
+   `"request_id":"b3f491c8-…","usage":{"inputTokens":9277,"outputTokens":110,"cacheReadTokens":26240,`
+   `"cacheWriteTokens":0}}`. `result`, `session_id` and `is_error` were guessed right; **`usage` was
+   not** — its keys are camelCase (`inputTokens`/`outputTokens`/`cacheReadTokens`/`cacheWriteTokens`),
+   so the old `input_tokens` lookup silently reported no usage at all on every run. Never JSONL,
+   never several documents, in any of the ten captures: `Parse` keeps parsing stdout as one document.
+   **There is no cost field anywhere** (and `--help` lists no budget flag), so `cost_usd` is null by
+   measurement and `--budget` neither caps nor accounts for a cursor run — the §D4 ledger records
+   nothing for a cursor child. That gap is cursor's, not Claustrum's, and it wants a decision.
+
+4. **Error capture — there is no JSON error document to capture on this plan.** Both failure modes
+   reachable here (workspace trust, named-model refusal) print human text on **stderr**, leave stdout
+   **empty**, and exit 1 — the same shape `CopilotBackend` documents for its own auth failure, and
+   the branch `Parse` already had (`stdout.Trim().Length == 0` → stderr as the final message,
+   `IsError` from the exit code) is therefore a *measured* path now, not a defensive guess. The
+   fabricated `tests/fixtures/cursor/error.json` is deleted and replaced by the real
+   `tests/fixtures/cursor/named-model-refused-stderr.txt`. An `is_error: true` JSON document is still
+   unobserved: nothing on a Free plan gets far enough into a session to produce one.
+
+5. **ReadOnly mapping — plan mode is real, works headless, and is now used.** Two paid probes, both
+   `-p --output-format json --model auto --mode plan -f --workspace <tmp>/r4`:
+   - asked for both an edit and a shell write ("(1) create plan-edit.txt containing x; (2) run the
+     shell command: echo ran > plan-shell.txt") → exit 0 in 18.1s, `result` = *"Plan mode blocks both
+     of those actions. Creating a short plan that names the blocked tools and what will run after you
+     confirm."*, and the directory afterwards held **neither file** (`ls -a` = `.git`, `seed.txt`).
+     Capture kept as `tests/fixtures/cursor/plan-mode.json`.
+   - asked to run `git log --oneline -1` and quote it → exit 0 in 17.2s, `result` ended with
+     `c089c56 seed`, which is that repo's real HEAD (`cat .git/refs/heads/master` =
+     `c089c56dcc903d25e2d02a8d1763e36f3f1920d9`). So **read-only commands still run in plan mode**.
+   Plan mode is thus the native "read the tree, run commands, change nothing" rung, and both
+   `readonly` and `shell` use it. It is behaviour, not a sandbox: the evidence cannot distinguish
+   "the edit tool was withheld" from "the model declined", and a shell command can still write, so
+   `readonly` keeps its prompt rule (now narrowed to "never run a command that changes anything").
+   Caveat recorded rather than measured: a `shell`-level role that needs to *start* something
+   (`npm run dev`) may find plan mode classifies that as unsafe — ui-reviewer, the role that would
+   care, is claude-only. `--mode ask` was never tried: it would take two more paid runs to characterise
+   and plan mode already covers both rungs.
+
+   | level | argv `Build` emits (after `-p --output-format json --model X`) | prompt rule |
+   |---|---|---|
+   | `readonly` | `--mode plan -f --workspace <cwd>` | READ-ONLY: never run a command that changes anything |
+   | `shell` | `--mode plan -f --workspace <cwd>` | — (plan mode carries it) |
+   | `edit` | `-f --workspace <cwd>` | Never run a shell command |
+   | `edit+shell` | `-f --workspace <cwd>` | — (deny list only) |
+   | `full` | `-f --sandbox disabled --workspace <cwd>` | — (deny list only) |
+
+   All five verified as emitted, without paying, by pointing `backends.cursor.path` at a fake
+   `cursor-agent` that dumps its argv and stdin (`claustrum run builder --backend cursor --permission
+   <level> …`). `--resume <id>` is appended last when a session is resumed.
+
+6. **#14 — the prompt is off argv, through stdin.** Both mechanisms the issue names work, and stdin
+   wins:
+   - **stdin: confirmed.** `printf 'reply with the single word PINEAPPLE' | timeout 180 cursor-agent
+     -p --output-format json --model auto -f --workspace <tmp>/r5` (no positional prompt) → exit 0 in
+     9.3s, `result: "PINEAPPLE"`. So `cursor-agent -p` reads the whole prompt from stdin when argv
+     carries none.
+   - **workspace rules: also confirmed.** `<tmp>/r6/.cursor/rules/claustrum-test.mdc` with
+     frontmatter `alwaysApply: true` and body "Begin every reply with the word PINEAPPLE", then a
+     trivial `'What is 2+2? Answer in one short line.'` → `result: "PINEAPPLE 2+2 = 4."`. The CLI does
+     apply `.cursor/rules/*.mdc` (input tokens jumped 9107 → 16663, so it really loads them).
+   - **Why stdin, not the rules file:** a per-job rules file lands *inside the workspace under
+     review*, and `ProcessSpec.TempFiles` cannot save it — `Runner` deletes temp files in its
+     `finally`, i.e. **after** the after-snapshot. Measured with the fake backend writing
+     `.cursor/rules/claustrum-probe.mdc` during a run: the RunResult came back with
+     `changed_files: [{"path":".cursor/rules/claustrum-probe.mdc","kind":"A"}]` and the file's full
+     content in `diff`. A blind code-reviewer would be handed its own role body as part of the diff it
+     is reviewing. Stdin touches nothing.
+   - Consequences in code: `ProcessSpec` grew `string? StdinText` (defaulted, so the other four
+     backends are untouched); `ProcessRunner` writes it and then closes stdin, keeping the
+     close-immediately behaviour for every spec without text (NOTES.md "MCP child stdin inheritance
+     hung git" is unaffected — stdin still ends up closed, still never inherited). The write happens
+     *after* `BeginOutputReadLine` (a prompt past the pipe buffer would otherwise deadlock against a
+     child blocked on an undrained stdout) and *inside* the run's timeout, with
+     `StandardInputEncoding` pinned to UTF-8 **without** a BOM so Windows cannot re-encode the prompt
+     in a legacy codepage or prepend three bytes to it. A broken pipe (child already dead) is
+     swallowed: its exit code and stderr are the better diagnosis. The 96 KB argv guard and its
+     `InvalidOperationException` are **gone** — no length limit applies to stdin, and cursor has no
+     documented prompt cap to replace it with. A real 6515-byte rendered builder prompt went through
+     stdin intact in the end-to-end runs.
+
+7. **Resume — confirmed, with the id the JSON returns.** `printf 'which file did you create earlier?
+   reply with its name only' | timeout 180 cursor-agent -p --output-format json --model auto -f
+   --workspace <tmp>/r2 --resume 79f194af-4fcb-4d3b-8201-6c9caa501e27` (the `session_id` from probe 3)
+   → exit 0 in 8.5s, `result: "hello.txt"`, the same `session_id` back, and `inputTokens: 122` — the
+   history is server-side, the flag really resumed that chat, and it composes with a stdin prompt.
+
+8. **Model naming — and the default is broken for cursor.** `--model` wants cursor's own ids
+   (`gpt-5.3-codex`, `claude-sonnet-5-thinking-high`, `composer-2.5`, `auto`, …; parameterised forms
+   like `'claude-opus-4-8[context=1m,effort=high]'` are also accepted per `--help`). With no alias
+   configured, `Config.BuiltInDefaults` maps the builder's `frontier-coding` class to `claude:opus`,
+   `--backend cursor` overrides only the backend, and cursor is handed the bare id **`opus`** — which
+   it rejects (on this plan with the Free-plan message; on any plan it is not a cursor id). As
+   instructed, no cursor model was added to `BuiltInDefaults`. A user needs an alias, e.g.
+   `{"models": {"frontier-coding": "cursor:auto"}}` or a named one — `{"models": {"fast":
+   "cursor:composer-2.5"}}` then `claustrum run builder --model fast`. Worth considering: have
+   `claustrum init`'s template mention it, since `--backend cursor` alone cannot work today.
+   Related: cursor has **no effort flag** — reasoning effort is part of the model id (`…-high`,
+   `…-xhigh`) or a bracket override (`'claude-opus-4-8[effort=high]'`), so a role's `effort` is
+   silently ignored on this backend, exactly as it already was before this pass.
+
+   ⚠ **`scripts/smoke.sh` will now FAIL its cursor row on this machine.** It gives every installed
+   builder-harness backend a paid `run builder … --budget 0.5` with no `--model` (only `claude` gets
+   an explicit `sonnet`), so cursor is handed `opus` and the run fails. Either smoke.sh needs a
+   per-backend model the way it already special-cases claude, or the repo needs the alias above —
+   left alone here because smoke.sh is issue #10's slice, not this one.
+
+9. **Roles — nothing to add.** `builder`, `code-reviewer` and `tester` already list `cursor` in
+   `role.json`'s `harnesses`; `ui-reviewer` stays `["claude"]`. Confirmed by running, not by reading:
+   all three render on the cursor harness through the `environment.default.md` fallback (there is no
+   `environment.cursor.md`), and builder and code-reviewer additionally completed real paid runs.
+
+10. **End to end — green, twice, on the shipped code.** `claustrum run builder --backend cursor
+    --brief "create hello.txt containing hi" --json --cwd <tmp>/r11 --budget 0.5 --model auto` →
+    `status: success`, `changed_files: [{"path":"hello.txt","kind":"A"}]`, a real diff,
+    `report_status: ok` with every field of the builder report schema filled, `session_id` set,
+    `usage: {input 33530, output 804, cache_read 45696}`, `cost_usd: null`, exit 0, 22.5s. The
+    `code-reviewer` role at its default `readonly` (so `--mode plan -f`) also came back
+    `status: success` with `report_status: ok`, the code-reviewer schema
+    (`status`/`findings`/`would_change_if_broader`), `changed_files: []` and 34.1s — plan mode does
+    **not** cost you the report fence, which was the open worry about using it for `readonly`.
+
+11. **Deny list — no native mechanism, confirmed from `--help`.** The only permission-ish flags
+    cursor-agent has are `-f/--force` ("Force allow commands unless explicitly denied"), `--yolo`,
+    `--auto-review`, `--sandbox enabled|disabled`, `--mode plan|ask`, `--trust` and
+    `--approve-mcps`. There is no `--deny-tool`/`--disallowed-tools` equivalent at any level, so the
+    deny list stays a prompt rule (`## Hard rules (never violate)` / `- Never run: <pattern>`) — and
+    `-f`'s own "unless explicitly denied" refers to cursor's config file, not to anything Claustrum
+    can pass per run. docs/PLAN.md §A3's promise that "`doctor` marks it advisory" is **still
+    unimplemented**, and implementing it as a `Doctor.Problems` entry would be a regression:
+    `BackendsCommands.ProbeLineAsync` treats any first problem as a reason to skip `--probe`'s paid
+    round trip, so an advisory note would silently disable cursor's probe. It needs its own field.
+
+**Still unverified, for the record:** any named model (Free plan), an `is_error: true` JSON document,
+`--mode ask`, whether plan mode would allow a long-running dev-server command, and the Windows leg of
+all of this (the stdin write is where Windows could differ — that is what `StandardInputEncoding`
+guards against).
+
+## `sync --global --only claude` against the owner's real agent files: not header-only (2026-09-21, issue #11/M3)
+
+Issue #4's third acceptance clause — "`sync --global --only claude` reproduces the owner's five agent
+files with header-only diffs" — was never evidenced. Measured 2026-09-21 on the owner's own machine
+(`~/.claude/agents/`: 12 claustrum-role files, 4 roles × 3 tiers, plus `architect*.md` ×3 and
+`mc-*.md` ×8), with the renderer at library 1.0.0 on commit `4c91f9b`:
+
+- **`--dry-run` cannot even show the diff**: all 12 files come back **foreign** — none carries the
+  `claustrum:generated` marker, because the first adoption with `--force` that docs/PLAN.md §B6
+  describes was never run. The `mc-*.md` files are untouched, as specified. So the comparison was
+  made by rendering into a redirected `HOME` and diffing by hand.
+- **Raw diff size** (lines changed, owner → generated): builder 164, code-reviewer 221, tester 133,
+  ui-reviewer 257; tier stubs 27–35 each. Almost all of it is *reflow*: the owner's files wrap at
+  ~80 columns, the library at ~100.
+- **Reflow-insensitive**, the four base roles fall into two groups:
+  - **builder and code-reviewer are the same text**, modulo deltas that are *by design* and will
+    never be header-only: the generated `## Report format` section (the `claustrum-report` fence
+    Claustrum parses), the shared `## House rules` section, `PowerShell` in the `tools:` list, a
+    single-line `description:` where the owner uses a folded `>-` scalar, "the `Agent` tool with
+    `subagent_type`" wording, "caller" for "user", tier bullets naming model classes instead of
+    model ids, and `you'd` → `you would`.
+  - **tester and ui-reviewer diverge in substance**: the owner rewrote both *after* they were ported
+    (tester ported 2026-09-14, ui-reviewer 2026-09-18). The owner's tester now opens with "You prove
+    a change is correct by writing and running its tests…", has a "The quality gate — run it, report
+    the exact result" section and the "a declared skip is an honest result" paragraph; the owner's
+    ui-reviewer is a different document (Preconditions, the browser-adapter verb table, data rules
+    on shared targets, its own tier section). The library still renders the older texts.
+- **`architect` is not in the library at all** — the plan's "five files" counts it, but no
+  `roles/architect/` exists; it arrives with M4's `coordinate`.
+- The owner's files are themselves mid-edit: `tester.md` carries the 2026-09-21 "whichever shell
+  tools you actually have" wording, `code-reviewer.md` still the older "both a `Bash` tool and a
+  `PowerShell` tool" one.
+
+**Outcome:** the clause as written is unsatisfiable *by design* (the report and house-rules
+sections must exist), and separately unmet for two roles because the library lags the owner's
+edits. What closes the gap: (1) restate the criterion as "body-identical outside the generated
+`## Report format`/`## House rules` sections and the frontmatter", (2) re-port `tester` and
+`ui-reviewer` from the owner's current files — tracked as a follow-up issue, since porting the
+owner's prose is a content decision the owner should see, not a renderer fix.
+
+## Issue #13's non-cursor boxes stay open (2026-09-21)
+
+The cursor checklist — the M3 gate — is ticked above with real captures. The `copilot`, `opencode`
+and `api` boxes are unchanged: as of 2026-09-21 this machine has none of those binaries installed
+and no `OPENROUTER_API_KEY`/`ANTHROPIC_API_KEY`, and `gh auth` carries no Copilot entitlement to
+lend the copilot CLI. They remain fixtures-plus-inference, as the per-backend sections of
+2026-09-18 state, until an install or a credential exists somewhere.
+
+Docs checked for #14 the same day, before measuring: cursor.com/docs/cli/reference/parameters lists
+no prompt-file flag and says nothing about stdin; cursor.com/docs/context/rules documents
+`.cursor/rules/*.mdc` and `AGENTS.md` for "Agent (Chat)" only. Both mechanisms were then measured
+against the real CLI — see the cursor section: stdin works and is what shipped.

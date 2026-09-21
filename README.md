@@ -112,7 +112,7 @@ never overwritten.
 |------------|---------------------------------------------------|--------------------------------------------------------|
 | `claude`   | `--append-system-prompt-file`                     | `--permission-mode acceptEdits --disallowedTools "Bash(git push*)"` |
 | `opencode` | inline agent in `OPENCODE_CONFIG_CONTENT`         | `permission: {"edit":"allow","bash":{"git push*":"deny"}}` |
-| `cursor`   | role prefixed to the prompt                       | `-f` + prompt rule (advisory; `doctor` says so)        |
+| `cursor`   | role prefixed to the prompt, fed on stdin         | `--mode plan` for read-only rungs, else `-f`; deny by prompt rule |
 | `copilot`  | per-job agent file                                | `--allow-all-tools --deny-tool "shell(git push)"`      |
 | `api`      | system message; no tools                          | reasoning-only roles                                   |
 
@@ -126,7 +126,8 @@ worlds are visible at once, `backends doctor --probe` warns when the two disagre
 - **Blind review** — the runner rejects a brief for a `blind` role that carries rationale.
 - **Parallel builders** — with `max_parallel > 1` each job gets its own `git worktree` on a
   `claustrum/<job>` branch; the cap is a semaphore shared by CLI and MCP; integration is by rebase.
-- **Budget** — accounted over the whole job tree; a child that would exceed it is refused.
+- **Budget** — accounted over the whole job tree (`CLAUSTRUM_PARENT_JOB` names the tree); a child
+  that would exceed what is left is refused; `claustrum jobs budget <tree>` shows the ledger.
 
 ## Two ways to conduct
 
