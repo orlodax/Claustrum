@@ -1324,11 +1324,13 @@ all.
    `…-xhigh`) or a bracket override (`'claude-opus-4-8[effort=high]'`), so a role's `effort` is
    silently ignored on this backend, exactly as it already was before this pass.
 
-   ⚠ **`scripts/smoke.sh` will now FAIL its cursor row on this machine.** It gives every installed
-   builder-harness backend a paid `run builder … --budget 0.5` with no `--model` (only `claude` gets
-   an explicit `sonnet`), so cursor is handed `opus` and the run fails. Either smoke.sh needs a
-   per-backend model the way it already special-cases claude, or the repo needs the alias above —
-   left alone here because smoke.sh is issue #10's slice, not this one.
+   ⚠ **`scripts/smoke.sh` would have FAILed its cursor row on this machine** when this was measured:
+   it gave every installed builder-harness backend a paid `run builder … --budget 0.5` with no
+   `--model` (only `claude` got an explicit `sonnet`), so cursor was handed `opus`. Closed the same
+   day by issue #10's remediation: each backend's smoke model now comes from
+   `CLAUSTRUM_SMOKE_MODEL_<NAME>` (claude defaults to `sonnet`; unset ⇒ the row SKIPs with the
+   variable to set), so a machine with cursor installed runs its row only when told which model —
+   here `CLAUSTRUM_SMOKE_MODEL_CURSOR=auto`.
 
 9. **Roles — nothing to add.** `builder`, `code-reviewer` and `tester` already list `cursor` in
    `role.json`'s `harnesses`; `ui-reviewer` stays `["claude"]`. Confirmed by running, not by reading:
