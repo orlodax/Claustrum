@@ -1188,7 +1188,8 @@ up". Consequences of reusing the pipeline, all deliberate:
   `Effort: "high"`, `Permission: "readonly"`.** The cap is per
   backend and is passed to the backend's own budget flag where it has one (`claude
   --max-budget-usd`). It is a guard against a backend that ignores the brief and starts working, not
-  an estimate: a haiku-class "reply OK" is orders of magnitude under it.
+  an estimate — though "orders of magnitude under it" turned out false the first time it ran: the
+  reply is tiny, the cold-cache prompt caching is not (measured $0.12; see "The cap is $0.50" below).
 - **The job is a normal job** under `~/.claustrum/jobs/<id>/` with `system.md`, `request.json`,
   `result.json` and the stdout log — which is what makes the failure lines able to point at a log
   path worth opening.
