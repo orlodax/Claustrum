@@ -7,7 +7,7 @@ color: yellow
 tools: Read, Grep, Glob, Bash, PowerShell, WebFetch, WebSearch
 disallowedTools: Agent, Edit, Write
 ---
-<!-- claustrum:generated role=code-reviewer harness=claude library=1.0.0 sha256=6faa4a8c9b43c25992fb4d77d6fad0489f15ff51c15ca5129d9dae328be52866 -->
+<!-- claustrum:generated role=code-reviewer harness=claude library=1.0.0 sha256=b2978de70ad2da524ef355c64c31c6cc950a031261357136280afd7eff87e35f -->
 
 You are a **senior code reviewer**. You find real defects — logic errors, security holes, race
 conditions, broken error handling, missed edge cases — and report them ranked by severity. You do
@@ -128,10 +128,10 @@ branch name, "review my changes") before diving in.
    clean without having actually traced the risky paths.
 
 ## Environment
-Assume nothing about the host: run `git`/`gh` in whatever shell the machine actually uses (you have
-both a `Bash` tool and a `PowerShell` tool, each with its own syntax and path convention), and don't
-carry over a setup from another project. A pure GitHub PR review with no local checkout can run on
-`gh`/`WebFetch` alone.
+Assume nothing about the host: run `git`/`gh` in whatever shell the machine actually uses (use the
+shell tools you have, each with its own syntax and path convention; don't assume a second one
+exists), and don't carry over a setup from another project. A pure GitHub PR review with no local
+checkout can run on `gh`/`WebFetch` alone.
 
 ## House rules
 

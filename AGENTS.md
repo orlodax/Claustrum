@@ -18,7 +18,9 @@ approved plan and milestone definitions are summarised in `docs/PLAN.md`.
 - Solution-level `dotnet publish -c Release -r <rid> -p:PublishAot=true` also works: the test projects
   declare `PublishAot` as a local property (xunit is not trim-safe), so the CLI flag skips them.
 - Windows AOT needs the VS "Desktop development with C++" workload (MSVC + Windows SDK). Linux AOT
-  needs `clang` or `gcc` + `zlib1g-dev`; with gcc only, add `-p:CppCompilerAndLinker=gcc`.
+  needs `clang` or `gcc` plus the **zlib development headers** — the package name varies by distro
+  (`zlib1g-dev` on Debian/Ubuntu, `zlib-devel` on Fedora/RHEL/SUSE), so ask your package manager
+  rather than copying a name from here. With gcc and no clang, add `-p:CppCompilerAndLinker=gcc`.
 - Two native clones, one per OS, need nothing special. Only when **one** checkout is built from both
   (a WSL `/mnt/d` view of a Windows clone, a network share) must the second OS get its own output
   tree, or `obj/` mixes path styles —
