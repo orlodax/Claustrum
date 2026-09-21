@@ -90,8 +90,13 @@ public static class JobDirectory
 
     // Public so `claustrum jobs list|show|logs` (CLI, builder slice 2026-09-13) can find existing job
     // directories without creating a new one.
-    public static string ResolveRoot(IPlatform platform) =>
+    public static string ResolveRoot(IPlatform platform) => Path.Combine(ResolveHome(platform), "jobs");
+
+    // `$CLAUSTRUM_HOME` or `~/.claustrum`: the one root every on-disk store hangs off — `jobs/` above
+    // and BudgetLedger's `budget/` — so a test (or a parallel worktree) that relocates the home
+    // isolates all of them together instead of one and not the other.
+    public static string ResolveHome(IPlatform platform) =>
         platform.GetEnvironmentVariable("CLAUSTRUM_HOME") is { Length: > 0 } home
-            ? Path.Combine(home, "jobs")
-            : Path.Combine(platform.HomeDirectory, ".claustrum", "jobs");
+            ? home
+            : Path.Combine(platform.HomeDirectory, ".claustrum");
 }

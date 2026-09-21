@@ -33,7 +33,20 @@ public static class DelegateEngine
         RenderedRole rendered = AppServices.RoleRenderer.Render(request.Role, request.Tier, harness, request.Cwd);
         ResolvedRole resolved = config.Resolve(rendered, request.Overrides);
 
-        decimal? budgetUsd = CastResolution.ApplyBudget(request.Overrides.BudgetUsd, request.CastBudget, config.Merged.Defaults?.BudgetUsd);
+        // docs/PLAN.md §D4: inside a job tree (CLAUSTRUM_PARENT_JOB, §D2) the cast's budget_usd is the
+        // whole tree's, so it goes to the ledger instead of straight to this one run — Runner clamps
+        // the child to what is left, which is why the per-run cap it starts from is only an explicit
+        // --budget. A cast that says unlimited yields no tree budget to share, and no tree at all
+        // leaves the §D1 precedence exactly as it was (NOTES.md "Tree budget accounting is a file
+        // ledger").
+        decimal? treeBudget = CastResolution.ApplyBudget(flagBudget: null, request.CastBudget, config.Merged.Defaults?.BudgetUsd);
+        JobTreeBudget? tree = BudgetLedger.TreeIdFor(AppServices.Platform) is { } treeId && treeBudget is { } shared
+            ? new JobTreeBudget(treeId, shared)
+            : null;
+        decimal? budgetUsd = tree is null
+            ? CastResolution.ApplyBudget(request.Overrides.BudgetUsd, request.CastBudget, config.Merged.Defaults?.BudgetUsd)
+            : request.Overrides.BudgetUsd;
+
         int timeoutSeconds = request.Overrides.TimeoutSeconds ?? config.Merged.Defaults?.TimeoutSeconds ?? DefaultTimeoutSeconds;
         PermissionPolicy? requestPermission = request.Overrides.Permission is { } permissionValue
             ? new PermissionPolicy(RequirePermissionLevel(permissionValue), request.Overrides.Deny ?? [])
@@ -45,7 +58,8 @@ public static class DelegateEngine
             DiffByteCapBytes: request.DiffCapBytes,
             BackendConfig: backendConfig,
             EnvPassthroughAll: config.Merged.Defaults?.EnvPassthrough == "all",
-            OnStreamLine: request.OnStreamLine);
+            OnStreamLine: request.OnStreamLine,
+            Tree: tree);
 
         // max_parallel > 1 (docs/PLAN.md §D4): the job runs isolated in its own git worktree/branch
         // instead of directly in request.Cwd, gated by a cross-process cap so at most maxParallel
