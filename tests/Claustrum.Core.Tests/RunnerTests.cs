@@ -229,6 +229,157 @@ public sealed class RunnerTests : IDisposable
         Assert.True(File.Exists(ResultJsonPath(result)));
     }
 
+    // docs/PLAN.md §D4 / NOTES.md "Tree budget accounting is a file ledger": RunOptions.Tree routes
+    // a run through BudgetLedger.AdmitAsync before anything is written or spawned.
+    [Fact]
+    public async Task AdmittedRunClosesTheEntryWithTheReportedCostAsync()
+    {
+        ScriptedBackend backend = ScriptedWithCost(0.30m);
+        Runner runner = NewRunner(backend);
+        JobTreeBudget tree = new("tree-a", 1.00m);
+        RunOptions options = DefaultOptions() with { Tree = tree };
+
+        RunResult result = await runner.RunAsync(MakeRequest(), MakeRole(), options, CancellationToken.None);
+
+        Assert.Equal(RunStatus.Success, result.Status);
+        Assert.Equal(0.30m, result.CostUsd);
+        decimal remaining = await BudgetLedger.PeekRemainingAsync(new HomeRedirectPlatform(homeDir), tree);
+        Assert.Equal(0.70m, remaining);
+    }
+
+    [Fact]
+    public async Task SecondRunInATreeSeesTheReducedRemainderAsync()
+    {
+        JobTreeBudget tree = new("tree-remainder", 1.00m);
+        RunOptions options = DefaultOptions() with { Tree = tree };
+
+        RunResult first = await NewRunner(ScriptedWithCost(0.40m)).RunAsync(MakeRequest(), MakeRole(), options, CancellationToken.None);
+        Assert.Equal(RunStatus.Success, first.Status);
+        RunResult second = await NewRunner(ScriptedWithCost(0.10m)).RunAsync(MakeRequest(), MakeRole(), options, CancellationToken.None);
+
+        Assert.Equal(RunStatus.Success, second.Status);
+        decimal remaining = await BudgetLedger.PeekRemainingAsync(new HomeRedirectPlatform(homeDir), tree);
+        Assert.Equal(0.50m, remaining);
+    }
+
+    [Fact]
+    public async Task ExhaustedTreeRefusesWithoutSpawningTheBackendAsync()
+    {
+        ScriptedBackend backend = ScriptedBackend.Success();
+        Runner runner = NewRunner(backend);
+        JobTreeBudget tree = new("tree-exhausted", 0.00m);
+        RunOptions options = DefaultOptions() with { Tree = tree };
+
+        RunResult result = await runner.RunAsync(MakeRequest(), MakeRole(), options, CancellationToken.None);
+
+        Assert.Equal(RunStatus.BudgetExceeded, result.Status);
+        Assert.Equal(-1, result.ExitCode);
+        Assert.NotNull(result.Error);
+        Assert.Null(backend.LastRun);
+        string jobDirectory = Path.GetDirectoryName(ResultJsonPath(result))!;
+        Assert.True(File.Exists(ResultJsonPath(result)));
+        Assert.False(File.Exists(Path.Combine(jobDirectory, "system.md")));
+        Assert.False(File.Exists(Path.Combine(jobDirectory, "request.json")));
+    }
+
+    [Fact]
+    public async Task NullRequestedCapIsClampedToTheRemainderAndPersistedAsync()
+    {
+        ScriptedBackend backend = ScriptedBackend.Success();
+        Runner runner = NewRunner(backend);
+        JobTreeBudget tree = new("tree-clamp", 0.75m);
+        RunOptions options = DefaultOptions() with { Tree = tree };
+
+        RunResult result = await runner.RunAsync(MakeRequest(), MakeRole(), options, CancellationToken.None);
+
+        Assert.Equal(RunStatus.Success, result.Status);
+        Assert.Equal(0.75m, backend.LastRun!.BudgetUsd);
+        string requestJson = await File.ReadAllTextAsync(Path.Combine(Path.GetDirectoryName(ResultJsonPath(result))!, "request.json"), CancellationToken.None);
+        Assert.Contains("\"budget_usd\":0.75", requestJson, StringComparison.Ordinal);
+    }
+
+    // Cursor/copilot report no cost at all (NOTES.md "Cost-less backends are charged their cap"):
+    // the tree cap must still be a real charge, with a warning since cost_usd stays null.
+    [Fact]
+    public async Task CostlessBackendThatRanIsChargedTheGrantedCapWithAWarningAsync()
+    {
+        ScriptedBackend backend = ScriptedBackend.Success();
+        Runner runner = NewRunner(backend);
+        JobTreeBudget tree = new("tree-costless", 0.50m);
+        RunOptions options = DefaultOptions() with { Tree = tree };
+
+        RunResult result = await runner.RunAsync(MakeRequest(), MakeRole(), options, CancellationToken.None);
+
+        Assert.Equal(RunStatus.Success, result.Status);
+        Assert.Null(result.CostUsd);
+        Assert.Contains("cost not reported by backend 'scripted'; charged the granted cap $0.50 to tree 'tree-costless'", result.Warnings);
+        decimal remaining = await BudgetLedger.PeekRemainingAsync(new HomeRedirectPlatform(homeDir), tree);
+        Assert.Equal(0m, remaining);
+    }
+
+    [Fact]
+    public async Task BackendMissingInsideATreeChargesZeroAndLeavesTheRemainderIntactAsync()
+    {
+        Runner runner = NewRunner(ScriptedBackend.NotOnPath());
+        JobTreeBudget tree = new("tree-missing-backend", 1.00m);
+        RunOptions options = DefaultOptions() with { Tree = tree };
+
+        RunResult result = await runner.RunAsync(MakeRequest(), MakeRole(), options, CancellationToken.None);
+
+        Assert.Equal(RunStatus.BackendMissing, result.Status);
+        decimal remaining = await BudgetLedger.PeekRemainingAsync(new HomeRedirectPlatform(homeDir), tree);
+        Assert.Equal(1.00m, remaining);
+    }
+
+    // Symmetric to CompleteAsync's own error handling: a ledger AdmitAsync cannot reach leaves
+    // through the same Failed funnel as any other pre-spawn failure, not as a throw.
+    [Fact]
+    public async Task LedgerErrorAtAdmissionYieldsFailedWithoutSpawningAsync()
+    {
+        ScriptedBackend backend = ScriptedBackend.Success();
+        Runner runner = NewRunner(backend);
+        JobTreeBudget tree = new("tree-broken-ledger", 1.00m);
+        string budgetDirectory = Path.Combine(homeDir, ".claustrum", "budget");
+        Directory.CreateDirectory(budgetDirectory);
+        File.WriteAllText(Path.Combine(budgetDirectory, "tree-broken-ledger"), "blocks Directory.CreateDirectory below it");
+        RunOptions options = DefaultOptions() with { Tree = tree };
+
+        RunResult result = await runner.RunAsync(MakeRequest(), MakeRole(), options, CancellationToken.None);
+
+        Assert.Equal(RunStatus.Failed, result.Status);
+        Assert.Null(backend.LastRun);
+        Assert.True(File.Exists(ResultJsonPath(result)));
+    }
+
+    [Fact]
+    public async Task PreMadeRefusedAdmissionShortCircuitsWithoutReAdmittingAsync()
+    {
+        ScriptedBackend backend = ScriptedBackend.Success();
+        Runner runner = NewRunner(backend);
+        BudgetAdmission refusal = new(Admitted: false, Spent: 1.00m, Reserved: 0m, Remaining: 0m, EffectiveCap: null, Reason: "pre-refused for the test", Reservation: null);
+        RunOptions options = DefaultOptions() with { Admission = refusal };
+
+        RunResult result = await runner.RunAsync(MakeRequest(), MakeRole(), options, CancellationToken.None);
+
+        Assert.Equal(RunStatus.BudgetExceeded, result.Status);
+        Assert.Equal("pre-refused for the test", result.Error);
+        Assert.Null(backend.LastRun);
+        Assert.False(Directory.Exists(Path.Combine(homeDir, ".claustrum", "budget")));
+    }
+
+    [Fact]
+    public async Task NoTreeMeansNoBudgetDirectoryAtAllAsync()
+    {
+        RunResult result = await NewRunner(ScriptedBackend.Success()).RunAsync(MakeRequest(), MakeRole(), DefaultOptions(), CancellationToken.None);
+
+        Assert.Equal(RunStatus.Success, result.Status);
+        Assert.False(Directory.Exists(Path.Combine(homeDir, ".claustrum", "budget")));
+    }
+
+    private static ScriptedBackend ScriptedWithCost(decimal cost) => OperatingSystem.IsWindows()
+        ? new ScriptedBackend("cmd", ["/c", "exit 0"], new ParsedOutput("ok", null, cost, null, [], null, false))
+        : new ScriptedBackend("sh", ["-c", "exit 0"], new ParsedOutput("ok", null, cost, null, [], null, false));
+
     private Runner NewRunner(IBackend backend)
     {
         HomeRedirectPlatform platform = new(homeDir);
