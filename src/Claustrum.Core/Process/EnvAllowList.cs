@@ -19,9 +19,11 @@ public static class EnvAllowList
     // ⚠ Deliberately no CLAUSTRUM_ prefix (2026-09-21): membership in a job tree is handed out by a
     // coordinator, never forwarded by a member. A member holds its §D4 reservation for its whole
     // lifetime, so a `claustrum run` that inherited its CLAUSTRUM_PARENT_JOB would be refused by the
-    // ledger — measured: `$0.00 remaining`. §D3's `coordinate` instead puts CLAUSTRUM_PARENT_JOB (and
-    // CLAUSTRUM_HOME when set) on its architect's request env, where caller-supplied values win over
-    // this list, and that architect's own children inherit both from the backend's shell.
+    // ledger — measured: `$0.00 remaining`. §D3's `coordinate` (M4, issue #5) will put
+    // CLAUSTRUM_PARENT_JOB (and CLAUSTRUM_HOME when set) on its architect's request env, where
+    // caller-supplied values win over this list. Until it lands, the only way to make a claustrum
+    // process a tree member is to give it CLAUSTRUM_PARENT_JOB in its own environment: a shell
+    // export, or `--env`/`Env` on the request that spawns its backend.
     private static readonly string[] prefixes =
         ["XDG_", "ANTHROPIC_", "OPENROUTER_", "OPENCODE_", "CURSOR_", "COPILOT_", "NODE_"];
 
