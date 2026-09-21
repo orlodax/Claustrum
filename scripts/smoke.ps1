@@ -8,6 +8,9 @@
 .PARAMETER Binary
     Path to an already-built claustrum executable. Falls back to $env:CLAUSTRUM, then to a Release
     build of src/Claustrum/Claustrum.csproj.
+.NOTES
+    CLAUSTRUM_SMOKE_MODEL_<NAME> (e.g. CLAUSTRUM_SMOKE_MODEL_CURSOR=auto) gives that backend's paid
+    run its model; unset SKIPs the row. claude defaults to sonnet.
 #>
 [CmdletBinding()]
 param(
@@ -143,7 +146,9 @@ function Invoke-InitCheck {
 }
 
 function Get-RepoSnapshot {
-    $gitPrefix = Join-Path $tmp ".git"
+    # The separator is load-bearing: a bare ".git" prefix also swallows .gitignore/.gitattributes,
+    # and the rerun check asserts on .gitignore (smoke.sh's `find -path ./.git -prune` sees it).
+    $gitPrefix = (Join-Path $tmp ".git") + [System.IO.Path]::DirectorySeparatorChar
     $files = Get-ChildItem -Path $tmp -Recurse -File -Force |
         Where-Object { -not $_.FullName.StartsWith($gitPrefix, [System.StringComparison]::Ordinal) } |
         Sort-Object FullName
@@ -173,6 +178,20 @@ function Invoke-InitRerunCheck {
 function Get-RunRow([string]$Name) {
     if ($Name -eq "claude") { return "run builder --json: success + hello.txt + report" }
     return "run builder --backend ${Name}: success + hello.txt + report"
+}
+
+# A backend that is merely installed has no model the smoke run can guess: claude's default id
+# ("opus") is refused by cursor and by opencode, so the row would FAIL where it must SKIP. claude
+# keeps sonnet, M1's original flag, when its variable is unset.
+function Get-SmokeModelVar([string]$Name) {
+    return "CLAUSTRUM_SMOKE_MODEL_" + $Name.ToUpperInvariant()
+}
+
+function Get-SmokeModel([string]$Name) {
+    $value = [string][System.Environment]::GetEnvironmentVariable((Get-SmokeModelVar $Name))
+    if (-not [string]::IsNullOrWhiteSpace($value)) { return $value.Trim() }
+    if ($Name -eq "claude") { return "sonnet" }
+    return ""
 }
 
 function Invoke-BuilderRun([string]$Row, [string]$ExpectedFile, [string[]]$Arguments) {
@@ -219,11 +238,17 @@ function Invoke-AllRunChecks {
             continue
         }
 
+        $model = Get-SmokeModel $name
+        if (-not $model) {
+            Add-Result $row "SKIP" "set $(Get-SmokeModelVar $name)=<model> to run"
+            continue
+        }
+
         if ($name -eq "claude") {
-            Invoke-BuilderRun $row "hello.txt" @("--brief", "create hello.txt containing hi", "--budget", "0.5", "--model", "sonnet")
+            Invoke-BuilderRun $row "hello.txt" @("--brief", "create hello.txt containing hi", "--budget", "0.5", "--model", $model)
         }
         else {
-            Invoke-BuilderRun $row "hello.txt" @("--backend", $name, "--brief", "create hello.txt containing hi", "--budget", "0.5")
+            Invoke-BuilderRun $row "hello.txt" @("--backend", $name, "--brief", "create hello.txt containing hi", "--budget", "0.5", "--model", $model)
         }
     }
 }
@@ -381,7 +406,9 @@ $results | Format-Table -AutoSize -Wrap
 
 $failed = @($results | Where-Object { $_.Status -eq "FAIL" })
 if ($failed.Count -gt 0) {
-    Write-Error "$($failed.Count) smoke check(s) failed."
+    # Write-Error under $ErrorActionPreference = "Stop" terminates the script before `exit 1` runs,
+    # so the caller would see an exception instead of the count and a deterministic exit code.
+    [Console]::Error.WriteLine("$($failed.Count) smoke check(s) failed.")
     exit 1
 }
 
