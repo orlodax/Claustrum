@@ -49,11 +49,28 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
 
         JobPaths job = jobOverride ?? JobDirectory.Create(platform);
 
+        // docs/PLAN.md §D4: in a job tree the budget belongs to the tree, not to this run, so the
+        // ledger decides before anything is written or spawned — a refusal must cost nothing. Stays
+        // null until the ledger admits the job, which is what makes `Finish` close its entry on every
+        // later return and on none of the earlier ones.
+        JobTreeBudget? admitted = null;
+        if (options.Tree is { } tree)
+        {
+            BudgetAdmission admission = BudgetLedger.Admit(platform, tree.TreeId, job.Id, role.Name, tree.BudgetUsd, request.BudgetUsd);
+            if (!admission.Admitted)
+                return Finish(job, admitted, NoProcessResult(job, role, RunStatus.BudgetExceeded, admission.Reason));
+
+            admitted = tree;
+            // Clamping here is what makes the tree cap hard per child: request.json below and the
+            // backend's own --max-budget-usd carry the slice the ledger granted, not what was asked.
+            request = request with { BudgetUsd = admission.EffectiveCap };
+        }
+
         File.WriteAllText(job.SystemMd, role.SystemPrompt);
         File.WriteAllText(job.RequestJson, JsonSerializer.Serialize(request, ClaustrumJsonContext.Default.RunRequest));
 
         if (!backends.TryGet(role.Backend, out IBackend? backend))
-            return WriteResult(job, MissingBackendResult(job, role, $"backend '{role.Backend}' is not registered"));
+            return Finish(job, admitted, MissingBackendResult(job, role, $"backend '{role.Backend}' is not registered"));
 
         // NOTES.md "Runner's before-snapshot is now inside a guarded section too": a bad `cwd` or any
         // other pre-spawn failure here used to escape RunCoreAsync entirely. `spec` does not exist
@@ -68,7 +85,7 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
         }
         catch (Exception ex)
         {
-            return WriteResult(job, FailureResult(job, role, outcome: null, ex));
+            return Finish(job, admitted, FailureResult(job, role, outcome: null, ex));
         }
 
         ProcessOutcome outcome;
@@ -82,7 +99,7 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
             // the unregistered-name branch above — same BackendMissing status either way, so a
             // caller need not distinguish "no such backend" from "backend not on PATH".
             DeleteTempFiles(spec.TempFiles);
-            return WriteResult(job, MissingBackendResult(job, role, ex.Message));
+            return Finish(job, admitted, MissingBackendResult(job, role, ex.Message));
         }
 
         try
@@ -120,11 +137,11 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
                 ReportStatus: extracted.Status,
                 Warnings: extracted.Warnings);
 
-            return WriteResult(job, result);
+            return Finish(job, admitted, result);
         }
         catch (Exception ex)
         {
-            return WriteResult(job, FailureResult(job, role, outcome, ex));
+            return Finish(job, admitted, FailureResult(job, role, outcome, ex));
         }
         finally
         {
@@ -194,10 +211,16 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
     [GeneratedRegex(@"^[ \t]*`{3,}claustrum-report\b", RegexOptions.Multiline)]
     private static partial Regex ReportFencePattern();
 
-    private static RunResult MissingBackendResult(JobPaths job, ResolvedRole role, string errorMessage) => new(
+    private static RunResult MissingBackendResult(JobPaths job, ResolvedRole role, string errorMessage) =>
+        NoProcessResult(job, role, RunStatus.BackendMissing, errorMessage);
+
+    // "Nothing ran": no diff, no cost, no report, and exit -1 standing in for a process exit code that
+    // never existed. The two BackendMissing call sites and §D4's BudgetExceeded refusal differ only in
+    // status and message.
+    private static RunResult NoProcessResult(JobPaths job, ResolvedRole role, RunStatus status, string? errorMessage) => new(
         SchemaVersion: "1",
         JobId: job.Id,
-        Status: RunStatus.BackendMissing,
+        Status: status,
         Backend: role.Backend,
         Model: role.Model,
         Role: role.Name,
@@ -253,10 +276,36 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
         _ => RunStatus.Success,
     };
 
-    private static RunResult WriteResult(JobPaths job, RunResult result)
+    // The one funnel every result leaves through: result.json is written, and a job the ledger admitted
+    // also has its entry closed with what the run really cost (null wherever nothing ran — the tree is
+    // charged nothing for it). Doing both here is what keeps the two from drifting apart as paths are
+    // added, the way §D4's accounting would silently leak if one `return` forgot to record.
+    private RunResult Finish(JobPaths job, JobTreeBudget? tree, RunResult result)
     {
+        if (tree is { } active)
+            result = RecordCost(active, job.Id, result);
+
         File.WriteAllText(job.ResultJson, JsonSerializer.Serialize(result, ClaustrumJsonContext.Default.RunResult));
         return result;
+    }
+
+    // A ledger that cannot be written must not lose a finished run (NOTES.md "Runner always yields a
+    // result after the process ran"), but the cost it drops makes the tree believe it has more left
+    // than it does — too consequential to swallow, so it rides out on the result as a warning.
+    private RunResult RecordCost(JobTreeBudget tree, string jobId, RunResult result)
+    {
+        try
+        {
+            BudgetLedger.Record(platform, tree.TreeId, jobId, result.CostUsd);
+            return result;
+        }
+        catch (Exception ex) when (ex is IOException or TimeoutException or UnauthorizedAccessException)
+        {
+            return result with
+            {
+                Warnings = [.. result.Warnings, $"budget ledger for tree '{tree.TreeId}' not updated with this job's cost: {ex.Message}"],
+            };
+        }
     }
 
     private static void DeleteTempFiles(string[] tempFiles)

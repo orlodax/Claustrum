@@ -1,4 +1,5 @@
 using Claustrum.Core.Config;
+using Claustrum.Core.Jobs;
 
 namespace Claustrum.Core;
 
@@ -8,4 +9,5 @@ namespace Claustrum.Core;
 // and EnvPassthroughAll are the caller's resolved `claustrum.json` values (`backends.<name>.path`,
 // `defaults.env_passthrough`) for the same reason: Runner does not read Config itself (NOTES.md
 // "Backend config and env passthrough are call-site data, not RunRequest fields").
-public sealed record RunOptions(int DiffByteCapBytes, BackendConfig? BackendConfig = null, bool EnvPassthroughAll = false, Action<string>? OnStreamLine = null);
+// `Tree` is the same category, documented on JobTreeBudget: the job tree this run belongs to (§D4).
+public sealed record RunOptions(int DiffByteCapBytes, BackendConfig? BackendConfig = null, bool EnvPassthroughAll = false, Action<string>? OnStreamLine = null, JobTreeBudget? Tree = null);
