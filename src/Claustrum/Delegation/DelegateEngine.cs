@@ -41,7 +41,7 @@ public static class DelegateEngine
         // ledger").
         decimal? treeBudget = CastResolution.ApplyBudget(flagBudget: null, request.CastBudget, config.Merged.Defaults?.BudgetUsd);
         JobTreeBudget? tree = BudgetLedger.TreeIdFor(AppServices.Platform) is { } treeId && treeBudget is { } shared
-            ? new JobTreeBudget(treeId, shared)
+            ? new JobTreeBudget(treeId, shared, Math.Max(1, request.MaxParallel ?? 1))
             : null;
         decimal? budgetUsd = tree is null
             ? CastResolution.ApplyBudget(request.Overrides.BudgetUsd, request.CastBudget, config.Merged.Defaults?.BudgetUsd)
@@ -66,7 +66,7 @@ public static class DelegateEngine
         // builders for this role run at once, however many separate `claustrum run` processes a
         // spawned architect fans them out as. Config/tier/harness resolution above still reads
         // request.Cwd — only the backend's own working directory moves.
-        if (request.MaxParallel is { } maxParallel && maxParallel > 1)
+        if (request.MaxParallel is { } maxParallel && maxParallel > 1 && await WorthIsolatingAsync(tree))
         {
             job ??= JobDirectory.Create(AppServices.Platform);
             string gateKey = RoleConcurrencyGate.KeyFor(request.CastName, request.Role);
@@ -98,6 +98,26 @@ public static class DelegateEngine
         return job is null
             ? await AppServices.Runner.RunAsync(runRequest, resolved, options, cancellationToken)
             : await AppServices.Runner.RunAsync(runRequest, resolved, options, job, cancellationToken);
+    }
+
+    // The ledger's real decision stays inside Runner, under the lock; this only avoids paying for
+    // isolation a refusal would throw away. A spent tree refuses every child, and the isolated path
+    // takes a concurrency slot and creates a worktree + branch *before* Runner ever sees the request
+    // (review finding F8) — the direct path writes the same refusal with none of that. A ledger this
+    // peek cannot read is not its problem: isolate, and let the admission produce the real answer.
+    private static async Task<bool> WorthIsolatingAsync(JobTreeBudget? tree)
+    {
+        if (tree is not { } active)
+            return true;
+
+        try
+        {
+            return await BudgetLedger.PeekRemainingAsync(AppServices.Platform, active) > 0;
+        }
+        catch (Exception ex) when (ex is TimeoutException or IOException or UnauthorizedAccessException)
+        {
+            return true;
+        }
     }
 
     private static RunRequest BuildRunRequest(DelegateRequest request, string cwd, PermissionPolicy? permission, decimal? budgetUsd, int timeoutSeconds) => new(

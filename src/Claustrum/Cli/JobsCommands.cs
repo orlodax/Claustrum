@@ -31,7 +31,12 @@ public static class JobsCommands
         Command clean = new("clean", "Remove finished max_parallel jobs' worktrees (docs/PLAN.md §D4); their branches are kept.") { cleanCwd };
         clean.SetAction(async parseResult => await CleanAsync(parseResult.GetValue(cleanCwd)));
 
-        return new Command("jobs", "Inspect past and running jobs.") { list, show, logs, clean };
+        Argument<string> budgetTree = new("tree") { Description = "Job tree id — the CLAUSTRUM_PARENT_JOB its members ran with." };
+        Option<bool> budgetReset = new("--reset") { Description = "Delete this tree's ledger. Refused while one of its jobs is still running." };
+        Command budget = new("budget", "Show (or reset) one job tree's budget ledger (docs/PLAN.md §D4).") { budgetTree, budgetReset };
+        budget.SetAction(async parseResult => await BudgetAsync(parseResult.GetRequiredValue(budgetTree), parseResult.GetValue(budgetReset)));
+
+        return new Command("jobs", "Inspect past and running jobs.") { list, show, logs, clean, budget };
     }
 
     private static int List(int last)
@@ -177,6 +182,55 @@ public static class JobsCommands
     private static bool IsCleanable(string jobsRoot, string jobId) =>
         File.Exists(Path.Combine(jobsRoot, jobId, "result.json"))
         || (Directory.Exists(jobsRoot) && !Directory.Exists(Path.Combine(jobsRoot, jobId)));
+
+    // Exporting a tree id makes docs/PLAN.md §D4's ledger permanent: spend accumulates across
+    // processes with nothing to inspect it and no way to start over (review finding F4). This is both.
+    // `--reset` refuses while a job still holds its `.live` handle — deleting the ledger under a
+    // running child would hand the next one the whole budget again.
+    private static async Task<int> BudgetAsync(string tree, bool reset)
+    {
+        BudgetLedgerState state = await BudgetLedger.ReadAsync(AppServices.Platform, tree);
+        Console.WriteLine(state.Directory);
+
+        if (state.Rows.Length == 0)
+            Console.WriteLine("(no entries)");
+
+        foreach (BudgetLedgerRow row in state.Rows)
+            Console.WriteLine(Describe(row));
+
+        Console.WriteLine($"spent     {BudgetLedger.Dollars(state.Spent)}");
+        Console.WriteLine($"reserved  {BudgetLedger.Dollars(state.Reserved)}");
+
+        if (!reset)
+            return ExitCodes.Ok;
+
+        if (state.Rows.FirstOrDefault(row => row.State == BudgetEntryState.Running) is { } running)
+        {
+            Console.Error.WriteLine($"job '{running.Entry.JobId}' of tree '{tree}' is still running; --reset refused");
+            return ExitCodes.Usage;
+        }
+
+        // Outside the ledger lock deliberately: the directory being deleted *contains* the lock file,
+        // and Windows will not remove a directory that still has an open handle in it. A child admitted
+        // in that gap is the race any explicit reset has, and the caller asked for the reset.
+        if (Directory.Exists(state.Directory))
+            Directory.Delete(state.Directory, recursive: true);
+
+        Console.WriteLine($"reset {state.Directory}");
+        return ExitCodes.Ok;
+    }
+
+    private static string Describe(BudgetLedgerRow row) =>
+        $"{row.Entry.JobId}  {row.Entry.Role,-12}  cap {Amount(row.Entry.Cap),8}  cost {Amount(row.Entry.Cost),8}  {StateText(row.State)}";
+
+    private static string Amount(decimal? value) => value is { } amount ? BudgetLedger.Dollars(amount) : "-";
+
+    private static string StateText(BudgetEntryState state) => state switch
+    {
+        BudgetEntryState.Running => "running",
+        BudgetEntryState.Abandoned => "abandoned",
+        _ => "done",
+    };
 
     // Plain JsonDocument.WriteTo, not JsonSerializer: this only re-formats bytes already on disk,
     // so it needs no JsonTypeInfo and stays AOT-safe without touching ClaustrumJsonContext.

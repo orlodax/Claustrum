@@ -8,13 +8,15 @@ namespace Claustrum.Core.Jobs;
 // docs/PLAN.md §D4: "budget_usd is enforced across the job tree: a child that would exceed the
 // remaining budget is refused with status BudgetExceeded". The tree is whatever CLAUSTRUM_PARENT_JOB
 // names (§D2), and its members are separate `claustrum run` processes, so the running total lives on
-// disk beside the job store: one `<jobId>.json` entry per job under `<claustrum home>/budget/<tree>/`,
-// guarded by the same exclusive-open `.lock` trick RoleConcurrencyGate uses for its slots. NOTES.md
-// "Tree budget accounting is a file ledger" holds the two gaps this shape accepts.
+// disk beside the job store: per job a `<jobId>.json` entry plus a `<jobId>.live` handle held open for
+// as long as it runs, under `<claustrum home>/budget/<tree>/` and guarded by the same exclusive-open
+// `.lock` trick RoleConcurrencyGate uses for its slots. NOTES.md "Tree budget accounting is a file
+// ledger" carries the admission rule in full and what the `.live` probe is worth.
 public static class BudgetLedger
 {
     private const string TreeVariable = "CLAUSTRUM_PARENT_JOB";
     private const string UnknownRole = "unknown";
+    private const string LiveExtension = ".live";
 
     private static readonly TimeSpan pollInterval = TimeSpan.FromMilliseconds(50);
     private static readonly TimeSpan lockTimeout = TimeSpan.FromSeconds(5);
@@ -42,65 +44,174 @@ public static class BudgetLedger
         return Path.Combine(JobDirectory.ResolveHome(platform), "budget", safe.Trim('.').Length > 0 ? safe : safe.Replace('.', '_'));
     }
 
+    /// <summary>`$0.10`, and `-$0.50` for a remainder a backend overshot — the sign leads the amount.</summary>
+    public static string Dollars(decimal value) => value < 0 ? $"-${Money(-value)}" : $"${Money(value)}";
+
     /// <summary>
-    /// Claims this job's slice of the tree budget, or refuses it. Under the ledger lock: spend is the
-    /// sum of the costs recorded so far, and the granted cap is <paramref name="requestedCap"/>
-    /// clamped to what is left (all of what is left when no cap was requested). Refused when nothing
-    /// is left, or when an explicit cap asks for more than that.
+    /// Claims this job's slice of the tree budget, or refuses it. Everything happens under the ledger
+    /// lock: a live sibling's granted cap counts against the tree exactly like a finished one's cost,
+    /// and the cap granted here is <paramref name="requestedCap"/> — or an equal share of what is
+    /// left, for a role that fans out — clamped to the remainder. The admission owns a
+    /// <see cref="BudgetReservation"/> that must be completed and disposed: while it is open, this
+    /// job's cap stays reserved against every other child of the tree.
     /// </summary>
-    public static BudgetAdmission Admit(IPlatform platform, string treeId, string jobId, string role, decimal treeBudget, decimal? requestedCap)
+    public static async Task<BudgetAdmission> AdmitAsync(IPlatform platform, JobTreeBudget tree, string jobId, string role, decimal? requestedCap)
     {
-        string directory = DirectoryFor(platform, treeId);
+        string directory = DirectoryFor(platform, tree.TreeId);
         Directory.CreateDirectory(directory);
 
-        using FileStream guard = Lock(directory);
+        using FileStream guard = await LockAsync(directory);
 
-        decimal spent = ReadEntries(directory).Sum(entry => entry.Cost ?? 0m);
-        decimal remaining = treeBudget - spent;
-        string state = $"tree '{treeId}': {Dollars(spent)} of {Dollars(treeBudget)} already spent, {Dollars(remaining)} remaining";
+        BudgetLedgerState state = Survey(directory, markAbandoned: true);
+        decimal remaining = tree.BudgetUsd - state.Spent - state.Reserved;
+        string summary = $"tree '{tree.TreeId}': {Dollars(state.Spent)} spent + {Dollars(state.Reserved)} reserved "
+            + $"of {Dollars(tree.BudgetUsd)}, {Dollars(remaining)} remaining";
 
         if (remaining <= 0)
-            return new BudgetAdmission(Admitted: false, Spent: spent, Remaining: remaining, EffectiveCap: null,
-                Reason: $"{state}; nothing left for role '{role}'");
+            return new BudgetAdmission(Admitted: false, state.Spent, state.Reserved, remaining,
+                EffectiveCap: null, Reason: $"{summary}; nothing left for role '{role}'", Reservation: null);
 
         if (requestedCap is { } cap && cap > remaining)
-            return new BudgetAdmission(Admitted: false, Spent: spent, Remaining: remaining, EffectiveCap: null,
-                Reason: $"{state}; --budget {Money(cap)} exceeds it");
+            return new BudgetAdmission(Admitted: false, state.Spent, state.Reserved, remaining,
+                EffectiveCap: null, Reason: $"{summary}; --budget {Money(cap)} exceeds it", Reservation: null);
 
-        // Min, though the branch above already refused a larger request: it states the invariant the
-        // cap rests on, that no admitted job is handed more than the tree has left.
-        decimal effectiveCap = Math.Min(requestedCap ?? remaining, remaining);
-        Write(EntryPath(directory, jobId), new BudgetLedgerEntry(jobId, role, effectiveCap, Cost: null, DateTimeOffset.UtcNow, FinishedAt: null));
+        // Share is the role's max_parallel: siblings that start together each take a slice of the
+        // remainder instead of the whole of it, so none can starve the others before it even runs. An
+        // explicit --budget is the caller's own ceiling and is never divided, only clamped.
+        decimal effectiveCap = Math.Min(requestedCap ?? remaining / tree.Share, remaining);
+        BudgetReservation reservation = Claim(directory, tree.TreeId, jobId, role, effectiveCap);
 
-        return new BudgetAdmission(Admitted: true, Spent: spent, Remaining: remaining, EffectiveCap: effectiveCap, Reason: null);
+        return new BudgetAdmission(Admitted: true, state.Spent, state.Reserved, remaining, effectiveCap, Reason: null, reservation);
     }
 
     /// <summary>
-    /// Closes this job's entry with what the run actually cost (null when the backend reported none).
-    /// A job that never gets here leaves its entry open, and an open entry counts as $0.
+    /// What the tree has left right now: the admission's arithmetic without its decision, and without
+    /// writing anything at all. DelegateEngine peeks with it to skip worktree isolation for a child a
+    /// spent tree is about to refuse anyway; the binding call is still AdmitAsync's, under the lock.
     /// </summary>
-    public static void Record(IPlatform platform, string treeId, string jobId, decimal? cost)
+    public static async Task<decimal> PeekRemainingAsync(IPlatform platform, JobTreeBudget tree)
+    {
+        BudgetLedgerState state = await ReadAsync(platform, tree.TreeId);
+        return tree.BudgetUsd - state.Spent - state.Reserved;
+    }
+
+    /// <summary>
+    /// Every entry of one tree with the liveness its `.live` probe reports now, plus the two sums the
+    /// admission rule runs on (`claustrum jobs budget`). Read-only: a dead holder's entry is reported
+    /// as abandoned but left alone on disk, which is the next admission's job to rewrite.
+    /// </summary>
+    public static async Task<BudgetLedgerState> ReadAsync(IPlatform platform, string treeId)
     {
         string directory = DirectoryFor(platform, treeId);
+        if (!Directory.Exists(directory))
+            return new BudgetLedgerState(directory, [], Spent: 0m, Reserved: 0m);
+
+        using FileStream guard = await LockAsync(directory);
+
+        return Survey(directory, markAbandoned: false);
+    }
+
+    // BudgetReservation.CompleteAsync's other half: the final entry, written under the lock. A missing
+    // entry (a hand-cleaned ledger, a job id no admission wrote) is created rather than thrown over —
+    // losing a finished job's cost is the one error that overstates what the tree has left. Abandoned
+    // is cleared: a real completion outranks a sibling's guess that this holder had died.
+    internal static async Task CloseAsync(string directory, string jobId, decimal cost)
+    {
         Directory.CreateDirectory(directory);
 
-        using FileStream guard = Lock(directory);
+        using FileStream guard = await LockAsync(directory);
 
-        // A missing entry (a hand-cleaned ledger, a job id Admit never saw) is written rather than
-        // thrown over: not recording a finished job's cost is the error that overstates what the tree
-        // has left, so it is the one outcome worth defending against here.
         string path = EntryPath(directory, jobId);
         BudgetLedgerEntry entry = TryRead(path)
             ?? new BudgetLedgerEntry(jobId, UnknownRole, Cap: null, Cost: null, DateTimeOffset.UtcNow, FinishedAt: null);
 
-        Write(path, entry with { Cost = cost, FinishedAt = DateTimeOffset.UtcNow });
+        Write(path, entry with { Cost = cost, FinishedAt = DateTimeOffset.UtcNow, Abandoned = false });
     }
 
-    private static IEnumerable<BudgetLedgerEntry> ReadEntries(string directory) =>
-        Directory.EnumerateFiles(directory, "*.json").Select(TryRead).OfType<BudgetLedgerEntry>();
+    // The three ways an entry can count, decided by one probe: a finished entry contributes its cost,
+    // one still holding its `.live` handle contributes the cap it was granted, and an open entry whose
+    // handle nobody holds belonged to a job that died — worth $0 from here on, and rewritten as
+    // finished so no later pass has to probe it again. Only a caller allowed to write asks for that
+    // rewrite: a read-only peek reports the same state and leaves the file alone.
+    private static BudgetLedgerState Survey(string directory, bool markAbandoned)
+    {
+        decimal spent = 0m;
+        decimal reserved = 0m;
+        List<BudgetLedgerRow> rows = [];
+
+        foreach (string path in Directory.EnumerateFiles(directory, "*.json"))
+        {
+            if (TryRead(path) is not { } entry)
+                continue;
+
+            if (entry.FinishedAt is not null || entry.Abandoned)
+            {
+                spent += entry.Cost ?? 0m;
+                rows.Add(new BudgetLedgerRow(entry, entry.Abandoned ? BudgetEntryState.Abandoned : BudgetEntryState.Done));
+            }
+            else if (IsLive(path))
+            {
+                reserved += entry.Cap ?? 0m;
+                rows.Add(new BudgetLedgerRow(entry, BudgetEntryState.Running));
+            }
+            else
+            {
+                BudgetLedgerEntry abandoned = entry with { Cost = null, FinishedAt = DateTimeOffset.UtcNow, Abandoned = true };
+                if (markAbandoned)
+                    Write(path, abandoned);
+
+                rows.Add(new BudgetLedgerRow(abandoned, BudgetEntryState.Abandoned));
+            }
+        }
+
+        // Ordinal on a `yyyyMMdd-HHmmss-8hex` id is chronological, and the enumeration order of a
+        // directory is not a thing `jobs budget` should make its output depend on.
+        return new BudgetLedgerState(directory, [.. rows.OrderBy(row => row.Entry.JobId, StringComparer.Ordinal)], spent, reserved);
+    }
+
+    // RoleConcurrencyGate's acquire, read backwards: the holder keeps `<jobId>.live` open with
+    // FileShare.None for its whole run, so an entry whose file this process CAN open — or that has no
+    // file at all — is one whose holder is gone. The probe is instantaneous by design: a live handle
+    // fails the open immediately rather than waiting, which is what makes it safe under the lock.
+    private static bool IsLive(string entryPath)
+    {
+        try
+        {
+            using FileStream probe = new(Path.ChangeExtension(entryPath, LiveExtension), FileMode.Open, FileAccess.Read, FileShare.None);
+            return false;
+        }
+        catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
+        {
+            return false;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return true;
+        }
+    }
+
+    // The order matters: the `.live` handle is taken *before* the entry is written, so no rival can
+    // ever read an entry whose holder has not claimed its handle yet and mistake it for a dead one.
+    // Both halves happen under the ledger lock, and a rival only probes what it has read.
+    private static BudgetReservation Claim(string directory, string treeId, string jobId, string role, decimal cap)
+    {
+        string entryPath = EntryPath(directory, jobId);
+        string livePath = Path.ChangeExtension(entryPath, LiveExtension);
+        FileStream live = new(livePath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+        try
+        {
+            Write(entryPath, new BudgetLedgerEntry(jobId, role, cap, Cost: null, DateTimeOffset.UtcNow, FinishedAt: null));
+            return new BudgetReservation(directory, livePath, treeId, jobId, cap, live);
+        }
+        catch
+        {
+            live.Dispose();
+            throw;
+        }
+    }
 
     // A truncated entry (a process killed mid-write) must not take the whole admission down — the same
-    // call `jobs list` makes for a partial result.json. It then counts as $0, like an open one.
+    // call `jobs list` makes for a partial result.json. It then counts as $0, like an abandoned one.
     private static BudgetLedgerEntry? TryRead(string path)
     {
         try
@@ -120,10 +231,6 @@ public static class BudgetLedger
 
     private static string EntryPath(string directory, string jobId) => Path.Combine(directory, $"{Sanitize(jobId)}.json");
 
-    // Remaining goes negative whenever a child outspent its cap (a backend may overshoot its own
-    // --max-budget-usd), so the sign leads the amount rather than sitting between it and the '$'.
-    private static string Dollars(decimal value) => value < 0 ? $"-${Money(-value)}" : $"${Money(value)}";
-
     private static string Money(decimal value) => value.ToString("0.00", CultureInfo.InvariantCulture);
 
     // Reading the ledger, deciding, and writing an entry is one critical section across processes, so
@@ -132,7 +239,7 @@ public static class BudgetLedger
     // lets a rival's lock land on an orphaned inode while a third process opens a fresh file at the
     // same path and believes it holds the same lock. The wait is bounded: one stuck holder must not
     // turn every other child of the tree into a run with no output and no end.
-    private static FileStream Lock(string directory)
+    private static async Task<FileStream> LockAsync(string directory)
     {
         string path = Path.Combine(directory, ".lock");
         long deadline = Environment.TickCount64 + (long)lockTimeout.TotalMilliseconds;
@@ -157,7 +264,9 @@ public static class BudgetLedger
                 // Another job of this tree holds the ledger; there is still time, so poll.
             }
 
-            Thread.Sleep(pollInterval);
+            // No CancellationToken on purpose: the wait is already bounded above, and the caller that
+            // must write whatever happens is the finish path, whose token has usually already fired.
+            await Task.Delay(pollInterval);
         }
     }
 
