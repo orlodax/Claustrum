@@ -13,7 +13,11 @@ public sealed class HomeRedirectPlatform(string homeDirectory) : IPlatform
 
     public ClaustrumOs Os => real.Os;
     public string HomeDirectory { get; } = homeDirectory;
-    public string? GetEnvironmentVariable(string name) => name == "CLAUSTRUM_HOME" ? null : real.GetEnvironmentVariable(name);
+
+    // CLAUSTRUM_PARENT_JOB is also filtered: a developer shell that exports it (real tree work) would
+    // otherwise flip every non-tree RunnerTests case onto BudgetLedger's path by accident.
+    public string? GetEnvironmentVariable(string name) =>
+        name is "CLAUSTRUM_HOME" or "CLAUSTRUM_PARENT_JOB" ? null : real.GetEnvironmentVariable(name);
     public IReadOnlyDictionary<string, string> GetEnvironmentVariables() => real.GetEnvironmentVariables();
     public string[] GetPathEntries() => real.GetPathEntries();
     public string[] GetPathExtensions() => real.GetPathExtensions();

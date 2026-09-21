@@ -84,6 +84,79 @@ public sealed class ProcessRunnerTests
         }
     }
 
+    // ProcessSpec.StdinText (issue #14, NOTES.md "The cursor backend, validated against a real
+    // install"): cursor-agent -p reads its whole prompt from stdin when argv carries none.
+    [Fact]
+    public async Task StdinTextIsWrittenAndTheChildSeesEofAsync()
+    {
+        JobPaths job = CreateTempJob();
+        try
+        {
+            (string exe, string[] args) = ReadStdinCommand();
+            ProcessSpec spec = new(exe, args, Path.GetTempPath(), [], [], StdinText: "the rendered prompt");
+            ProcessRunner runner = new(new RealPlatform());
+
+            ProcessOutcome outcome = await runner.RunAsync(spec, backendConfig: null, job, envPassthroughAll: false, onStreamLine: null, TimeSpan.FromSeconds(10), CancellationToken.None);
+
+            Assert.Equal(ProcessTermination.Completed, outcome.Termination);
+            Assert.Contains("the rendered prompt", outcome.Stdout, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(job.Directory, recursive: true);
+        }
+    }
+
+    // NOTES.md: "a prompt past the pipe buffer would otherwise deadlock against a child blocked on
+    // an undrained stdout" — this child never reads stdin at all, so the write itself has to be the
+    // thing the run's timeout cancels, not WaitForExitAsync.
+    [Fact]
+    public async Task APromptLargerThanThePipeBufferEndsAtTheTimeoutInsteadOfHangingAsync()
+    {
+        JobPaths job = CreateTempJob();
+        try
+        {
+            (string exe, string[] args) = SleepCommand(30);
+            ProcessSpec spec = new(exe, args, Path.GetTempPath(), [], [], StdinText: new string('x', 256 * 1024));
+            ProcessRunner runner = new(new RealPlatform());
+
+            ProcessOutcome outcome = await runner.RunAsync(spec, backendConfig: null, job, envPassthroughAll: false, onStreamLine: null, TimeSpan.FromSeconds(3), CancellationToken.None);
+
+            Assert.Equal(ProcessTermination.TimedOut, outcome.Termination);
+        }
+        finally
+        {
+            Directory.Delete(job.Directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task AUtf8PromptArrivesByteExactWithNoBomAsync()
+    {
+        JobPaths job = CreateTempJob();
+        try
+        {
+            const string prompt = "héllo — ⚙ tëst";
+            (string exe, string[] args) = ReadStdinCommand();
+            ProcessSpec spec = new(exe, args, Path.GetTempPath(), [], [], StdinText: prompt);
+            ProcessRunner runner = new(new RealPlatform());
+
+            ProcessOutcome outcome = await runner.RunAsync(spec, backendConfig: null, job, envPassthroughAll: false, onStreamLine: null, TimeSpan.FromSeconds(10), CancellationToken.None);
+
+            Assert.Equal(ProcessTermination.Completed, outcome.Termination);
+            Assert.Contains(prompt, outcome.Stdout, StringComparison.Ordinal);
+            Assert.DoesNotContain('﻿', outcome.Stdout);
+        }
+        finally
+        {
+            Directory.Delete(job.Directory, recursive: true);
+        }
+    }
+
+    private static (string Exe, string[] Args) SleepCommand(int seconds) => OperatingSystem.IsWindows()
+        ? ("cmd", ["/c", "ping", "-n", (seconds + 1).ToString(), "127.0.0.1"])
+        : ("sh", ["-c", $"sleep {seconds}"]);
+
     private static (string Exe, string[] Args) ReadStdinCommand() => OperatingSystem.IsWindows()
         ? ("cmd", ["/c", "more"])
         : ("sh", ["-c", "cat"]);
