@@ -109,8 +109,16 @@ internal static class DoctorProbe
         }
         finally
         {
-            if (Directory.Exists(probeCwd))
-                Directory.Delete(probeCwd, recursive: true);
+            try
+            {
+                if (Directory.Exists(probeCwd))
+                    Directory.Delete(probeCwd, recursive: true);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // A file the backend left locked must not replace the probe's real result with a
+                // cleanup throw; the directory is under the OS temp root, which reclaims it.
+            }
         }
     }
 
