@@ -867,7 +867,9 @@ key reads back as `done`).
 3. `remaining <= 0` ⇒ refused, "nothing left for role '<role>'".
 4. an explicit `requestedCap > remaining` ⇒ refused, `--budget 0.50 exceeds it`.
 5. otherwise `effectiveCap = floor_to_cents(min(requestedCap ?? remaining / share, remaining))`; a cap
-   that floors to `$0` is refused with step 3's message, and otherwise the `.live` handle is taken,
+   that floors to `$0` is refused with its own reason (see "Step 3 refuses with a reason…" below:
+   the share slice names the division and the `--budget` that would get past it; an explicit cap
+   that rounds away says so), and otherwise the `.live` handle is taken,
    the entry is written with `cost: null`, and the job is admitted.
 
 `share` is `JobTreeBudget.Share` = `max(1, the role's max_parallel ?? 1)`, set by `DelegateEngine`: a
