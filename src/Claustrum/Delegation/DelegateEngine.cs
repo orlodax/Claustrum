@@ -66,29 +66,51 @@ public static class DelegateEngine
         // builders for this role run at once, however many separate `claustrum run` processes a
         // spawned architect fans them out as. Config/tier/harness resolution above still reads
         // request.Cwd — only the backend's own working directory moves.
-        if (request.MaxParallel is { } maxParallel && maxParallel > 1 && await WorthIsolatingAsync(tree))
+        if (request.MaxParallel is { } maxParallel && maxParallel > 1)
         {
             job ??= JobDirectory.Create(AppServices.Platform);
             string gateKey = RoleConcurrencyGate.KeyFor(request.CastName, request.Role);
             await using RoleConcurrencyGate gate = await RoleConcurrencyGate.AcquireAsync(
                 request.Cwd, gateKey, maxParallel, TimeSpan.FromSeconds(timeoutSeconds), cancellationToken);
-            JobWorktreeInfo worktree = await JobWorktree.AddAsync(request.Cwd, job.Id, cancellationToken);
 
+            // Binding, and before any isolation: this path cuts a branch and holds a slot before Runner
+            // ever sees the request, so a job the ledger will refuse has to be refused here. The slot
+            // comes first anyway — a reservation must never wait behind the gate, and a sibling that
+            // finishes in that wait releases budget this job can then have.
+            BudgetAdmission? admission = await TryAdmitAsync(tree, job.Id, resolved.Name, budgetUsd);
+            RunOptions isolatedOptions = options with { Admission = admission };
+
+            if (admission is { Admitted: false })
+            {
+                // No worktree, no branch, no slot: Runner only writes the refusal's result.json, and
+                // the `await using` above disposes the gate a second time, which is a no-op.
+                await gate.DisposeAsync();
+                RunRequest refusedRunRequest = BuildRunRequest(request, request.Cwd, requestPermission, budgetUsd, timeoutSeconds);
+                return await AppServices.Runner.RunAsync(refusedRunRequest, resolved, isolatedOptions, job, cancellationToken);
+            }
+
+            JobWorktreeInfo? worktree = null;
             try
             {
+                worktree = await JobWorktree.AddAsync(request.Cwd, job.Id, cancellationToken);
                 RunRequest isolatedRunRequest = BuildRunRequest(request, worktree.Path, requestPermission, budgetUsd, timeoutSeconds);
-                RunResult isolatedResult = await AppServices.Runner.RunAsync(isolatedRunRequest, resolved, options, job, cancellationToken);
+                RunResult isolatedResult = await AppServices.Runner.RunAsync(isolatedRunRequest, resolved, isolatedOptions, job, cancellationToken);
                 return isolatedResult with { Worktree = worktree.Path, Branch = worktree.Branch };
             }
             catch (Exception ex)
             {
                 // Runner writes a result.json for everything that fails once the backend process has
                 // run, so landing here means the run never produced one — a rejected blind gate, a
-                // non-positive --timeout, a cancel before the spawn. `jobs clean` only removes
-                // worktrees whose job wrote a result.json, so a worktree left behind here could never
-                // be cleaned again and its branch would accumulate forever (review finding). Undo it
-                // on the way out; the original failure is still what the caller gets.
-                if (await JobWorktree.TryRemoveAbandonedAsync(request.Cwd, job.Id, CancellationToken.None) is { } cleanupFailure)
+                // non-positive --timeout, a `git worktree add` on a cwd that is no repo. Two things
+                // must be undone. The reservation, because Runner closes it through its funnel but may
+                // never have received it; releasing the handle is enough (the next admission then reads
+                // the entry as abandoned, worth $0) and disposing twice is harmless. And the worktree:
+                // `jobs clean` only removes worktrees whose job wrote a result.json, so one left behind
+                // here could never be cleaned and its branch would accumulate forever.
+                if (admission?.Reservation is { } reservation)
+                    await reservation.DisposeAsync();
+
+                if (worktree is not null && await JobWorktree.TryRemoveAbandonedAsync(request.Cwd, job.Id, CancellationToken.None) is { } cleanupFailure)
                     throw new AggregateException($"{ex.Message} (and cleaning up {worktree.Path} failed)", ex, cleanupFailure);
                 throw;
             }
@@ -100,23 +122,24 @@ public static class DelegateEngine
             : await AppServices.Runner.RunAsync(runRequest, resolved, options, job, cancellationToken);
     }
 
-    // The ledger's real decision stays inside Runner, under the lock; this only avoids paying for
-    // isolation a refusal would throw away. A spent tree refuses every child, and the isolated path
-    // takes a concurrency slot and creates a worktree + branch *before* Runner ever sees the request
-    // (review finding F8) — the direct path writes the same refusal with none of that. A ledger this
-    // peek cannot read is not its problem: isolate, and let the admission produce the real answer.
-    private static async Task<bool> WorthIsolatingAsync(JobTreeBudget? tree)
+    // The isolated path's own admission, under the ledger's lock and binding — the earlier
+    // PeekRemainingAsync here was not, and a sibling finishing in the gap between peek and admission
+    // let a job run directly in the caller's cwd, outside both the worktree and the concurrency cap
+    // (review finding). Null means "no tree at all, or a ledger that could not be read": Runner then
+    // admits under the slot this caller is still holding, which turns a ledger error back into its
+    // Failed result and keeps a transient one from running this job un-isolated.
+    private static async Task<BudgetAdmission?> TryAdmitAsync(JobTreeBudget? tree, string jobId, string role, decimal? requestedCap)
     {
         if (tree is not { } active)
-            return true;
+            return null;
 
         try
         {
-            return await BudgetLedger.PeekRemainingAsync(AppServices.Platform, active) > 0;
+            return await BudgetLedger.AdmitAsync(AppServices.Platform, active, jobId, role, requestedCap);
         }
         catch (Exception ex) when (ex is TimeoutException or IOException or UnauthorizedAccessException)
         {
-            return true;
+            return null;
         }
     }
 
