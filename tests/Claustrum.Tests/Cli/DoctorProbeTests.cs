@@ -173,6 +173,16 @@ public sealed class DoctorProbeTests
         Assert.Equal("failed (boom: connection refused) — log: /x/stdout.log", line);
     }
 
+    // Pins the shape of tests/fixtures/claude/error-max-budget.json (issue #12): its message names a
+    // dollar figure, not any of authMarkers' words, so the "no credential" arm must not fire on it.
+    [Fact]
+    public void DescribeReportsAMaxBudgetErrorAsFailedNotCredential()
+    {
+        string line = DoctorProbe.Describe(Result(RunStatus.Failed, error: "Reached maximum budget ($0.05)", logPath: "/x/stdout.log"));
+
+        Assert.Equal("failed (Reached maximum budget ($0.05)) — log: /x/stdout.log", line);
+    }
+
     [Fact]
     public void DescribeClampsAnOverlongErrorLineToOneHundredTwentyCharacters()
     {
@@ -204,7 +214,7 @@ public sealed class DoctorProbeTests
             Assert.StartsWith("OK (", outcome.Line, StringComparison.Ordinal);
 
             Assert.NotNull(backend.LastRun);
-            Assert.Equal(0.05m, backend.LastRun!.BudgetUsd);
+            Assert.Equal(DoctorProbe.ProbeBudgetUsd, backend.LastRun!.BudgetUsd);
             Assert.DoesNotContain("claustrum-report", backend.LastRun.Brief, StringComparison.Ordinal);
 
             string[] probeDirsAfter = Directory.GetDirectories(Path.GetTempPath(), "claustrum-probe-*");
@@ -254,15 +264,13 @@ public sealed class DoctorProbeTests
     // file lock open past the spawned process's own exit — the only point an external handle could be
     // injected without the path in hand), so this runs on POSIX only.
     //
-    // Measured: the same 000 directory also breaks Runner's own *after*-snapshot (WorktreeSnapshot's
-    // file-scan branch has to enumerate the whole cwd, including "locked") — an UnauthorizedAccessException
-    // that lands in RunCoreAsync's outer catch and comes back as RunStatus.Failed, not Success. There is
-    // no way to chmod it only *after* that snapshot and *before* the delete from inside one spawned
-    // process (both run strictly after the process exits, in an order this test cannot see or hook), so
-    // this proves the claim through the Failed path instead: DoctorProbe.RunAsync still returns a
-    // populated, non-null ProbeOutcome (not an exception, not a null Result) and the temp directory it
-    // could not fully delete is still there afterwards — the cleanup failure changed nothing about what
-    // was already computed.
+    // 2026-09-21 (issue #12): the 000 directory used to also break Runner's own *after*-snapshot
+    // (WorktreeSnapshot's file-scan branch enumerated the whole cwd, including "locked", with
+    // SearchOption.AllDirectories) and turned a finished run into RunStatus.Failed before the delete
+    // was ever reached. Now that ScanFiles walks by hand and skips what it cannot read, the run
+    // legitimately succeeds; this test's actual claim — a temp cwd that DoctorProbe.RunAsync's own
+    // cleanup cannot fully delete is left on disk rather than masked or thrown out of RunAsync — is
+    // still exercised via the leftover "locked" subdirectory alone.
     [Fact]
     public async Task RunAsyncSurvivesATempCwdItCannotFullyDeleteAsync()
     {
@@ -284,7 +292,7 @@ public sealed class DoctorProbeTests
             ProbeOutcome outcome = await DoctorProbe.RunAsync(backend, config, runner, TestContext.Current.CancellationToken);
 
             Assert.NotNull(outcome.Result);
-            Assert.Equal(RunStatus.Failed, outcome.Result!.Status);
+            Assert.Equal(RunStatus.Success, outcome.Result!.Status);
             Assert.NotEmpty(outcome.Line);
 
             string[] probeDirsAfter = Directory.GetDirectories(Path.GetTempPath(), "claustrum-probe-*");

@@ -1,3 +1,4 @@
+using System.Text.Json.Nodes;
 using Claustrum.Core.Backends;
 using Claustrum.Core.Backends.Claude;
 using Claustrum.Core.Model;
@@ -113,6 +114,77 @@ public sealed class ClaudeBackendParseTests
         Assert.Equal(2, parsed.ReportedEdits.Length);
         Assert.Contains(parsed.ReportedEdits, e => e.Path == "src/foo.cs" && e.Kind == ChangeKind.Modified);
         Assert.Contains(parsed.ReportedEdits, e => e.Path == "src/bar.cs" && e.Kind == ChangeKind.Added);
+    }
+
+    // A budget-terminated document (2026-09-21, issue #12) carries no `result` at all: the message
+    // sits in `errors`, and `subtype` names the failure class. Recorded as a genuine capture, not
+    // synthesized (tests/fixtures/claude/error-max-budget.json's own generation is the real thing).
+    [Fact]
+    public void MaxBudgetFixtureFallsBackToTheJoinedErrorsEntry()
+    {
+        string stdout = File.ReadAllText(FixturePath("error-max-budget.json"));
+
+        ParsedOutput parsed = backend.Parse(stdout, stderr: "", exitCode: 0);
+
+        Assert.Equal("Reached maximum budget ($0.05)", parsed.FinalMessage);
+        Assert.True(parsed.IsError);
+        Assert.Equal(0.1200704m, parsed.CostUsd);
+        Assert.Equal("0df355fa-4f19-47ba-8f86-5b476f0e4080", parsed.SessionId);
+    }
+
+    // Two entries prove the fallback joins the whole array, not merely reads the first one.
+    [Fact]
+    public void TwoErrorsEntriesAreJoinedWithASemicolon()
+    {
+        JsonObject document = new()
+        {
+            ["type"] = "result",
+            ["subtype"] = "error_during_execution",
+            ["is_error"] = true,
+            ["errors"] = new JsonArray("first problem", "second problem"),
+            ["session_id"] = "synthetic-session",
+        };
+
+        ParsedOutput parsed = backend.Parse(document.ToJsonString(), stderr: "", exitCode: 1);
+
+        Assert.Equal("first problem; second problem", parsed.FinalMessage);
+    }
+
+    // Neither `result` nor `errors` present: the last resort is the machine-readable `subtype`, which
+    // at least names the failure class instead of leaving FinalMessage empty.
+    [Fact]
+    public void NeitherResultNorErrorsFallsBackToTheErrorSubtype()
+    {
+        JsonObject document = new()
+        {
+            ["type"] = "result",
+            ["subtype"] = "error_during_execution",
+            ["is_error"] = true,
+            ["session_id"] = "synthetic-session",
+        };
+
+        ParsedOutput parsed = backend.Parse(document.ToJsonString(), stderr: "", exitCode: 1);
+
+        Assert.Equal("error_during_execution", parsed.FinalMessage);
+    }
+
+    // A "success" subtype is not an `error_*` prefix, so the last-resort fallback must not fire on it
+    // either: an empty `result` on an otherwise-successful document stays empty, not "success".
+    [Fact]
+    public void SuccessSubtypeWithEmptyResultStaysEmpty()
+    {
+        JsonObject document = new()
+        {
+            ["type"] = "result",
+            ["subtype"] = "success",
+            ["is_error"] = false,
+            ["result"] = "",
+            ["session_id"] = "synthetic-session",
+        };
+
+        ParsedOutput parsed = backend.Parse(document.ToJsonString(), stderr: "", exitCode: 0);
+
+        Assert.Equal("", parsed.FinalMessage);
     }
 
     private static (string Stdout, string Stderr) ReadErrorFixture()
