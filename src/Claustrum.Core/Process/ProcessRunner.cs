@@ -31,6 +31,9 @@ public sealed class ProcessRunner(IPlatform platform)
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             RedirectStandardInput = true,
+            // Without this a piped prompt (ProcessSpec.StdinText) would go out in Console.InputEncoding
+            // — a legacy codepage on Windows; no BOM, or it would be prepended to the prompt itself.
+            StandardInputEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
             CreateNoWindow = true,
         };
 
@@ -58,11 +61,8 @@ public sealed class ProcessRunner(IPlatform platform)
         Stopwatch stopwatch = Stopwatch.StartNew();
         process.Start();
 
-        // Closed immediately, never fed: every backend takes its brief as an argv element (NOTES.md
-        // "MCP child stdin inheritance hung git"), so this cannot truncate one — and without it the
-        // child would inherit the MCP host's own live JSON-RPC pipe.
-        process.StandardInput.Close();
-
+        // Pumps started before stdin is written: a prompt larger than the pipe buffer would otherwise
+        // deadlock against a child already blocked writing stdout nobody is draining yet.
         process.BeginOutputReadLine();
         process.BeginErrorReadLine();
 
@@ -72,6 +72,9 @@ public sealed class ProcessRunner(IPlatform platform)
         ProcessTermination termination = ProcessTermination.Completed;
         try
         {
+            // Inside the timeout, not before it: a child that never drains its stdin would otherwise
+            // block this write with nothing left to interrupt it.
+            await WriteStdinAsync(process, spec.StdinText, linked.Token);
             await process.WaitForExitAsync(linked.Token);
         }
         catch (OperationCanceledException)
@@ -83,6 +86,27 @@ public sealed class ProcessRunner(IPlatform platform)
 
         stopwatch.Stop();
         return new ProcessOutcome(process.ExitCode, stdout.ToString(), stderr.ToString(), termination, stopwatch.Elapsed);
+    }
+
+    // Stdin always ends up closed, and is never inherited: a child holding the MCP host's own live
+    // JSON-RPC pipe can block on it (NOTES.md "MCP child stdin inheritance hung git"). cursor is the
+    // only backend fed anything first — `cursor-agent -p` has no prompt-file flag and reads its whole
+    // prompt from stdin (issue #14), so ProcessSpec.StdinText arrives here.
+    private static async Task WriteStdinAsync(System.Diagnostics.Process process, string? stdinText, CancellationToken cancellationToken)
+    {
+        try
+        {
+            if (stdinText is { } text)
+                await process.StandardInput.WriteAsync(text.AsMemory(), cancellationToken);
+
+            process.StandardInput.Close();
+        }
+        catch (IOException)
+        {
+            // A child that exited before reading its prompt (a startup error: cursor's own
+            // workspace-trust and plan-tier refusals both exit in ~1-5s) makes this a broken pipe.
+            // Its exit code and stderr diagnose that far better than a throw from here would.
+        }
     }
 
     private static void Pump(string? line, StringBuilder buffer, StreamWriter log, Action<string>? onStreamLine)
