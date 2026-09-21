@@ -90,8 +90,8 @@ public static class BackendsCommands
             Console.WriteLine($"  .vscode/mcp.json: {DescribeMcpFile(Path.Combine(cwd, ".vscode", "mcp.json"), "servers")}");
 
             // opencode registers MCP servers under its own top-level "mcp" key in the same file that
-            // holds the rest of its settings, and accepts either extension (`sync` writes neither —
-            // OpencodeSync deliberately leaves that key alone).
+            // holds the rest of its settings, and accepts either extension. doctor only reads it:
+            // `sync --only opencode` is what writes the claustrum entry there (OpencodeSync, #15).
             string opencodeConfig = OpencodeConfigPath(cwd);
             string opencodeLabel = Path.GetFileName(opencodeConfig) + ":";
             Console.WriteLine($"  {opencodeLabel,-18}{DescribeMcpFile(opencodeConfig, "mcp")}");
