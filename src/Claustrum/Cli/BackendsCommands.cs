@@ -8,8 +8,8 @@ namespace Claustrum.Cli;
 // docs/PLAN.md §A5/§B6 `claustrum backends list|doctor [name] [--probe]`; doctor also prints the
 // merged config with the winning layer per key (Config.Origins), per the builder brief item 3.
 // Bare `doctor` is just `binary` (path/version/problems, docs/PLAN.md §B6's first bullet); `--probe`
-// adds `auth`/`mcp`/`os` — the fourth bullet, `probe` itself (an actual paid 1-token round trip per
-// backend), is deliberately not implemented yet (NOTES.md "doctor --probe").
+// adds `auth`/`mcp`/`os` plus `probe` itself — a real paid 1-token round trip per installed backend
+// (DoctorProbe, issue #12), skippable with CLAUSTRUM_SKIP_PROBE so the free checks stay free.
 public static class BackendsCommands
 {
     public static Command Build()
@@ -18,7 +18,10 @@ public static class BackendsCommands
         list.SetAction(_ => List());
 
         Argument<string?> name = new("name") { Description = "Only check this backend.", Arity = ArgumentArity.ZeroOrOne };
-        Option<bool> probe = new("--probe") { Description = "Also check auth presence, MCP registration, and OS/path mismatches." };
+        Option<bool> probe = new("--probe")
+        {
+            Description = "Also check auth presence, MCP registration, and OS/path mismatches. One minimal paid request per installed backend; set CLAUSTRUM_SKIP_PROBE=1 to skip the paid request.",
+        };
         Command doctor = new("doctor", "Check backend availability and print the merged config.") { name, probe };
         doctor.SetAction(async parseResult => await DoctorAsync(parseResult.GetValue(name), parseResult.GetValue(probe)));
 
@@ -49,6 +52,16 @@ public static class BackendsCommands
 
         string cwd = Environment.CurrentDirectory;
         Config config = Config.Load(AppServices.Platform, cwd);
+        bool probeSkipped = DoctorProbe.IsSkipped(AppServices.Platform);
+
+        // Said up front, before any money is spent: `--probe` is the one diagnostic that costs.
+        if (probe)
+        {
+            Console.WriteLine(probeSkipped
+                ? "probe: skipped for every backend (CLAUSTRUM_SKIP_PROBE set; no paid request made)"
+                : "probe: one minimal paid request per installed backend (cap $0.05 each; role doctor-probe under ~/.claustrum/jobs)");
+            Console.WriteLine();
+        }
 
         foreach (IBackend backend in targets)
         {
@@ -65,6 +78,7 @@ public static class BackendsCommands
             {
                 Console.WriteLine($"  auth:    {AuthStatusFor(backend.Name)}");
                 Console.WriteLine($"  os:      {OsStatusFor(doctor.Path, cwd)}");
+                Console.WriteLine($"  probe:   {await ProbeLineAsync(backend, doctor, config, probeSkipped)}");
             }
         }
 
@@ -74,6 +88,13 @@ public static class BackendsCommands
             Console.WriteLine("mcp:");
             Console.WriteLine($"  .mcp.json:        {DescribeMcpFile(Path.Combine(cwd, ".mcp.json"), "mcpServers")}");
             Console.WriteLine($"  .vscode/mcp.json: {DescribeMcpFile(Path.Combine(cwd, ".vscode", "mcp.json"), "servers")}");
+
+            // opencode registers MCP servers under its own top-level "mcp" key in the same file that
+            // holds the rest of its settings, and accepts either extension (`sync` writes neither —
+            // OpencodeSync deliberately leaves that key alone).
+            string opencodeConfig = OpencodeConfigPath(cwd);
+            string opencodeLabel = Path.GetFileName(opencodeConfig) + ":";
+            Console.WriteLine($"  {opencodeLabel,-18}{DescribeMcpFile(opencodeConfig, "mcp")}");
         }
 
         Console.WriteLine();
@@ -81,6 +102,34 @@ public static class BackendsCommands
         PrintMergedConfig(config);
 
         return ExitCodes.Ok;
+    }
+
+    // docs/PLAN.md §B6's `probe` bullet. Order matters: the owner's own skip flag first, then the
+    // binary, then a blocker this backend's own doctor already named (the api backend's "neither
+    // OPENROUTER_API_KEY nor ANTHROPIC_API_KEY is set") — only a backend past all three is worth
+    // paying for. Exit code stays 0 either way: doctor reports, it does not fail.
+    private static async Task<string> ProbeLineAsync(IBackend backend, Doctor doctor, Config config, bool probeSkipped)
+    {
+        if (probeSkipped)
+            return "skipped (CLAUSTRUM_SKIP_PROBE set)";
+
+        if (!doctor.Found)
+            return "skipped (binary not found)";
+
+        if (doctor.Problems.FirstOrDefault() is { } problem)
+            return $"skipped ({problem})";
+
+        ProbeOutcome outcome = await DoctorProbe.RunAsync(backend, config, AppServices.Runner, CancellationToken.None);
+        return outcome.Line;
+    }
+
+    // opencode reads either extension; the .jsonc is only named when there is no .json, so the line
+    // always describes the file that actually decides.
+    private static string OpencodeConfigPath(string cwd)
+    {
+        string jsonPath = Path.Combine(cwd, "opencode.json");
+        string jsoncPath = Path.Combine(cwd, "opencode.jsonc");
+        return !File.Exists(jsonPath) && File.Exists(jsoncPath) ? jsoncPath : jsonPath;
     }
 
     // docs/PLAN.md §B6: "env key or login file present — value never printed". Only the env-var half
