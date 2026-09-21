@@ -183,6 +183,57 @@ public sealed class WorktreeSnapshotTests
         Assert.Null(diff.Diff);
     }
 
+    // 2026-09-21 (issue #12): the non-git ScanFiles fallback used SearchOption.AllDirectories, so one
+    // unreadable subdirectory threw UnauthorizedAccessException out of CaptureAsync and turned an
+    // already-finished run into RunStatus.Failed (doctor --probe's own temp cwd, in practice). It now
+    // walks by hand and skips what it cannot read, the same trade LockedFileIsUnhashableInsteadOfFatalAsync
+    // proves for the git branch's HashWorktreeFile.
+    [Fact]
+    [UnsupportedOSPlatform("windows")]
+    public async Task UnreadableSubdirectoryIsSkippedNotFatalInTheFileScanFallbackAsync()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            Assert.Skip("chmod 000 does not deny a Windows directory listing the same way, and nothing here can inject an equivalent lock without the path in hand.");
+            return;
+        }
+
+        CancellationToken ct = TestContext.Current.CancellationToken;
+        string dir = Directory.CreateTempSubdirectory("claustrum-nogit-scanguard-").FullName;
+        string locked = Path.Combine(dir, "locked");
+        Directory.CreateDirectory(locked);
+        File.WriteAllText(Path.Combine(locked, "unreachable.txt"), "never seen\n");
+        File.SetUnixFileMode(locked, UnixFileMode.None);
+
+        try
+        {
+            File.WriteAllText(Path.Combine(dir, "readable.txt"), "v1\n");
+            File.WriteAllText(Path.Combine(dir, ".hidden"), "hidden\n");
+
+            WorktreeState before = await WorktreeSnapshot.CaptureAsync(dir, ct);
+            WorktreeState.FileScan beforeScan = Assert.IsType<WorktreeState.FileScan>(before);
+            Assert.Contains("readable.txt", beforeScan.Files.Keys);
+            Assert.Contains(".hidden", beforeScan.Files.Keys);
+            Assert.DoesNotContain(beforeScan.Files.Keys, path => path.Contains("locked", StringComparison.Ordinal));
+
+            File.WriteAllText(Path.Combine(dir, "readable.txt"), "v2\n"); // the one change between the two captures
+            WorktreeState after = await WorktreeSnapshot.CaptureAsync(dir, ct);
+
+            SnapshotDiff diff = await WorktreeSnapshot.DiffAsync(dir, before, after, 1_000_000, ct);
+
+            ChangedFile file = Assert.Single(diff.ChangedFiles);
+            Assert.Equal("readable.txt", file.Path);
+            Assert.Equal(ChangeKind.Modified, file.Kind);
+        }
+        finally
+        {
+            // The owner can always chmod their own directory back regardless of its current mode —
+            // needed so the temp tree can be deleted at all.
+            File.SetUnixFileMode(locked, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
     [Fact]
     public async Task TruncationBacksUpOverAMultibyteUtf8BoundaryAsync()
     {
