@@ -11,6 +11,11 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
+    env:
+      # backends doctor --probe now makes a real paid call per installed backend (issue #12); no
+      # backend is installed on a CI runner anyway, but this keeps the test suite from ever depending
+      # on that and from spending money the moment one is.
+      CLAUSTRUM_SKIP_PROBE: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4

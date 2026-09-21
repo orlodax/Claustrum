@@ -399,6 +399,102 @@ public sealed class CliEndToEndTests : IDisposable
         Assert.Contains("no worktrees", stdout, StringComparison.Ordinal);
     }
 
+    // §D4's tree budget through the real front door: CLAUSTRUM_PARENT_JOB names the tree, no cast is
+    // needed (the built-in defaults.budget_usd, 5, is the tree's budget), and the seed entry below is
+    // the on-disk ledger shape NOTES.md "Tree budget accounting is a file ledger" documents, written
+    // by hand rather than through the production type so the test pins the actual file contract.
+    [Fact]
+    public async Task RunOverTheTreeRemainderExitsFiveNamingTheExceededBudgetAsync()
+    {
+        SeedBudgetLedgerEntry(home, "cli-tree-over", jobId: "seed", cap: 4.90m, cost: 4.90m);
+
+        (int exitCode, string stdout, _) = await RunAsync(
+            new Dictionary<string, string> { ["CLAUSTRUM_PARENT_JOB"] = "cli-tree-over" },
+            "run", "builder", "--brief", "hi", "--backend", "nonexistent", "--budget", "0.5", "--json");
+
+        Assert.Equal(ExitCodes.Budget, exitCode);
+        JsonElement root = JsonDocument.Parse(stdout).RootElement;
+        Assert.Equal("budget_exceeded", root.GetProperty("status").GetString());
+        Assert.Contains("--budget 0.50 exceeds it", root.GetProperty("error").GetString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task RunWithinTheTreeRemainderIsClampedToItWithNoExplicitBudgetAsync()
+    {
+        SeedBudgetLedgerEntry(home, "cli-tree-clamp", jobId: "seed", cap: 4.90m, cost: 4.90m);
+
+        (int exitCode, string stdout, _) = await RunAsync(
+            new Dictionary<string, string> { ["CLAUSTRUM_PARENT_JOB"] = "cli-tree-clamp" },
+            "run", "builder", "--brief", "hi", "--backend", "nonexistent", "--json");
+
+        Assert.Equal(ExitCodes.BackendMissing, exitCode);
+        string jobId = JsonDocument.Parse(stdout).RootElement.GetProperty("job_id").GetString()!;
+        string requestJson = File.ReadAllText(Path.Combine(home, "jobs", jobId, "request.json"));
+        // Compared numerically, not as a literal "0.10" substring: BudgetLedger's floor-to-cents
+        // (Math.Floor(x * 100m) / 100m) normalizes decimal's own scale, and a quotient with no
+        // significant second decimal digit — exactly this $0.10 case — serializes as "0.1", the same
+        // way NOTES.md's own $0.12/$0.66 examples show only as many digits as the value needs.
+        Assert.Equal(0.10m, JsonDocument.Parse(requestJson).RootElement.GetProperty("budget_usd").GetDecimal());
+    }
+
+    [Fact]
+    public async Task JobsBudgetListsRowsWithCapCostAndSpentReservedLinesAsync()
+    {
+        SeedBudgetLedgerEntry(home, "cli-tree-list", jobId: "seed", cap: 1.25m, cost: 1.00m);
+
+        (int exitCode, string stdout, _) = await RunAsync("jobs", "budget", "cli-tree-list");
+
+        Assert.Equal(Ok, exitCode);
+        Assert.Contains("seed", stdout, StringComparison.Ordinal);
+        Assert.Contains("cap", stdout, StringComparison.Ordinal);
+        Assert.Contains("cost", stdout, StringComparison.Ordinal);
+        Assert.Contains("spent     $1.00", stdout, StringComparison.Ordinal);
+        Assert.Contains("reserved  $0.00", stdout, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task JobsBudgetResetDeletesTheLedgerButRefusesWhileAJobIsLiveAsync()
+    {
+        string directory = Path.Combine(home, "budget", "cli-tree-reset");
+        Directory.CreateDirectory(directory);
+        File.WriteAllText(Path.Combine(directory, "running.json"),
+            /*lang=json,strict*/ """{"job_id":"running","role":"builder","cap":1.00,"cost":null,"started_at":"2026-01-01T00:00:00Z","finished_at":null,"abandoned":false}""");
+
+        using (new FileStream(Path.Combine(directory, "running.live"), FileMode.Create, FileAccess.ReadWrite, FileShare.None))
+        {
+            (int refusedExit, _, string refusedErr) = await RunAsync("jobs", "budget", "cli-tree-reset", "--reset");
+
+            Assert.Equal(Usage, refusedExit);
+            Assert.Contains("running", refusedErr, StringComparison.Ordinal);
+            Assert.True(Directory.Exists(directory));
+        }
+
+        (int exitCode, string stdout, _) = await RunAsync("jobs", "budget", "cli-tree-reset", "--reset");
+
+        Assert.Equal(Ok, exitCode);
+        Assert.Contains("reset", stdout, StringComparison.Ordinal);
+        Assert.False(Directory.Exists(directory));
+    }
+
+    [Fact]
+    public async Task JobsBudgetOnATreeThatNeverExistedPrintsNoEntriesAndCreatesNothingAsync()
+    {
+        (int exitCode, string stdout, _) = await RunAsync("jobs", "budget", "cli-tree-never-existed");
+
+        Assert.Equal(Ok, exitCode);
+        Assert.Contains("(no entries)", stdout, StringComparison.Ordinal);
+        Assert.False(Directory.Exists(Path.Combine(home, "budget", "cli-tree-never-existed")));
+    }
+
+    private static void SeedBudgetLedgerEntry(string home, string tree, string jobId, decimal cap, decimal cost)
+    {
+        string directory = Path.Combine(home, "budget", tree);
+        Directory.CreateDirectory(directory);
+        string json = /*lang=json,strict*/
+            $$"""{"job_id":"{{jobId}}","role":"builder","cap":{{cap}},"cost":{{cost}},"started_at":"2026-01-01T00:00:00Z","finished_at":"2026-01-01T00:00:01Z","abandoned":false}""";
+        File.WriteAllText(Path.Combine(directory, $"{jobId}.json"), json);
+    }
+
     private static string[] ListBranches(string dir)
     {
         ProcessStartInfo startInfo = new("git")
@@ -459,6 +555,12 @@ public sealed class CliEndToEndTests : IDisposable
         Assert.Contains("os:", stdout, StringComparison.Ordinal);
         Assert.Contains("mcp:", stdout, StringComparison.Ordinal);
         Assert.Contains(".mcp.json:", stdout, StringComparison.Ordinal);
+        Assert.Contains("opencode.json:", stdout, StringComparison.Ordinal);
+
+        // The harness's own money rule (CLAUSTRUM_SKIP_PROBE=1, set on every spawn by RunAsync above):
+        // the banner and every backend's own probe line must say so, never make the real call.
+        Assert.Contains("probe: skipped for every backend (CLAUSTRUM_SKIP_PROBE set; no paid request made)", stdout, StringComparison.Ordinal);
+        Assert.Contains("probe:   skipped (CLAUSTRUM_SKIP_PROBE set)", stdout, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -590,7 +692,13 @@ public sealed class CliEndToEndTests : IDisposable
         Assert.Equal(1, occurrences);
     }
 
-    private async Task<(int ExitCode, string Stdout, string Stderr)> RunAsync(params string[] args)
+    private Task<(int ExitCode, string Stdout, string Stderr)> RunAsync(params string[] args) =>
+        RunAsync(extraEnv: null, args);
+
+    // extraEnv is how a test puts CLAUSTRUM_PARENT_JOB (§D4's tree budget) on the child's own
+    // environment — the same env the child's own backend spawn would inherit it from in the real
+    // host-architect topology (NOTES.md "Tree budget accounting is a file ledger").
+    private async Task<(int ExitCode, string Stdout, string Stderr)> RunAsync(IReadOnlyDictionary<string, string>? extraEnv, params string[] args)
     {
         string binary = Path.Combine(AppContext.BaseDirectory, OperatingSystem.IsWindows() ? "claustrum.exe" : "claustrum");
         Assert.True(File.Exists(binary), $"built claustrum binary not found at '{binary}'");
@@ -608,6 +716,11 @@ public sealed class CliEndToEndTests : IDisposable
         foreach (string arg in args)
             startInfo.ArgumentList.Add(arg);
         startInfo.Environment["CLAUSTRUM_HOME"] = home;
+        // §12's real paid call is a house rule violation waiting to happen the moment this suite runs
+        // on a machine with a backend logged in — every spawn here skips it unless a test overrides it.
+        startInfo.Environment["CLAUSTRUM_SKIP_PROBE"] = "1";
+        foreach ((string key, string value) in extraEnv ?? new Dictionary<string, string>())
+            startInfo.Environment[key] = value;
 
         using Process process = Process.Start(startInfo)!;
         process.StandardInput.Close();
