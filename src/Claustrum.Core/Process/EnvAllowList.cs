@@ -16,8 +16,11 @@ public static class EnvAllowList
         "PATHEXT", "windir", "SystemDrive", "ProgramFiles", "ProgramFiles(x86)", "ProgramData",
     ];
 
+    // CLAUSTRUM_ because a spawned architect is itself a claustrum caller: its own `claustrum run`
+    // children must inherit CLAUSTRUM_PARENT_JOB and CLAUSTRUM_HOME, or they open a second ledger
+    // under a different home and the tree budget of docs/PLAN.md §D4 caps nothing.
     private static readonly string[] prefixes =
-        ["XDG_", "ANTHROPIC_", "OPENROUTER_", "OPENCODE_", "CURSOR_", "COPILOT_", "NODE_"];
+        ["XDG_", "ANTHROPIC_", "OPENROUTER_", "OPENCODE_", "CURSOR_", "COPILOT_", "NODE_", "CLAUSTRUM_"];
 
     private const string ApiKeySuffix = "_API_KEY";
 

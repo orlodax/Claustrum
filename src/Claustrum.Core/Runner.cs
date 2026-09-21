@@ -50,27 +50,39 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
         JobPaths job = jobOverride ?? JobDirectory.Create(platform);
 
         // docs/PLAN.md §D4: in a job tree the budget belongs to the tree, not to this run, so the
-        // ledger decides before anything is written or spawned — a refusal must cost nothing. Stays
-        // null until the ledger admits the job, which is what makes `Finish` close its entry on every
-        // later return and on none of the earlier ones.
-        JobTreeBudget? admitted = null;
+        // ledger decides before anything is written or spawned — a refusal must cost nothing. A ledger
+        // that cannot be reached at all is the symmetric case to ChargeAsync's below: it leaves through
+        // the same funnel as a Failed result rather than escaping RunCoreAsync as a throw.
+        BudgetAdmission? admission = null;
         if (options.Tree is { } tree)
         {
-            BudgetAdmission admission = BudgetLedger.Admit(platform, tree.TreeId, job.Id, role.Name, tree.BudgetUsd, request.BudgetUsd);
-            if (!admission.Admitted)
-                return Finish(job, admitted, NoProcessResult(job, role, RunStatus.BudgetExceeded, admission.Reason));
-
-            admitted = tree;
-            // Clamping here is what makes the tree cap hard per child: request.json below and the
-            // backend's own --max-budget-usd carry the slice the ledger granted, not what was asked.
-            request = request with { BudgetUsd = admission.EffectiveCap };
+            try
+            {
+                admission = await BudgetLedger.AdmitAsync(platform, tree, job.Id, role.Name, request.BudgetUsd);
+            }
+            catch (Exception ex) when (ex is TimeoutException or IOException or UnauthorizedAccessException)
+            {
+                return await FinishAsync(job, reservation: null, FailureResult(job, role, outcome: null, ex), ran: false);
+            }
         }
+
+        // Held for the rest of this method: while this handle is open a sibling's admission reserves
+        // this job's cap instead of handing the same dollars out twice (review finding F2).
+        await using BudgetReservation? reservation = admission?.Reservation;
+
+        if (admission is { Admitted: false })
+            return await FinishAsync(job, reservation: null, NoProcessResult(job, role, RunStatus.BudgetExceeded, admission.Reason), ran: false);
+
+        // Clamping here is what makes the tree cap hard per child: request.json below and the backend's
+        // own --max-budget-usd carry the slice the ledger granted, not what was asked.
+        if (admission is { EffectiveCap: { } granted })
+            request = request with { BudgetUsd = granted };
 
         File.WriteAllText(job.SystemMd, role.SystemPrompt);
         File.WriteAllText(job.RequestJson, JsonSerializer.Serialize(request, ClaustrumJsonContext.Default.RunRequest));
 
         if (!backends.TryGet(role.Backend, out IBackend? backend))
-            return Finish(job, admitted, MissingBackendResult(job, role, $"backend '{role.Backend}' is not registered"));
+            return await FinishAsync(job, reservation, MissingBackendResult(job, role, $"backend '{role.Backend}' is not registered"), ran: false);
 
         // NOTES.md "Runner's before-snapshot is now inside a guarded section too": a bad `cwd` or any
         // other pre-spawn failure here used to escape RunCoreAsync entirely. `spec` does not exist
@@ -85,7 +97,7 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
         }
         catch (Exception ex)
         {
-            return Finish(job, admitted, FailureResult(job, role, outcome: null, ex));
+            return await FinishAsync(job, reservation, FailureResult(job, role, outcome: null, ex), ran: false);
         }
 
         ProcessOutcome outcome;
@@ -99,7 +111,7 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
             // the unregistered-name branch above — same BackendMissing status either way, so a
             // caller need not distinguish "no such backend" from "backend not on PATH".
             DeleteTempFiles(spec.TempFiles);
-            return Finish(job, admitted, MissingBackendResult(job, role, ex.Message));
+            return await FinishAsync(job, reservation, MissingBackendResult(job, role, ex.Message), ran: false);
         }
 
         try
@@ -137,11 +149,13 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
                 ReportStatus: extracted.Status,
                 Warnings: extracted.Warnings);
 
-            return Finish(job, admitted, result);
+            return await FinishAsync(job, reservation, result, ran: true);
         }
         catch (Exception ex)
         {
-            return Finish(job, admitted, FailureResult(job, role, outcome, ex));
+            // `ran: true` — this catch only fires after ProcessOutcome came back, so the backend did
+            // burn whatever it burned even though nothing downstream could read a cost out of it.
+            return await FinishAsync(job, reservation, FailureResult(job, role, outcome, ex), ran: true);
         }
         finally
         {
@@ -277,13 +291,14 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
     };
 
     // The one funnel every result leaves through: result.json is written, and a job the ledger admitted
-    // also has its entry closed with what the run really cost (null wherever nothing ran — the tree is
-    // charged nothing for it). Doing both here is what keeps the two from drifting apart as paths are
-    // added, the way §D4's accounting would silently leak if one `return` forgot to record.
-    private RunResult Finish(JobPaths job, JobTreeBudget? tree, RunResult result)
+    // also has its reservation closed with what the run really cost. Doing both here is what keeps the
+    // two from drifting apart as paths are added, the way §D4's accounting would silently leak if one
+    // `return` forgot to record. `ran` is the backend process having actually run — ChargeAsync needs
+    // it to tell "cost 0 because nothing happened" from "no cost reported by a backend that did run".
+    private static async Task<RunResult> FinishAsync(JobPaths job, BudgetReservation? reservation, RunResult result, bool ran)
     {
-        if (tree is { } active)
-            result = RecordCost(active, job.Id, result);
+        if (reservation is { } claim)
+            result = await ChargeAsync(claim, result, ran);
 
         File.WriteAllText(job.ResultJson, JsonSerializer.Serialize(result, ClaustrumJsonContext.Default.RunResult));
         return result;
@@ -291,21 +306,32 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
 
     // A ledger that cannot be written must not lose a finished run (NOTES.md "Runner always yields a
     // result after the process ran"), but the cost it drops makes the tree believe it has more left
-    // than it does — too consequential to swallow, so it rides out on the result as a warning.
-    private RunResult RecordCost(JobTreeBudget tree, string jobId, RunResult result)
+    // than it does — too consequential to swallow, so it rides out on the result as a warning. The
+    // charge itself gets one too when it falls back to the granted cap: cursor and copilot report no
+    // cost at all (review finding F3), and a caller reading `cost_usd: null` deserves to know the tree
+    // was charged anyway.
+    private static async Task<RunResult> ChargeAsync(BudgetReservation reservation, RunResult result, bool ran)
     {
         try
         {
-            BudgetLedger.Record(platform, tree.TreeId, jobId, result.CostUsd);
-            return result;
+            await reservation.CompleteAsync(result.CostUsd, ran);
         }
         catch (Exception ex) when (ex is IOException or TimeoutException or UnauthorizedAccessException)
         {
             return result with
             {
-                Warnings = [.. result.Warnings, $"budget ledger for tree '{tree.TreeId}' not updated with this job's cost: {ex.Message}"],
+                Warnings = [.. result.Warnings, $"budget ledger for tree '{reservation.TreeId}' not updated with this job's cost: {ex.Message}"],
             };
         }
+
+        if (result.CostUsd is not null || !ran)
+            return result;
+
+        return result with
+        {
+            Warnings = [.. result.Warnings, $"cost not reported by backend '{result.Backend}'; "
+                + $"charged the granted cap {BudgetLedger.Dollars(reservation.Cap)} to tree '{reservation.TreeId}'"],
+        };
     }
 
     private static void DeleteTempFiles(string[] tempFiles)
