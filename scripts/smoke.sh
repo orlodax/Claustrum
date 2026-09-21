@@ -5,6 +5,8 @@
 # builders followed by `jobs clean`. A backend that is not installed SKIPs instead of failing, so the
 # one script works on a machine with any subset of them; only a FAIL row exits nonzero.
 # Usage: scripts/smoke.sh [path-to-claustrum-binary]   (falls back to $CLAUSTRUM, then a Release build)
+# Env: CLAUSTRUM_SMOKE_MODEL_<NAME> (e.g. CLAUSTRUM_SMOKE_MODEL_CURSOR=auto) gives that backend's
+# paid run its model; unset SKIPs the row. claude defaults to sonnet.
 set -uo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -175,6 +177,23 @@ run_row() {
     fi
 }
 
+# A backend that is merely installed has no model the smoke run can guess: claude's default id
+# ("opus") is refused by cursor and by opencode, so the row would FAIL where it must SKIP. claude
+# keeps sonnet, M1's original flag, when its variable is unset.
+smoke_model_var() {
+    printf 'CLAUSTRUM_SMOKE_MODEL_%s' "$(printf '%s' "$1" | tr '[:lower:]' '[:upper:]')"
+}
+
+smoke_model() {
+    local var value
+    var="$(smoke_model_var "$1")"
+    value="${!var:-}"
+    if [ -z "$value" ] && [ "$1" = "claude" ]; then
+        value="sonnet"
+    fi
+    printf '%s' "$value"
+}
+
 assert_run() {
     local row="$1" expected_file="$2"
     shift 2
@@ -200,7 +219,7 @@ check_all_runs() {
     # `api` is registered and its curl is "found", but it has no tools, is not a builder harness, and
     # `--backend api` without an `api:<provider>:<model>` model spec cannot even resolve a model
     # (measured 2026-09-21: "api backend model must be 'openrouter:<model>'... got 'opus'").
-    local harnesses name
+    local harnesses name model
     harnesses="$("$claustrum_bin" roles show builder | sed -n 's/^harnesses: *//p' | tr -d ',')"
     if [ -z "$harnesses" ]; then
         # Without the list every backend would SKIP, quietly dropping every paid row.
@@ -219,12 +238,18 @@ check_all_runs() {
             continue
         fi
 
+        model="$(smoke_model "$name")"
+        if [ -z "$model" ]; then
+            report_check "$(run_row "$name")" SKIP "set $(smoke_model_var "$name")=<model> to run"
+            continue
+        fi
+
         if [ "$name" = "claude" ]; then
             assert_run "$(run_row "$name")" hello.txt \
-                --brief "create hello.txt containing hi" --budget 0.5 --model sonnet
+                --brief "create hello.txt containing hi" --budget 0.5 --model "$model"
         else
             assert_run "$(run_row "$name")" hello.txt \
-                --backend "$name" --brief "create hello.txt containing hi" --budget 0.5
+                --backend "$name" --brief "create hello.txt containing hi" --budget 0.5 --model "$model"
         fi
     done
 }
