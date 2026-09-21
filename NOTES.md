@@ -880,13 +880,17 @@ only thing the caller sees: `tree 'tree-abc': $4.90 spent + $0.00 reserved of $5
 state, not an anomaly (step 3's own message shows it), since a backend can overshoot the
 `--max-budget-usd` it was given.
 
-**Step 3 also names the way out, but only when there is one.** A sequential role divides by 1, so its
-first child reserves the entire remainder and its second is refused while the first still runs — the
-arithmetic is right and the message was useless. When `reserved > 0` the refusal now ends `; pass
---budget to reserve a smaller slice for concurrent siblings`; when it is `$0` the tree really is spent
-and the hint would be a lie. Measured 2026-09-21 with a `flock -x` holding one `.live` for a `cap 2.00`
-entry on a $2.00 tree: `$0.00 spent + $2.00 reserved of $2.00, $0.00 remaining; nothing left for role
-'builder'; pass --budget to reserve a smaller slice for concurrent siblings`.
+**Step 3 refuses with a reason a caller can act on, and there are three of them.** A sequential
+role divides by 1, so its first child reserves the entire remainder and its second is refused while
+the first still runs — the arithmetic is right, and the first cut of the message was useless (it
+suggested `--budget`, which the `remaining <= 0` check never reads). Measured 2026-09-21: exhausted
+with a live sibling ⇒ `…$0.00 remaining; nothing left for role 'builder' while 1 running job(s) hold
+$2.00 — wait for one to finish`; exhausted alone ⇒ `…; nothing left for role 'builder'`; a share
+slice that floors to zero (`$0.05` tree, share 10) ⇒ `…; the slice for role 'builder' ($0.05 / 10)
+rounds to $0.00 — pass --budget (at most $0.05) to claim an explicit slice`; an explicit
+`--budget 0.004` ⇒ `…; --budget 0.004 rounds to $0.00`; `--budget 0.50` over `$0.10` ⇒ `…; --budget
+0.50 exceeds it`. Only the third case is one `--budget` can get past, and it is the only one that
+says so.
 
 **Step 5's clamp is what makes the cap hard per child.** `Runner` rewrites the request with the
 granted cap (`request = request with { BudgetUsd = granted }`) *before* `request.json` is written, so
@@ -965,7 +969,9 @@ direct path is untouched. The slot is taken *before* the admission on purpose: a
 never sit behind a gate that can hold it for the role's whole timeout, and a sibling that finishes
 during that wait releases budget this child can then be granted.
 
-**Ownership of the reservation is split at exactly one point: entering Runner.** Up to there it
+**Ownership of the reservation is split at one point: `Runner`'s `await using` of it** (a brief that
+trips the blind gate has entered `Runner` but not reached that line, and the engine's `catch` is what
+releases the handle then). Up to there it
 belongs to whoever admitted — `DelegateEngine` releases it in its own `catch` if `git worktree add`
 throws, which merely closes the handle and leaves the entry for the next admission to write off as
 abandoned ($0). From there on `Runner.FinishAsync` completes *and* disposes it on every path, so the
@@ -985,6 +991,19 @@ both the worktree and the cap.
 
 ### The gaps this shape still accepts, deliberately
 
+- **Until M4's `coordinate` exists, nothing in the repo hands a tree id across a process hop.**
+  `CLAUSTRUM_PARENT_JOB` is read by the ledger and written by nobody: a claustrum process is a member
+  only when its *own* environment carries the variable (a shell export, or `--env`/`Env` on the
+  request that spawns its backend), and a member never forwards it (see the allow-list bullet
+  below). So the spawned-architect topology — `claustrum run architect` whose backend fans out
+  `claustrum run builder` — is **not enforced today**: the architect's run holds the tree's whole
+  remainder as its reservation while its children see no tree at all and spend under the §D1 per-run
+  cap. Before 2026-09-21's second remediation the same topology failed loudly (`$0.00 remaining`);
+  it now fails silently in the direction that costs money, which is the honest state of a feature
+  whose producer side is M4's. The host-architect topology (the chat agent exports the variable and
+  calls `claustrum run` itself) is fully enforced. ⚠ `coordinate` must pass `CLAUSTRUM_HOME` along
+  with the tree id whenever it is set, or `claustrum jobs budget` reads a different ledger than the
+  children write to — and `--reset` would clear the wrong one.
 - **The slice decays across an overlapping wave.** `remaining / share` divides what is left *after*
   live siblings are subtracted, so siblings admitted back to back on a $5.00 tree with `share 2` get
   $2.50 and then $1.25, not $2.50 twice (both numbers measured). It is monotone and can never
