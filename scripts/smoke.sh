@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
-# End-to-end smoke check for Claustrum (docs/PLAN.md "Verification" item 3): a fresh git repo,
-# `backends doctor claude`, then a real `run builder` against the `claude` backend.
+# End-to-end smoke check for Claustrum (docs/PLAN.md "Verification" item 3) on a throwaway git repo:
+# `backends doctor` for every registered backend, `claustrum init` plus an idempotent rerun, a real
+# `run builder` per installed backend the builder role supports, and two concurrent max_parallel
+# builders followed by `jobs clean`. A backend that is not installed SKIPs instead of failing, so the
+# one script works on a machine with any subset of them; only a FAIL row exits nonzero.
 # Usage: scripts/smoke.sh [path-to-claustrum-binary]   (falls back to $CLAUSTRUM, then a Release build)
 set -uo pipefail
 
@@ -34,9 +37,14 @@ if ! command -v jq >/dev/null 2>&1; then
     exit 1
 fi
 
-tmp="$(mktemp -d)"
-cleanup() { rm -rf "$tmp"; }
+# The parallel runs' stdout and the cast answers file live beside the repo, not in it: an untracked
+# file inside the repo turns up in the next run's changed_files.
+work="$(mktemp -d)"
+tmp="$work/repo"
+outputs="$work/out"
+cleanup() { rm -rf "$work"; }
 trap cleanup EXIT
+mkdir -p "$tmp" "$outputs"
 
 (
     cd "$tmp"
@@ -50,27 +58,286 @@ trap cleanup EXIT
 
 checks_failed=0
 report_check() {
-    local name="$1" ok="$2" detail="$3"
-    printf "%-55s %-4s %s\n" "$name" "$([ "$ok" = "1" ] && echo OK || echo FAIL)" "$detail"
-    [ "$ok" = "1" ] || checks_failed=$((checks_failed + 1))
+    local name="$1" status="$2" detail="$3"
+    printf "%-60s %-4s %s\n" "$name" "$status" "$detail"
+    if [ "$status" = "FAIL" ]; then
+        checks_failed=$((checks_failed + 1))
+    fi
 }
 
-doctor_output="$("$claustrum_bin" backends doctor claude 2>&1)"
-if echo "$doctor_output" | grep -A1 "^claude:" | grep -q "found:.*True"; then
-    doctor_ok=1
-else
-    doctor_ok=0
-fi
-report_check "backends doctor claude finds it" "$doctor_ok" "$(echo "$doctor_output" | tr '\n' ' ')"
+declare -A found_backends=()
+backend_names=()
+parallel_branches=()
+smoke_cast_created=0
 
-run_output="$("$claustrum_bin" run builder --brief "create hello.txt containing hi" --json --cwd "$tmp" --budget 0.5 --model sonnet 2>/dev/null)"
-status="$(echo "$run_output" | jq -r '.status // empty' 2>/dev/null)"
-has_hello="$(echo "$run_output" | jq -r '([.changed_files[]?.path] | index("hello.txt")) != null' 2>/dev/null)"
-report_present="$(echo "$run_output" | jq -r '.report != null' 2>/dev/null)"
+# Check 4's row names, shared between the checks themselves and the SKIP branches that stand in for
+# them, so a renamed row cannot drift between the two.
+cast_row="cast create smoke: builder claude:sonnet, max_parallel 2"
+parallel_row="2 parallel builders: distinct worktrees + branches"
+clean_row="jobs clean: worktrees removed, branches kept"
 
-run_ok=0
-[ "$status" = "success" ] && [ "$has_hello" = "true" ] && [ "$report_present" = "true" ] && run_ok=1
-report_check "run builder --json: success + hello.txt + report" "$run_ok" "status=$status hello.txt=$has_hello report=$report_present"
+# Multi-line output squeezed onto the table's third column (the api backend's `version:` alone is
+# four lines of curl banner).
+join_lines() {
+    tr '\n' ';' | sed 's/;\{1,\}$//'
+}
+
+# 1. `backends doctor <name>` for every name `backends list` prints. found: False is a SKIP, not a
+# failure — the whole point of the loop is that one script runs on any subset of the five.
+check_doctor() {
+    local name="$1" output exit_code found path problems
+    output="$("$claustrum_bin" backends doctor "$name" 2>&1)"
+    exit_code=$?
+    found="$(printf '%s\n' "$output" | sed -n 's/^  found: *//p' | head -n1)"
+    path="$(printf '%s\n' "$output" | sed -n 's/^  path: *//p' | head -n1)"
+    problems="$(printf '%s\n' "$output" | sed -n 's/^  problem: *//p' | join_lines)"
+
+    local detail="path=$path"
+    if [ -n "$problems" ]; then
+        detail="$detail problems=$problems"
+    fi
+
+    if [ "$exit_code" -ne 0 ]; then
+        report_check "backends doctor $name finds it" FAIL "exit=$exit_code $problems"
+    elif [ "$found" = "True" ]; then
+        found_backends["$name"]=1
+        report_check "backends doctor $name finds it" OK "$detail"
+    else
+        report_check "backends doctor $name finds it" SKIP "not installed: $problems"
+    fi
+}
+
+check_all_doctors() {
+    mapfile -t backend_names < <("$claustrum_bin" backends list)
+    if [ "${#backend_names[@]}" -eq 0 ]; then
+        report_check "backends list yields the registered backends" FAIL "no names on stdout"
+        return
+    fi
+
+    report_check "backends list yields the registered backends" OK "${backend_names[*]}"
+    local name
+    for name in "${backend_names[@]}"; do
+        check_doctor "$name"
+    done
+}
+
+# 2. `claustrum init` has no --cwd: it scaffolds Environment.CurrentDirectory (Cli/InitCommand.cs).
+check_init() {
+    local output exit_code entry
+    local missing=()
+    output="$(cd "$tmp" && "$claustrum_bin" init 2>&1)"
+    exit_code=$?
+
+    [ -f "$tmp/claustrum.json" ] || missing+=("claustrum.json")
+    [ -d "$tmp/.claustrum/casts" ] || missing+=(".claustrum/casts/")
+    [ -f "$tmp/.claude/agents/builder.md" ] || missing+=(".claude/agents/builder.md")
+    for entry in ".claustrum/worktrees/" ".claustrum/locks/" ".claustrum/briefs/"; do
+        grep -qF "$entry" "$tmp/.gitignore" 2>/dev/null || missing+=(".gitignore lacks $entry")
+    done
+
+    if [ "$exit_code" -eq 0 ] && [ "${#missing[@]}" -eq 0 ]; then
+        report_check "claustrum init scaffolds a fresh repo" OK "$(printf '%s\n' "$output" | join_lines)"
+    else
+        report_check "claustrum init scaffolds a fresh repo" FAIL "exit=$exit_code missing: ${missing[*]:-none}"
+    fi
+}
+
+snapshot_repo() {
+    (cd "$tmp" && find . -path ./.git -prune -o -type f -print0 | sort -z | xargs -0 -r sha256sum)
+}
+
+check_init_rerun() {
+    local before after output exit_code unchanged=no up_to_date=no snapshot=identical
+    before="$(snapshot_repo)"
+    output="$(cd "$tmp" && "$claustrum_bin" init 2>&1)"
+    exit_code=$?
+    after="$(snapshot_repo)"
+
+    printf '%s\n' "$output" | grep -q "already present, left unchanged" && unchanged=yes
+    printf '%s\n' "$output" | grep -q "already up to date" && up_to_date=yes
+    [ "$before" = "$after" ] || snapshot=differs
+
+    if [ "$exit_code" -eq 0 ] && [ "$unchanged" = "yes" ] && [ "$up_to_date" = "yes" ] && [ "$snapshot" = "identical" ]; then
+        report_check "claustrum init is idempotent on rerun" OK "left_unchanged=$unchanged up_to_date=$up_to_date snapshot=$snapshot"
+    else
+        report_check "claustrum init is idempotent on rerun" FAIL \
+            "exit=$exit_code left_unchanged=$unchanged up_to_date=$up_to_date snapshot=$snapshot"
+    fi
+}
+
+# 3. One paid `run builder` per installed backend. The row name keeps M1's wording for claude, whose
+# flags are also unchanged, so a regression there reads the same as it always did.
+run_row() {
+    if [ "$1" = "claude" ]; then
+        echo "run builder --json: success + hello.txt + report"
+    else
+        echo "run builder --backend $1: success + hello.txt + report"
+    fi
+}
+
+assert_run() {
+    local row="$1" expected_file="$2"
+    shift 2
+    local output status has_file report_present
+    # An earlier backend's hello.txt would let a backend that did nothing still pass this row.
+    rm -f "$tmp/$expected_file"
+
+    output="$("$claustrum_bin" run builder "$@" --json --cwd "$tmp" 2>/dev/null)"
+    status="$(printf '%s' "$output" | jq -r '.status // empty' 2>/dev/null)"
+    has_file="$(printf '%s' "$output" | jq -r --arg f "$expected_file" '([.changed_files[]?.path] | index($f)) != null' 2>/dev/null)"
+    report_present="$(printf '%s' "$output" | jq -r '.report != null' 2>/dev/null)"
+
+    local detail="status=$status $expected_file=$has_file report=$report_present"
+    if [ "$status" = "success" ] && [ "$has_file" = "true" ] && [ "$report_present" = "true" ]; then
+        report_check "$row" OK "$detail"
+    else
+        report_check "$row" FAIL "$detail"
+    fi
+}
+
+check_all_runs() {
+    # The builder role's own harness list (roles/builder/role.json) decides who gets a paid run:
+    # `api` is registered and its curl is "found", but it has no tools, is not a builder harness, and
+    # `--backend api` without an `api:<provider>:<model>` model spec cannot even resolve a model
+    # (measured 2026-09-21: "api backend model must be 'openrouter:<model>'... got 'opus'").
+    local harnesses name
+    harnesses="$("$claustrum_bin" roles show builder | sed -n 's/^harnesses: *//p' | tr -d ',')"
+    if [ -z "$harnesses" ]; then
+        # Without the list every backend would SKIP, quietly dropping every paid row.
+        report_check "roles show builder lists its harnesses" FAIL "no harnesses line"
+        return
+    fi
+    harnesses=" $harnesses "
+
+    for name in "${backend_names[@]}"; do
+        if [ -z "${found_backends[$name]:-}" ]; then
+            report_check "$(run_row "$name")" SKIP "not installed"
+            continue
+        fi
+        if [[ "$harnesses" != *" $name "* ]]; then
+            report_check "$(run_row "$name")" SKIP "not a builder harness (roles show builder)"
+            continue
+        fi
+
+        if [ "$name" = "claude" ]; then
+            assert_run "$(run_row "$name")" hello.txt \
+                --brief "create hello.txt containing hi" --budget 0.5 --model sonnet
+        else
+            assert_run "$(run_row "$name")" hello.txt \
+                --backend "$name" --brief "create hello.txt containing hi" --budget 0.5
+        fi
+    done
+}
+
+# 4. max_parallel > 1 (docs/PLAN.md §D4) end to end: a cast with max_parallel 2, two concurrent
+# builders that must land on their own worktree and branch, then `jobs clean`.
+check_cast_create() {
+    local answers="$outputs/smoke-answers.json" output exit_code
+
+    # Only the questions this cast needs: CastBuilder reads an unanswered role as "not needed"
+    # (Casts/CastBuilder.cs), so this file stays correct when the role library gains a role.
+    cat > "$answers" <<'JSON'
+{
+  "architect": "host",
+  "builder": "claude:sonnet",
+  "builder_max_parallel": "2",
+  "budget": "2"
+}
+JSON
+
+    output="$(cd "$tmp" && "$claustrum_bin" cast create --answers "$answers" --name smoke 2>&1)"
+    exit_code=$?
+    if [ "$exit_code" -eq 0 ] && [ -f "$tmp/.claustrum/casts/smoke.json" ]; then
+        smoke_cast_created=1
+        report_check "$cast_row" OK "$output"
+    else
+        report_check "$cast_row" FAIL "exit=$exit_code $output"
+    fi
+}
+
+check_parallel_runs() {
+    local n
+    local statuses=() worktrees=() has_file=()
+
+    for n in 1 2; do
+        "$claustrum_bin" run builder --cast smoke --brief "create parallel-$n.txt containing $n" \
+            --json --cwd "$tmp" --budget 0.5 > "$outputs/parallel-$n.json" 2>/dev/null &
+    done
+    wait
+
+    for n in 1 2; do
+        statuses[$n]="$(jq -r '.status // empty' "$outputs/parallel-$n.json" 2>/dev/null)"
+        worktrees[$n]="$(jq -r '.worktree // empty' "$outputs/parallel-$n.json" 2>/dev/null)"
+        parallel_branches[$n]="$(jq -r '.branch // empty' "$outputs/parallel-$n.json" 2>/dev/null)"
+        has_file[$n]="$(jq -r --arg f "parallel-$n.txt" '([.changed_files[]?.path] | index($f)) != null' \
+            "$outputs/parallel-$n.json" 2>/dev/null)"
+    done
+
+    local detail="status=${statuses[1]},${statuses[2]} branch=${parallel_branches[1]},${parallel_branches[2]}"
+    detail="$detail files=${has_file[1]},${has_file[2]}"
+    if [ "${statuses[1]}" = "success" ] && [ "${statuses[2]}" = "success" ] \
+        && [ -n "${worktrees[1]}" ] && [ -n "${worktrees[2]}" ] && [ "${worktrees[1]}" != "${worktrees[2]}" ] \
+        && [ -n "${parallel_branches[1]}" ] && [ -n "${parallel_branches[2]}" ] \
+        && [ "${parallel_branches[1]}" != "${parallel_branches[2]}" ] \
+        && [ "${has_file[1]}" = "true" ] && [ "${has_file[2]}" = "true" ]; then
+        report_check "$parallel_row" OK "$detail"
+    else
+        report_check "$parallel_row" FAIL "$detail"
+    fi
+}
+
+check_jobs_clean() {
+    local output exit_code n
+    local left=0 branches_kept=yes
+    output="$("$claustrum_bin" jobs clean --cwd "$tmp" 2>&1)"
+    exit_code=$?
+
+    if [ -d "$tmp/.claustrum/worktrees" ]; then
+        left="$(find "$tmp/.claustrum/worktrees" -mindepth 1 -maxdepth 1 | wc -l)"
+    fi
+
+    # `jobs clean` removes the working directory only — the branch survives for the architect to
+    # rebase from (Cli/JobsCommands.cs, NOTES.md "Worktree isolation for max_parallel builders").
+    local branch_list
+    branch_list="$(git -C "$tmp" branch --list 'claustrum/*')"
+    for n in 1 2; do
+        if [ -z "${parallel_branches[$n]:-}" ] || ! printf '%s\n' "$branch_list" | grep -qF "${parallel_branches[$n]}"; then
+            branches_kept=no
+        fi
+    done
+
+    local detail="exit=$exit_code worktrees_left=$left branches_kept=$branches_kept ($output)"
+    if [ "$exit_code" -eq 0 ] && [ "$left" -eq 0 ] && [ "$branches_kept" = "yes" ]; then
+        report_check "$clean_row" OK "$detail"
+    else
+        report_check "$clean_row" FAIL "$detail"
+    fi
+}
+
+check_max_parallel() {
+    if [ -z "${found_backends[claude]:-}" ]; then
+        report_check "$cast_row" SKIP "claude not installed"
+        report_check "$parallel_row" SKIP "claude not installed"
+        report_check "$clean_row" SKIP "claude not installed"
+        return
+    fi
+
+    check_cast_create
+    if [ "$smoke_cast_created" -ne 1 ]; then
+        report_check "$parallel_row" SKIP "cast smoke was not created"
+        report_check "$clean_row" SKIP "cast smoke was not created"
+        return
+    fi
+
+    check_parallel_runs
+    check_jobs_clean
+}
+
+check_all_doctors
+check_init
+check_init_rerun
+check_all_runs
+check_max_parallel
 
 if [ "$checks_failed" -gt 0 ]; then
     echo "$checks_failed check(s) failed" >&2
