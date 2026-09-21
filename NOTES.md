@@ -1184,7 +1184,8 @@ up". Consequences of reusing the pipeline, all deliberate:
   snapshots its cwd before and after every run; pointing the probe at the user's repo would hash a
   whole worktree twice to learn nothing. The temp dir is not a git repo, so `WorktreeSnapshot` takes
   its file-scan branch over an empty directory.
-- **`BudgetUsd: 0.05`, `Timeout: 120s`, `Effort: "high"`, `Permission: "readonly"`.** The cap is per
+- **`BudgetUsd: 0.50` (was `0.05` for a few hours — see "The cap is $0.50, not $0.05" below), `Timeout: 120s`,
+  `Effort: "high"`, `Permission: "readonly"`.** The cap is per
   backend and is passed to the backend's own budget flag where it has one (`claude
   --max-budget-usd`). It is a guard against a backend that ignores the brief and starts working, not
   an estimate: a haiku-class "reply OK" is orders of magnitude under it.
@@ -1250,6 +1251,26 @@ prints the same text under `failed (...)`. The word `token` is the widest of the
 token-limit error would read as a credential problem) and is the first one to drop if that shows up
 in practice. Nothing here is a substitute for the `auth:` line, which reports env-var presence only
 and never a value.
+
+**The cap is $0.50, not $0.05 — measured (2026-09-21, issue #12).** The first real
+`claustrum backends doctor claude --probe` never got an answer: on Claude Code 2.1.278 the one-word
+round trip cost **$0.1200704** and `claude` killed it at its own flag
+(`subtype: "error_max_budget_usd"`, `terminal_reason: "budget_exhausted"`,
+`errors: ["Reached maximum budget ($0.05)"]`). Two tokens of conversation (2 in, 4 out) but a cold
+cache: 28 987 cache-creation tokens for the system prompt plus the tool definitions, which is what
+gets billed and what no "1-token call" estimate accounts for. `ProbeBudgetUsd` is therefore `0.50m`,
+and the banner now interpolates the constant instead of repeating the number, so the next move
+cannot leave a stale string behind. What did **not** change is what the cap is *for*: a guard against
+a backend that ignores the brief and starts working, not an estimate of the round trip — a probe that
+actually answers still costs a few cents (the recorded success is $0.0384621), and the tool-definition
+surface, not the reply, is what sets the floor. The same run exposed two defects one level down, both
+fixed with it: `ClaudeBackend` read the final message only from `result`, which this document does not
+carry at all, so the probe printed `failed (no error message)` over a perfectly explicit error — it
+now falls back to the `errors` array joined with `; `, then to an `error_*` `subtype`; and the non-git
+`ScanFiles` fallback threw `UnauthorizedAccessException` out of the *after* snapshot when the probe's
+temp cwd held an unreadable directory, failing a run that had already succeeded — it now walks
+directories itself and skips what it cannot read, the same trade the "unreadable file is unhashable"
+note already accepted.
 
 ## The cursor backend, validated against a real install (2026-09-21, issues #13/#14)
 
