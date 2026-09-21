@@ -866,8 +866,9 @@ key reads back as `done`).
 2. `remaining = treeBudget - spent - reserved`.
 3. `remaining <= 0` ⇒ refused, "nothing left for role '<role>'".
 4. an explicit `requestedCap > remaining` ⇒ refused, `--budget 0.50 exceeds it`.
-5. otherwise `effectiveCap = min(requestedCap ?? remaining / share, remaining)`, the `.live` handle
-   is taken, the entry is written with `cost: null`, and the job is admitted.
+5. otherwise `effectiveCap = floor_to_cents(min(requestedCap ?? remaining / share, remaining))`; a cap
+   that floors to `$0` is refused with step 3's message, and otherwise the `.live` handle is taken,
+   the entry is written with `cost: null`, and the job is admitted.
 
 `share` is `JobTreeBudget.Share` = `max(1, the role's max_parallel ?? 1)`, set by `DelegateEngine`: a
 fan-out role takes a slice of what is left rather than all of it, a sequential role takes the whole
@@ -878,6 +879,14 @@ only thing the caller sees: `tree 'tree-abc': $4.90 spent + $0.00 reserved of $5
 --budget 0.50 exceeds it`. A negative remainder prints as `-$0.50`, not `$-0.50` — it is a normal
 state, not an anomaly (step 3's own message shows it), since a backend can overshoot the
 `--max-budget-usd` it was given.
+
+**Step 3 also names the way out, but only when there is one.** A sequential role divides by 1, so its
+first child reserves the entire remainder and its second is refused while the first still runs — the
+arithmetic is right and the message was useless. When `reserved > 0` the refusal now ends `; pass
+--budget to reserve a smaller slice for concurrent siblings`; when it is `$0` the tree really is spent
+and the hint would be a lie. Measured 2026-09-21 with a `flock -x` holding one `.live` for a `cap 2.00`
+entry on a $2.00 tree: `$0.00 spent + $2.00 reserved of $2.00, $0.00 remaining; nothing left for role
+'builder'; pass --budget to reserve a smaller slice for concurrent siblings`.
 
 **Step 5's clamp is what makes the cap hard per child.** `Runner` rewrites the request with the
 granted cap (`request = request with { BudgetUsd = granted }`) *before* `request.json` is written, so
@@ -948,11 +957,31 @@ no temp files). `RunOptions.Tree` (`JobTreeBudget`) is how the tree reaches Core
 like `BackendConfig` and `EnvPassthroughAll`, so Core still never reads a cast or an env var of its
 own (NOTES.md "Backend config and env passthrough are call-site data, not RunRequest fields").
 
+**…except for the one caller that has to spend before Runner is entered**, `DelegateEngine`'s
+`max_parallel > 1` path: it cuts a branch and holds a concurrency slot first, so it calls
+`AdmitAsync` itself and passes the answer in as `RunOptions.Admission`. Runner's rule is then one
+line — `options.Admission ?? admit here` — so there is still exactly one admission per job and the
+direct path is untouched. The slot is taken *before* the admission on purpose: a reservation must
+never sit behind a gate that can hold it for the role's whole timeout, and a sibling that finishes
+during that wait releases budget this child can then be granted.
+
+**Ownership of the reservation is split at exactly one point: entering Runner.** Up to there it
+belongs to whoever admitted — `DelegateEngine` releases it in its own `catch` if `git worktree add`
+throws, which merely closes the handle and leaves the entry for the next admission to write off as
+abandoned ($0). From there on `Runner.FinishAsync` completes *and* disposes it on every path, so the
+engine never completes one and the two can never double-charge. Disposing twice is harmless
+(`FileStream.Dispose` is idempotent), which is what makes the split safe to state so simply.
+
 **A ledger error at admission time is a `Failed` result, not a throw.** It is the symmetric case to
 the one `CompleteAsync` already had: `TimeoutException`/`IOException`/`UnauthorizedAccessException`
 around `AdmitAsync` leaves through the same funnel with `RunStatus.Failed`, the message in `Error`,
 and nothing spawned. Measured by making the tree's ledger path a *file*: `failed`, exit 1, one
-`result.json` in the job directory and no `request.json` beside it.
+`result.json` in the job directory and no `request.json` beside it. The isolated path keeps that
+property by *not* deciding: the same three exceptions leave it with no admission at all, and Runner —
+called with the slot still held and the worktree already created — admits, fails the same way and
+writes the same `Failed` result. Falling through to the direct path there would have been the cheaper
+code and the wrong one: a retry that *succeeded* would have run the job in the caller's cwd, outside
+both the worktree and the cap.
 
 ### The gaps this shape still accepts, deliberately
 
@@ -977,19 +1006,26 @@ and nothing spawned. Measured by making the tree's ledger path a *file*: `failed
 
 ### Decisions worth knowing
 
-- **`CLAUSTRUM_` is on `EnvAllowList.prefixes`.** Without it the tree id died at the first process
-  hop: a spawned architect *is* a claustrum caller, and its own `claustrum run` children have to
-  inherit `CLAUSTRUM_PARENT_JOB` and `CLAUSTRUM_HOME` or they open a second ledger under a different
-  home and cap nothing. A prefix rather than two exact names, because every other tool family on that
-  list is a prefix and none of Claustrum's own variables is a secret. ⚠ It follows that anything
-  named `CLAUSTRUM_*` now reaches a backend process — `ProcessRunnerTests`' "filtered variable" marker
-  was named `CLAUSTRUM_TEST_SECRET_<guid>` and had to move off the prefix to keep testing filtering.
+- **Membership in a tree is handed out by a coordinator, never forwarded by a member** — which is why
+  `CLAUSTRUM_` is *not* on `EnvAllowList.prefixes` (it was, for one revision, and the list is back to
+  its previous seven entries byte-for-byte). A member holds its reservation for its whole lifetime, so
+  a `claustrum run` that inherited its `CLAUSTRUM_PARENT_JOB` would ask the ledger for a slice its own
+  parent has already reserved: measured, a share-1 member's nested child saw `$0.00 remaining` and was
+  refused. §D3's `coordinate` will instead put `CLAUSTRUM_PARENT_JOB` (and `CLAUSTRUM_HOME` when set)
+  on its architect's *request env*, where caller-supplied values beat the allow-list, and that
+  architect's own children inherit both from the backend's shell; the coordinator is not a member.
+  ⚠ The allow-list is therefore load-bearing for `ProcessRunnerTests`' "filtered variable" marker
+  again: it is named `CLAUSTRUM_TEST_SECRET_<guid>`, and it only proves filtering while no
+  `CLAUSTRUM_` prefix is on the list.
 - **The whole ledger API is async** (`AdmitAsync`/`CompleteAsync`/`PeekRemainingAsync`/`ReadAsync`):
   `Runner` is async and the first cut blocked a pool thread on `Thread.Sleep` while polling the lock.
   The poll takes no `CancellationToken` on purpose — the wait is already bounded at 5s, and the one
   caller that must write whatever happens is the finish path, whose token has usually already fired.
   A concurrency test still has to put two admits on two threads: the lock serializes them, so what it
-  observes is the *second* admission seeing the first one's reservation.
+  observes is the *second* admission seeing the first one's reservation. ⚠ `PeekRemainingAsync` now has
+  **no caller in the repo** and is kept deliberately, as the read-only remainder a *reporting* caller
+  wants; its doc comment carries the trap it cost us, dated, so the next caller reads it there: a peek
+  is never binding, and anything that has to decide calls `AdmitAsync`.
 - **The lock is the gate's trick, and the same reasoning applies to not deleting it**: unlinking it
   while a rival races to reopen the same path lets that lock land on an orphaned inode while a third
   process opens a fresh file at the same path and believes it holds the same lock. The wait is
@@ -1010,26 +1046,40 @@ and nothing spawned. Measured by making the tree's ledger path a *file*: `failed
   stays the next admission's job. The delete happens after the lock is released, because the directory
   being removed contains the lock file and Windows will not unlink a directory with an open handle in
   it; a child admitted in that gap is the race any explicit reset has.
-- **A refused child in the `max_parallel > 1` path never takes a slot.** The isolated path acquires
-  the concurrency gate and creates a worktree + branch *before* `Runner` ever sees the request, so a
-  tree with nothing left was paying for isolation it would immediately throw away.
-  `DelegateEngine.WorthIsolatingAsync` peeks with `BudgetLedger.PeekRemainingAsync` first and falls
-  through to the direct path when the remainder is `<= 0`; the binding decision still happens inside
-  `Runner` under the lock, and a peek that cannot read the ledger isolates rather than guessing.
-  Measured with a spent tree, `max_parallel: 2` and a cwd that is *not* a git repo — which would have
-  failed loudly on any attempt to isolate: exit 5, no `worktree`/`branch` on the result, no
-  `.claustrum/locks` and no `.claustrum/worktrees` created.
-- **A refused job that did get isolated is cleaned the normal way.** A refusal is a *returned* result
-  with a `result.json` on disk, not a throw, so `JobWorktree.TryRemoveAbandonedAsync` (which exists
-  for throws) does not fire and `jobs clean` — which treats `result.json` as "finished" — removes the
+- **A refused child in the `max_parallel > 1` path is refused before it is isolated** — and the
+  decision that does it is binding, because the first attempt was not. That one peeked with
+  `PeekRemainingAsync` and fell through to the direct path on `<= 0`, leaving the real admission to
+  `Runner`; a sibling's reservation is released the moment it finishes, so in the window between the
+  peek and `AdmitAsync` (job directory, prune, up to 5s of lock polling) the remainder climbed back and
+  the job was admitted — and then ran **directly in `request.Cwd`, concurrently with isolated siblings
+  and outside the per-cast cap** (reproduced with a FIFO `--file` to hold the window open). The peek
+  also only covered `remaining <= 0`, so a `--budget` larger than the remainder still cut a
+  `claustrum/<job>` branch before `Runner` refused it — and the refusal advertised that branch, since
+  `isolatedResult with { Worktree, Branch }` was unconditional. Now: slot, admission, and only then
+  `git worktree add`; a refusal releases the slot, writes its `result.json` against `request.Cwd`, and
+  returns `worktree`/`branch` null. Measured 2026-09-21 on a cwd that is *not* a git repo (any attempt
+  to isolate would have failed loudly), `max_parallel: 2` — spent tree ⇒ exit 5, `budget_exceeded`,
+  `worktree`/`branch` null, **no `.claustrum/worktrees` at all**; `--budget 0.5` against a $0.10
+  remainder ⇒ the same. ⚠ Unlike the peek, this path *does* create the slot file
+  `.claustrum/locks/<cast>__<role>.0.lock` — it takes a slot in order to ask, then releases it — so
+  "a refusal touches no lock file" is no longer true; "a refusal holds no slot and cuts no branch" is.
+- **A refused job that did get isolated is cleaned the normal way.** Only one route still leads there
+  — the ledger error above, where the engine isolates without an admission and `Runner` refuses under
+  the slot — but the cleanup is the same as it always was: a refusal is a *returned* result with a
+  `result.json` on disk, not a throw, so `JobWorktree.TryRemoveAbandonedAsync` (which exists for
+  throws) does not fire and `jobs clean` — which treats `result.json` as "finished" — removes the
   worktree and keeps the branch, exactly as it does for a `backend_missing` job.
 - **Nothing was needed for MCP.** `RunStatus` already serializes snake_case, so `delegate` and
   `job_result` return `"status":"budget_exceeded"` from the same `DelegateEngine`; only the CLI has
   an exit code to map, and `RunCommand.ExitCodeFor` already mapped it to 5.
-- **`remaining / share` is not rounded.** A three-way split of $5.00 grants
-  `1.6666666666666666666666666667` and that string reaches `--max-budget-usd` verbatim. Truncating
-  would be prettier but would either over-grant or, on a sub-cent remainder, hand out a $0 cap; the
-  exact decimal is the honest number and only `claude` ever parses it.
+- **The granted cap is floored to whole cents.** `remaining / share` is an exact decimal — a $2.00
+  tree split three ways gave `0.6666666666666666666666666667`, and that string reached
+  `--max-budget-usd`, `request.json` and the ledger's `cap` verbatim while `jobs budget` printed
+  `$0.66` beside it. `Math.Floor(x * 100) / 100` makes the stored number the printed one; *down*,
+  because rounding up is the only direction that can over-grant. The two prices of that: a cap that
+  floors to `$0` is refused with step 3's message (a sub-cent slice buys nothing, and a `$0`
+  `--max-budget-usd` would be a lie either way), and an explicit `--budget 0.125` is granted `0.12`
+  — measured through the real binary, `request.json` `"budget_usd":0.12` and the entry's `cap` `0.12`.
 
 ## The claustrum MCP server is registered in opencode.json too (2026-09-21, issue #15/M3)
 
