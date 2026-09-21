@@ -70,12 +70,17 @@ public static class BudgetLedger
             + $"of {Dollars(tree.BudgetUsd)}, {Dollars(remaining)} remaining";
 
         // A role without max_parallel divides by 1, so its first child reserves the whole remainder and
-        // its second finds nothing: the way out is the caller's own ceiling, so the refusal names it.
-        string siblingHint = state.Reserved > 0 ? "; pass --budget to reserve a smaller slice for concurrent siblings" : "";
-        string exhausted = $"{summary}; nothing left for role '{role}'{siblingHint}";
-
+        // its second finds nothing. --budget is no way out *here*: it is the sibling already holding
+        // the reservation that would have had to ask for less, and an exhausted tree refuses whatever
+        // this job passes. What can still come back is that sibling's slice, so name the wait instead.
         if (remaining <= 0)
-            return Refused(state, remaining, exhausted);
+        {
+            int running = state.Rows.Count(row => row.State == BudgetEntryState.Running);
+            string held = state.Reserved > 0
+                ? $" while {running} running job(s) hold {Dollars(state.Reserved)} — wait for one to finish"
+                : "";
+            return Refused(state, remaining, $"{summary}; nothing left for role '{role}'{held}");
+        }
 
         if (requestedCap is { } cap && cap > remaining)
             return Refused(state, remaining, $"{summary}; --budget {Money(cap)} exceeds it");
@@ -85,10 +90,18 @@ public static class BudgetLedger
         // explicit --budget is the caller's own ceiling and is never divided, only clamped. Cents,
         // floored: the exact quotient (`0.6666666666666666666666666667`) used to reach
         // --max-budget-usd and request.json verbatim, and rounding *down* is the only direction that
-        // cannot over-grant. A slice that floors to $0 is the same answer as an empty tree.
+        // cannot over-grant.
         decimal effectiveCap = Cents(Math.Min(requestedCap ?? remaining / tree.Share, remaining));
         if (effectiveCap <= 0)
-            return Refused(state, remaining, exhausted);
+        {
+            // The tree is not empty here — only this job's slice is, so --budget is real advice. The
+            // requested cap prints unrounded (Money would show the `0.00` that is being complained about).
+            string vanished = requestedCap is { } requested
+                ? $"--budget {requested.ToString(CultureInfo.InvariantCulture)} rounds to $0.00"
+                : $"the slice for role '{role}' ({Dollars(remaining)} / {tree.Share}) rounds to $0.00 "
+                    + $"— pass --budget (at most {Dollars(remaining)}) to claim an explicit slice";
+            return Refused(state, remaining, $"{summary}; {vanished}");
+        }
 
         BudgetReservation reservation = Claim(directory, tree.TreeId, jobId, role, effectiveCap);
 

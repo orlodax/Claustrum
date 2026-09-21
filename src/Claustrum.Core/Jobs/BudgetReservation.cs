@@ -10,6 +10,7 @@ public sealed class BudgetReservation : IAsyncDisposable
     private readonly string directory;
     private readonly string livePath;
     private readonly FileStream live;
+    private bool completed;
 
     internal BudgetReservation(string directory, string livePath, string treeId, string jobId, decimal cap, FileStream live)
     {
@@ -31,11 +32,19 @@ public sealed class BudgetReservation : IAsyncDisposable
     /// Closes this job's entry under the ledger lock and releases the reservation. The charge is
     /// <paramref name="cost"/> when the backend reported one, the granted cap when it did not but the
     /// process <paramref name="ran"/> anyway — cursor and copilot report no cost at all, and an entry
-    /// closing at $0 would make the tree cap a no-op — and $0 when nothing ever ran.
+    /// closing at $0 would make the tree cap a no-op — and $0 when nothing ever ran. A second call
+    /// charges nothing: it only makes sure the handle is released.
     /// </summary>
     public async Task CompleteAsync(decimal? cost, bool ran)
     {
-        await BudgetLedger.CloseAsync(directory, JobId, cost ?? (ran ? Cap : 0m));
+        // Charged at most once (2026-09-21): Runner's finish funnel re-enters when writing result.json
+        // throws, and its second pass carries no cost — closing again would overwrite what the run
+        // really cost with the granted cap. A close that *failed* is not a charge, so it may retry.
+        if (!completed)
+        {
+            await BudgetLedger.CloseAsync(directory, JobId, cost ?? (ran ? Cap : 0m));
+            completed = true;
+        }
 
         // Only after the entry is finished, and in this order: a finished entry is never probed, so
         // releasing the handle here can no longer be mistaken for a holder that died.
