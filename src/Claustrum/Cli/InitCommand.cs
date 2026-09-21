@@ -60,10 +60,10 @@ public static class InitCommand
         bool wroteConfig = WriteConfigIfAbsent(cwd);
         bool updatedGitignore = EnsureGitignoreEntries(cwd);
 
-        // "claude" is always synced, --all or not: it is the only harness whose Sync also merges the
-        // claustrum MCP server into .mcp.json/.vscode/mcp.json (McpConfigSync is internal to
-        // Claustrum.Roles, wired only through ClaudeSync.Sync today), and its own agent files are
-        // harmless even in a repo that has not adopted Claude Code.
+        // "claude" is always synced, --all or not: its Sync is the one that merges the claustrum MCP
+        // server into .mcp.json/.vscode/mcp.json, which every host that reads those two files picks
+        // up (opencode registers itself in opencode.json instead, issue #15), and its own agent files
+        // are harmless even in a repo that has not adopted Claude Code.
         string[] harnesses = all ? ["claude", "opencode", "copilot"] : DetectHarnesses(cwd);
 
         Console.WriteLine($"claustrum.json: {(wroteConfig ? "written" : "already present, left unchanged")}");

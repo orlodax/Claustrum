@@ -1,6 +1,5 @@
 using System.Text;
-using System.Text.Json;
-using Claustrum.Roles.Json;
+using System.Text.Json.Nodes;
 using Claustrum.Roles.Model;
 
 namespace Claustrum.Roles.Sync;
@@ -52,12 +51,24 @@ public sealed class ClaudeSync(RoleLibrary library, RoleRenderer renderer, strin
         // --global target (B4's --global list is agent directories and the desktop app's own config
         // file) — skipped entirely under --global, same as the manifest itself.
         if (!global)
-            McpConfigSync.Sync(cwd, mode, force, into.Written, into.Skipped, into.Foreign, into.ManifestFiles, into.ProposedContent, ReadManifest(cwd));
+            MergeMcpConfigs(cwd, mode, force, into);
 
         if (!global && mode == SyncMode.Write)
-            UpdateManifest(cwd, into.ManifestFiles);
+            SyncManifestStore.Update(cwd, library.Version, into.ManifestFiles);
 
         return into.ToResult(mode);
+    }
+
+    private static void MergeMcpConfigs(string cwd, SyncMode mode, bool force, SyncAccumulator into)
+    {
+        // One manifest read for both targets: nothing between the two merges can change it.
+        Dictionary<string, SyncManifestFile> existingManifest = SyncManifestStore.Read(cwd);
+
+        JsonObject claudeCodeEntry = new() { ["command"] = "claustrum", ["args"] = new JsonArray("mcp") };
+        McpConfigSync.Merge(new McpConfigTarget(Harness, Path.Combine(cwd, ".mcp.json"), "mcpServers", claudeCodeEntry), mode, force, into, existingManifest);
+
+        JsonObject vsCodeEntry = new() { ["type"] = "stdio", ["command"] = "claustrum", ["args"] = new JsonArray("mcp") };
+        McpConfigSync.Merge(new McpConfigTarget(Harness, Path.Combine(cwd, ".vscode", "mcp.json"), "servers", vsCodeEntry), mode, force, into, existingManifest);
     }
 
     private void WriteBaseAgent(string agentsDir, string role, LoadedRole loaded, string cwd, bool force, SyncMode mode, SyncAccumulator into)
@@ -102,51 +113,6 @@ public sealed class ClaudeSync(RoleLibrary library, RoleRenderer renderer, strin
         string body = library.ReadShared("_shared/claustrum-skill.md");
         string path = Path.Combine(skillDir, "SKILL.md");
         writer.Write(path, "claustrum", frontmatter, body, force, mode, into);
-    }
-
-    private void UpdateManifest(string cwd, List<SyncManifestFile> manifestFiles)
-    {
-        Dictionary<string, SyncManifestFile> merged = ReadManifest(cwd);
-        foreach (SyncManifestFile file in manifestFiles)
-            merged[file.Path] = file;
-
-        string manifestDir = Path.Combine(cwd, ".claustrum");
-        Directory.CreateDirectory(manifestDir);
-
-        // Stored relative to cwd with '/' separators (review finding #5): an absolute path only
-        // matches a sync run from the exact same checkout location, so building this repo from
-        // both Windows and WSL (AGENTS.md) — or any worktree, CI checkout, or rename — made
-        // claustrum's own entries look foreign forever. ReadManifest resolves the path back.
-        List<SyncManifestFile> portable = [.. merged.Values
-            .OrderBy(f => f.Path, StringComparer.Ordinal)
-            .Select(f => f with { Path = Path.GetRelativePath(cwd, f.Path).Replace('\\', '/') })];
-        SyncManifest manifest = new(library.Version, portable);
-        File.WriteAllText(Path.Combine(manifestDir, "sync-manifest.json"), JsonSerializer.Serialize(manifest, RolesJsonContext.Default.SyncManifest));
-    }
-
-    // McpConfigSync's only way to tell "claustrum wrote this JSON key last time, safe to overwrite"
-    // apart from "a human put unrelated content there" — JSON has no room for the inline
-    // claustrum:generated marker WriteGenerated's Markdown targets carry (SyncManifestFile doc
-    // comment "so a future non-marker target ... is still idempotent"). Paths come back absolute
-    // here so every other caller keeps treating SyncManifestFile.Path as absolute in memory.
-    private static Dictionary<string, SyncManifestFile> ReadManifest(string cwd)
-    {
-        string manifestPath = Path.Combine(cwd, ".claustrum", "sync-manifest.json");
-        if (!File.Exists(manifestPath))
-            return [];
-
-        SyncManifest? existing = JsonSerializer.Deserialize(File.ReadAllText(manifestPath), RolesJsonContext.Default.SyncManifest);
-        Dictionary<string, SyncManifestFile> byPath = [];
-        foreach (SyncManifestFile file in existing?.Files ?? [])
-        {
-            // Path.GetFullPath(path, basePath) resolves a portable, cwd-relative stored path back
-            // to absolute, and passes an already-absolute legacy entry through unchanged, so an
-            // old manifest full of absolute paths keeps working with no migration.
-            string absolutePath = Path.GetFullPath(file.Path, cwd);
-            byPath[absolutePath] = file with { Path = absolutePath };
-        }
-
-        return byPath;
     }
 
     private static string BuildFrontmatter(string name, string description, string model, string effort, string color, string tools, string? disallowedTools)

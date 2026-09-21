@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.Json.Nodes;
 using Claustrum.Roles.Model;
 
 namespace Claustrum.Roles.Sync;
@@ -12,9 +13,9 @@ namespace Claustrum.Roles.Sync;
 /// slash command in opencode's UI; opencode's own "skill" concept is auto-surfaced reference material,
 /// not a slash command, so it would not satisfy docs/PLAN.md §D2's "/claustrum works in ... opencode".
 ///
-/// Deliberately does not touch opencode.json's own "mcp" key (registering the claustrum MCP server
-/// for opencode's native session) — that merge has the same idempotency/foreign-key concerns
-/// McpConfigSync solved for `.mcp.json`, deserves the same dedicated care, and is out of scope here.
+/// It also registers the claustrum MCP server in `opencode.json`'s own "mcp" key (issue #15) through
+/// the same <see cref="McpConfigSync"/> that handles ClaudeSync's `.mcp.json` — one shared merge, so
+/// the idempotency and foreign-key rules are identical on both sides.
 ///
 /// The marker/idempotency machinery lives in <see cref="SyncWriter"/> and the result lists in
 /// <see cref="SyncAccumulator"/>, shared with ClaudeSync and CopilotSync — the extraction this
@@ -65,7 +66,36 @@ public sealed class OpencodeSync(RoleLibrary library, RoleRenderer renderer, str
 
         WriteCommand(root, force, mode, into);
 
+        // opencode.json is a repo-root file, not one of §B4's --global targets (agent directories,
+        // the desktop app's own config file) — skipped entirely under --global, exactly as
+        // ClaudeSync skips `.mcp.json` there, and so is the manifest that proves its provenance.
+        if (!global)
+            MergeMcpConfig(cwd, mode, force, into);
+
+        if (!global && mode == SyncMode.Write)
+            SyncManifestStore.Update(cwd, library.Version, into.ManifestFiles);
+
         return into.ToResult(mode);
+    }
+
+    // Documented shape (opencode.ai/docs/mcp-servers, checked 2026-09-21): top-level "mcp", entry
+    // `{"type": "local", "command": ["claustrum", "mcp"]}` — `command` is an ARRAY here, unlike the
+    // command+args split `.mcp.json`/`.vscode/mcp.json` use. The optional enabled/environment/
+    // timeout/cwd fields are left out so opencode's own defaults apply.
+    private static void MergeMcpConfig(string cwd, SyncMode mode, bool force, SyncAccumulator into)
+    {
+        // opencode reads either name, and writing back through JsonNode drops comments (the
+        // trade-off McpConfigSync documents), so the `.jsonc` is only targeted when it is the file
+        // that actually exists — a repo with neither gets the documented `opencode.json`.
+        string jsonPath = Path.Combine(cwd, "opencode.json");
+        string jsoncPath = Path.Combine(cwd, "opencode.jsonc");
+        string path = !File.Exists(jsonPath) && File.Exists(jsoncPath) ? jsoncPath : jsonPath;
+
+        JsonObject entry = new() { ["type"] = "local", ["command"] = new JsonArray("claustrum", "mcp") };
+        // $schema seeds a file created from nothing (it is what opencode's own docs show first) and is
+        // never added to — or rewritten in — a config a human already has.
+        JsonObject rootOnCreate = new() { ["$schema"] = "https://opencode.ai/config.json" };
+        McpConfigSync.Merge(new McpConfigTarget(Harness, path, "mcp", entry, rootOnCreate), mode, force, into, SyncManifestStore.Read(cwd));
     }
 
     private void WriteAgent(string agentDir, string role, LoadedRole loaded, string cwd, bool force, SyncMode mode, SyncAccumulator into)
