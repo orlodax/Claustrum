@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # End-to-end smoke check for Claustrum (docs/PLAN.md "Verification" item 3) on a throwaway git repo:
 # `backends doctor` for every registered backend, `claustrum init` plus an idempotent rerun, a real
-# `run builder` per installed backend the builder role supports, and two concurrent max_parallel
-# builders followed by `jobs clean`. A backend that is not installed SKIPs instead of failing, so the
-# one script works on a machine with any subset of them; only a FAIL row exits nonzero.
+# `run builder` per installed backend the builder role supports, two concurrent max_parallel
+# builders followed by `jobs clean`, and a spawned-architect `coordinate`. A backend that is not
+# installed SKIPs instead of failing, so one script works on any subset; only a FAIL row exits nonzero.
 # Usage: scripts/smoke.sh [path-to-claustrum-binary]   (falls back to $CLAUSTRUM, then a Release build)
-# Env: CLAUSTRUM_SMOKE_MODEL_<NAME> (e.g. CLAUSTRUM_SMOKE_MODEL_CURSOR=auto) gives that backend's
-# paid run its model; unset SKIPs the row. claude defaults to sonnet.
+# Env: CLAUSTRUM_SMOKE_MODEL_<NAME> (e.g. …CURSOR=auto) gives that backend's paid run its model and
+# CLAUSTRUM_SMOKE_COORDINATE_MODEL the coordinate architect; unset SKIPs the row (claude: sonnet).
 set -uo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -77,6 +77,7 @@ smoke_cast_created=0
 cast_row="cast create smoke: builder claude:sonnet, max_parallel 2"
 parallel_row="2 parallel builders: distinct worktrees + branches"
 clean_row="jobs clean: worktrees removed, branches kept"
+coordinate_row="coordinate: spawned architect, builder writes hello.txt"
 
 # Multi-line output squeezed onto the table's third column (the api backend's `version:` alone is
 # four lines of curl banner).
@@ -358,11 +359,82 @@ check_max_parallel() {
     check_jobs_clean
 }
 
+# 5. docs/PLAN.md §D3 spawned architect: `coordinate` runs the architect role headlessly and the
+# architect delegates the file to a builder, so this row pays for two nested agents — its own
+# opt-in variable, separate from the per-backend ones, and a top-level check rather than a row
+# inside check 4, whose early returns would otherwise swallow it.
+check_coordinate() {
+    local model="${CLAUSTRUM_SMOKE_COORDINATE_MODEL:-}"
+    if [ -z "$model" ]; then
+        report_check "$coordinate_row" SKIP "set CLAUSTRUM_SMOKE_COORDINATE_MODEL=<spec> to run"
+        return
+    fi
+    if [ -z "${found_backends[claude]:-}" ]; then
+        report_check "$coordinate_row" SKIP "claude not installed"
+        return
+    fi
+
+    # `cast create`'s questionnaire cannot express a spawned architect, so this cast is written by
+    # hand; its `library` is copied from the one cast create did write, to stay right when the role
+    # library's version moves.
+    local library builder_model
+    library="$(jq -r '.library // empty' "$tmp/.claustrum/casts/smoke.json" 2>/dev/null)"
+    [ -n "$library" ] || library="1.0.0"
+    builder_model="$(smoke_model claude)"
+    [[ "$builder_model" == *:* ]] || builder_model="claude:$builder_model"
+
+    mkdir -p "$tmp/.claustrum/casts"
+    cat > "$tmp/.claustrum/casts/coordinate.json" <<JSON
+{
+  "name": "coordinate",
+  "library": "$library",
+  "architect": { "mode": "spawned", "model": "$model", "tier": null },
+  "roles": {
+    "builder": { "model": "$builder_model", "backend": null, "tier": null, "max_parallel": null },
+    "code-reviewer": null,
+    "ui-reviewer": null,
+    "tester": null
+  },
+  "budget_usd": 2
+}
+JSON
+
+    # check 3's claude row left a hello.txt behind; an architect that delegated nothing would still
+    # pass the "in repo" half of the assertion below.
+    rm -f "$tmp/hello.txt"
+
+    local output status job_id in_repo=no on_branch=no budget=""
+    output="$("$claustrum_bin" coordinate --cast coordinate \
+        --brief "create hello.txt containing hi, delegate the file creation to the builder role, do not run a reviewer or tester" \
+        --json --cwd "$tmp" --timeout 900 2>/dev/null)"
+    status="$(printf '%s' "$output" | jq -r '.status // empty' 2>/dev/null)"
+    job_id="$(printf '%s' "$output" | jq -r '.job_id // empty' 2>/dev/null)"
+
+    # The builder may have run in its own worktree, in which case hello.txt is only ever a commit on
+    # a claustrum/* branch — the architect is expected to leave it there for a rebase, not to merge.
+    [ -f "$tmp/hello.txt" ] && in_repo=yes
+    if [ -n "$(git -C "$tmp" branch --list 'claustrum/*' 2>/dev/null)" ] \
+        && [ -n "$(git -C "$tmp" log --all --oneline -- hello.txt 2>/dev/null)" ]; then
+        on_branch=yes
+    fi
+    if [ -n "$job_id" ]; then
+        budget="$("$claustrum_bin" jobs budget "$job_id" 2>&1 | join_lines)"
+    fi
+
+    local detail="status=$status job=$job_id hello_in_repo=$in_repo hello_on_branch=$on_branch budget=$budget"
+    if [ "$status" = "success" ] && { [ "$in_repo" = "yes" ] || [ "$on_branch" = "yes" ]; }; then
+        report_check "$coordinate_row" OK "$detail"
+    else
+        report_check "$coordinate_row" FAIL "$detail"
+    fi
+}
+
 check_all_doctors
 check_init
 check_init_rerun
 check_all_runs
 check_max_parallel
+check_coordinate
 
 if [ "$checks_failed" -gt 0 ]; then
     echo "$checks_failed check(s) failed" >&2
