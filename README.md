@@ -19,8 +19,10 @@ The story behind it, with the numbers, is newsletter issue 008:
 **[Claustrum — un direttore, qualunque sia il podio](https://orlodax.github.io/tks-newsletter/008-claustrum.html)**
 · [English edition](https://orlodax.github.io/tks-newsletter/en/008-claustrum.html).
 
-> **Status: pre-alpha.** The design is complete ([docs/PLAN.md](docs/PLAN.md)); the binary builds,
-> shows a splash screen, and does not delegate anything yet. Nothing below is measured.
+> **Status: alpha.** M0–M3 have shipped — the five backends, casts, the `claustrum mcp` server,
+> parallel builders each on their own git worktree, a budget ledger kept across the whole job tree,
+> and `backends doctor --probe`. M4 is in progress: the spawned architect (`claustrum coordinate`)
+> and the release pipeline. The measured numbers behind all of it are in [NOTES.md](NOTES.md).
 
 ## Why
 
@@ -149,6 +151,15 @@ dotnet publish src/Claustrum/Claustrum.csproj -c Release -r linux-x64 -p:Publish
 Contribution rules — style, comment ceiling, linear history, issues on the
 [project board](https://github.com/users/orlodax/projects/6) — are in [AGENTS.md](AGENTS.md);
 design rationale in [NOTES.md](NOTES.md).
+
+## Install
+
+A release binary per OS, the .NET global tool, or a build from source —
+[docs/INSTALL.md](docs/INSTALL.md) has all three.
+
+```bash
+dotnet tool install -g Claustrum
+```
 
 ## Licence
 

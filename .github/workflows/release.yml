@@ -1,0 +1,127 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  # A dry run without cutting a tag: the binaries and the package are built, nothing is published.
+  workflow_dispatch:
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.derive.outputs.version }}
+    steps:
+      # `v0.1.0` -> `0.1.0`; empty on workflow_dispatch, which leaves the Directory.Build.props
+      # default in place rather than stamping an empty version. The tag is validated here and used
+      # everywhere else through `env:`, never spliced into a script: a ref name is attacker-settable
+      # in a fork, and an expression expanded inside a `run:` body is textual substitution of that
+      # name into the script, not a shell variable.
+      - id: derive
+        run: |
+          version=""
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            if ! printf '%s' "$GITHUB_REF_NAME" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+              echo "::error::tag '$GITHUB_REF_NAME' is not vMAJOR.MINOR.PATCH[-prerelease] (e.g. v0.1.0, v1.2.3-rc.1) — refusing to release from it"
+              exit 1
+            fi
+            version="${GITHUB_REF_NAME#v}"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  publish:
+    needs: version
+    strategy:
+      matrix:
+        include:
+          - { os: ubuntu-latest, rid: linux-x64 }
+          - { os: ubuntu-24.04-arm, rid: linux-arm64 }
+          - { os: windows-latest, rid: win-x64 }
+          # macos-13 was retired 2025-12-04; macos-15-intel is the last x86_64 macOS label (to Aug 2027).
+          - { os: macos-15-intel, rid: osx-x64 }
+          - { os: macos-latest, rid: osx-arm64 }
+    runs-on: ${{ matrix.os }}
+    env:
+      RID: ${{ matrix.rid }}
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev
+      # An empty VERSION adds no argument at all, so workflow_dispatch keeps the csproj default.
+      - shell: bash
+        run: |
+          args=()
+          if [ -n "$VERSION" ]; then
+            args+=(-p:Version="$VERSION")
+          fi
+          dotnet publish src/Claustrum/Claustrum.csproj -c Release -r "$RID" -p:PublishAot=true "${args[@]}" -warnaserror
+      # One bash step for all five legs: the Windows runner ships git bash, so the rename and the
+      # `--version` smoke call need no pwsh twin. `if` rather than `[ … ] && ext=`, whose nonzero
+      # exit on the non-Windows legs would trip the shell's -e.
+      - shell: bash
+        run: |
+          ext=""
+          if [ "$RUNNER_OS" = Windows ]; then
+            ext=".exe"
+          fi
+          mv "src/Claustrum/bin/Release/net10.0/$RID/publish/claustrum$ext" "claustrum-$RID$ext"
+          "./claustrum-$RID$ext" --version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: claustrum-${{ matrix.rid }}
+          path: claustrum-${{ matrix.rid }}*
+
+  pack:
+    needs: version
+    runs-on: ubuntu-latest
+    # Job level, not step level: a step's own `env:` is not visible to that step's `if:`.
+    env:
+      NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+      # No PublishAot override needed: packing the tool with PublishAot=true in the csproj succeeds
+      # as is (measured 2026-09-22, SDK 10.0.4xx) — the package carries the IL build.
+      - shell: bash
+        run: |
+          args=()
+          if [ -n "$VERSION" ]; then
+            args+=(-p:Version="$VERSION")
+          fi
+          dotnet pack src/Claustrum/Claustrum.csproj -c Release "${args[@]}" -o nupkg
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nupkg
+          path: nupkg/*.nupkg
+      - if: github.ref_type == 'tag' && env.NUGET_API_KEY != ''
+        run: dotnet nuget push nupkg/*.nupkg --api-key "$NUGET_API_KEY" --source https://api.nuget.org/v3/index.json --skip-duplicate
+
+  release:
+    needs: [publish, pack]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      # Bare filenames, so `sha256sum -c SHA256SUMS.txt` works next to the downloaded binaries.
+      - run: sha256sum claustrum-* > SHA256SUMS.txt
+        working-directory: artifacts
+      - uses: softprops/action-gh-release@v3
+        with:
+          files: |
+            artifacts/claustrum-*
+            artifacts/SHA256SUMS.txt
+            artifacts/*.nupkg
+          generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}

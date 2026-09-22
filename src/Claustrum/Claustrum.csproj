@@ -9,7 +9,16 @@
     <ToolCommandName>claustrum</ToolCommandName>
     <PackageId>Claustrum</PackageId>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Description>Harness-neutral coding-agent delegation: one binary that runs role-based agent jobs on claude, opencode, cursor or copilot, as a CLI and as an MCP server.</Description>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/orlodax/Claustrum</PackageProjectUrl>
+    <PackageTags>agents;mcp;cli;claude;opencode;cursor;copilot</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
+  <ItemGroup>
+    <!-- PackageReadmeFile names a file that must be *in* the package, at the path it names. -->
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\Claustrum.Core\Claustrum.Core.csproj" />
     <ProjectReference Include="..\Claustrum.Roles\Claustrum.Roles.csproj" />

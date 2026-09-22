@@ -2,15 +2,17 @@
 .SYNOPSIS
     End-to-end smoke check for Claustrum (docs/PLAN.md "Verification" item 3) on a throwaway git
     repo: `backends doctor` for every registered backend, `claustrum init` plus an idempotent rerun,
-    a real `run builder` per installed backend the builder role supports, and two concurrent
-    max_parallel builders followed by `jobs clean`. A backend that is not installed SKIPs instead of
-    failing, so the one script works on a machine with any subset of them; only a FAIL exits nonzero.
+    a real `run builder` per installed backend the builder role supports, two concurrent
+    max_parallel builders followed by `jobs clean`, and a spawned-architect `coordinate`. A backend
+    that is not installed SKIPs instead of failing, so one script works on a machine with any subset
+    of them; only a FAIL exits nonzero.
 .PARAMETER Binary
     Path to an already-built claustrum executable. Falls back to $env:CLAUSTRUM, then to a Release
     build of src/Claustrum/Claustrum.csproj.
 .NOTES
     CLAUSTRUM_SMOKE_MODEL_<NAME> (e.g. CLAUSTRUM_SMOKE_MODEL_CURSOR=auto) gives that backend's paid
-    run its model; unset SKIPs the row. claude defaults to sonnet.
+    run its model and CLAUSTRUM_SMOKE_COORDINATE_MODEL the coordinate architect; unset SKIPs the
+    row. claude defaults to sonnet.
 #>
 [CmdletBinding()]
 param(
@@ -65,6 +67,7 @@ $script:smokeCastCreated = $false
 $castRow = "cast create smoke: builder claude:sonnet, max_parallel 2"
 $parallelRow = "2 parallel builders: distinct worktrees + branches"
 $cleanRow = "jobs clean: worktrees removed, branches kept"
+$coordinateRow = "coordinate: spawned architect, builder writes hello.txt"
 
 # The parallel runs' stdout and the cast answers file live beside the repo, not in it: an untracked
 # file inside the repo turns up in the next run's changed_files.
@@ -376,6 +379,83 @@ function Invoke-MaxParallelChecks {
     Invoke-JobsCleanCheck
 }
 
+# 5. docs/PLAN.md §D3 spawned architect: `coordinate` runs the architect role headlessly and the
+# architect delegates the file to a builder, so this row pays for two nested agents — its own
+# opt-in variable, separate from the per-backend ones, and a top-level check rather than a row
+# inside check 4, whose early returns would otherwise swallow it.
+function Invoke-CoordinateCheck {
+    $model = [string][System.Environment]::GetEnvironmentVariable("CLAUSTRUM_SMOKE_COORDINATE_MODEL")
+    if ([string]::IsNullOrWhiteSpace($model)) {
+        Add-Result $coordinateRow "SKIP" "set CLAUSTRUM_SMOKE_COORDINATE_MODEL=<spec> to run"
+        return
+    }
+    if (-not $foundBackends.ContainsKey("claude")) {
+        Add-Result $coordinateRow "SKIP" "claude not installed"
+        return
+    }
+    $model = $model.Trim()
+
+    # `cast create`'s questionnaire cannot express a spawned architect, so this cast is written by
+    # hand; its `library` is copied from the one cast create did write, to stay right when the role
+    # library's version moves.
+    $library = "1.0.0"
+    $smokeCast = Join-Path $tmp ".claustrum/casts/smoke.json"
+    if (Test-Path $smokeCast) {
+        $existing = (Get-Content -Raw $smokeCast) | ConvertFrom-Json
+        if ($existing.library) { $library = [string]$existing.library }
+    }
+    $builderModel = Get-SmokeModel "claude"
+    if ($builderModel -notmatch ":") { $builderModel = "claude:$builderModel" }
+
+    $castDir = Join-Path $tmp ".claustrum/casts"
+    New-Item -ItemType Directory -Path $castDir -Force | Out-Null
+    @"
+{
+  "name": "coordinate",
+  "library": "$library",
+  "architect": { "mode": "spawned", "model": "$model", "tier": null },
+  "roles": {
+    "builder": { "model": "$builderModel", "backend": null, "tier": null, "max_parallel": null },
+    "code-reviewer": null,
+    "ui-reviewer": null,
+    "tester": null
+  },
+  "budget_usd": 2
+}
+"@ | Out-File -FilePath (Join-Path $castDir "coordinate.json") -Encoding utf8
+
+    # Check 3's claude row left a hello.txt behind; an architect that delegated nothing would still
+    # pass the "in repo" half of the assertion below.
+    Remove-Item -Path (Join-Path $tmp "hello.txt") -Force -ErrorAction SilentlyContinue
+
+    $brief = "create hello.txt containing hi, delegate the file creation to the builder role, do not run a reviewer or tester"
+    $output = (& $claustrum coordinate --cast coordinate --brief $brief --json --cwd $tmp --timeout 900 2>$null)
+    $status = ""
+    $jobId = ""
+    try {
+        $result = $output | ConvertFrom-Json
+        $status = [string]$result.status
+        $jobId = [string]$result.job_id
+    }
+    catch {
+        $status = ""
+    }
+
+    # The builder may have run in its own worktree, in which case hello.txt is only ever a commit on
+    # a claustrum/* branch — the architect is expected to leave it there for a rebase, not to merge.
+    $inRepo = Test-Path (Join-Path $tmp "hello.txt")
+    $branchList = [string](& git -C $tmp branch --list "claustrum/*" 2>$null | Out-String)
+    $fileLog = [string](& git -C $tmp log --all --oneline -- hello.txt 2>$null | Out-String)
+    $onBranch = (-not [string]::IsNullOrWhiteSpace($branchList)) -and (-not [string]::IsNullOrWhiteSpace($fileLog))
+
+    $budget = ""
+    if ($jobId) { $budget = Join-Lines ([string](& $claustrum jobs budget $jobId 2>&1 | Out-String)) }
+
+    $detail = "status=$status job=$jobId hello_in_repo=$inRepo hello_on_branch=$onBranch budget=$budget"
+    $ok = $status -eq "success" -and ($inRepo -or $onBranch)
+    Add-Result $coordinateRow $(if ($ok) { "OK" } else { "FAIL" }) $detail
+}
+
 try {
     Push-Location $tmp
     try {
@@ -395,6 +475,7 @@ try {
     Invoke-InitRerunCheck
     Invoke-AllRunChecks
     Invoke-MaxParallelChecks
+    Invoke-CoordinateCheck
 }
 finally {
     # -Force also clears the read-only attribute git-for-windows puts on loose objects, which a plain
