@@ -47,6 +47,31 @@ public sealed class JobManagerTests : IDisposable
         Stream: false,
         DiffCapBytes: 64 * 1024);
 
+    // The Func<JobPaths, CancellationToken, Task<RunResult>> overload `coordinate` needs (the job id
+    // has to exist before the request does — see CoordinatePlan.ToDelegateRequest): this pins that it
+    // registers the job exactly the way the DelegateRequest overload does, GetStatus/GetResultAsync
+    // included, without going through DelegateEngine or a real request at all.
+    [Fact]
+    public async Task StartWithARunFunctionRegistersTheJobAndReportsRunningThenDoneAsync()
+    {
+        JobManager manager = new();
+        TaskCompletionSource<RunResult> gate = new();
+        RunResult expected = DummyResult();
+
+        (string jobId, string logPath) = manager.Start((job, _) => gate.Task, CancellationToken.None);
+
+        Assert.NotEmpty(jobId);
+        Assert.EndsWith("stdout.log", logPath, StringComparison.Ordinal);
+        Assert.Equal("running", manager.GetStatus(jobId)?.State);
+        Assert.Null(await manager.GetResultAsync(jobId));
+
+        gate.SetResult(expected with { JobId = jobId });
+        RunResult? result = await manager.GetResultAsync(jobId);
+
+        Assert.Equal("done", manager.GetStatus(jobId)?.State);
+        Assert.Equal(jobId, result?.JobId);
+    }
+
     [Fact]
     public async Task StartReturnsAJobIdImmediatelyAndTheResultEventuallyResolvesAsync()
     {

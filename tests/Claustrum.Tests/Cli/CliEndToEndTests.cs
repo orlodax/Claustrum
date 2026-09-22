@@ -1,5 +1,7 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Claustrum.Cli;
 using Claustrum.Tests.Testing;
 
@@ -10,7 +12,7 @@ namespace Claustrum.Tests.Cli;
 // with no `roles`) only show as the wrong exit code or a raw stack trace at the process door, which
 // no in-process test observes. `claustrum` is on the test output path via the project reference, so
 // this needs no publish step. CLAUSTRUM_HOME keeps every job out of the real ~/.claustrum.
-public sealed class CliEndToEndTests : IDisposable
+public sealed partial class CliEndToEndTests : IDisposable
 {
     private const int Ok = 0;
     private const int Usage = 2;
@@ -665,10 +667,17 @@ public sealed class CliEndToEndTests : IDisposable
         Assert.False(File.Exists(Path.Combine(cwd, "AGENTS.md")));
     }
 
+    // "15 skipped" was pinned to the library's role count at the time (4 roles * 3 files + skill + 2
+    // mcp configs); the architect role (M4) moved that number, and pinning a fresh literal again
+    // would only repeat the same fragility on the next role addition. Reading the first run's own
+    // "written" count and expecting it back as the second run's "skipped" count is exact without
+    // depending on how many roles the library ships.
     [Fact]
     public async Task InitIsIdempotentOnRerunAsync()
     {
-        Assert.Equal(Ok, (await RunAsync("init")).ExitCode);
+        (int firstExit, string firstStdout, _) = await RunAsync("init");
+        Assert.Equal(Ok, firstExit);
+        int writtenFirstRun = int.Parse(ClaudeSyncLinePattern().Match(firstStdout).Groups[1].Value, CultureInfo.InvariantCulture);
         string configBefore = File.ReadAllText(Path.Combine(cwd, "claustrum.json"));
 
         (int exitCode, string stdout, _) = await RunAsync("init");
@@ -676,8 +685,11 @@ public sealed class CliEndToEndTests : IDisposable
         Assert.Equal(Ok, exitCode);
         Assert.Equal(configBefore, File.ReadAllText(Path.Combine(cwd, "claustrum.json")));
         Assert.Contains("already present", stdout, StringComparison.Ordinal);
-        Assert.Contains("0 written, 15 skipped", stdout, StringComparison.Ordinal);
+        Assert.Contains($"claude: 0 written, {writtenFirstRun} skipped", stdout, StringComparison.Ordinal);
     }
+
+    [GeneratedRegex(@"claude: (\d+) written")]
+    private static partial Regex ClaudeSyncLinePattern();
 
     [Fact]
     public async Task InitDoesNotDuplicateTheAgentsMdPointerOnRerunAsync()

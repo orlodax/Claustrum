@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Text.Json;
 using Claustrum.Core.Backends;
 using Claustrum.Core.Config;
+using Claustrum.Core.Process;
 
 namespace Claustrum.Cli;
 
@@ -13,6 +14,8 @@ namespace Claustrum.Cli;
 // (DoctorProbe, issue #12), skippable with CLAUSTRUM_SKIP_PROBE so the free checks stay free.
 public static class BackendsCommands
 {
+    private static readonly TimeSpan ghVersionTimeout = TimeSpan.FromSeconds(10);
+
     public static Command Build()
     {
         Command list = new("list", "List registered backends.");
@@ -83,6 +86,11 @@ public static class BackendsCommands
             }
         }
 
+        // Only for a bare `doctor`: `doctor <name>` is a question about that one backend, and `gh` is
+        // not one of them.
+        if (name is null)
+            await PrintGhAsync();
+
         if (probe)
         {
             Console.WriteLine();
@@ -103,6 +111,26 @@ public static class BackendsCommands
         PrintMergedConfig(config);
 
         return ExitCodes.Ok;
+    }
+
+    // docs/PLAN.md §D3: "`gh` presence is a `doctor` check" — `claustrum coordinate --issues` shells
+    // out to it. Free, unlike `--probe`: locating a binary costs nothing, so a bare `doctor` always
+    // prints it.
+    private static async Task PrintGhAsync()
+    {
+        Doctor gh = await VersionProbe.RunAsync("gh", ["--version"], config: null, AppServices.Platform, CancellationToken.None, ghVersionTimeout);
+
+        Console.WriteLine();
+        Console.WriteLine("gh:");
+        Console.WriteLine($"  found:   {gh.Found}");
+        Console.WriteLine($"  path:    {gh.Path ?? "-"}");
+
+        // `gh --version` answers on two lines ("gh version 2.x (date)" then a release URL);
+        // VersionProbe keeps stdout whole, so the second line is dropped here rather than there.
+        Console.WriteLine($"  version: {gh.Version?.Split('\n')[0].TrimEnd() ?? "-"}");
+
+        if (!gh.Found)
+            Console.WriteLine("  problem: gh not on PATH — `claustrum coordinate --issues` needs it");
     }
 
     // docs/PLAN.md §B6's `probe` bullet. Order matters: the owner's own skip flag first, then the

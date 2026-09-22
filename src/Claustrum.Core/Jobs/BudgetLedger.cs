@@ -14,7 +14,13 @@ namespace Claustrum.Core.Jobs;
 // ledger" carries the admission rule in full and what the `.live` probe is worth.
 public static class BudgetLedger
 {
-    private const string TreeVariable = "CLAUSTRUM_PARENT_JOB";
+    /// <summary>
+    /// docs/PLAN.md §D2's tree variable by name: read here to decide membership, written by
+    /// `coordinate` on its architect's request env, and the one name `env_passthrough: "all"` still
+    /// filters out of an inherited environment (EnvAllowList).
+    /// </summary>
+    public const string TreeVariable = "CLAUSTRUM_PARENT_JOB";
+
     private const string UnknownRole = "unknown";
     private const string LiveExtension = ".live";
 

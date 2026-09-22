@@ -153,6 +153,61 @@ public sealed class ProcessRunnerTests
         }
     }
 
+    // ProcessRunner.stdoutLog is opened with AutoFlush = true (NOTES.md/the field's own comment)
+    // specifically so JobManager.GetStatus's "last output line" has something to report while a job is
+    // still running — this proves the log file actually grows mid-run rather than only appearing whole
+    // at exit. Polls for the first line with a bounded wait instead of a fixed sleep, so the assertion
+    // is deterministic without being slow on a fast machine or flaky on a loaded one.
+    [Fact]
+    public async Task StdoutLogGrowsWhileTheProcessIsStillRunningAsync()
+    {
+        JobPaths job = CreateTempJob();
+        try
+        {
+            (string exe, string[] args) = GrowingOutputCommand();
+            ProcessSpec spec = new(exe, args, Path.GetTempPath(), [], []);
+            ProcessRunner runner = new(new RealPlatform());
+
+            Task<ProcessOutcome> run = runner.RunAsync(spec, backendConfig: null, job, envPassthroughAll: false, onStreamLine: null, TimeSpan.FromSeconds(30), CancellationToken.None);
+
+            string firstLine = await PollForFirstLineAsync(job.StdoutLog, TimeSpan.FromSeconds(10));
+            Assert.Equal("a", firstLine);
+            // The process is still asleep (it prints "b" only after a 1s sleep): the log has grown to
+            // exactly its first line, proof this was read mid-run and not after the process exited.
+            Assert.False(run.IsCompleted, "the process finished before the mid-run read — the test proves nothing");
+
+            ProcessOutcome outcome = await run;
+            Assert.Equal(0, outcome.ExitCode);
+            Assert.Contains("b", await File.ReadAllTextAsync(job.StdoutLog, TestContext.Current.CancellationToken));
+        }
+        finally
+        {
+            Directory.Delete(job.Directory, recursive: true);
+        }
+    }
+
+    private static async Task<string> PollForFirstLineAsync(string logPath, TimeSpan timeout)
+    {
+        DateTime deadline = DateTime.UtcNow + timeout;
+        while (DateTime.UtcNow < deadline)
+        {
+            if (File.Exists(logPath))
+            {
+                string[] lines = await File.ReadAllLinesAsync(logPath, TestContext.Current.CancellationToken);
+                if (lines.Length > 0)
+                    return lines[0];
+            }
+
+            await Task.Delay(20, TestContext.Current.CancellationToken);
+        }
+
+        throw new TimeoutException($"'{logPath}' never gained a first line within {timeout}");
+    }
+
+    private static (string Exe, string[] Args) GrowingOutputCommand() => OperatingSystem.IsWindows()
+        ? ("cmd", ["/c", "echo a & ping -n 2 127.0.0.1 >nul & echo b"])
+        : ("sh", ["-c", "echo a; sleep 1; echo b"]);
+
     private static (string Exe, string[] Args) SleepCommand(int seconds) => OperatingSystem.IsWindows()
         ? ("cmd", ["/c", "ping", "-n", (seconds + 1).ToString(), "127.0.0.1"])
         : ("sh", ["-c", $"sleep {seconds}"]);

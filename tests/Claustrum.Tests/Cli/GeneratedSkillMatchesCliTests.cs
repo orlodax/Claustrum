@@ -31,8 +31,10 @@ public sealed partial class GeneratedSkillMatchesCliTests : IDisposable
         string[] commands = SkillCommands();
 
         // The extractor is the weak link: an over-eager regex change that stops matching would make
-        // the assertions below vacuous, so pin the count the skill actually documents today.
-        Assert.Equal(3, commands.Length);
+        // the assertions below vacuous, so pin the count the skill actually documents today (M4
+        // added `coordinate --cast ... --issues ...` and `jobs budget <job_id>` to the "Coordinating"
+        // section).
+        Assert.Equal(5, commands.Length);
 
         RootCommand root = CliRoot.Build();
         foreach (string command in commands)
@@ -54,7 +56,9 @@ public sealed partial class GeneratedSkillMatchesCliTests : IDisposable
     public void EveryMcpToolTheSkillNamesExistsOnClaustrumTools()
     {
         string[] named = [.. NamedToolPattern().Matches(GeneratedSkill()).Select(match => match.Groups[1].Value).Distinct(StringComparer.Ordinal)];
-        Assert.Equal(3, named.Length);
+        // M4's "Coordinating" section names `coordinate`, `job_status` and `job_result` on top of the
+        // three the "Delegating"/setup sections already named.
+        Assert.Equal(6, named.Length);
 
         foreach (string tool in named)
             Assert.Contains(tool, McpToolNames());

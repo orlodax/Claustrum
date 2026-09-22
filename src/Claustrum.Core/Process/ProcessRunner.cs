@@ -52,8 +52,10 @@ public sealed class ProcessRunner(IPlatform platform)
         StringBuilder stdout = new();
         StringBuilder stderr = new();
 
-        await using StreamWriter stdoutLog = new(job.StdoutLog, append: false);
-        await using StreamWriter stderrLog = new(job.StderrLog, append: false);
+        // AutoFlush on both, or the 4 KB FileStream buffer holds a quiet run's whole output until
+        // exit and `last_line` (JobManager, MCP job_status) has nothing to report while it matters.
+        await using StreamWriter stdoutLog = new(job.StdoutLog, append: false) { AutoFlush = true };
+        await using StreamWriter stderrLog = new(job.StderrLog, append: false) { AutoFlush = true };
 
         process.OutputDataReceived += (_, e) => Pump(e.Data, stdout, stdoutLog, onStreamLine);
         process.ErrorDataReceived += (_, e) => Pump(e.Data, stderr, stderrLog, onStreamLine: null);
