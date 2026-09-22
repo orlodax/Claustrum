@@ -1,7 +1,9 @@
 using System.Text.Json;
+using Claustrum.Casts;
 using Claustrum.Core.Jobs;
 using Claustrum.Core.Json;
 using Claustrum.Core.Model;
+using Claustrum.Delegation;
 using Claustrum.Mcp;
 using Claustrum.Tests.Testing;
 using ModelContextProtocol;
@@ -353,6 +355,103 @@ public sealed class ClaustrumToolsTests(AppServicesHomeFixture fixture) : IDispo
         {
             Directory.Delete(cwd, recursive: true);
         }
+    }
+
+    // coordinate plans before it starts anything (CoordinateEngine.PlanAsync), so a usage error must
+    // surface through McpExceptionBoundary exactly like a domain exception from any other tool, and no
+    // job directory is ever created for it — mirrored at the CLI door by CoordinateEndToEndTests'
+    // sibling assertions on <home>/jobs.
+    [Fact]
+    public async Task CoordinateWithNeitherIssuesNorBriefThrowsMcpExceptionAndStartsNoJobAsync()
+    {
+        string cwd = Directory.CreateTempSubdirectory("claustrum-mcp-coordinate-neither-").FullName;
+        try
+        {
+            string jobsRoot = JobDirectory.ResolveRoot(fixture.Platform);
+            int before = Directory.Exists(jobsRoot) ? Directory.GetDirectories(jobsRoot).Length : 0;
+
+            McpException exception = await Assert.ThrowsAsync<McpException>(
+                () => ClaustrumTools.CoordinateAsync(cwd: cwd, cancellationToken: CancellationToken.None));
+
+            Assert.Contains("coordinate needs a task", exception.Message, StringComparison.Ordinal);
+            int after = Directory.Exists(jobsRoot) ? Directory.GetDirectories(jobsRoot).Length : 0;
+            Assert.Equal(before, after);
+        }
+        finally
+        {
+            Directory.Delete(cwd, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task CoordinateWithBothIssuesAndBriefThrowsMcpExceptionAndStartsNoJobAsync()
+    {
+        string cwd = Directory.CreateTempSubdirectory("claustrum-mcp-coordinate-both-").FullName;
+        try
+        {
+            string jobsRoot = JobDirectory.ResolveRoot(fixture.Platform);
+            int before = Directory.Exists(jobsRoot) ? Directory.GetDirectories(jobsRoot).Length : 0;
+
+            McpException exception = await Assert.ThrowsAsync<McpException>(
+                () => ClaustrumTools.CoordinateAsync(issues: [12], brief: "hi", cwd: cwd, cancellationToken: CancellationToken.None));
+
+            Assert.Contains("not both", exception.Message, StringComparison.Ordinal);
+            int after = Directory.Exists(jobsRoot) ? Directory.GetDirectories(jobsRoot).Length : 0;
+            Assert.Equal(before, after);
+        }
+        finally
+        {
+            Directory.Delete(cwd, recursive: true);
+        }
+    }
+
+    // The tool is async by construction (its own [Description]): a cast plus a brief must return the
+    // {job_id, log_path} pair at once, and the architect's run — backend "nonexistent" so nothing real
+    // spawns — reaches "done" with status backend_missing and a request.json recording Stream: true
+    // (CoordinateRequest hardcodes it so job_status always has a last line to relay).
+    [Fact]
+    public async Task CoordinateWithACastAndBriefReturnsAJobIdThatReachesDoneWithStreamTrueAsync()
+    {
+        string cwd = Directory.CreateTempSubdirectory("claustrum-mcp-coordinate-ok-").FullName;
+        try
+        {
+            CastStore.Save(cwd, new Cast("default", "1.0.0", new CastArchitect(CastArchitect.Spawned, Model: "nonexistent:x"), [], null));
+
+            string startJson = await ClaustrumTools.CoordinateAsync(brief: "hi", cwd: cwd, cancellationToken: CancellationToken.None);
+            using JsonDocument started = JsonDocument.Parse(startJson);
+            string jobId = started.RootElement.GetProperty("job_id").GetString()!;
+            Assert.NotEmpty(jobId);
+            Assert.Contains("stdout.log", started.RootElement.GetProperty("log_path").GetString());
+
+            JobStatusInfo? status = await PollUntilDoneAsync(jobId);
+            Assert.Equal("done", status?.State);
+
+            RunResult? result = await AppServices.JobManager.GetResultAsync(jobId);
+            Assert.Equal(RunStatus.BackendMissing, result?.Status);
+            Assert.Equal("architect", result?.Role);
+
+            string requestPath = Path.Combine(JobDirectory.ResolveRoot(fixture.Platform), jobId, "request.json");
+            using JsonDocument request = JsonDocument.Parse(File.ReadAllText(requestPath));
+            Assert.True(request.RootElement.GetProperty("stream").GetBoolean());
+        }
+        finally
+        {
+            Directory.Delete(cwd, recursive: true);
+        }
+    }
+
+    private static async Task<JobStatusInfo?> PollUntilDoneAsync(string jobId)
+    {
+        for (int attempt = 0; attempt < 300; attempt++)
+        {
+            JobStatusInfo? status = AppServices.JobManager.GetStatus(jobId);
+            if (status is not { State: "running" })
+                return status;
+
+            await Task.Delay(20, TestContext.Current.CancellationToken);
+        }
+
+        return null;
     }
 
     // Written directly, like DelegateEngineTests' own seed — the on-disk shape NOTES.md "Tree budget

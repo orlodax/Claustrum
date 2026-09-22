@@ -18,4 +18,7 @@
     <PackageReference Include="xunit.v3" />
     <PackageReference Include="xunit.runner.visualstudio" />
   </ItemGroup>
+  <ItemGroup>
+    <Content Include="..\fixtures\gh\**\*" LinkBase="fixtures\gh" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>

@@ -46,6 +46,40 @@ public sealed class DelegateEngineTests(AppServicesHomeFixture fixture) : IDispo
         DiffCapBytes: 64 * 1024,
         MaxParallel: maxParallel);
 
+    // DelegateEngine.InsertAppendix (private): exercised through a real render rather than made
+    // internal-visible, since `coordinate` reaches it only via DelegateRequest.SystemAppendix and a
+    // `--backend nonexistent` run still writes the rendered system.md before Runner's registry check
+    // (same trick MissingBackendRequest already relies on).
+    [Fact]
+    public async Task SystemAppendixLandsInSystemMdBeforeHouseRulesAsync()
+    {
+        DelegateRequest request = MissingBackendRequest(maxParallel: null) with { SystemAppendix = "## Coordination\n\nCast: default" };
+
+        RunResult result = await DelegateEngine.RunAsync(request, TestContext.Current.CancellationToken);
+
+        string systemMd = File.ReadAllText(Path.Combine(JobDirectory.ResolveRoot(fixture.Platform), result.JobId, "system.md"));
+        int appendixIndex = systemMd.IndexOf("## Coordination", StringComparison.Ordinal);
+        int houseRulesIndex = systemMd.IndexOf("\n## House rules\n", StringComparison.Ordinal);
+        Assert.True(appendixIndex >= 0, "appendix text missing from system.md");
+        Assert.True(houseRulesIndex >= 0, "'## House rules' missing from system.md");
+        Assert.True(appendixIndex < houseRulesIndex, "appendix must land before '## House rules'");
+    }
+
+    // No SystemAppendix at all must leave the rendered body exactly as RoleRenderer produced it — the
+    // "append when absent" branch of InsertAppendix never runs, because every real role render already
+    // carries a trailing `## House rules` (RoleRenderer.ComposeSystemBody).
+    [Fact]
+    public async Task NoSystemAppendixLeavesTheRenderedSystemBodyUnchangedAsync()
+    {
+        DelegateRequest request = MissingBackendRequest(maxParallel: null);
+
+        RunResult result = await DelegateEngine.RunAsync(request, TestContext.Current.CancellationToken);
+
+        string systemMd = File.ReadAllText(Path.Combine(JobDirectory.ResolveRoot(fixture.Platform), result.JobId, "system.md"));
+        RenderedRole rendered = AppServices.RoleRenderer.Render("builder", "high", "nonexistent", cwd);
+        Assert.Equal(rendered.SystemBody, systemMd);
+    }
+
     [Fact]
     public async Task NoMaxParallelRunsDirectlyInTheRequestedCwdAsync()
     {

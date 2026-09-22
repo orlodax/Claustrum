@@ -16,10 +16,18 @@ public sealed class JobManager
 {
     private readonly ConcurrentDictionary<string, Entry> jobs = new();
 
-    public (string JobId, string LogPath) Start(DelegateRequest request, CancellationToken cancellationToken)
+    public (string JobId, string LogPath) Start(DelegateRequest request, CancellationToken cancellationToken) =>
+        Start((job, token) => DelegateEngine.RunAsync(request, job, token), cancellationToken);
+
+    /// <summary>
+    /// The same background job for a caller that needs the job id *before* it can build its request:
+    /// `coordinate`'s tree id is the job id it will run under (docs/PLAN.md §D3), so it reads
+    /// <see cref="JobPaths.Id"/> out of the directory this creates and only then prepares the run.
+    /// </summary>
+    public (string JobId, string LogPath) Start(Func<JobPaths, CancellationToken, Task<RunResult>> run, CancellationToken cancellationToken)
     {
         JobPaths job = JobDirectory.Create(AppServices.Platform);
-        Task<RunResult> task = DelegateEngine.RunAsync(request, job, cancellationToken);
+        Task<RunResult> task = run(job, cancellationToken);
         jobs[job.Id] = new Entry(job, task, DateTimeOffset.UtcNow);
         return (job.Id, job.StdoutLog);
     }

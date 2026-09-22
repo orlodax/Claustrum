@@ -1,4 +1,5 @@
 using Claustrum.Casts;
+using Claustrum.Cli;
 using Claustrum.Core;
 using Claustrum.Core.Config;
 using Claustrum.Core.Process;
@@ -40,6 +41,9 @@ public static class McpExceptionBoundary
         }
     }
 
+    // CliUsageException is not CLI-only in practice: `coordinate` raises it for both flags at once
+    // and for a gh call that failed, and those messages are the whole answer an MCP caller gets.
     private static bool IsDomainException(Exception ex) =>
-        ex is ConfigException or RoleRenderException or CastException or BlindGateException or RunRequestException or BackendNotFoundException;
+        ex is ConfigException or RoleRenderException or CastException or BlindGateException
+            or RunRequestException or BackendNotFoundException or CliUsageException;
 }

@@ -13,7 +13,8 @@ namespace Claustrum.Cli;
 // the fixed §A5 table (ExitCodes), not System.CommandLine's own.
 public static class RunCommand
 {
-    private const int CliDiffCapBytes = 200 * 1024; // §A2: 200 KB on the CLI door, 64 KB on MCP.
+    // §A2: 200 KB on the CLI door, 64 KB on MCP. Internal because `coordinate` is the same door.
+    internal const int CliDiffCapBytes = 200 * 1024;
 
     public static Command Build()
     {
@@ -140,28 +141,12 @@ public static class RunCommand
         }
     }
 
-    // §B3 lists three ways in: `--brief`, `--brief-file <path|->`, or bare stdin. Runner.ResolveBrief
-    // only understands Brief/BriefFile-as-a-real-path, so the CLI reads the text itself and always
-    // hands Runner a resolved Brief string.
-    private static string ResolveBrief(string? briefText, string? briefFilePath)
-    {
-        if (briefText is { Length: > 0 } && briefFilePath is { Length: > 0 })
-            throw new CliUsageException("use either --brief or --brief-file, not both");
-
-        if (briefText is { Length: > 0 })
-            return briefText;
-
-        // A brief-file path or redirected stdin that reads back empty falls through to the same "no
-        // brief given" as no source at all — checked here, before Config/RoleRenderer/Runner touch
-        // anything, so an empty brief never reaches a spawned process (review finding #1).
-        string brief = briefFilePath is { Length: > 0 }
-            ? briefFilePath == "-" ? Console.In.ReadToEnd() : File.ReadAllText(briefFilePath)
-            : Console.IsInputRedirected ? Console.In.ReadToEnd() : "";
-
-        return brief is { Length: > 0 }
-            ? brief
-            : throw new CliUsageException("no brief given");
-    }
+    // §B3's three ways in live in BriefSource, shared with `coordinate`. `run` is the door where a
+    // brief is mandatory: no source, an empty file or an empty stdin all land on the same refusal,
+    // before Config/RoleRenderer/Runner touch anything (review finding #1).
+    private static string ResolveBrief(string? briefText, string? briefFilePath) =>
+        BriefSource.TryResolve(briefText, briefFilePath, allowBareStdin: true)
+            ?? throw new CliUsageException("no brief given");
 
     private static Dictionary<string, string> ParseEnv(string[] entries)
     {
@@ -177,7 +162,8 @@ public static class RunCommand
         return env;
     }
 
-    private static int ExitCodeFor(RunStatus status) => status switch
+    /// <summary>docs/PLAN.md §A5's fixed status → exit code table, shared with `coordinate`.</summary>
+    public static int ExitCodeFor(RunStatus status) => status switch
     {
         RunStatus.Success => ExitCodes.Ok,
         RunStatus.Failed => ExitCodes.BackendFailure,

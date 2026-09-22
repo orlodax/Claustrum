@@ -17,6 +17,7 @@ public static class CliRoot
             JobsCommands.Build(),
             SyncCommand.Build(),
             CastCommands.Build(),
+            CoordinateCommand.Build(),
             McpCommand.Build(),
             InitCommand.Build(),
         };

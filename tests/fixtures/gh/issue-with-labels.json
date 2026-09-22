@@ -1,0 +1,7 @@
+{
+  "number": 12,
+  "title": "Coordinate should import gh issues",
+  "body": "Wire up `claustrum coordinate --issues 12,13` so it folds the issue text into the architect's brief.",
+  "labels": [{ "name": "enhancement" }, { "name": "P1" }],
+  "url": "https://github.com/orlodax/Claustrum/issues/12"
+}

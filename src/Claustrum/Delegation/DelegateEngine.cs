@@ -31,6 +31,13 @@ public static class DelegateEngine
         string harness = config.ResolveBackend(request.Role, tierModelClass, request.Overrides);
 
         RenderedRole rendered = AppServices.RoleRenderer.Render(request.Role, request.Tier, harness, request.Cwd);
+
+        // Call-site data appended after the renderer, never a template token: `coordinate` puts the
+        // whole cast here (NOTES.md "A cast is call-site data, not a Core concept"), and it lands in
+        // the job's system.md for free because Runner writes what Config.Resolve produced.
+        if (request.SystemAppendix?.Trim() is { Length: > 0 } appendix)
+            rendered = rendered with { SystemBody = InsertAppendix(rendered.SystemBody, appendix) };
+
         ResolvedRole resolved = config.Resolve(rendered, request.Overrides);
 
         // docs/PLAN.md §D4: inside a job tree (CLAUSTRUM_PARENT_JOB, §D2) the cast's budget_usd is the
@@ -120,6 +127,18 @@ public static class DelegateEngine
         return job is null
             ? await AppServices.Runner.RunAsync(runRequest, resolved, options, cancellationToken)
             : await AppServices.Runner.RunAsync(runRequest, resolved, options, job, cancellationToken);
+    }
+
+    // Above `## House rules`, not after it: dead-last in a ~23 KB system prompt is the position
+    // RoleRenderer.ComposeSystemBody measured as skippable (its comment carries the tester report),
+    // which is why `## Report format` was moved off the end too. A body without that heading — one
+    // no RoleRenderer composed — keeps the plain append.
+    private static string InsertAppendix(string systemBody, string appendix)
+    {
+        int houseRules = systemBody.IndexOf("\n## House rules\n", StringComparison.Ordinal);
+        return houseRules < 0
+            ? $"{systemBody}\n\n{appendix}"
+            : $"{systemBody[..houseRules].TrimEnd()}\n\n{appendix}\n{systemBody[houseRules..]}";
     }
 
     // The isolated path's own admission, under the ledger's lock and binding — the earlier

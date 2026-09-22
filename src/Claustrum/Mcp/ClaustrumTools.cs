@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Text.Json;
 using Claustrum.Casts;
+using Claustrum.Coordination;
 using Claustrum.Core.Backends;
 using Claustrum.Core.Config;
 using Claustrum.Core.Json;
@@ -13,9 +14,9 @@ using ModelContextProtocol.Server;
 
 namespace Claustrum.Mcp;
 
-// docs/PLAN.md §A6: the 10 MCP tools, thin adapters over the same DelegateEngine/JobManager/
-// RoleLibrary/BackendRegistry/CastStore the CLI uses — no logic lives here that the CLI does not
-// already exercise. Every tool returns a pre-serialized JSON string.
+// docs/PLAN.md §A6 + §D5's `coordinate`: the MCP tools, thin adapters over the same DelegateEngine/
+// CoordinateEngine/JobManager/RoleLibrary/BackendRegistry/CastStore the CLI uses — no logic lives
+// here that the CLI does not already exercise. Every tool returns a pre-serialized JSON string.
 [McpServerToolType]
 public sealed class ClaustrumTools
 {
@@ -71,6 +72,55 @@ public sealed class ClaustrumTools
             // request, which is what "returns immediately" means — a client cancelling *this* call
             // cannot reach back into an already-started background job.
             (string jobId, string logPath) = AppServices.JobManager.Start(request, CancellationToken.None);
+
+            return JsonSerializer.Serialize(new DelegateAsyncResult(jobId, logPath), McpJsonContext.Default.DelegateAsyncResult);
+        });
+
+    [McpServerTool(Name = "coordinate")]
+    [Description(
+        "Spawn the cast's architect headlessly (docs/PLAN.md §D3) over GitHub issues or a brief: it reads the " +
+        "cast, writes the briefs and delegates builders/reviewers/tester itself. Async by nature — returns " +
+        "{job_id, log_path} immediately, progress via job_status (state, elapsed seconds and the architect's " +
+        "last output line), the architect's RunResult via job_result once state is 'done'. The returned job_id " +
+        "is also the budget tree id: every child the architect spawns is accounted against this cast's " +
+        "budget_usd and inspectable with `claustrum jobs budget <job_id>`. Pass exactly one of issues or brief. " +
+        "Needs `gh` on PATH for issues (see the doctor tool).")]
+    public static Task<string> CoordinateAsync(
+        [Description("GitHub issue numbers to import as the task, e.g. [12, 13].")] int[]? issues = null,
+        [Description("Task text, instead of issues.")] string? brief = null,
+        [Description("Working directory (default: the server's own cwd).")] string? cwd = null,
+        [Description("Cast name (default: .claustrum/casts/default.json).")] string? cast = null,
+        [Description("Architect tier: high (default), xhigh, or max.")] string? tier = null,
+        [Description("Architect model override.")] string? model = null,
+        [Description("Budget cap in USD for the architect's own run; the cast's budget_usd caps the whole tree.")] decimal? budgetUsd = null,
+        [Description("Timeout in seconds (default: unset, so the config layers' defaults.timeout_seconds decides, falling back to 1800).")] int? timeoutSeconds = null,
+        CancellationToken cancellationToken = default) =>
+        McpExceptionBoundary.GuardAsync(async () =>
+        {
+            string resolvedCwd = cwd is { Length: > 0 } ? Path.GetFullPath(cwd) : Environment.CurrentDirectory;
+            CoordinateRequest request = new(
+                Cwd: resolvedCwd,
+                CastName: cast,
+                Issues: issues ?? [],
+                Brief: brief,
+                TierFlag: tier,
+                Overrides: new ConfigOverrides(Model: model, BudgetUsd: budgetUsd, TimeoutSeconds: timeoutSeconds),
+                // Streaming with no OnStreamLine: nothing echoes it anywhere, but ProcessRunner logs
+                // every line as it arrives, so job_status has a last line to relay for the whole run
+                // instead of an empty stdout.log until exit (claude's Parse auto-detects the JSONL).
+                Stream: true,
+                DiffCapBytes: McpDiffCapBytes);
+
+            // Planned on this call, not inside the job: a usage error, a missing cast or a failed
+            // `gh` is then answered here, with its own message, instead of being buried in a
+            // job_result nobody knows to ask for — and no job directory is minted for it.
+            CoordinatePlan plan = await CoordinateEngine.PlanAsync(request, new GhIssueSource(AppServices.Platform), cancellationToken);
+
+            // The job id has to exist before the request does — it is the tree the architect's
+            // children join — so this takes JobManager's JobPaths-first overload. CancellationToken.
+            // None for the same reason delegate_async does: the job outlives this tool call.
+            (string jobId, string logPath) = AppServices.JobManager.Start(
+                (job, token) => DelegateEngine.RunAsync(plan.ToDelegateRequest(job), job, token), CancellationToken.None);
 
             return JsonSerializer.Serialize(new DelegateAsyncResult(jobId, logPath), McpJsonContext.Default.DelegateAsyncResult);
         });

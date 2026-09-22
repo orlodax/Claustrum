@@ -65,9 +65,10 @@ public sealed class McpStdioServerTests : IDisposable
 
         Assert.NotNull(response);
         string[] names = [.. response!["result"]!["tools"]!.AsArray().Select(tool => tool!["name"]!.GetValue<string>())];
-        Assert.Equal(10, names.Length);
+        Assert.Equal(11, names.Length);
         Assert.Contains("delegate", names);
         Assert.Contains("job_status", names);
+        Assert.Contains("coordinate", names);
     }
 
     private static async Task InitializeAsync(McpStdioClient client, CancellationToken cancellationToken)

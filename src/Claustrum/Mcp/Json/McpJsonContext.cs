@@ -9,6 +9,11 @@ namespace Claustrum.Mcp.Json;
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.SnakeCaseLower, WriteIndented = true)]
 [JsonSerializable(typeof(RoleSummary[]))]
 [JsonSerializable(typeof(string[]))]
+// Not a return type: `coordinate`'s `int[]? issues` parameter. The MCP SDK asks this resolver for a
+// JsonTypeInfo per tool parameter while building the tool list, and a missing one takes the whole
+// server down at startup, not just that tool — measured 2026-09-22 on the AOT binary:
+// "JsonTypeInfo metadata for type 'System.Int32[]' was not provided", Hosting failed to start.
+[JsonSerializable(typeof(int[]))]
 [JsonSerializable(typeof(DoctorReport))]
 [JsonSerializable(typeof(DelegateAsyncResult))]
 [JsonSerializable(typeof(JobStatusInfo))]

@@ -24,4 +24,8 @@ public sealed record DelegateRequest(
     // The cast MaxParallel came from (CastApplication.Resolve). Only RoleConcurrencyGate reads it:
     // its slot pool has to be per cast, not per role (docs/PLAN.md §D4).
     string? CastName = null,
-    Action<string>? OnStreamLine = null);
+    Action<string>? OnStreamLine = null,
+    // Appended to the rendered role's system body before Config.Resolve — how `coordinate` gets the
+    // cast into its architect's prompt without Roles/Core learning what a cast is (NOTES.md
+    // "coordinate: a spawned architect is a job run with the cast injected…").
+    string? SystemAppendix = null);

@@ -1,3 +1,4 @@
+using Claustrum.Core.Jobs;
 using Claustrum.Core.Platform;
 
 namespace Claustrum.Core.Process;
@@ -16,14 +17,13 @@ public static class EnvAllowList
         "PATHEXT", "windir", "SystemDrive", "ProgramFiles", "ProgramFiles(x86)", "ProgramData",
     ];
 
-    // ⚠ Deliberately no CLAUSTRUM_ prefix (2026-09-21): membership in a job tree is handed out by a
-    // coordinator, never forwarded by a member. A member holds its §D4 reservation for its whole
-    // lifetime, so a `claustrum run` that inherited its CLAUSTRUM_PARENT_JOB would be refused by the
-    // ledger — measured: `$0.00 remaining`. §D3's `coordinate` (M4, issue #5) will put
-    // CLAUSTRUM_PARENT_JOB (and CLAUSTRUM_HOME when set) on its architect's request env, where
-    // caller-supplied values win over this list. Until it lands, the only way to make a claustrum
-    // process a tree member is to give it CLAUSTRUM_PARENT_JOB in its own environment: a shell
-    // export, or `--env`/`Env` on the request that spawns its backend.
+    // ⚠ Deliberately no CLAUSTRUM_ prefix (2026-09-21), and `passthroughAll` drops the tree variable
+    // all the same (2026-09-22): membership in a job tree is handed out by a coordinator, never
+    // forwarded by a member, which holds its §D4 reservation for its whole lifetime — a `claustrum
+    // run` that inherited its parent's CLAUSTRUM_PARENT_JOB would be refused by the ledger
+    // (measured: `$0.00 remaining`). `coordinate` hands it down deliberately, on its architect's
+    // request env, where caller-supplied values win over both rules (NOTES.md "Tree budget
+    // accounting is a file ledger", "coordinate: a spawned architect…").
     private static readonly string[] prefixes =
         ["XDG_", "ANTHROPIC_", "OPENROUTER_", "OPENCODE_", "CURSOR_", "COPILOT_", "NODE_"];
 
@@ -34,7 +34,7 @@ public static class EnvAllowList
         Dictionary<string, string> result = new(StringComparer.Ordinal);
 
         foreach (KeyValuePair<string, string> entry in platform.GetEnvironmentVariables())
-            if (passthroughAll || IsAllowed(entry.Key))
+            if (passthroughAll ? !IsTreeMembership(entry.Key) : IsAllowed(entry.Key))
                 result[entry.Key] = entry.Value;
 
         foreach (KeyValuePair<string, string> entry in callerEnv)
@@ -42,6 +42,11 @@ public static class EnvAllowList
 
         return result;
     }
+
+    // `env_passthrough: "all"` turns off the allow-list, not the rule above it: an inherited tree id
+    // would enrol a grandchild in a tree whose remainder its own parent already holds reserved.
+    private static bool IsTreeMembership(string name) =>
+        name.Equals(BudgetLedger.TreeVariable, StringComparison.OrdinalIgnoreCase);
 
     private static bool IsAllowed(string name) =>
         exactNames.Contains(name, StringComparer.OrdinalIgnoreCase)

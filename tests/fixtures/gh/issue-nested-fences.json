@@ -1,0 +1,7 @@
+{
+  "number": 14,
+  "title": "Body with nested code fences",
+  "body": "Repro:\n```python\nprint('hi')\n```\nAlso this, with a longer fence already in the body:\n````\nnested ``` still inside\n````\n",
+  "labels": [],
+  "url": "https://github.com/orlodax/Claustrum/issues/14"
+}
