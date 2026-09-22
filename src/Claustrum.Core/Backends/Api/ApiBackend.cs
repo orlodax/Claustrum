@@ -19,8 +19,11 @@ public sealed class ApiBackend(IPlatform platform) : IBackend
     private static readonly TimeSpan detectTimeout = TimeSpan.FromSeconds(10);
 
     // Anthropic's Messages API requires max_tokens; there is no per-role token budget in Claustrum
-    // to derive one from (BudgetUsd is a dollar cap, not a token count), so this is a generous fixed
-    // ceiling rather than a tuned value — UNCONFIRMED whether it should vary by tier/effort.
+    // to derive one from (BudgetUsd is a dollar cap, not a token count), so this stays a generous
+    // fixed ceiling. Still unmeasured on 2026-09-22 and recorded as such: no ANTHROPIC_API_KEY
+    // exists on this machine and the endpoint answers 401 before it looks at the body, so nothing
+    // short of a real key can tell whether 8192 is too low for a role — NOTES.md "The opencode and
+    // api backends, validated against real endpoints" lists what such a pass would have to do.
     private const int AnthropicMaxTokens = 8192;
 
     public string Name => "api";
@@ -96,7 +99,8 @@ public sealed class ApiBackend(IPlatform platform) : IBackend
             // Checked before dispatching on success shape: an error body from either provider has
             // no "choices"/"content" array of its own, so without this an OpenRouter error would
             // fall through to the Anthropic branch (and vice versa) and report an empty message.
-            if (root.TryGetProperty("error", out JsonElement errorElement))
+            // Presence alone is not the test — see IsRealError.
+            if (root.TryGetProperty("error", out JsonElement errorElement) && IsRealError(errorElement))
             {
                 string message = errorElement.ValueKind == JsonValueKind.Object && errorElement.TryGetProperty("message", out JsonElement messageProp)
                     ? messageProp.GetString() ?? trimmed
@@ -109,6 +113,18 @@ public sealed class ApiBackend(IPlatform platform) : IBackend
                 : ParseAnthropicSuccess(root, exitCode != 0);
         }
     }
+
+    // An `error` property is a failure only when it carries something. OpenRouter emits a JSON
+    // **null** for an optional field it has nothing to say about (`service_tier`, `refusal` in the
+    // genuine 2026-09-22 success capture), so testing presence alone would report a billed, correct
+    // response as Failed with the whole body as its message — the same trap `"usage": null` sprang
+    // one level down, and the same ValueKind discipline the success parsers now use.
+    private static bool IsRealError(JsonElement error) => error.ValueKind switch
+    {
+        JsonValueKind.Object => true,
+        JsonValueKind.String => error.GetString() is { Length: > 0 },
+        _ => false,
+    };
 
     private string RequireKey(string envVarName) =>
         platform.GetEnvironmentVariable(envVarName) is { Length: > 0 } key
@@ -162,9 +178,10 @@ public sealed class ApiBackend(IPlatform platform) : IBackend
             writer.WriteString("content", brief);
             writer.WriteEndObject();
             writer.WriteEndArray();
-            // OpenRouter-specific extension: asks for usage.cost in the response so RunResult can
-            // carry a real dollar figure instead of always being null (UNCONFIRMED: exact field
-            // name/availability per model/account).
+            // OpenRouter's documented opt-in for usage accounting. Measured 2026-09-22: this account
+            // gets `usage.cost` on deepseek-v4-flash *with or without* it, so it is belt-and-braces
+            // rather than load-bearing — kept because "one account, one model" is no basis for
+            // dropping the only documented way to ask.
             writer.WriteStartObject("usage");
             writer.WriteBoolean("include", true);
             writer.WriteEndObject();
@@ -205,9 +222,20 @@ public sealed class ApiBackend(IPlatform platform) : IBackend
 
         Usage? usage = null;
         decimal? cost = null;
-        if (root.TryGetProperty("usage", out JsonElement usageElement))
+        // `ValueKind == Object`, not just "present": OpenRouter emits a JSON **null** for an
+        // optional field, and `TryGetProperty` on a null element throws — which turned a billed,
+        // successful response into a Failed run out of `Parse`. Same guard `TryGetInt` already has.
+        if (root.TryGetProperty("usage", out JsonElement usageElement) && usageElement.ValueKind == JsonValueKind.Object)
         {
-            usage = new Usage(TryGetInt(usageElement, "prompt_tokens"), TryGetInt(usageElement, "completion_tokens"), null, null);
+            // All four names read off a genuine 2026-09-22 capture (tests/fixtures/api/
+            // openrouter-success.json): `usage.cost` is the dollar figure, and the cache counts live
+            // one level down in `prompt_tokens_details`, which this used to leave null.
+            JsonElement promptDetails = usageElement.TryGetProperty("prompt_tokens_details", out JsonElement details) ? details : default;
+            usage = new Usage(
+                TryGetInt(usageElement, "prompt_tokens"),
+                TryGetInt(usageElement, "completion_tokens"),
+                TryGetInt(promptDetails, "cached_tokens"),
+                TryGetInt(promptDetails, "cache_write_tokens"));
             cost = usageElement.TryGetProperty("cost", out JsonElement costProp) && costProp.TryGetDecimal(out decimal costValue) ? costValue : null;
         }
 
@@ -227,7 +255,7 @@ public sealed class ApiBackend(IPlatform platform) : IBackend
             finalMessage = text.ToString();
         }
 
-        Usage? usage = root.TryGetProperty("usage", out JsonElement usageElement)
+        Usage? usage = root.TryGetProperty("usage", out JsonElement usageElement) && usageElement.ValueKind == JsonValueKind.Object
             ? new Usage(TryGetInt(usageElement, "input_tokens"), TryGetInt(usageElement, "output_tokens"), null, null)
             : null;
 
@@ -235,5 +263,7 @@ public sealed class ApiBackend(IPlatform platform) : IBackend
     }
 
     private static int? TryGetInt(JsonElement parent, string propertyName) =>
-        parent.TryGetProperty(propertyName, out JsonElement property) && property.TryGetInt32(out int value) ? value : null;
+        parent.ValueKind == JsonValueKind.Object
+        && parent.TryGetProperty(propertyName, out JsonElement property)
+        && property.TryGetInt32(out int value) ? value : null;
 }

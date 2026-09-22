@@ -3,11 +3,10 @@ using Claustrum.Core.Backends.Api;
 
 namespace Claustrum.Core.Tests.Backends.Api;
 
-// Fixtures live in tests/fixtures/api/. Unlike tests/fixtures/claude/ (recorded from the real CLI),
-// these are hand-built from OpenRouter's and Anthropic's published API response shapes — this
-// project has no API key to record a live call against, and docs/PLAN.md flags the api backend as
-// best-effort/UNCONFIRMED until validated against a real account (same status as opencode/cursor/
-// copilot's own fixtures).
+// Fixtures live in tests/fixtures/api/. openrouter-success.json, error.json, error-invalid-model.json
+// and anthropic-error.json are genuine captures against live endpoints (2026-09-22, NOTES.md "The
+// opencode and api backends, validated against real endpoints", item 6) — anthropic-success.json is
+// the one fixture here still fabricated, for lack of an ANTHROPIC_API_KEY on the capturing machine.
 public sealed class ApiBackendParseTests
 {
     private readonly ApiBackend backend = new(platform: null!); // Parse never touches IPlatform.
@@ -21,13 +20,16 @@ public sealed class ApiBackendParseTests
 
         ParsedOutput parsed = backend.Parse(stdout, stderr: "", exitCode: 0);
 
-        Assert.Contains("No defects found", parsed.FinalMessage);
+        Assert.Contains("OK", parsed.FinalMessage, StringComparison.Ordinal);
+        Assert.Contains("claustrum-report", parsed.FinalMessage, StringComparison.Ordinal);
         Assert.False(parsed.IsError);
         Assert.Null(parsed.SessionId);
-        Assert.Equal(0.00182m, parsed.CostUsd);
+        Assert.Equal(0.000040318m, parsed.CostUsd);
         Assert.NotNull(parsed.Usage);
-        Assert.Equal(1240, parsed.Usage!.InputTokens);
-        Assert.Equal(96, parsed.Usage.OutputTokens);
+        Assert.Equal(1883, parsed.Usage!.InputTokens);
+        Assert.Equal(25, parsed.Usage.OutputTokens);
+        Assert.Equal(1827, parsed.Usage.CacheReadInputTokens);
+        Assert.Equal(0, parsed.Usage.CacheCreationInputTokens);
         Assert.Empty(parsed.ReportedEdits);
         Assert.NotNull(parsed.Raw);
     }
@@ -39,7 +41,7 @@ public sealed class ApiBackendParseTests
 
         ParsedOutput parsed = backend.Parse(stdout, stderr: "", exitCode: 0);
 
-        Assert.Contains("No defects found", parsed.FinalMessage);
+        Assert.Contains("No defects found", parsed.FinalMessage, StringComparison.Ordinal);
         Assert.False(parsed.IsError);
         Assert.Null(parsed.CostUsd);
         Assert.Equal(1240, parsed.Usage!.InputTokens);
@@ -47,14 +49,25 @@ public sealed class ApiBackendParseTests
     }
 
     [Fact]
-    public void OpenRouterErrorShapeIsErrorTrueWithMessageExtracted()
+    public void OpenRouterAuthErrorShapeIsErrorTrueWithMessageExtracted()
     {
         string stdout = File.ReadAllText(FixturePath("error.json"));
 
         ParsedOutput parsed = backend.Parse(stdout, stderr: "", exitCode: 22);
 
         Assert.True(parsed.IsError);
-        Assert.Contains("this-model-does-not-exist-xyz", parsed.FinalMessage);
+        Assert.Equal("User not found.", parsed.FinalMessage);
+    }
+
+    [Fact]
+    public void OpenRouterInvalidModelErrorShapeIsErrorTrueWithMessageExtracted()
+    {
+        string stdout = File.ReadAllText(FixturePath("error-invalid-model.json"));
+
+        ParsedOutput parsed = backend.Parse(stdout, stderr: "", exitCode: 22);
+
+        Assert.True(parsed.IsError);
+        Assert.Contains("this-model-does-not-exist-xyz", parsed.FinalMessage, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -65,7 +78,51 @@ public sealed class ApiBackendParseTests
         ParsedOutput parsed = backend.Parse(stdout, stderr: "", exitCode: 22);
 
         Assert.True(parsed.IsError);
-        Assert.Contains("this-model-does-not-exist-xyz", parsed.FinalMessage);
+        Assert.Equal("API key is invalid.", parsed.FinalMessage);
+    }
+
+    // A billed, successful response can omit usage with a JSON **null** rather than dropping the
+    // property; TryGetProperty on a null element throws, so before the ValueKind guard this turned a
+    // paid success into a Failed run out of Parse (NOTES.md item 6).
+    [Fact]
+    public void OpenRouterSuccessWithNullUsageDoesNotThrowAndReportsNoUsage()
+    {
+        string stdout = /*lang=json,strict*/ """{"choices":[{"message":{"content":"ok"}}],"usage":null}""";
+
+        ParsedOutput parsed = backend.Parse(stdout, stderr: "", exitCode: 0);
+
+        Assert.False(parsed.IsError);
+        Assert.Equal("ok", parsed.FinalMessage);
+        Assert.Null(parsed.Usage);
+        Assert.Null(parsed.CostUsd);
+    }
+
+    [Fact]
+    public void AnthropicSuccessWithNullUsageDoesNotThrowAndReportsNoUsage()
+    {
+        string stdout = /*lang=json,strict*/ """{"content":[{"type":"text","text":"ok"}],"usage":null}""";
+
+        ParsedOutput parsed = backend.Parse(stdout, stderr: "", exitCode: 0);
+
+        Assert.False(parsed.IsError);
+        Assert.Equal("ok", parsed.FinalMessage);
+        Assert.Null(parsed.Usage);
+    }
+
+    // OpenRouter emits a JSON null for an optional field it has nothing to say about (`refusal`,
+    // `service_tier` in the genuine success capture) — an `error` property present but null is not a
+    // failure, the same ValueKind discipline the null-usage guard above already applies one level up.
+    [Fact]
+    public void OpenRouterSuccessWithANullErrorPropertyIsStillSuccess()
+    {
+        string stdout = /*lang=json,strict*/
+            """{"error":null,"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":10,"completion_tokens":2,"cost":0.0001}}""";
+
+        ParsedOutput parsed = backend.Parse(stdout, stderr: "", exitCode: 0);
+
+        Assert.False(parsed.IsError);
+        Assert.Equal("ok", parsed.FinalMessage);
+        Assert.Equal(0.0001m, parsed.CostUsd);
     }
 
     [Fact]

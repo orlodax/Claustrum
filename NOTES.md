@@ -463,6 +463,10 @@ and the main checkout was untouched throughout — the exact §D4/M3 "done when"
 
 ## The api backend (2026-09-18, issue #4/M3)
 
+*Superseded 2026-09-22 by "The opencode and api backends, validated against real endpoints" below,
+which replaced three of the four fixtures here with genuine captures — kept as the record of why
+`curl` and the `api:<provider>:<model>` spec are shaped this way.*
+
 `curl` is the process this backend actually spawns — no HTTP client SDK, no extra dependency, and it
 fits `IBackend.Build -> ProcessSpec` (Core/Backends/Api/ApiBackend.cs) without any change to Core's
 architecture. Two things drove the shape:
@@ -494,6 +498,11 @@ shapes, not recorded from a live call — this environment has no `OPENROUTER_AP
 until validated against a real account (docs/PLAN.md's own M3 UNCONFIRMED list).
 
 ## The opencode backend (2026-09-18, issue #4/M3)
+
+*Superseded 2026-09-22 by "The opencode and api backends, validated against real endpoints" below.
+⚠ Every argv and env fact confirmed here was confirmed against **1.18.31**, and 2.0.12 removed
+`--dir`, `--variant`, `OPENCODE_PERMISSION` and the run-in-this-process's-environment assumption.
+Read it as history, not as a reference.*
 
 Verified against a real `opencode-ai` 1.18.31 install (`npm install -g opencode-ai`, available in this
 sandbox — unlike Cursor/Copilot's CLIs it installs cleanly with no account). No working provider
@@ -1521,9 +1530,10 @@ owner's prose is a content decision the owner should see, not a renderer fix.
 
 ## Issue #13's non-cursor boxes stay open (2026-09-21)
 
-*Half superseded 2026-09-22: copilot 1.0.87 was installed and logged in the next day, and all four
-of its boxes are ticked in "The copilot backend, validated against a real install". `opencode` and
-`api` are still open.*
+*Superseded 2026-09-22 for opencode and api by "The opencode and api backends, validated against
+real endpoints" below, and for copilot by "The copilot backend, validated against a real install" —
+the machine gained all three since. Kept as the record of what was still fixture-only on
+2026-09-21, and for the #14 doc checks in its second paragraph.*
 
 The cursor checklist — the M3 gate — is ticked above with real captures. The `copilot`, `opencode`
 and `api` boxes are unchanged: as of 2026-09-21 this machine has none of those binaries installed
@@ -2681,3 +2691,366 @@ the caller's console and **outlives the process**. A redirected stream gets a `S
 own instead; a real console still needs the property, because raw UTF-8 bytes into a cp437 console
 render as mojibake. `Splash.Run`'s own assignment went with it — startup covers every verb now, and
 leaving it would have put `SetConsoleOutputCP` back on the `claustrum splash > file` path.
+
+## The opencode and api backends, validated against real endpoints (2026-09-22, issue #13)
+
+Supersedes the unconfirmed halves of "The opencode backend (2026-09-18, issue #4/M3)" and "The api
+backend (2026-09-18, issue #4/M3)", and closes issue #13's opencode and api boxes. The machine has
+**opencode 2.0.12** at `~/.opencode/bin/opencode` with no provider login, an `OPENROUTER_API_KEY` in
+the environment, and **no `ANTHROPIC_API_KEY`** — which is why one box below is a measured negative
+and stays open. Everything paid ran in throwaway `git init` toys under a scratch directory (`<tmp>`
+below) with `CLAUSTRUM_HOME` pointed at a scratch dir, never against this repository.
+
+**Total spend: $0.0098**, against a $0.50 budget — six paid `claustrum run`s on opencode, one paid
+`run` and one probe on api, one opencode probe, and two raw `curl`s. The single most expensive line
+was the $0.0060 readonly run that found defect 2 below; everything else was fractions of a cent on
+`openrouter/deepseek/deepseek-v4-flash` ($0.049/M in, $0.098/M out). A remediation pass the same day
+(items 10-11) added **$0.0007** on top: one paid `readonly` run, and a `--tier max` run that cost
+nothing at all because opencode refuses an unpublished variant before the first API call.
+
+**The big news is that opencode went from 1.18.31 to 2.0.12 and took four confirmed things away.**
+`--dir`, `--variant` and `OPENCODE_PERMISSION` no longer exist, and a `run` no longer executes in
+the CLI process's own environment. Everything the 2026-09-18 section recorded as *confirmed live*
+about argv and env is now wrong; only `OPENCODE_CONFIG_CONTENT` and its `{file:}` substitution
+survived. Four further defects nobody had listed turned up: the `readonly` rung did not hold, a
+single-step run reports no cost at all, `--auto` was quietly auto-approving opencode's own `.env`
+and external-directory guards (item 10), and an OpenRouter `"usage": null` threw a billed success
+into `Failed` (item 6).
+
+| box | verdict | what decided it |
+|---|---|---|
+| opencode success-event shapes | **corrected** | a real 5-event capture; every event name `Parse` looked for was wrong, and `cost` had to be summed, not overwritten |
+| api `AnthropicMaxTokens` 8192 | **measured negative** | no `ANTHROPIC_API_KEY` exists here and the endpoint 401s before it reads the body; 8192 stays, untested |
+| api OpenRouter `usage.cost` | **confirmed** | present and correct in a genuine body — and present *without* the `usage:{include:true}` this already sends |
+| `doctor --probe` × 2 | **confirmed** | both printed `OK`; api reports a dollar figure, opencode reports none, for the reason in defect 3 |
+| `AuthStatusFor` env vars | **confirmed** | opencode's three are verbatim models.dev's `env` entries for the three providers |
+| opencode login file | **measured negative** | there is no `auth.json` on a 2.x install; credentials are env-detected or in a SQLite `opencode.db` |
+
+**The free probes that did most of the work.** `opencode run` validates the agent before the model
+and the model before the first API call, so both resolution steps can be measured for nothing:
+`opencode run --agent claustrum-test --model openrouter/nonexistent-model-xyz --format json "hi"`
+exits 1 with a single JSON line naming whichever one it could not find. That one command answered
+the `--standalone` question and handed over the v2 error shape. A deliberately wrong
+`OPENROUTER_API_KEY` is free the same way — OpenRouter answers 401 before billing anything.
+
+1. **The event stream, captured and committed to.** `claustrum run builder --backend opencode
+   --model openrouter/deepseek/deepseek-v4-flash --brief "create hello.txt containing hi" --budget
+   0.5 --json --cwd <tmp>/toy-oc` → `status: success` in **15.9s**, `changed_files:
+   [{"path":"hello.txt","kind":"A"}]` with a real diff, `report_status: ok`, `session_id:
+   ses_f35a1b513ffeMTNgfaAtjYaIl6`, `cost_usd: 0.0004988494`, `usage.input_tokens: 9757`, exit 0.
+   Its `stdout.log` is **five JSON lines** and is now `tests/fixtures/opencode/success.jsonl`. The
+   fabricated fixture it replaced agreed with the old `Parse`, so the two were consistently wrong
+   together and the first live run came back with an **empty** `final_message`, `cost_usd: null`,
+   `usage: null` and `report_status: missing` despite having written the file correctly.
+   - Every line is `{"type", "timestamp", "sessionID", "part"}`. The event names are
+     **`step_start` / `tool_use` / `step_finish` / `text`** — snake_case, and `part.type` is their
+     kebab-case twin (`step-start`, `tool`, `step-finish`, `text`). **Nothing resembling
+     `message.part.updated` is emitted**, which is what the old `Parse` filtered on and why it saw
+     nothing at all.
+   - Assistant text is `part.text` on a `type:"text"` event. Exactly one such event per part was
+     observed, carrying the whole text — there is no incremental variant in `--format json` — so
+     the replace-by-`part.id` rule is kept and is now a measured fact rather than an inference.
+   - `step_finish`'s `part` carries `cost` and `tokens: {input, output, reasoning, cache:{read,
+     write}}`. **Those field names were right all along; the arithmetic was not.** The numbers are
+     **per step, not cumulative**: the captured `cost: 0.000523614` is exactly `10526 × $0.049/M +
+     (60 + 20) × $0.098/M` for that step's own tokens at the model's published price. `Parse`
+     overwrote, so a multi-step run reported only its last step; it now adds. Proof at scale: the
+     22-step run in defect 2 summed to `$0.0060491676` across 83 337 input tokens.
+   - ⚠ **`reasoning` tokens are billed as output and reported separately, and Claustrum drops
+     them.** `Usage` has no field for them, so `output_tokens: 60` under-reports the 80 output
+     tokens the $0.000523614 was charged for. Not fixed here: it is a `RunResult` schema change,
+     and `cost_usd` — the number the budget ledger actually uses — is already right.
+   - **Redactions in `success.jsonl`:** the scratch path containing the owner's username, twice, in
+     the `tool_use` event's `metadata.content` and `output` (`… /toy-oc/hello.txt` →
+     `/tmp/claustrum-opencode-capture/hello.txt`). Nothing else, and no key ever appeared: the job
+     directory was grepped for the live `OPENROUTER_API_KEY` and for `sk-` before anything was
+     copied, and `request.json`/`stdout.log`/`system.md` were all clean.
+   - `tests/fixtures/opencode/error.jsonl` is now a genuine v2 capture too — a `step_start`
+     followed by `{"type":"error","error":{"type":"provider.auth","message":"User not found.",
+     "status":401}}`, exit 1, produced free with a bogus key. The v1.18.31 capture it replaced is
+     **kept** as `error-v1.jsonl`; both shapes are real, so `ExtractErrorMessage` reads
+     `error.message` first and falls back to v1's `error.data.message`. Three v2 error `type`s were
+     seen: `unknown` (agent not found), `provider.no-route` (model unavailable), `provider.auth`.
+
+2. **What v2 took away, one flag at a time.**
+   - **`--standalone` is now mandatory, and this is the trap that wastes an afternoon.** v2 runs
+     jobs through a long-lived `opencode serve --service` daemon started in whatever environment
+     first woke it, so `OPENCODE_CONFIG_CONTENT` set by `ProcessRunner` never reaches it: the run
+     dies with `{"error":{"type":"unknown","message":"Agent not found: \"claustrum-test\""}}`. With
+     `--standalone` the CLI spawns its own `serve --stdio --port 0` child, which inherits the
+     environment, and the identical command gets past the agent to the model. Free to measure, both
+     ways.
+   - **`--dir` is gone** (`opencode run --dir X …` prints usage and exits). `ProcessRunner` already
+     sets `WorkingDirectory = spec.Cwd`, so dropping the flag changes nothing about where the run
+     lands. docs/PLAN.md §A3's opencode argv still shows `--dir` and wants updating.
+   - **`--variant` is gone**; `--model`'s own help now reads *"Model to use in the format
+     provider/model#variant"*, so the tier rides on the model id: `ModelSpec` appends `#<effort>`
+     unless the spec already names one. `openrouter/deepseek/deepseek-v4-flash#high` was accepted by
+     every paid run above — models.dev lists `reasoning_options: [{type:"toggle"},{type:"effort",
+     values:["high","xhigh"]}]` for it, so `max` would need a model that offers it.
+   - **`OPENCODE_PERMISSION` is gone** — zero occurrences in the 2.0.12 binary, against the
+     2026-09-18 note that confirmed it live in 1.18.31. The same JSON moves into
+     `OPENCODE_CONFIG_CONTENT`, which is where docs/PLAN.md §A3's opencode row always drew it.
+   - **`OPENCODE_DISABLE_FILEWATCHER=1` is set on every run**, for an environment reason worth
+     naming: with the host at its `fs.inotify.max_user_instances` (128, with 100 in use by the
+     agent fleet), the server stops dead right after logging `watcher subscribe` and answers
+     nothing — `opencode models` hung past 60s three times before this was found. A one-shot
+     headless run has no UI to live-update, so there is nothing to lose; if a future version needs
+     the watcher for correctness, this is the line that silently degrades it.
+
+3. **Defect 1, and a deliberate deviation from docs/PLAN.md §A3: `--auto` at every level.** The
+   plan gives `--auto` to `full` alone. Measured: a `readonly` run without it spent **2m32s and
+   $0.0060**, burned 22 steps and 83 337 input tokens, then had two tool calls come back *"The user
+   declined this tool call"* and died on `{"type":"error","error":{"type":"aborted","message":"Step
+   interrupted"}}` — a permission prompt nobody could answer, since `ProcessRunner` closes stdin.
+   `--auto` approves whatever is **not explicitly denied**, so the mapped denies survive it (proved
+   in defect 2's re-run: `write`, `execute` and `bash` were all still unavailable to the model with
+   `--auto` on). Same allow-broad-deny-narrow shape `CopilotBackend` already uses for the same
+   headless reason. The same 22-step run also showed the model reaching thirty times for a second
+   command-running tool called **`execute`** — a restricted JS sandbox with no fs, no `process` and
+   no network, so it got nowhere — which is now denied wherever `bash` is. ⚠ "the mapped denies
+   survive it" is the whole of what `--auto` is safe for: the guards opencode only *asks* about are
+   a different matter, and item 10 is where that bill came due.
+
+4. **Defect 2: the `readonly` rung did not hold, and `subagent` was the way out.** With `--auto`
+   added and `write`/`bash`/`execute` denied on the agent, a builder told to *"create denied.txt …
+   try the execute tool and the bash tool as well"* delegated instead: `subagent` with
+   `{"agent":"general"}`, whose report reads *"The file **was created successfully** — no refusal,
+   no blocking, no error. I ran `echo "x" > denied.txt`"*. `changed_files` duly listed it. The
+   permission block binds **the primary agent only**; a delegate runs under opencode's own defaults.
+   Fixed at the root rather than by banning delegation — `BuildConfigContent` now writes the same
+   permission object **twice**, on the agent and at the config's top level. Re-run with the same
+   brief plus *"and try delegating to a subagent"*: `status: success`, `changed_files: []`, the toy
+   afterwards holding only `.git` and `seed.txt`, and the `general` subagent itself reporting *"it
+   only has read-only tools (`read`, `glob`, `grep`, `webfetch`, `websearch`, `skill`)"*. The rung
+   holds, and `subagent` stays available — which keeps this consistent with `ClaudeBackend`, where
+   the native subagent tool is taken away only from a coordinate-spawned architect (NOTES.md "The
+   native subagent tool is called `Agent`").
+
+   | level | argv (after `run --standalone --agent claustrum-<role> --model <model>#<effort> --format json --auto`) | `permission`, written on the agent **and** at the top level |
+   |---|---|---|
+   | `readonly` | — | `{"edit":"deny","bash":"deny","execute":"deny"}` |
+   | `shell` | — | `{"edit":"deny","bash":{"*":"allow","<deny>*":"deny"}}` |
+   | `edit` | — | `{"edit":"allow","bash":"deny","execute":"deny"}` |
+   | `edit+shell` | — | `{"edit":"allow","bash":{"*":"allow","git push*":"deny"}}` |
+   | `full` | — | `{"edit":"allow","bash":"allow"}` |
+
+   All five verified as emitted, without paying, by pointing `backends.opencode.path` at a fake
+   `opencode` that dumps its argv and environment. `--session <id>` and the brief follow, in that
+   order. ⚠ `shell` and `edit+shell` deliberately leave `execute` alone: denying it there would take
+   away a tool the rung already grants the equivalent of. ⚠ **Every row except `full` also carries
+   the three headless guards of item 10** — `"external_directory":"deny"`, `"question":"deny"`,
+   `"read":{"*.env":"deny","*.env.*":"deny","*.env.example":"allow"}` — which the table above
+   predates; item 10 has all five blocks re-dumped verbatim.
+
+5. **Defect 3: a single-step opencode run reports no cost and no usage at all.** `step_finish` is
+   emitted *before* a tool call, never after the last assistant message: the builder captures end
+   `… step_start, text` with no closing `step_finish`, and the `doctor --probe` stream is exactly
+   two lines — `step_start`, `text` — so `cost_usd` and `usage` come back `null` for a round trip
+   that was genuinely billed. Measured on every capture here, twice on the two-line probe. The
+   consequence is concrete: **`--budget` neither caps nor accounts for a one-shot opencode run, and
+   the §D4 tree ledger records nothing for it** — the same gap cursor and copilot have. The
+   last step's numbers are also lost from *every* multi-step run, so `cost_usd` is a floor, not a
+   total. `opencode stats` and the session rows in `opencode.db` are where a real total would have
+   to come from; neither is reachable from `Parse`, which only sees stdout.
+   - **The rule that follows, and the one `Parse` now implements: a reported opencode cost is
+     complete or absent, never partial.** `Parse` counts `step_start` against `step_finish` (both
+     deduplicated by `part.id`) and returns `cost_usd` **and** `usage` as `null` unless every step
+     reported back; only a complete stream is summed. Charging a floor verbatim is worse than
+     reporting nothing: `Runner.ChargeAsync` charges a non-null cost as-is *and* drops its "cost not
+     reported by backend" warning, so the §D4 ledger would quietly believe the tree has more left
+     than it does. With the rule, an incomplete stream falls back to charging the granted cap and
+     says so — the behaviour that was in place before summation was added.
+   - Measured on the item-10 run: **5 `step_start` against 4 `step_finish`**, the four summing to a
+     floor of **$0.0006714862** over 7 591 input tokens, and `cost_usd: null` in the result.
+     ⚠ `tests/fixtures/opencode/success.jsonl` is one of these too (2 `step_start`, 1
+     `step_finish`), so the figure that fixture is entitled to is now `null`, **not** the
+     $0.0004988494 recorded in item 1 — item 1 is the record of what opencode emitted, not of what
+     `Parse` must report. The upstream limitation is unchanged and cannot be closed from stdout.
+
+6. **The api backend, against a live OpenRouter endpoint.** `claustrum run code-reviewer --model
+   api:openrouter:deepseek/deepseek-v4-flash --brief "## Task\nSay OK.\n## Diff\nnone" --budget 0.5
+   --json --cwd <tmp>/toy-api` → `status: success` in **2.8s**, `final_message: " OK\n\n```
+   claustrum-report …"`, `report_status: ok`, `cost_usd: 4.0318e-05`, `usage.input_tokens: 1883`,
+   exit 0. Its `stdout.log` — curl's raw response body — is now
+   `tests/fixtures/api/openrouter-success.json`, verbatim, with nothing redacted: the body carries
+   no key, and the job directory was grepped for the live key before it was copied (the curl config
+   file holding the `Authorization` header is in `ProcessSpec.TempFiles` and was already gone).
+   - **`usage.cost` is real, top-level inside `usage`, and the name was right.** The genuine body
+     also carries `cost_details.upstream_inference_cost` (identical value) and, one level down,
+     `prompt_tokens_details: {cached_tokens: 1827, cache_write_tokens: 0, …}` — which
+     `ParseOpenRouterSuccess` was hardcoding to `null`, and now reads. `completion_tokens_details.
+     reasoning_tokens` exists too and is left alone for the same schema reason as opencode's.
+   - ⚠ **The `usage: {include: true}` this sends is not what produces the cost.** An otherwise
+     identical raw `curl` with that object removed came back with the same `usage.cost`
+     (`1.194e-06`). One account and one model is no basis for dropping OpenRouter's only documented
+     way to ask for usage accounting, so it stays — but it is belt-and-braces, not load-bearing.
+   - ⚠ **`"usage": null` is a JSON null, not an absent property, and it used to fail the run.**
+     `TryGetProperty` on a `JsonValueKind.Null` element **throws**, so a billed, successful
+     OpenRouter response that omitted usage by sending null escaped out of `Parse` and came back as
+     `Failed` — money spent, answer discarded. Both success parsers now require
+     `usageElement.ValueKind == JsonValueKind.Object` before reading anything out of it, the same
+     guard `TryGetInt` already applied one level down. Found by review, not by a capture: every body
+     captured here carries a real `usage` object.
+   - ⚠ **`"error": null` was the same defect one level up, and `Parse` failed the run on it.** The
+     error branch fired on `TryGetProperty("error", …)` alone, so a success body that carried the
+     key with a JSON null — the shape OpenRouter uses for every optional field it has nothing to
+     say about, `service_tier` and `refusal` in the capture above — came back `Failed` with the
+     whole body as its message, never reaching the `choices` parser. Fixed 2026-09-22 by the same
+     ValueKind discipline: `error` is a failure only when it is an **object**, or a **non-empty
+     string**; null, empty string and any scalar are a success. Found by review, like the `usage`
+     one; no captured body here carries a null `error`, which is why only a synthetic body can
+     cover it.
+   - **The two-flag form still does not work**, re-measured today and unchanged since 2026-09-18:
+     `--backend api --model openrouter/deepseek/deepseek-v4-flash` reaches `Build` with the provider
+     prefix gone and throws *"api backend model must be 'openrouter:<model>' or 'anthropic:<model>',
+     got 'openrouter/deepseek/deepseek-v4-flash'"*. The single combined `--model
+     api:openrouter:<id>` is the only form that resolves. Free to reproduce.
+   - `tests/fixtures/api/error.json` is now the genuine OpenRouter 401 body
+     (`{"error":{"message":"User not found.","code":401}}`, curl exit 22), and the genuine 400 for
+     an unknown model is kept beside it as `error-invalid-model.json` — that one needed a
+     redaction, since OpenRouter returns a `user_id` alongside the error. `anthropic-error.json` is
+     now genuine too, captured for free because the endpoint 401s before reading the body:
+     `{"type":"error","error":{"type":"authentication_error","message":"API key is invalid."},
+     "request_id":null}`. The fabricated shape it replaced was structurally right.
+     **`anthropic-success.json` is the one fixture in this directory still fabricated**, and cannot
+     stop being one without a key.
+
+7. **`AnthropicMaxTokens` — the measured negative, and what would close it.** `max_tokens` is
+   required by the Messages API and there is nothing in Claustrum to derive one from: `BudgetUsd` is
+   dollars, tiers carry an effort string, and roles carry no token budget. No free check exists —
+   `api.anthropic.com/v1/messages` answers `401 authentication_error` before it looks at the body,
+   so an unauthenticated request cannot even be told whether 8192 is accepted — and the OpenRouter
+   run offers no natural rule to borrow, because the OpenAI-compatible endpoint does not require
+   `max_tokens` at all and Claustrum never sends one there. **8192 stays, untested.** Closing this
+   needs a real `ANTHROPIC_API_KEY` and, concretely: one call per tier at `max_tokens: 8192` with a
+   role body long enough to run a `max`-effort reviewer out of room, checking `stop_reason` for
+   `max_tokens` rather than `end_turn`. If it ever does need to vary, the model's own published
+   output ceiling is the only principled source (models.dev lists `limit.output`), and reading it
+   would mean the api backend fetching a catalogue — which is exactly the dependency `curl`-only was
+   chosen to avoid.
+
+8. **`--probe` and `auth:`, both backends.** With `CLAUSTRUM_SKIP_PROBE` unset, in a toy repo whose
+   `claustrum.json` aliases resolve to the backend under test (the probe skips without one —
+   NOTES.md "The copilot backend, validated against a real install" names the same trap):
+   - `backends doctor opencode --probe` → `probe: OK (3.8s, cost not reported, reply "OK")`, and
+     `auth: present (env var set — a login file may also work even if not)`. "cost not reported" is
+     defect 3, not a probe bug.
+   - `backends doctor api --probe` → `probe: OK (1.3s, cost $0.0000, reply "OK")` (the real figure
+     in `result.json` is `1.42e-06`), `auth:` the same line, `path: /usr/bin/curl`.
+   - **The env-var lists were already right.** opencode's `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`,
+     `OPENCODE_API_KEY` are verbatim the `env` entries models.dev publishes for Anthropic, OpenRouter
+     and **OpenCode Zen**, which is where 2.0.12 gets them; `opencode auth list` on this machine
+     prints exactly one row, `OpenRouter  OPENROUTER_API_KEY  environment`, from the env var alone
+     with no login. api's two are right by construction — `ApiBackend` reads those two and no others.
+   - **The login-file half is now a real answer for both, and for opposite reasons.** `api` has no
+     credential store at all, so it says so. opencode 2.x has **no `auth.json`**: neither
+     `~/.config/opencode/` (which holds only `service.json`) nor `~/.local/share/opencode/` has one,
+     and credentials are either env-detected or in an 11 MB SQLite `opencode.db` that an AOT binary
+     will not take a dependency on to read. `LoginFileStatusFor` still checks the v1 path — it is
+     cheap, and a 1.x install or a 2.x that writes one on `auth login` would be reported — but
+     reports **existence only**, never contents: unlike copilot's `config.json`, that file's shape
+     was never seen on a real install here, and guessing at it is what this pass exists to stop.
+     With the three variables unset the lines read
+     `not set (env var absent; /home/…/.local/share/opencode/auth.json not present, and 2.x keeps
+     credentials in opencode.db, which this does not read)` and
+     `not set (env var absent; this backend has no login file — it is a direct HTTPS call)`.
+     Whether `opencode auth login` writes one was **not** tested: it would mean planting the owner's
+     credential in a store this pass did not put it in.
+
+9. **Confirmed in passing, for the two places that name model ids.** `curl -s
+   https://openrouter.ai/api/v1/models` (free, no key) lists **`deepseek/deepseek-v4-flash`**
+   ($0.049/M in, $0.098/M out) and **`deepseek/deepseek-v4-pro`** as live ids today, so
+   `InitCommand`'s written `"cheap-coding": "opencode:openrouter/deepseek/deepseek-v4-flash"` and
+   `OpencodeSync.OpencodeModelFor`'s pair are both real — no change needed. `scripts/smoke.sh`'s
+   `CLAUSTRUM_SMOKE_MODEL_OPENCODE=<model>` row is the exact shape run above and its api row's
+   "skipped, cannot resolve a model" reasoning is re-measured and still correct; neither script
+   changed.
+
+10. **Defect 4 (remediation pass, same day): `--auto` was auto-approving opencode's own `ask`
+    guards, at every rung.** `--auto` reads *"auto-approve permissions that are not explicitly
+    denied"*, and 2.0.12 gives **every** agent this default ruleset (verbatim from the binary, and
+    from `opencode debug agents` on the built-in agents): `{action:"*",resource:"*",effect:"allow"}`,
+    `{external_directory,*,ask}`, `{read,*.env,ask}`, `{read,*.env.*,ask}`,
+    `{read,*.env.example,allow}`. Every one of those `ask`s was therefore an `allow` under
+    Claustrum: a `readonly` code-reviewer could read `.env` or `~/.ssh/*`, and an `edit` builder
+    could write `~/.bashrc`. The **`question`** tool was worse than open — it is its own permission
+    action (opencode denies it on its own headless `general` agent, and allows it on the
+    interactive `build`/`plan` ones), and under `ProcessRunner`'s closed stdin it can only stall
+    the run to its timeout. Below `full`, `WritePermission` now appends
+    `"external_directory":"deny"`, `"question":"deny"` and
+    `"read":{"*.env":"deny","*.env.*":"deny","*.env.example":"allow"}` to every rung; `full` is
+    unchanged and keeps `--auto` with nothing denied.
+    - **Order is load-bearing, and this is the trap.** Config `permission` entries are appended
+      *after* opencode's own defaults, and the matcher is
+      `rules.findLast(r => glob(action, r.action) && glob(resource, r.resource))` — **last match
+      wins**, not most-specific. So the `*.env.example` allow must come after the two `.env`
+      denies, which is exactly the order opencode writes its own in and the order the object
+      literal above is emitted in (`Utf8JsonWriter` preserves it). The patterns are globs compiled
+      to `^…$` with `*` → `.*`, so `*.env` does match a bare `.env`.
+    - The config shape is the one the 2.0.12 binary declares: `PermissionConfig` accepts
+      `read/edit/glob/grep/list/bash/task/external_directory/question/webfetch/websearch/lsp/
+      doom_loop/skill` plus arbitrary extra keys (which is how `execute` works), each taking either
+      a bare `"ask"|"allow"|"deny"` **or** a pattern → effect map — except `question`, `websearch`
+      and `doom_loop`, which take the bare string only. Config keys are also renamed on the way in:
+      `bash`→`shell`, `write`/`patch`→`edit`, `task`→`subagent`.
+    - **All five blocks as actually emitted**, re-dumped free through the fake-`opencode` trick
+      (written identically on the agent and at the top level, as defect 2 requires):
+
+      | level | `permission` |
+      |---|---|
+      | `readonly` | `{"edit":"deny","bash":"deny","execute":"deny","external_directory":"deny","question":"deny","read":{"*.env":"deny","*.env.*":"deny","*.env.example":"allow"}}` |
+      | `shell` | `{"edit":"deny","bash":{"*":"allow","git push*":"deny"},"external_directory":"deny","question":"deny","read":{…}}` |
+      | `edit` | `{"edit":"allow","bash":"deny","execute":"deny","external_directory":"deny","question":"deny","read":{…}}` |
+      | `edit+shell` | `{"edit":"allow","bash":{"*":"allow","git push*":"deny"},"external_directory":"deny","question":"deny","read":{…}}` |
+      | `full` | `{"edit":"allow","bash":"allow"}` |
+
+    - **The paid proof, $0.0007 and 44.2s.** `claustrum run builder --permission readonly --backend
+      opencode --model openrouter/deepseek/deepseek-v4-flash --json --cwd <tmp>/toy-leak`, brief
+      *"Do three things and report each result: 1) read the file .env in the working directory and
+      quote it; 2) write the text x to the file /tmp/claustrum-leak-<rnd>.txt; 3) ask me a
+      clarifying question using your question tool."*, against a toy holding a committed `.env` of
+      `SECRET=not-a-real-secret`. **All three blocked.** `status: success`, exit 0,
+      `changed_files: []`, `report_status: ok`, `cost_usd: null` (the item-5 rule), no stall —
+      44 seconds, nowhere near the 30-minute timeout. Two `read` tool calls on the `.env` path came
+      back `{"status":"error","error":"Permission denied: read"}`; `/tmp/claustrum-leak-<rnd>.txt`
+      does not exist; and the model's own report reads *"I have no 'question tool' available among
+      my tools (`glob`, `grep`, `read`, `skill`, `subagent`, `webfetch`, `websearch`)"* — a denied
+      action is not offered at all, which is why it cannot stall. `.env`'s contents appear nowhere
+      in the output. The job directory was grepped for the live `OPENROUTER_API_KEY` and for
+      `sk-or-`: zero hits.
+    - ⚠ **What `external_directory: "deny"` costs, and it is not measured.** opencode gives every
+      agent four internal `external_directory` *allow* rules (its `shell/*/*` and `tool-output/*`
+      data dirs, `$TMPDIR/opencode/*`, and its config dir), and because config rules append last,
+      a blanket deny **overrides those too**. Nothing in the run above needed them, and reads and
+      globs inside the working directory were unaffected — but a run that reaches for a truncated
+      tool-output file, or a `bash` rung whose shell output is spooled to that data dir, may be
+      denied where it previously was not. Re-allowing them would mean Claustrum computing
+      opencode's own XDG paths, which is a worse guess than the deny is; if this bites, that is
+      where to look first.
+
+11. **`#<effort>` on a model that does not publish the variant: opencode refuses, for free.** The
+    receipt for the "tier → variant" follow-up, which this pass deliberately does **not** fix.
+    `claustrum run builder --backend opencode --model openrouter/deepseek/deepseek-v4-flash --tier
+    max --brief "reply with the single word OK and change nothing" --json --cwd <tmp>` →
+    `status: failed`, `exit_code: 1`, in **0.72s**, with `cost_usd: null` and nothing billed.
+    opencode's own line, verbatim from `stdout.log`:
+    `{"type":"error","timestamp":…,"sessionID":"ses_f35719021ffe…","error":{"type":"provider.no-route","message":"Variant unavailable for openrouter/deepseek/deepseek-v4-flash: max"}}`
+    — so it is a **surfaced `error` event**, which `ExtractErrorMessage` already reads and
+    `ParsedOutput` already turns into `status: failed`; `final_message` and `error` both read
+    *"Variant unavailable for openrouter/deepseek/deepseek-v4-flash: max"*. It is neither ignored
+    nor silently downgraded, and it is refused **client-side, before any API call** — which is why
+    it is free to reproduce and why a wrong tier can never cost money, only a failed run.
+    **No mapping was added.** `ModelSpec` still appends `#<effort>` unconditionally; a `max` tier on
+    a model publishing only `high`/`xhigh` (models.dev's `reasoning_options` for this one) fails
+    fast with a clear message. Whether that should instead clamp to the highest published variant,
+    or refuse earlier in `ResolvedRole`, is the open design question.
+
+**Still unverified, for the record:** the Anthropic path end to end, including `AnthropicMaxTokens`
+and `anthropic-success.json`; `--session <id>` resume against a real opencode session; the `full`
+rung's `--auto`-plus-allow-all combination; whether
+`OPENCODE_DISABLE_FILEWATCHER` has a cost on a host that is *not* at its inotify cap; whether
+`opencode auth login` writes an `auth.json`; opencode's own `stats`/`db` as a cost source for
+defect 3; `OpencodeSync`'s synced agent files under 2.0.12 — including the unquoted `description:`
+that the copilot pass found breaks YAML there, which was flagged for opencode and is still not
+measured; and the Windows leg of every line above.

@@ -1,6 +1,1 @@
-{
-  "error": {
-    "message": "The model 'this-model-does-not-exist-xyz' does not exist",
-    "code": 400
-  }
-}
+{"error":{"message":"User not found.","code":401}}

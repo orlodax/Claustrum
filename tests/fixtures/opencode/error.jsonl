@@ -1,1 +1,2 @@
-{"type":"error","timestamp":1789729931890,"sessionID":"ses_f4bc88058ffeoEALuwpU2XsjoV","error":{"name":"UnknownError","data":{"message":"Unexpected server error. Check server logs for details.","ref":"err_f387a8e7"}}}
+{"type":"step_start","timestamp":1790100928709,"sessionID":"ses_f35ab8b0fffeeIZgPVQSfNAiFb","part":{"id":"prt_0ca5478c5001k7iqATB3q8TyyK","sessionID":"ses_f35ab8b0fffeeIZgPVQSfNAiFb","messageID":"msg_0ca547636001Zc3M3thlLpvs01","type":"step-start","snapshot":"703030a52647d2efbdb8ce9bdbda2491667f848e"}}
+{"type":"error","timestamp":1790100928721,"sessionID":"ses_f35ab8b0fffeeIZgPVQSfNAiFb","error":{"type":"provider.auth","message":"User not found.","status":401}}
