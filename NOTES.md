@@ -672,7 +672,8 @@ against the same real `@github/copilot` 1.0.86 install as the copilot backend.
 
 `sync --only claude,opencode,copilot` (any comma-combination) all work through the same
 `SyncCommand.MergeResults`; cursor still has no Sync class (fixture-only backend, matches NOTES.md
-"The cursor backend").
+"The cursor backend") — superseded by CursorSync (2026-09-22, #25): `cursor` is a fourth `--only`
+value, see "CursorSync: agents, skill and mcp.json, doc-confirmed but never round-tripped".
 
 ## claustrum init (2026-09-18, issue #4/M3)
 
@@ -695,7 +696,8 @@ never creating one, and never touching `CLAUDE.md` at all, exactly as specified.
   `OpencodeSync`'s own doc comment on why that merge wasn't generalized in this pass), and its agent
   files are harmless to have even in a repo that hasn't adopted Claude Code. opencode/copilot are
   detected from `opencode.json`/`.opencode/` and `.github/` respectively; cursor is detected
-  (`.cursor/`) but only reported, never synced (no `CursorSync` exists).
+  (`.cursor/`) but only reported, never synced (no `CursorSync` exists) — superseded by CursorSync
+  (2026-09-22, #25): a detected `.cursor/` is now synced like the rest.
 - Idempotent by construction, same as `sync` itself: reruns skip an existing `claustrum.json`, skip a
   `.gitignore` that already has the entries, skip an `AGENTS.md` that already has the pointer
   (checked by the `## Claustrum delegation` heading), and each harness's own `Sync` already handles
@@ -954,6 +956,13 @@ per path. `MissingBackendResult` delegates to a shared `NoProcessResult` builder
 the only difference between it and the refusal result), so the refusal's "nothing ran" shape is not a
 third copy of the same 20 fields.
 
+⚠ Since 2026-09-22 the funnel is no longer the *only* writer of an entry:
+`BudgetLedger.RecordFinishedAsync` writes one finished entry directly, with no admission, no `.live`
+file and no reservation, for the one run that is deliberately not a member of the tree it pays for —
+the coordinator's own architect (see "M4 follow-ups…", issue #21). It is not an exception to the
+funnel rule but its complement: the funnel closes entries that were *admitted*, and this one never
+was.
+
 **Where the accounting lives, and why not `JobManager`.** The issue suggested `JobManager` "already
 owns the async job tree", but it owns only the jobs *this MCP server* started; the CLI door never
 touches it. Admission therefore sits in `Runner.RunCoreAsync`, the one place both doors reach, right
@@ -1043,7 +1052,8 @@ both the worktree and the cap.
   ⚠ The allow-list is therefore load-bearing for `ProcessRunnerTests`' "filtered variable" marker
   again: it is named `CLAUSTRUM_TEST_SECRET_<guid>`, and it only proves filtering while no
   `CLAUSTRUM_` prefix is on the list.
-- **The whole ledger API is async** (`AdmitAsync`/`CompleteAsync`/`PeekRemainingAsync`/`ReadAsync`):
+- **The whole ledger API is async** (`AdmitAsync`/`CompleteAsync`/`RecordFinishedAsync`/
+  `PeekRemainingAsync`/`ReadAsync`):
   `Runner` is async and the first cut blocked a pool thread on `Thread.Sleep` while polling the lock.
   The poll takes no `CancellationToken` on purpose — the wait is already bounded at 5s, and the one
   caller that must write whatever happens is the finish path, whose token has usually already fired.
@@ -1524,8 +1534,9 @@ nothing in the repo hands a tree id across a process hop"*). `claustrum coordina
 things are added to it and nothing else — the cast appended to the system body, the job id exported
 as `CLAUSTRUM_PARENT_JOB`, and `gh` issues folded into the brief — so tier precedence, `--model`
 winning over the cast, `CastBudget`, the blind gate and worktree isolation are all the code that was
-already there. `CoordinateEngine.PlanAsync` is that assembly step, and it is the *only* new
-decision-making: it returns a `CoordinatePlan` and runs nothing itself.
+already there. `CoordinateEngine.PlanAsync` is that assembly step: it returns a `CoordinatePlan` and
+runs nothing itself. (Its sibling `CoordinateEngine.RunAsync` came later, for issue #21: it is the
+one place both doors share for "run the delegation, then record what the architect cost".)
 
 ### The cast rides in the system body as call-site data
 
@@ -1541,9 +1552,11 @@ sight) would have to render it empty. Appending after the renderer costs two lin
 the tree id, both written *before* the backend lookup — so a `--model nonexistent:x` run
 (`backend_missing`, exit 3) still leaves both artifacts to inspect for free.
 
-The appendix itself is `CoordinationBrief.RenderSystemAppendix(cast, castName, cwd, jobId)`, pure
-and dependency-free so it can be asserted against a hand-built `Cast` with no gh, no backend and no
-job on disk. It states facts, not prose: one line per role (architect first, then builder,
+The appendix itself is `CoordinationBrief.RenderSystemAppendix(cast, castName, cwd, modelOverride)`
+— pure and dependency-free so it can be asserted against a hand-built `Cast` with no gh, no backend
+and no job on disk. ⚠ It took a `jobId` until 2026-09-22; the three lines that name the job now emit
+`DelegateRequest.JobIdToken` instead, because the id does not exist when this renders any more (see
+"M4 follow-ups…", issue #23). A 4-argument call still compiles and now means `modelOverride`. It states facts, not prose: one line per role (architect first, then builder,
 code-reviewer, ui-reviewer, tester, then any other cast role alphabetically), the tree budget, the
 `jobs budget <id>` command, the exact `claustrum run … --cast … --cwd …` line to delegate with, the
 `claustrum/<jobId>` work branch and the rebase-never-merge rule (owner's rule 2), and
@@ -1638,10 +1651,17 @@ same warning.
 ⚠ The closing read is guarded (`TimeoutException`/`IOException`/`UnauthorizedAccessException` →
 `tree: ledger unavailable (<message>)`, exit code untouched) and skipped entirely when the ledger
 directory does not exist: it is another process's locked file, and `LockAsync` gives up after 5s —
-unguarded, that read could turn a successful run into exit 1. The fix, when
-it bites, is a ledger entry for the coordinator's own cost — charge the architect's `cost_usd` to
-its own tree when it finishes — which is deliberately not built now: `Runner`'s admission/completion
-funnel exists for *members*, and a non-member has no reservation to complete.
+unguarded, that read could turn a successful run into exit 1.
+
+⚠ **Superseded 2026-09-22 (issue #21): the ledger entry the rest of this paragraph called "the fix,
+when it bites" exists.** The cap decision did not change — the architect's per-run cap is still the
+whole cast `budget_usd`, for the reason recorded in "M4 follow-ups…" — but its cost is no longer
+invisible to the tree: `CoordinateEngine.RunAsync` writes the finished run as an entry of its own
+tree, so `jobs budget <id>` totals the coordinator with its children and the two printed lines read
+`architect cost $X` and `tree spent $Y (architect $X included), reserved $Z`. The doubling above is
+therefore *measured* now rather than merely argued. The original plan is kept for the reasoning it
+carries: `Runner`'s admission/completion funnel exists for *members*, and a non-member has no
+reservation to complete — which is exactly why the entry is written outside that funnel.
 
 ### `CLAUSTRUM_HOME` travels with the tree id
 
@@ -1712,9 +1732,11 @@ so only the first line is printed.
   than a silent consumption of the caller's stdin.
 - **Nothing is minted before the run can fail** — not for a usage error, and not for the cast or
   `gh` either, which the first shape got wrong. `CoordinateEngine.PlanAsync` does everything that
-  can be refused (the task-source flags, loading the cast, the `gh` import, rendering the user
-  prompt) and returns a `CoordinatePlan` that carries no job id; `plan.ToDelegateRequest(job)` is
-  the second half, which needs one. Both doors call them in that order. Before it,
+  can be refused (the task-source flags, loading *and resolving* the cast, the `gh` import,
+  rendering the user prompt) and returns a `CoordinatePlan` that carries no job id;
+  `plan.Prepare()` is the second half — config, role render, model alias — and still mints nothing
+  (2026-09-22, issue #23: `ToDelegateRequest` lost its `JobPaths` parameter with it). Both doors
+  call them in that order, and only then `JobDirectory.Create`. Before it,
   `JobDirectory.Create` ran first and every one of those failures left a `pending (no result.json)`
   directory behind forever — measured on the pre-fix binary: two job directories holding nothing
   but their `.claim`. `Create` also *prunes* the job store, so a refused invocation aged the user's
@@ -1755,11 +1777,12 @@ so only the first line is printed.
   `CoordinateEngine.PlanAsync` now refuses a non-positive `Overrides.TimeoutSeconds` with the same
   message, for both doors, before anything is minted — measured 2026-09-22: exit 2, and under a
   fresh `CLAUSTRUM_HOME` no `jobs/` directory was created at all. `Runner` keeps its own check: it
-  is the last line of defence for `run`/`delegate`, which validate nothing earlier. ⚠ It is also the
-  only *validation* on this path. What can still throw after the job exists is malformed input read
-  later — a `claustrum.json` that fails `Config.Load`, a cast whose `architect.tier` no role defines
-  (`RoleRenderException`), an unresolvable model alias (`ConfigException`) — and fixing those means
-  moving config/role loading ahead of `JobDirectory.Create`, not adding another guard here.
+  is the last line of defence for `run`/`delegate`, which validate nothing earlier. ⚠ It was also the
+  only *validation* on this path, and the classes it did not cover — a `claustrum.json` that fails
+  `Config.Load`, a cast whose `architect.tier` no role defines (`RoleRenderException`), an unknown
+  permission (`ConfigException`) — have since been fixed the way this bullet already said they had
+  to be: by moving config/role loading ahead of `JobDirectory.Create`, not by another guard here
+  (2026-09-22, issue #23, "M4 follow-ups…").
 - **The `## Coordination` section is injected above `## House rules`, not at the end.** Appending it
   put it dead last in a 25 KB system prompt (measured: 25 456 B) — the exact position
   `RoleRenderer.ComposeSystemBody` moved `## Report format` *off*, because a live smoke test caught
@@ -1798,9 +1821,10 @@ so only the first line is printed.
   wins, which is how `coordinate` hands it down on purpose.
 - **Over-fanning is bounded by the run's timeout, not by patience.** A delegation beyond the role's
   `max_parallel` does not queue indefinitely: it waits for a slot up to `--timeout`
-  (`defaults.timeout_seconds`, 1800 s) and then fails with an error on stderr and **no JSON**, which
-  is the one failure shape an architect parsing `--json` cannot read. `roles/architect/ROLE.md` now
-  says so.
+  (`defaults.timeout_seconds`, 1800 s) and then gives up. ⚠ It gave up as an exception on stderr
+  with **no JSON** until 2026-09-22 — the one failure shape an architect parsing `--json` cannot
+  read — and now comes back as a `status: failed` RunResult naming the cap (issue #20, "M4
+  follow-ups…"). `roles/architect/ROLE.md` says the second thing.
 - **The tool package describes itself.** `Claustrum.csproj` carries `Description`,
   `PackageLicenseExpression` MIT (matching the repo's LICENSE), `PackageProjectUrl`, `PackageTags`
   and a packed `README.md`; the nuspec previously said `Package Description` and named no licence
@@ -1813,7 +1837,10 @@ printed no cost line at all, which was the defect and not the design; re-measure
 remediation on a `--model nonexistent:x` run of a **capped** cast (nothing paid), the two lines read
 `architect cost -` and `tree spent $0.00, reserved $0.00` — the second because the architect
 delegated nothing and the ledger directory for its tree was never created. The same run against an
-uncapped cast reads `tree: unlimited (children not accounted)` instead.
+uncapped cast reads `tree: unlimited (children not accounted)` instead. ⚠ Both capped numbers moved
+on 2026-09-22 (issue #21): the tree line now carries the architect's own entry, so the same run
+reads `tree spent $0.00 (architect $0.00 included), reserved $0.00` and the ledger directory *is*
+created. The uncapped line is unchanged.
 
 ## The architect role, ported last (2026-09-22, issue #5/M4)
 
@@ -1865,6 +1892,9 @@ budget — that M2/M3 had to exist first.
 
 ## docs/INSTALL.md records one gap rather than papering over it (2026-09-22, issue #5/M4)
 
+*Closed 2026-09-22 by #24 — see "The claustrum MCP server in the Claude desktop config"; the
+paragraph below is the record of the gap as it stood.*
+
 docs/PLAN.md §B4 lists `%APPDATA%\Claude\claude_desktop_config.json` among `--global`'s targets, but
 `ClaudeSync` writes only `~/.claude/` there. INSTALL.md says so and tells the reader to register the
 server by hand — a doc that claimed the file was written would be discovered wrong on a fresh
@@ -1897,7 +1927,9 @@ publishes nothing). The tag is the version: `v0.1.0` → `-p:Version=0.1.0`, der
   uninstall.
 - **The trap `PackAsTool` sets:** it suppresses the apphost, so `dotnet build -c Release` produces
   no `claustrum` executable at all — only `claustrum.dll`. Anything that expects a runnable binary
-  from a plain build (both smoke scripts' fallback resolver) needs a *publish* first.
+  from a plain build needs a *publish* first. Both smoke scripts' fallback resolver did not, and was
+  fixed on 2026-09-22 (#22) — see "Both smoke scripts' fallback resolver publishes, it does not
+  build".
 - `NUGET_API_KEY` is declared as **job**-level `env` in the pack job, not on the push step: a step's
   own `env:` block is not visible to that step's own `if:`, so a step-level declaration would make
   the guard read empty and always skip.
@@ -1932,3 +1964,319 @@ after the run, with no handle held across the read, so the plain `File.*` calls 
 
 ⚠ Do not "simplify" `JobLog` back to `File.ReadLines`/`File.ReadAllText`: they carry the default
 share mode and reintroduce the Windows failure, which no Linux run will ever tell you about.
+
+## M4 follow-ups: prepare before mint, a gate timeout is a result, the architect is in the ledger (2026-09-22, issues #23 #20 #21)
+
+Three findings of the M4 blind review, fixed in one pass. They share one theme: the moments where
+`coordinate` and `delegate_async` could still produce *no* answer — a job directory nobody would
+close, an exception where a JSON document was promised, a cost nobody counted.
+
+### Resolve everything before the job directory exists (#23)
+
+`DelegateEngine` is now cut in two at the mint: `Prepare(DelegateRequest) -> PreparedDelegation`
+(config layers, tier model class, backend, `RoleRenderer.Render`, the appendix, `Config.Resolve`,
+the tree, the per-run budget/timeout/permission, `RunOptions` without its `Admission`) and
+`RunAsync(PreparedDelegation, JobPaths?, ct)` (the concurrency gate, worktree isolation, `Runner`).
+The two `RunAsync(DelegateRequest, …)` overloads survive as `RunAsync(Prepare(request), …)`, so
+`run` and `delegate` are unchanged; the callers that mint a directory themselves — `JobManager.
+Start(DelegateRequest, …)` for MCP `delegate_async`, and both `coordinate` doors — call `Prepare`
+**first**, so the whole class of "malformed input read after the mint" now refuses with nothing on
+disk. Measured under an isolated `CLAUSTRUM_HOME`, nothing paid: a syntactically broken
+`claustrum.json` ⇒ `coordinate` exits 2 with the parser's own message and **no new job directory**
+(9 → 9); the same over real stdio JSON-RPC ⇒ the `coordinate` *and* `delegate_async` tool calls come
+back `isError: true` carrying that message, still 2 → 2 job directories. A cast whose
+`architect.tier` is `bogus` ⇒ `role 'architect' has no tier 'bogus'`, exit 2, nothing minted.
+
+**The job id is the one thing `Prepare` cannot know, and `coordinate` needs it in two places** — the
+`## Coordination` appendix (`Job tree:`, `Inspect:`, `Work branch:`) and the architect's request env
+(`CLAUSTRUM_PARENT_JOB`, whose value *is* the id). Neither can be patched in afterwards from outside:
+the appendix is spliced into `RenderedRole.SystemBody` *before* `Config.Resolve`, so by the time a
+caller holds a `PreparedDelegation` it is buried inside `ResolvedRole.SystemPrompt`. So the text is
+rendered with an exact placeholder, `DelegateRequest.JobIdToken` = `{{job_id}}`, and
+`PreparedDelegation.ForJob(jobId)` replaces it in the system prompt and in every env value at the
+last possible moment, inside `RunAsync`. A plain `string.Replace` of an exact token — deliberately
+not a template engine, and a no-op for every other caller.
+
+⚠ **It borrows `{{…}}` from `TemplateRenderer` but is not one of its tokens** (docs/PLAN.md B2:
+"plain `{{token}}` replacement, no engine. Unknown token = render error"). The appendix is spliced
+into the body *after* `RoleRenderer.Render` has finished — that is the whole point of
+`SystemAppendix` — so the role templater never sees `{{job_id}}` and cannot refuse it. Anything that
+ever routes call-site text back through the renderer would turn this into a render error; the two
+layers share a spelling, not a mechanism.
+
+⚠ **Substitution only happens when a caller hands in a `JobPaths`.** The `job is null` path is the
+CLI `run` ordering, where `Runner` mints the directory itself *after* its blind gate (NOTES.md
+"Runner always yields a result after the process ran" and review finding #7) — that ordering is
+deliberately kept, and it means the id genuinely does not exist at substitution time. Nothing breaks,
+because `coordinate` is the only renderer of the token and both its doors mint the job themselves.
+A `--env FOO={{job_id}}` typed by hand on `run` would survive verbatim; on `delegate_async` it would
+not. That is a curiosity, not a feature.
+
+**`CoordinatePlan` now carries the resolved cast, not the cast's file path.** `PlanAsync` calls
+`CastApplication.Resolve` once and keeps `Tier`/`Overrides`/`CastBudget` on the plan, and
+`ToDelegateRequest()` takes `CastName` from the `Cast` object it already holds — so the second read
+of `.claustrum/casts/<name>.json` that used to happen *after* the mint (and could throw over a job
+nobody would close) is gone. ⚠ `PlanAsync` does read the cast file twice in a row (`CastStore.Load`
+for the plan's own `Cast`, then `CastApplication.Resolve` inside it): both reads are pre-mint, so
+the failure mode is gone, but deduplicating them wants a `CastApplication` overload that takes an
+already-loaded `Cast` — deliberately not written here, because `CastApplication` is the one place
+that maps `cast.Architect` onto a role entry and this slice did not own that file.
+
+The order both `coordinate` doors now run is: **plan → prepare → mint → run**. `Runner.ValidateTimeout`
+stays where it is: it is the last line of defence for `run`/`delegate`, which validate nothing earlier.
+Good-path behaviour is unchanged, measured on the same runs: `system.md` carries `## Coordination`
+between `## Environment` and `## House rules` with the real job id on all three lines, `request.json`'s
+`env` is `{CLAUSTRUM_PARENT_JOB: <id>, CLAUSTRUM_HOME: <scratch>}`, and neither file contains the
+token.
+
+- **The MCP tool descriptions say so now (2026-09-22, review of the follow-ups batch).**
+  `delegate_async` still promised a plain "returns immediately with a job id", which after this
+  change is half the story: config, role and model resolution happen **in the tool call**, so an
+  unknown role, a broken `claustrum.json` or a tier the role has no model for is that call's own
+  error with no job created, and only the run is deferred. A host that cannot read that from the
+  description retries the call or polls a job id that was never minted. `job_status`'s `'failed'`
+  sentence was stale the other way round — it said the job threw "before producing a RunResult",
+  where what is left after #23 is a job that threw *after it was started* (a blind-gate rejection is
+  inside the run, not in the call). All four state names stay in that string: `McpToolSurfaceTests`
+  pins `running`, `done`, `failed` and `unknown` one by one.
+
+### A concurrency-gate timeout is a `RunResult`, not an exception (#20)
+
+`RoleConcurrencyGate.AcquireAsync` throws `TimeoutException` when every slot stays taken for the
+run's whole `--timeout`. That exception used to escape `DelegateEngine`, so an over-fanned
+`claustrum run builder --json` exited 1 with a message on stderr and **nothing on stdout** — the one
+failure shape an architect parsing `--json` cannot read, while every other pre-spawn refusal on that
+path (`backend_missing`, `budget_exceeded`, a ledger error) already produced a document. The acquire
+is now wrapped in a `catch (TimeoutException)` — exactly that type, so a genuinely broken lock
+directory still surfaces as itself — which returns `Runner.RefuseAsync(job, role, Failed, ex.Message)`.
+
+`RefuseAsync` is a small public seam on `Runner` rather than a second copy of the 20-field result
+record in `DelegateEngine`: it builds the existing `NoProcessResult` shape and leaves through the
+same `FinishAsync` funnel with `reservation: null`, so `result.json` is written exactly as for every
+other "nothing ran" refusal. It is `static` because it touches no instance state, and public because
+the caller that needs it decides *before* `Runner` is ever entered.
+
+⚠ **The `Admitted: false` refusal one branch below deliberately did *not* move onto the same seam.**
+It still goes through `Runner.RunAsync`, which runs `ValidateTimeout`, brief resolution and the blind
+gate before it reaches the refusal — calling `RefuseAsync` directly would silently skip all three and
+change which failure a doubly-bad invocation reports.
+
+Measured 2026-09-22 (cast `par2`, `max_parallel: 2`, both slot files held by an unrelated `flock -x`,
+`--timeout 2`, `--backend nonexistent` so nothing could ever be paid): one RunResult document on
+stdout, `"status":"failed"`, exit 1, `"worktree":null,"branch":null`, and `error` = ``all 2
+'par2__builder' slots under '<cwd>/.claustrum/locks' stayed unavailable for 2s (last error: …) — a
+sibling run may be stuck; check `claustrum jobs list` ``. A `result.json` in the job directory and
+nothing else in it, **no `.claustrum/worktrees/<id>` and no `claustrum/<id>` branch**. With the locks
+released the same command isolates normally (worktree and branch cut, `backend_missing`, exit 3), so
+the two-slot path is untouched.
+
+`roles/architect/ROLE.md`'s `max_parallel` bullet now says the waiting run comes back `status:
+failed` with the cap named in `error`, and keeps "do not start more builders at once than
+`max_parallel`". ⚠ That file is rendered into `tests/golden/claude/architect.md` and
+`architect-xhigh.md`, which are compared byte-for-byte — they have to be re-recorded.
+
+### The architect's cost is in the ledger; its cap stays the cast's (#21)
+
+**Decision: the coordinator's per-run cap remains the cast's whole `budget_usd`.** A share (say half)
+would have to be guessed before the architect knows how many children it will start or how much
+reading, planning and integrating its own run will cost — and the architect is precisely the run
+whose spend is the wildcard. The failure it would buy is the worst one available: a coordinator
+refused or truncated *mid-flight*, after its children have already been paid for, losing the only
+process that knows what the batch was doing. An overspend of at most 2× a number the user chose is
+cheaper than that. What was wrong was not the cap but the invisibility: `claustrum jobs budget <tree>`
+never saw the coordinator at all.
+
+So the cost is recorded instead of capped. `BudgetLedger.RecordFinishedAsync(platform, treeId, jobId,
+role, cap, cost, startedAt)` writes one `<jobId>.json` under the ledger lock with `finished_at` set
+and `abandoned: false` — the same `BudgetLedgerEntry` shape, and **no `.live` file**, because nothing
+was ever reserved for this run, only spent. `CoordinateEngine.RunAsync` is the one place both doors
+share: it runs the delegation and then, **only for a capped cast** (an uncapped one has no ledger at
+all, so `$0.00` would be a measurement nobody took), records the finished run against its own tree.
+`cost` mirrors `BudgetReservation.CompleteAsync`'s rule — the reported cost, the granted cap when the
+backend ran and reported none, `$0` when nothing ran. ⚠ "Ran" is read off `RunResult.DurationSeconds
+> 0`, not off the exit code: every "nothing ran" shape `Runner` builds hardcodes duration 0, while a
+*killed* process reports a real elapsed time and an exit code of `-1` on Windows — the same value
+`NoProcessResult` uses, and therefore no discriminator at all.
+
+⚠ **A `coordinate` that is itself inside a tree records a cap-less entry.** When the coordinating
+process's own environment carries `CLAUSTRUM_PARENT_JOB` (a host architect calling `coordinate`),
+`Prepare` gives its run only an explicit `--budget` as a per-run cap — the outer ledger grants the
+real slice at admission — so the entry written into the *inner* tree has `cap: null` and a backend
+reporting no cost falls back to `$0` there. The outer tree still charges it correctly through
+`Runner`'s reservation; only the inner tree's row is thin.
+
+Measured 2026-09-22 against a fake backend on `backends.claude.path` reporting
+`total_cost_usd: 0.25` (nothing paid), cast capped at `$10.00`: human output ends `architect cost
+$0.25` / `tree spent $0.25 (architect $0.25 included), reserved $0.00`; `--json` keeps stdout to
+exactly one RunResult document and writes the same tree line to stderr; `claustrum jobs budget
+<tree>` lists `<tree id>  architect  cap $10.00  cost $0.25  done`. An MCP-started `coordinate`
+records the same row, which is why the recording lives in `CoordinateEngine` and not in
+`CoordinateCommand`. An uncapped cast still prints `tree: unlimited (children not accounted)` and
+writes nothing.
+
+⚠ **One admission does change, and it is the point.** The entry is written *after* the architect
+returns, so children running during the coordination are unaffected — they were admitted while no
+architect entry existed. A child started against the same tree *after* the coordinate process has
+finished now sees the remainder net of it: measured, a `claustrum run builder --cast capped` under
+`CLAUSTRUM_PARENT_JOB=<tree>` was admitted `cap $9.75` of a `$10.00` tree and the ledger totalled
+`spent $0.50`.
+
+⚠ **A ledger that cannot be written rides out as a warning on the returned result only.** The three
+exceptions every other ledger caller swallows (`TimeoutException`/`IOException`/
+`UnauthorizedAccessException`) must not turn a finished architect run into a failure, so they append
+`budget ledger for tree '<id>' not updated with the architect's own cost: <message>` to the
+`RunResult`. That warning reaches `--json`, `job_result` and the MCP client, but **not** the
+`result.json` already on disk: `Runner` wrote it through its funnel before this code runs, and
+rewriting it from the coordination layer would make a second writer of the file the funnel exists to
+own. The human tree line degrades honestly on its own — with no architect row to read, it prints
+without the `(architect $X included)` clause.
+
+- **⚠ Superseded 2026-09-22 (review of the follow-ups batch): a run that never started writes no row
+  at all.** `RecordFinishedAsync` creates `<CLAUSTRUM_HOME>/budget/<tree>/` before it takes the lock,
+  so the `$0` row above *materialised a ledger directory* for a `coordinate` whose architect never
+  spawned a process — and `CoordinateCommand`'s "no ledger directory ⇒ no child ever ran" shortcut
+  (the branch that prints `tree spent $0.00` without touching the lock) then read a tree that had
+  one. `CoordinateEngine.NeverRan(result)` now returns before the write, on the notion `Runner` hands
+  `ChargeAsync` as `ran`: `Status is BackendMissing or BudgetExceeded` (the two statuses that exist
+  only without a process) **or** `ExitCode == -1 && DurationSeconds == 0` (the pre-spawn failure,
+  which is a plain `Failed`; a *killed* process pairs its `-1` with a real elapsed time, so it is
+  still charged). The duration alone was never the discriminator this needed — it decided the
+  *amount*, not whether to write — so past the guard the cost is simply `CostUsd ?? cap`. The human
+  line degrades as it already did: `tree spent $0.00, reserved $0.00`, no `(architect $X included)`.
+
+### What this breaks on the test side
+
+`tests/Claustrum.Tests/Coordination/CoordinatePlanTests.cs` (the 4-argument `CoordinatePlan` ctor and
+`ToDelegateRequest(job)`) and `CoordinationBriefTests.cs` (`RenderSystemAppendix`'s dropped `jobId`)
+no longer compile, and the two architect golden renders carry the old `max_parallel` bullet. ⚠ The
+brief test file is the dangerous one: `RenderSystemAppendix(cast, "default", "/repo", "job-1")` still
+*compiles*, binding `"job-1"` to `modelOverride`, and an assertion that the appendix "contains job-1"
+then passes against the `(this run: job-1)` the architect line prints. Those calls have to be
+rewritten, not merely re-run.
+
+## The native subagent tool is called `Agent`, and only `--disallowedTools` takes it away (2026-09-22, issue #19)
+
+A spawned architect (`coordinate`, docs/PLAN.md §D3) must not fan out natively: a Claude Code
+subagent runs the role on the architect's own model, outside the cast and outside the tree budget
+ledger. `roles/architect/parts/delegation.claude.md` says so in prose; `ClaudeBackend.Build` now
+enforces it, adding `--disallowedTools Agent,Task` whenever the run's **request env** carries
+`CLAUSTRUM_PARENT_JOB` — which `CoordinatePlan.TreeEnv` sets on exactly one run, the spawned
+architect. A host architect with no cast keeps its native subagents, and a `claustrum run` the
+architect issues never inherits the variable (EnvAllowList drops it), so the block lands on the
+architect alone.
+
+Measured against `claude 2.1.278`, with no paid invocation: `ANTHROPIC_BASE_URL` was pointed at a
+local capture server with a junk API key, and the `tools` array of the real `/v1/messages` request
+was read before the server answered 400.
+
+- **The tool is `Agent`.** The baseline request carries `Agent` (alongside `TaskStop`, `Workflow`,
+  `SendMessage`, `ListAgents`, `Skill`); there is no bare `Task`, and the package's own
+  `sdk-tools.d.ts` declares `AgentInput`/`AgentOutput` only. `--disallowedTools Agent` removes it;
+  `--disallowedTools Task` removes nothing and does not touch `TaskStop` — matching is exact, not by
+  prefix. `Task` is passed anyway because an unknown name is silently ignored (`Agent,Task,Edit`
+  dropped `Agent` and `Edit`, kept `Write`, raised nothing), so it costs a word and covers an older
+  installed `claude` where the tool was called `Task`.
+- **No permission level withholds it.** Under `--permission-mode plan --allowedTools
+  "Read,Glob,Grep,Bash(git diff*)"` the request still ships `Agent`: `--allowedTools` gates
+  permission, it does not filter the tool set. That is why the flag is added at every level, `Full`
+  included — and the disallow *is* honoured next to `--dangerously-skip-permissions`.
+- **Repeated `--disallowedTools` merge; the last one does not win.** `--disallowedTools Edit,Write
+  --disallowedTools Agent` removed all three. `ShellArgs`/`EditShellArgs` already emit the flag
+  twice and were relying on this; the tree block is a third occurrence and adds to them.
+- ⚠ **`--disallowedTools` is variadic and swallows the following positional.** `claude -p
+  --output-format json --disallowedTools ZzzNotATool "reply PINEAPPLE"` consumed the prompt as a
+  tool name and exited with *"Input must be provided either through stdin or as a prompt argument"*.
+  The brief is the last argv element, so the tree block must never be the last flag before it — it
+  is emitted right after the permission block, where `--no-session-persistence` or `--resume` always
+  follows.
+- **Still reachable, deliberately unaddressed:** `Workflow`, `SendMessage` and `ListAgents` remain
+  in the spawned architect's tool list. #19 named the subagent tool only.
+
+## Both smoke scripts' fallback resolver publishes, it does not build (2026-09-22, issue #22)
+
+`PackAsTool=true` suppresses the apphost, so `dotnet build -c Release` leaves `claustrum.dll` and no
+executable, and on a clean clone `scripts/smoke.sh` with no argument died on "could not resolve a
+claustrum binary". The fallback is now `dotnet publish -c Release -r <host rid> -p:PublishAot=true`,
+taking the binary from `bin/Release/<tfm>/<rid>/publish/`; a failed AOT publish prints AGENTS.md's
+prerequisites (clang/gcc + zlib headers; the VS C++ workload on Windows) and exits 1 rather than
+falling back to something that cannot run. Host RID comes from `uname -s`/`uname -m` in bash. In
+PowerShell it comes from `RuntimeInformation::RuntimeIdentifier` — but only when that is already
+portable: measured on Fedora it returns **`fedora.44-x64`**, which has no runtime pack to restore,
+so anything non-portable is rebuilt from `$IsLinux`/`$IsMacOS` plus `OSArchitecture`. Verified
+2026-09-22: a no-argument `scripts/smoke.sh` with every backend and `gh` removed from PATH published
+linux-x64, ran every row as SKIP/PASS and exited 0.
+
+## CursorSync: agents, skill and mcp.json, doc-confirmed but never round-tripped (2026-09-22, issue #25/M4)
+
+`.cursor/agents/<role>.md` (+ `-xhigh`/`-max` stubs), `.cursor/skills/claustrum/SKILL.md` and
+`.cursor/mcp.json`, on the same `SyncWriter`/`SyncAccumulator`/`McpConfigSync` as the other three.
+
+- **Frontmatter is doc-confirmed, not guessed.** cursor.com/docs/context/subagents (fetched
+  2026-09-22) gives the agent fields: `name`, `description`, `model` (default `inherit`, or an id),
+  `readonly`, `is_background` — and both `.cursor/agents/` and `~/.cursor/agents/`. The locally
+  installed CLI's own bundled `~/.cursor/skills-cursor/create-subagent/SKILL.md` states the same
+  locations and the same required `name`/`description` pair, independently of the website.
+- **`model: inherit` for every role and tier.** It is the documented default *and* the only thing a
+  Free plan accepts (NOTES.md "The cursor backend, validated against a real install"), so no model
+  class → id table was invented. The consequence is honest and worth stating: the `-xhigh`/`-max`
+  stubs differ only in prose here, not in configuration.
+- **`readonly: true` only where `role.json.permission` is `readonly`** (today: code-reviewer). False
+  is the documented default, so it is omitted rather than written out. docs/PLAN.md §B5's "no
+  `tools` field, so it is prose-only" still holds for the deny lists; the readonly rung is now real.
+- **A Cursor skill is both slash-invocable and auto-surfaced** (cursor.com/docs/context/skills:
+  "type `/` in Agent chat and search for the skill name"), so unlike opencode this harness needs no
+  command-vs-skill split, and unlike Copilot `/claustrum` is genuinely typeable. The folder name
+  must equal the skill's `name`. `disable-model-invocation` is deliberately **not** written: leaving
+  it out keeps the skill auto-surfaced by description as on every other harness, and the slash form
+  works either way — Cursor's own `create-skill` guidance suggests the opposite default for its
+  built-ins.
+- **`~/.cursor/` is a real user-level target for all three**, mcp.json included
+  (cursor.com/docs/context/mcp), so `--global` writes agents, skills *and* mcp.json — unlike
+  `.mcp.json`/`opencode.json`, which are repo-root files `--global` skips.
+- **Not verified live**: no synced file was ever loaded by a real Cursor session (no GUI here), so
+  this is one notch below CopilotSync's `copilot skill list` round trip. Issue #25's "`/claustrum`
+  runs in a real Cursor session" stays open until someone with Cursor checks it.
+- **`~/.cursor/mcp.json` registers the absolute binary (2026-09-22, review of the follow-ups
+  batch).** Under `--global` the user-level entry carried the same bare `claustrum` the repo file
+  gets — the exact GUI-PATH hazard #24 fixed next door, for a Cursor started from a desktop session.
+  `CursorSync.Sync` takes an optional `globalBinaryPath`, supplied by the caller the way
+  `ClaudeDesktopTarget.BinaryPath` is (so Roles still reads no environment of its own), and **skips
+  the global `mcp.json` merge entirely** when it is null rather than registering the dotnet host
+  under the `claustrum` key; `SyncCommand` prints `cursor global mcp.json: not written (<reason>)`.
+  The repo-level `.cursor/mcp.json` keeps the bare name deliberately: it is committed and shared, and
+  a machine-specific path in it would be wrong for everyone else.
+
+## The claustrum MCP server in the Claude desktop config (2026-09-22, issue #24/M4)
+
+Closes the gap NOTES.md "docs/INSTALL.md records one gap rather than papering over it" recorded:
+`sync --global --only claude` now merges `mcpServers.claustrum` into the desktop app's own config —
+`%APPDATA%\Claude\claude_desktop_config.json` on Windows, `~/Library/Application
+Support/Claude/claude_desktop_config.json` on macOS. Linux has no Claude desktop app, so nothing is
+written and `sync` prints one line saying exactly that.
+
+- **`command` is `Environment.ProcessPath`, not the bare `claustrum`**: the desktop app spawns the
+  server from a GUI process whose PATH rarely holds the install directory. The path (and the
+  binary) is resolved in the CLI (`Cli/ClaudeDesktopConfig`) and handed to `ClaudeSync` as a
+  `ClaudeDesktopTarget`, so Roles still reads no environment of its own and a test can point the
+  merge at a temp file — the same seam `homeDirectory` already is.
+- **Provenance: `McpProvenance.OwnKey`.** The manifest rule (`.claustrum/sync-manifest.json` proves
+  claustrum wrote the key) cannot apply to a file that belongs to no repo, so the smallest honest
+  rule was chosen instead: the `claustrum` key's own name is its provenance — it is rewritten
+  whenever its content differs, and no sibling server is ever touched. `~/.cursor/mcp.json` under
+  `--global` uses the same rule for the same reason. The trade-off is deliberate: a hand-written
+  `claustrum` entry (what INSTALL.md told desktop users to create until today) is corrected rather
+  than reported foreign.
+- **Written only where the app is, and only by the binary (2026-09-22, review of the follow-ups
+  batch).** Two ways the merge above wrote a file nobody asked for. (1) A machine with no desktop app
+  at all: `%APPDATA%\Claude` / `~/Library/Application Support/Claude` did not exist, the merge
+  created it and planted a config no app reads, after which `sync --global --only claude --check`
+  reported that file missing/stale there forever. `Resolve` now requires the app's own config
+  **directory** to exist — its *file* may still be absent, which is a fresh install and ours to
+  create — and otherwise skips with `Claude desktop app not found at <dir>`. (2) `dotnet
+  run`/`dotnet exec`: `Environment.ProcessPath` is then the **dotnet host**, not claustrum (this
+  project suppresses its apphost through `PackAsTool`), so the registered `command` would start the
+  SDK. `ClaustrumBinaryPath.Resolve()` returns a reason instead of a path whenever
+  `Path.GetFileNameWithoutExtension(ProcessPath)` is not `claustrum` (case-insensitive), and every
+  skip prints through the one line the Linux skip already used: `claude desktop config: not written
+  (<reason>)`. Order is OS → directory → binary, so a Linux user is told there is no such app instead
+  of being sent to install a binary that would not help.
