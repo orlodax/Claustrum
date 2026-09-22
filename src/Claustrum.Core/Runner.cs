@@ -31,6 +31,16 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
     public async Task<RunResult> RunAsync(RunRequest request, ResolvedRole role, RunOptions options, JobPaths job, CancellationToken cancellationToken) =>
         await RunCoreAsync(request, role, options, jobOverride: job, cancellationToken);
 
+    /// <summary>
+    /// A run refused before anything but its job directory existed: no process, no worktree, no
+    /// reservation to release — only the `result.json` a caller parsing `--json` must still find
+    /// (issue #20: a `max_parallel` gate that times out waiting for a slot). Same "nothing ran" shape
+    /// and the same finish funnel as the BackendMissing and BudgetExceeded refusals this class builds
+    /// internally; it is public because that caller decides *before* Runner is ever entered.
+    /// </summary>
+    public static async Task<RunResult> RefuseAsync(JobPaths job, ResolvedRole role, RunStatus status, string error) =>
+        await FinishAsync(job, reservation: null, NoProcessResult(job, role, status, error), ran: false);
+
     // 2026-09-14 review finding #7: the old single-expression overload evaluated
     // `JobDirectory.Create(platform)` as an *argument*, before the callee body ran — so
     // JobDirectory.Prune's deletion of old job dirs, and the job dir itself, existed before

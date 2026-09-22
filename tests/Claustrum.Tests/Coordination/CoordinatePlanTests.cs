@@ -8,97 +8,96 @@ using Claustrum.Tests.Testing;
 
 namespace Claustrum.Tests.Coordination;
 
-// CoordinatePlan.ToDelegateRequest re-resolves the cast from disk (CastApplication.Resolve reads
-// Request.Cwd/Request.CastName, not the Cast already sitting on the plan) and reads
+// CoordinatePlan.ToDelegateRequest no longer re-reads the cast from disk (issue #23: PlanAsync
+// resolves Tier/Overrides/CastBudget once, pre-mint, and keeps them on the plan), but it still reads
 // AppServices.Platform.GetEnvironmentVariable("CLAUSTRUM_HOME") directly (TreeEnv) — so this needs
-// both a real cast file under a temp cwd and the "AppServices home" collection, like
-// DelegateEngineTests/JobManagerTests. JobPaths is hand-built rather than JobDirectory.Create()'d:
-// ToDelegateRequest only ever reads job.Id, and nothing here needs a real job directory on disk.
+// the "AppServices home" collection, like DelegateEngineTests/JobManagerTests. Every plan here comes
+// from a real CoordinateEngine.PlanAsync call over a cast saved to a temp cwd — the same path
+// production takes, and the only way Tier/Overrides/CastBudget end up resolved the way they do
+// there — rather than a hand-built CoordinatePlan record.
 [Collection(AppServicesHomeCollectionDefinition.Name)]
 public sealed class CoordinatePlanTests(AppServicesHomeFixture fixture) : IDisposable
 {
-    private static readonly JobPaths job = new("job-abc123", "", "", "", "", "", "");
-
     private readonly string cwd = Directory.CreateTempSubdirectory("claustrum-coordinate-plan-").FullName;
 
     public void Dispose() => Directory.Delete(cwd, recursive: true);
 
-    private CoordinatePlan Plan(CastArchitect architect, string? tierFlag = null, ConfigOverrides? overrides = null)
+    private async Task<CoordinatePlan> PlanAsync(CastArchitect architect, string? tierFlag = null, ConfigOverrides? overrides = null)
     {
         Cast cast = new("default", "1.0.0", architect, [], null);
         CastStore.Save(cwd, cast);
 
-        return new CoordinatePlan(
-            new CoordinateRequest(
-                Cwd: cwd,
-                CastName: "default",
-                Issues: [],
-                Brief: "do it",
-                TierFlag: tierFlag,
-                Overrides: overrides ?? new ConfigOverrides(),
-                Stream: false,
-                DiffCapBytes: 64 * 1024),
-            cast,
-            "default",
-            "## Task\ndo it");
+        CoordinateRequest request = new(
+            Cwd: cwd,
+            CastName: "default",
+            Issues: [],
+            Brief: "do it",
+            TierFlag: tierFlag,
+            Overrides: overrides ?? new ConfigOverrides(),
+            Stream: false,
+            DiffCapBytes: 64 * 1024);
+
+        return await CoordinateEngine.PlanAsync(request, new NeverCalledIssueSource(), TestContext.Current.CancellationToken);
     }
 
     private static CastArchitect SpawnedCast(string? model = "claude:opus", string? tier = "xhigh") =>
         new(CastArchitect.Spawned, Model: model, Tier: tier);
 
     [Fact]
-    public void RoleIsAlwaysArchitect()
+    public async Task RoleIsAlwaysArchitectAsync()
     {
-        DelegateRequest request = Plan(SpawnedCast()).ToDelegateRequest(job);
+        DelegateRequest request = (await PlanAsync(SpawnedCast())).ToDelegateRequest();
 
         Assert.Equal(Cast.ArchitectRole, request.Role);
     }
 
+    // The job id does not exist yet (issue #23): both places that need it carry
+    // DelegateRequest.JobIdToken, substituted later by PreparedDelegation.ForJob.
     [Fact]
-    public void EnvCarriesTheJobIdAsTheParentJobTreeVariable()
+    public async Task EnvCarriesTheJobIdTokenAsTheParentJobTreeVariableAsync()
     {
-        DelegateRequest request = Plan(SpawnedCast()).ToDelegateRequest(job);
+        DelegateRequest request = (await PlanAsync(SpawnedCast())).ToDelegateRequest();
 
-        Assert.Equal(job.Id, request.Env[BudgetLedger.TreeVariable]);
+        Assert.Equal(DelegateRequest.JobIdToken, request.Env[BudgetLedger.TreeVariable]);
     }
 
     [Fact]
-    public void MaxParallelIsAlwaysNull()
+    public async Task MaxParallelIsAlwaysNullAsync()
     {
-        DelegateRequest request = Plan(SpawnedCast()).ToDelegateRequest(job);
+        DelegateRequest request = (await PlanAsync(SpawnedCast())).ToDelegateRequest();
 
         Assert.Null(request.MaxParallel);
     }
 
     [Fact]
-    public void SystemAppendixNamesTheJobId()
+    public async Task SystemAppendixCarriesTheJobIdTokenAsync()
     {
-        DelegateRequest request = Plan(SpawnedCast()).ToDelegateRequest(job);
+        DelegateRequest request = (await PlanAsync(SpawnedCast())).ToDelegateRequest();
 
-        Assert.Contains(job.Id, request.SystemAppendix, StringComparison.Ordinal);
+        Assert.Contains(DelegateRequest.JobIdToken, request.SystemAppendix, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void TierAndModelComeFromTheCastsArchitectEntry()
+    public async Task TierAndModelComeFromTheCastsArchitectEntryAsync()
     {
-        DelegateRequest request = Plan(SpawnedCast(model: "claude:opus", tier: "xhigh")).ToDelegateRequest(job);
+        DelegateRequest request = (await PlanAsync(SpawnedCast(model: "claude:opus", tier: "xhigh"))).ToDelegateRequest();
 
         Assert.Equal("xhigh", request.Tier);
         Assert.Equal("claude:opus", request.Overrides.Model);
     }
 
     [Fact]
-    public void AnExplicitTierFlagStillWinsOverTheCastsArchitectEntry()
+    public async Task AnExplicitTierFlagStillWinsOverTheCastsArchitectEntryAsync()
     {
-        DelegateRequest request = Plan(SpawnedCast(tier: "xhigh"), tierFlag: "max").ToDelegateRequest(job);
+        DelegateRequest request = (await PlanAsync(SpawnedCast(tier: "xhigh"), tierFlag: "max")).ToDelegateRequest();
 
         Assert.Equal("max", request.Tier);
     }
 
     [Fact]
-    public void AnExplicitModelOverrideStillWinsOverTheCastsArchitectEntry()
+    public async Task AnExplicitModelOverrideStillWinsOverTheCastsArchitectEntryAsync()
     {
-        DelegateRequest request = Plan(SpawnedCast(model: "claude:opus"), overrides: new ConfigOverrides(Model: "claude:haiku")).ToDelegateRequest(job);
+        DelegateRequest request = (await PlanAsync(SpawnedCast(model: "claude:opus"), overrides: new ConfigOverrides(Model: "claude:haiku"))).ToDelegateRequest();
 
         Assert.Equal("claude:haiku", request.Overrides.Model);
     }
@@ -108,9 +107,9 @@ public sealed class CoordinatePlanTests(AppServicesHomeFixture fixture) : IDispo
     // reachable honestly — asserting CLAUSTRUM_HOME is absent, not asserting it is present under a
     // platform rigged to never report one.
     [Fact]
-    public void EnvOmitsClaustrumHomeWhenThePlatformReportsNone()
+    public async Task EnvOmitsClaustrumHomeWhenThePlatformReportsNoneAsync()
     {
-        DelegateRequest request = Plan(SpawnedCast()).ToDelegateRequest(job);
+        DelegateRequest request = (await PlanAsync(SpawnedCast())).ToDelegateRequest();
 
         Assert.False(request.Env.ContainsKey("CLAUSTRUM_HOME"));
     }
@@ -122,12 +121,12 @@ public sealed class CoordinatePlanTests(AppServicesHomeFixture fixture) : IDispo
     // sequentially (AppServicesHomeFixture's own doc comment), so nothing else in this collection
     // observes the swap mid-flight.
     [Fact]
-    public void EnvCarriesClaustrumHomeWhenThePlatformReportsOne()
+    public async Task EnvCarriesClaustrumHomeWhenThePlatformReportsOneAsync()
     {
         AppServices.OverrideForTests(new ClaustrumHomeReportingPlatform("/fake/claustrum/home"));
         try
         {
-            DelegateRequest request = Plan(SpawnedCast()).ToDelegateRequest(job);
+            DelegateRequest request = (await PlanAsync(SpawnedCast())).ToDelegateRequest();
 
             Assert.Equal("/fake/claustrum/home", request.Env["CLAUSTRUM_HOME"]);
         }
@@ -139,6 +138,15 @@ public sealed class CoordinatePlanTests(AppServicesHomeFixture fixture) : IDispo
             // would silently break that for the rest of the collection.
             AppServices.OverrideForTests(fixture.Platform);
         }
+    }
+
+    // Plan() never sets Issues, so a source that would throw if ever called proves ToDelegateRequest
+    // itself touches nothing gh-shaped — the same guarantee CoordinateEngineTests' FakeIssueSource
+    // gives its own callers, just phrased as "must never be called" instead of "records its calls".
+    private sealed class NeverCalledIssueSource : IIssueSource
+    {
+        public Task<GhIssue> ViewAsync(string cwd, int number, CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("PlanAsync must not consult the issue source when Issues is empty");
     }
 
     // Delegates everything to RealPlatform except CLAUSTRUM_HOME, which HomeRedirectPlatform hides

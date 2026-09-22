@@ -10,18 +10,27 @@ namespace Claustrum.Delegation;
 // The pipeline docs/PLAN.md §A5 describes for `run`, now shared by CLI `run` and MCP `delegate`/
 // `delegate_async` (extracted from RunCommand once MCP needed the same steps): load config -> the
 // harness the role's tier model resolves to (--backend still wins) -> RoleRenderer.Render -> Config.
-// Resolve -> RunRequest -> Runner.RunAsync.
+// Resolve -> RunRequest -> Runner.RunAsync. Cut in two at the job directory (issue #23): Prepare is
+// everything decidable without one, RunAsync everything that needs one.
 public static class DelegateEngine
 {
     public const int DefaultTimeoutSeconds = 1800;
 
+    // The whole pipeline for a caller that has no job directory to lose: `run` and `delegate`, where
+    // Runner mints one itself after the blind gate. ⚠ There is deliberately no
+    // `RunAsync(DelegateRequest, JobPaths, …)` beside it — a caller that mints first must Prepare
+    // first, or it is back to resolving config and role over a directory nothing will ever close
+    // (issue #23). JobManager and `coordinate` take the PreparedDelegation overload for that reason.
     public static async Task<RunResult> RunAsync(DelegateRequest request, CancellationToken cancellationToken) =>
-        await RunAsync(request, job: null, cancellationToken);
+        await RunAsync(Prepare(request), job: null, cancellationToken);
 
-    // JobManager (MCP delegate_async) needs the job id before the run finishes, so it pre-creates the
-    // JobPaths and passes it in; the CLI's synchronous `run` (and MCP's synchronous `delegate`) use
-    // the overload above, which lets Runner create one internally.
-    public static async Task<RunResult> RunAsync(DelegateRequest request, JobPaths? job, CancellationToken cancellationToken)
+    /// <summary>
+    /// Everything this pipeline can decide — and refuse — before a job directory exists (issue #23):
+    /// a malformed `claustrum.json`, a tier the role has no model class for, an unresolvable model
+    /// alias and an unknown permission all throw here, where the caller that would have minted the
+    /// directory has not yet. Nothing on disk is written and no backend is looked up.
+    /// </summary>
+    public static PreparedDelegation Prepare(DelegateRequest request)
     {
         // Config first, then the harness the role's tier model resolves to, then Render — Render
         // must already know the harness it will run on (M1 review finding #2), not a placeholder
@@ -68,65 +77,97 @@ public static class DelegateEngine
             OnStreamLine: request.OnStreamLine,
             Tree: tree);
 
-        // max_parallel > 1 (docs/PLAN.md §D4): the job runs isolated in its own git worktree/branch
-        // instead of directly in request.Cwd, gated by a cross-process cap so at most maxParallel
-        // builders for this role run at once, however many separate `claustrum run` processes a
-        // spawned architect fans them out as. Config/tier/harness resolution above still reads
-        // request.Cwd — only the backend's own working directory moves.
-        if (request.MaxParallel is { } maxParallel && maxParallel > 1)
+        return new PreparedDelegation(request, resolved, options, budgetUsd, timeoutSeconds, requestPermission);
+    }
+
+    /// <summary>
+    /// The half that needs a job: the concurrency gate and worktree isolation a fanned-out role pays
+    /// for up front, then Runner. A <paramref name="job"/> of null lets Runner mint one after its own
+    /// blind gate (the CLI `run` ordering); anything a caller minted itself is handed straight on, and
+    /// its id fills <see cref="DelegateRequest.JobIdToken"/> here, at the last moment.
+    /// </summary>
+    public static async Task<RunResult> RunAsync(PreparedDelegation prepared, JobPaths? job, CancellationToken cancellationToken)
+    {
+        if (prepared.Request.MaxParallel is { } maxParallel && maxParallel > 1)
+            return await RunIsolatedAsync(prepared, job ?? JobDirectory.Create(AppServices.Platform), maxParallel, cancellationToken);
+
+        PreparedDelegation bound = job is null ? prepared : prepared.ForJob(job.Id);
+        RunRequest runRequest = BuildRunRequest(bound, bound.Request.Cwd);
+
+        return job is null
+            ? await AppServices.Runner.RunAsync(runRequest, bound.Role, bound.Options, cancellationToken)
+            : await AppServices.Runner.RunAsync(runRequest, bound.Role, bound.Options, job, cancellationToken);
+    }
+
+    // max_parallel > 1 (docs/PLAN.md §D4): the job runs isolated in its own git worktree/branch
+    // instead of directly in request.Cwd, gated by a cross-process cap so at most maxParallel
+    // builders for this role run at once, however many separate `claustrum run` processes a
+    // spawned architect fans them out as. Prepare's config/tier/harness resolution still read
+    // request.Cwd — only the backend's own working directory moves.
+    private static async Task<RunResult> RunIsolatedAsync(PreparedDelegation prepared, JobPaths job, int maxParallel, CancellationToken cancellationToken)
+    {
+        PreparedDelegation bound = prepared.ForJob(job.Id);
+        DelegateRequest request = bound.Request;
+
+        string gateKey = RoleConcurrencyGate.KeyFor(request.CastName, request.Role);
+
+        RoleConcurrencyGate slot;
+        try
         {
-            job ??= JobDirectory.Create(AppServices.Platform);
-            string gateKey = RoleConcurrencyGate.KeyFor(request.CastName, request.Role);
-            await using RoleConcurrencyGate gate = await RoleConcurrencyGate.AcquireAsync(
-                request.Cwd, gateKey, maxParallel, TimeSpan.FromSeconds(timeoutSeconds), cancellationToken);
-
-            // Binding, and before any isolation: this path cuts a branch and holds a slot before Runner
-            // ever sees the request, so a job the ledger will refuse has to be refused here. The slot
-            // comes first anyway — a reservation must never wait behind the gate, and a sibling that
-            // finishes in that wait releases budget this job can then have.
-            BudgetAdmission? admission = await TryAdmitAsync(tree, job.Id, resolved.Name, budgetUsd);
-            RunOptions isolatedOptions = options with { Admission = admission };
-
-            if (admission is { Admitted: false })
-            {
-                // No worktree, no branch, no slot: Runner only writes the refusal's result.json, and
-                // the `await using` above disposes the gate a second time, which is a no-op.
-                await gate.DisposeAsync();
-                RunRequest refusedRunRequest = BuildRunRequest(request, request.Cwd, requestPermission, budgetUsd, timeoutSeconds);
-                return await AppServices.Runner.RunAsync(refusedRunRequest, resolved, isolatedOptions, job, cancellationToken);
-            }
-
-            JobWorktreeInfo? worktree = null;
-            try
-            {
-                worktree = await JobWorktree.AddAsync(request.Cwd, job.Id, cancellationToken);
-                RunRequest isolatedRunRequest = BuildRunRequest(request, worktree.Path, requestPermission, budgetUsd, timeoutSeconds);
-                RunResult isolatedResult = await AppServices.Runner.RunAsync(isolatedRunRequest, resolved, isolatedOptions, job, cancellationToken);
-                return isolatedResult with { Worktree = worktree.Path, Branch = worktree.Branch };
-            }
-            catch (Exception ex)
-            {
-                // Runner writes a result.json for everything that fails once the backend process has
-                // run, so landing here means the run never produced one — a rejected blind gate, a
-                // non-positive --timeout, a `git worktree add` on a cwd that is no repo. Two things
-                // must be undone. The reservation, because Runner closes it through its funnel but may
-                // never have received it; releasing the handle is enough (the next admission then reads
-                // the entry as abandoned, worth $0) and disposing twice is harmless. And the worktree:
-                // `jobs clean` only removes worktrees whose job wrote a result.json, so one left behind
-                // here could never be cleaned and its branch would accumulate forever.
-                if (admission?.Reservation is { } reservation)
-                    await reservation.DisposeAsync();
-
-                if (worktree is not null && await JobWorktree.TryRemoveAbandonedAsync(request.Cwd, job.Id, CancellationToken.None) is { } cleanupFailure)
-                    throw new AggregateException($"{ex.Message} (and cleaning up {worktree.Path} failed)", ex, cleanupFailure);
-                throw;
-            }
+            slot = await RoleConcurrencyGate.AcquireAsync(
+                request.Cwd, gateKey, maxParallel, TimeSpan.FromSeconds(bound.TimeoutSeconds), cancellationToken);
+        }
+        catch (TimeoutException ex)
+        {
+            // issue #20: every other pre-spawn refusal on this path is a RunResult document, and an
+            // architect parsing --json cannot read an exception on stderr. Nothing to undo — no
+            // worktree, no branch, and admission comes after the gate, so no reservation exists yet.
+            return await Runner.RefuseAsync(job, bound.Role, RunStatus.Failed, ex.Message);
         }
 
-        RunRequest runRequest = BuildRunRequest(request, request.Cwd, requestPermission, budgetUsd, timeoutSeconds);
-        return job is null
-            ? await AppServices.Runner.RunAsync(runRequest, resolved, options, cancellationToken)
-            : await AppServices.Runner.RunAsync(runRequest, resolved, options, job, cancellationToken);
+        await using RoleConcurrencyGate gate = slot;
+
+        // Binding, and before any isolation: this path cuts a branch and holds a slot before Runner
+        // ever sees the request, so a job the ledger will refuse has to be refused here. The slot
+        // comes first anyway — a reservation must never wait behind the gate, and a sibling that
+        // finishes in that wait releases budget this job can then have.
+        BudgetAdmission? admission = await TryAdmitAsync(bound.Options.Tree, job.Id, bound.Role.Name, bound.BudgetUsd);
+        RunOptions isolatedOptions = bound.Options with { Admission = admission };
+
+        if (admission is { Admitted: false })
+        {
+            // No worktree, no branch, no slot: Runner only writes the refusal's result.json, and
+            // the `await using` above disposes the gate a second time, which is a no-op.
+            await gate.DisposeAsync();
+            RunRequest refusedRunRequest = BuildRunRequest(bound, request.Cwd);
+            return await AppServices.Runner.RunAsync(refusedRunRequest, bound.Role, isolatedOptions, job, cancellationToken);
+        }
+
+        JobWorktreeInfo? worktree = null;
+        try
+        {
+            worktree = await JobWorktree.AddAsync(request.Cwd, job.Id, cancellationToken);
+            RunRequest isolatedRunRequest = BuildRunRequest(bound, worktree.Path);
+            RunResult isolatedResult = await AppServices.Runner.RunAsync(isolatedRunRequest, bound.Role, isolatedOptions, job, cancellationToken);
+            return isolatedResult with { Worktree = worktree.Path, Branch = worktree.Branch };
+        }
+        catch (Exception ex)
+        {
+            // Runner writes a result.json for everything that fails once the backend process has
+            // run, so landing here means the run never produced one — a rejected blind gate, a
+            // non-positive --timeout, a `git worktree add` on a cwd that is no repo. Two things
+            // must be undone. The reservation, because Runner closes it through its funnel but may
+            // never have received it; releasing the handle is enough (the next admission then reads
+            // the entry as abandoned, worth $0) and disposing twice is harmless. And the worktree:
+            // `jobs clean` only removes worktrees whose job wrote a result.json, so one left behind
+            // here could never be cleaned and its branch would accumulate forever.
+            if (admission?.Reservation is { } reservation)
+                await reservation.DisposeAsync();
+
+            if (worktree is not null && await JobWorktree.TryRemoveAbandonedAsync(request.Cwd, job.Id, CancellationToken.None) is { } cleanupFailure)
+                throw new AggregateException($"{ex.Message} (and cleaning up {worktree.Path} failed)", ex, cleanupFailure);
+            throw;
+        }
     }
 
     // Above `## House rules`, not after it: dead-last in a ~23 KB system prompt is the position
@@ -162,21 +203,21 @@ public static class DelegateEngine
         }
     }
 
-    private static RunRequest BuildRunRequest(DelegateRequest request, string cwd, PermissionPolicy? permission, decimal? budgetUsd, int timeoutSeconds) => new(
-        Role: request.Role,
-        Brief: request.Brief,
+    private static RunRequest BuildRunRequest(PreparedDelegation prepared, string cwd) => new(
+        Role: prepared.Request.Role,
+        Brief: prepared.Request.Brief,
         BriefFile: null,
         Cwd: cwd,
-        Backend: request.Overrides.Backend,
-        Model: request.Overrides.Model,
-        Effort: request.Overrides.Effort,
-        Permission: permission,
-        BudgetUsd: budgetUsd,
-        Timeout: TimeSpan.FromSeconds(timeoutSeconds),
-        ResumeSession: request.ResumeSession,
-        AttachFiles: request.AttachFiles,
-        Env: request.Env,
-        Stream: request.Stream);
+        Backend: prepared.Request.Overrides.Backend,
+        Model: prepared.Request.Overrides.Model,
+        Effort: prepared.Request.Overrides.Effort,
+        Permission: prepared.Permission,
+        BudgetUsd: prepared.BudgetUsd,
+        Timeout: TimeSpan.FromSeconds(prepared.TimeoutSeconds),
+        ResumeSession: prepared.Request.ResumeSession,
+        AttachFiles: prepared.Request.AttachFiles,
+        Env: prepared.Request.Env,
+        Stream: prepared.Request.Stream);
 
     // The CLI's --permission option already validates against the known set (AcceptOnlyFromAmong)
     // before this ever runs; an MCP caller sending an invalid string is exactly the case this should

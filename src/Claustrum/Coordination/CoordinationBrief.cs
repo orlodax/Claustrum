@@ -1,6 +1,7 @@
 using System.Globalization;
 using Claustrum.Casts;
 using Claustrum.Core.Jobs;
+using Claustrum.Delegation;
 
 namespace Claustrum.Coordination;
 
@@ -8,7 +9,9 @@ namespace Claustrum.Coordination;
 // `## Task`/`## Context` convention) and the `## Coordination` section appended to its system body
 // (§D3's "with the cast injected into its system body"). Pure and dependency-free on purpose — the
 // appendix is the contract a spawned architect actually obeys, so it must be assertable against a
-// hand-built Cast without gh, a backend, or a job on disk.
+// hand-built Cast without gh, a backend, or a job on disk. The job id is not a dependency either:
+// it does not exist when this renders (issue #23), so the three lines that name it emit
+// DelegateRequest.JobIdToken and the engine substitutes the real id once the directory is minted.
 public static class CoordinationBrief
 {
     // CastResolution.ApplyRole's fallback, repeated here because the appendix states what each role
@@ -41,7 +44,7 @@ public static class CoordinationBrief
         return string.Join('\n', lines);
     }
 
-    public static string RenderSystemAppendix(Cast cast, string castName, string cwd, string jobId, string? modelOverride = null)
+    public static string RenderSystemAppendix(Cast cast, string castName, string cwd, string? modelOverride = null)
     {
         List<string> lines =
         [
@@ -65,8 +68,8 @@ public static class CoordinationBrief
             cast.BudgetUsd is { } budget
                 ? $"Budget: {BudgetLedger.Dollars(budget)} across the whole job tree"
                 : "Budget: unlimited — children are not accounted; `claustrum jobs budget` will be empty",
-            $"Job tree: {jobId}",
-            $"Inspect: claustrum jobs budget {jobId}",
+            $"Job tree: {DelegateRequest.JobIdToken}",
+            $"Inspect: claustrum jobs budget {DelegateRequest.JobIdToken}",
             "",
             // Both values quoted: a cwd or a cast name with a space in it otherwise splits into two
             // arguments, and double quotes read the same in bash and in PowerShell.
@@ -77,7 +80,7 @@ public static class CoordinationBrief
             """- A child that comes back with `status: budget_exceeded` has not necessarily spent anything — its `error` says what to do. "… while N running job(s) hold …": wait for one of your running children to finish, then start it again. "$R remaining; --budget X exceeds it": start it again with `--budget` at most R, or wait for a sibling to finish and free more. "rounds to $0.00 — pass --budget (at most $Y)": start it again with that explicit `--budget`. "$0.00 remaining" with nothing of yours running: the tree is spent — stop and report what is done. When you start two children at once (reviewer ‖ ui-reviewer, several builders), give each an explicit `--budget <usd>` that together fit the remaining budget; a child started without one reserves the whole remainder until it finishes, so its sibling is refused.""",
             "- Write each brief to .claustrum/briefs/<n>-<role>.md first, then pass that path to --brief-file.",
             "",
-            $"Work branch: claustrum/{jobId} — create it from the current HEAD before delegating anything.",
+            $"Work branch: claustrum/{DelegateRequest.JobIdToken} — create it from the current HEAD before delegating anything.",
             "- A builder running in parallel returns `worktree` and `branch` (claustrum/<its own job id>). Integrate each one with `git rebase` onto the work branch, then fast-forward the work branch to it.",
             "- Never a merge commit, never `git push`.",
         ]);

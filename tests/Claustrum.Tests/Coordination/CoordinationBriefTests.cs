@@ -1,5 +1,6 @@
 using Claustrum.Casts;
 using Claustrum.Coordination;
+using Claustrum.Delegation;
 
 namespace Claustrum.Tests.Coordination;
 
@@ -19,7 +20,7 @@ public sealed class CoordinationBriefTests
     {
         Cast cast = BuildCast(roles: new Dictionary<string, CastRoleEntry?> { ["tester"] = null });
 
-        string appendix = CoordinationBrief.RenderSystemAppendix(cast, "default", "/repo", "job-1");
+        string appendix = CoordinationBrief.RenderSystemAppendix(cast, "default", "/repo");
 
         Assert.Contains("- tester: not needed for this cast — do not delegate to it", appendix, StringComparison.Ordinal);
     }
@@ -33,7 +34,7 @@ public sealed class CoordinationBriefTests
             ["tester"] = new CastRoleEntry(Model: "claude:haiku", Backend: null, Tier: null),
         });
 
-        string appendix = CoordinationBrief.RenderSystemAppendix(cast, "default", "/repo", "job-1");
+        string appendix = CoordinationBrief.RenderSystemAppendix(cast, "default", "/repo");
 
         Assert.Contains("- builder: model claude:opus, tier high, max_parallel 3", appendix, StringComparison.Ordinal);
         Assert.Contains("- tester: model claude:haiku, tier high", appendix, StringComparison.Ordinal);
@@ -49,7 +50,7 @@ public sealed class CoordinationBriefTests
             ["builder"] = new CastRoleEntry(Model: null, Backend: null, Tier: null),
         });
 
-        string appendix = CoordinationBrief.RenderSystemAppendix(cast, "default", "/repo", "job-1");
+        string appendix = CoordinationBrief.RenderSystemAppendix(cast, "default", "/repo");
 
         Assert.Contains("- builder: model per claustrum.json, tier high, max_parallel 1", appendix, StringComparison.Ordinal);
     }
@@ -59,7 +60,7 @@ public sealed class CoordinationBriefTests
     {
         Cast cast = BuildCast(budgetUsd: 12.5m);
 
-        string appendix = CoordinationBrief.RenderSystemAppendix(cast, "default", "/repo", "job-1");
+        string appendix = CoordinationBrief.RenderSystemAppendix(cast, "default", "/repo");
 
         Assert.Contains("Budget: $12.50 across the whole job tree", appendix, StringComparison.Ordinal);
     }
@@ -69,7 +70,7 @@ public sealed class CoordinationBriefTests
     {
         Cast cast = BuildCast(budgetUsd: null);
 
-        string appendix = CoordinationBrief.RenderSystemAppendix(cast, "default", "/repo", "job-1");
+        string appendix = CoordinationBrief.RenderSystemAppendix(cast, "default", "/repo");
 
         Assert.Contains("Budget: unlimited — children are not accounted", appendix, StringComparison.Ordinal);
         Assert.DoesNotContain("across the whole job tree", appendix, StringComparison.Ordinal);
@@ -89,7 +90,7 @@ public sealed class CoordinationBriefTests
             ["code-reviewer"] = new CastRoleEntry(Model: "claude:opus", Backend: null, Tier: null),
         });
 
-        string appendix = CoordinationBrief.RenderSystemAppendix(cast, "default", "/repo", "job-1");
+        string appendix = CoordinationBrief.RenderSystemAppendix(cast, "default", "/repo");
 
         int builder = appendix.IndexOf("- builder:", StringComparison.Ordinal);
         int codeReviewer = appendix.IndexOf("- code-reviewer:", StringComparison.Ordinal);
@@ -108,7 +109,7 @@ public sealed class CoordinationBriefTests
     {
         Cast cast = BuildCast();
 
-        string appendix = CoordinationBrief.RenderSystemAppendix(cast, "my cast", "/repo with space", "job-1");
+        string appendix = CoordinationBrief.RenderSystemAppendix(cast, "my cast", "/repo with space");
 
         Assert.Contains(
             "Delegate with: claustrum run <role> --cast \"my cast\" --brief-file <path> --json --cwd \"/repo with space\"",
@@ -120,7 +121,7 @@ public sealed class CoordinationBriefTests
     {
         Cast cast = BuildCast(architect: new CastArchitect(CastArchitect.Spawned, Model: "claude:opus"));
 
-        string appendix = CoordinationBrief.RenderSystemAppendix(cast, "default", "/repo", "job-1", modelOverride: null);
+        string appendix = CoordinationBrief.RenderSystemAppendix(cast, "default", "/repo", modelOverride: null);
 
         Assert.Contains("- architect: mode spawned, model claude:opus, tier high — that is you, in this run", appendix, StringComparison.Ordinal);
         Assert.DoesNotContain("this run:", appendix, StringComparison.Ordinal);
@@ -131,21 +132,24 @@ public sealed class CoordinationBriefTests
     {
         Cast cast = BuildCast(architect: new CastArchitect(CastArchitect.Spawned, Model: "claude:opus"));
 
-        string appendix = CoordinationBrief.RenderSystemAppendix(cast, "default", "/repo", "job-1", modelOverride: "claude:haiku");
+        string appendix = CoordinationBrief.RenderSystemAppendix(cast, "default", "/repo", modelOverride: "claude:haiku");
 
         Assert.Contains("model claude:opus, tier high (this run: claude:haiku)", appendix, StringComparison.Ordinal);
     }
 
+    // The job id does not exist yet when this renders (issue #23): the three lines that used to
+    // name it carry DelegateRequest.JobIdToken instead, substituted later by
+    // PreparedDelegation.ForJob once a job directory is minted (PreparedDelegationTests).
     [Fact]
-    public void TheJobIdAndInspectCommandAppear()
+    public void TheJobIdTokenAndInspectCommandAppear()
     {
         Cast cast = BuildCast();
 
-        string appendix = CoordinationBrief.RenderSystemAppendix(cast, "default", "/repo", "the-job-id");
+        string appendix = CoordinationBrief.RenderSystemAppendix(cast, "default", "/repo");
 
-        Assert.Contains("Job tree: the-job-id", appendix, StringComparison.Ordinal);
-        Assert.Contains("Inspect: claustrum jobs budget the-job-id", appendix, StringComparison.Ordinal);
-        Assert.Contains("Work branch: claustrum/the-job-id", appendix, StringComparison.Ordinal);
+        Assert.Contains($"Job tree: {DelegateRequest.JobIdToken}", appendix, StringComparison.Ordinal);
+        Assert.Contains($"Inspect: claustrum jobs budget {DelegateRequest.JobIdToken}", appendix, StringComparison.Ordinal);
+        Assert.Contains($"Work branch: claustrum/{DelegateRequest.JobIdToken}", appendix, StringComparison.Ordinal);
     }
 
     // The four distinct shapes a budget_exceeded error can take (DelegateEngine/BudgetLedger), all
@@ -155,7 +159,7 @@ public sealed class CoordinationBriefTests
     {
         Cast cast = BuildCast();
 
-        string appendix = CoordinationBrief.RenderSystemAppendix(cast, "default", "/repo", "job-1");
+        string appendix = CoordinationBrief.RenderSystemAppendix(cast, "default", "/repo");
 
         Assert.Contains("while N running job(s) hold", appendix, StringComparison.Ordinal);
         Assert.Contains("$R remaining; --budget X exceeds it", appendix, StringComparison.Ordinal);

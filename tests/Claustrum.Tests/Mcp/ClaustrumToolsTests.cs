@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json;
 using Claustrum.Casts;
 using Claustrum.Core.Jobs;
@@ -262,23 +263,53 @@ public sealed class ClaustrumToolsTests(AppServicesHomeFixture fixture) : IDispo
         }
     }
 
-    // DelegateStart itself must NOT throw for a bad role: an async job's `Task<RunResult>` is a
-    // faulted task returned by DelegateEngine.RunAsync, not a synchronous throw at Start() — "returns
-    // immediately with a job id" (the tool's own description) has to hold even for a job that will
-    // fail. The role error surfaces later, via job_result.
+    // issue #23: JobManager.Start now calls DelegateEngine.Prepare (config, tier model class,
+    // backend, RoleRenderer.Render) BEFORE JobDirectory.Create, so an unknown role is this call's
+    // own synchronous error — not a faulted background task discovered later via job_result — and no
+    // job directory is minted for it. Supersedes the pre-#23 assumption that DelegateStart never
+    // throws for a bad role.
     [Fact]
-    public async Task DelegateStartWithUnknownRoleThenJobResultThrowsMcpExceptionWithTheRealMessageAsync()
+    public void DelegateStartWithUnknownRoleThrowsMcpExceptionOnTheCallAndStartsNoJob()
     {
         string cwd = Directory.CreateTempSubdirectory("claustrum-mcp-badrole-async-").FullName;
         try
         {
-            string startJson = ClaustrumTools.DelegateStart(role: "no-such-role", brief: "hi", cwd: cwd);
+            string jobsRoot = JobDirectory.ResolveRoot(fixture.Platform);
+            int before = Directory.Exists(jobsRoot) ? Directory.GetDirectories(jobsRoot).Length : 0;
+
+            McpException exception = Assert.Throws<McpException>(
+                () => ClaustrumTools.DelegateStart(role: "no-such-role", brief: "hi", cwd: cwd));
+
+            Assert.Contains("no-such-role", exception.Message, StringComparison.Ordinal);
+            int after = Directory.Exists(jobsRoot) ? Directory.GetDirectories(jobsRoot).Length : 0;
+            Assert.Equal(before, after);
+        }
+        finally
+        {
+            Directory.Delete(cwd, recursive: true);
+        }
+    }
+
+    // Prepare only resolves config/role/model — the blind gate reads the brief's own content, which
+    // it cannot see until Runner actually runs the job, so a blind-role brief carrying rationale
+    // still starts a job (Prepare succeeds) and still fails, just asynchronously: the background
+    // Task<RunResult> faults inside Runner.RunCoreAsync before any result.json exists, and
+    // job_status reports it as "failed" rather than "done".
+    [Fact]
+    public async Task DelegateStartWithBlindGateViolationStillFailsAsynchronouslyViaJobStatusAsync()
+    {
+        string cwd = Directory.CreateTempSubdirectory("claustrum-mcp-blindgate-async-").FullName;
+        try
+        {
+            string startJson = ClaustrumTools.DelegateStart(role: "code-reviewer", brief: "## Plan\nstep 1", cwd: cwd);
             using JsonDocument started = JsonDocument.Parse(startJson);
             string jobId = started.RootElement.GetProperty("job_id").GetString()!;
 
-            McpException exception = await Assert.ThrowsAsync<McpException>(() => ClaustrumTools.JobResultAsync(jobId));
+            JobStatusInfo? status = await PollUntilDoneAsync(jobId);
+            Assert.Equal("failed", status?.State);
 
-            Assert.Contains("no-such-role", exception.Message, StringComparison.Ordinal);
+            McpException exception = await Assert.ThrowsAsync<McpException>(() => ClaustrumTools.JobResultAsync(jobId));
+            Assert.Contains("blind", exception.Message, StringComparison.OrdinalIgnoreCase);
         }
         finally
         {
@@ -405,6 +436,59 @@ public sealed class ClaustrumToolsTests(AppServicesHomeFixture fixture) : IDispo
         }
     }
 
+    // issue #23: CoordinatePlan.Prepare (config, role, model) runs before JobDirectory.Create — a
+    // syntactically broken claustrum.json is this call's own McpException, with no job directory
+    // minted for it. claustrum.json is only read from the git root (Config.Load), so this needs a
+    // real repo, unlike CoordinateWithNeitherIssuesNorBriefThrowsMcpExceptionAndStartsNoJobAsync.
+    [Fact]
+    public async Task CoordinateWithABrokenConfigThrowsMcpExceptionAndStartsNoJobAsync()
+    {
+        string cwd = CreateGitRepo("claustrum-mcp-coordinate-badconfig-");
+        try
+        {
+            CastStore.Save(cwd, new Cast("default", "1.0.0", new CastArchitect(CastArchitect.Spawned, Model: "nonexistent:x"), [], null));
+            File.WriteAllText(Path.Combine(cwd, "claustrum.json"), "{ not json");
+            string jobsRoot = JobDirectory.ResolveRoot(fixture.Platform);
+            int before = Directory.Exists(jobsRoot) ? Directory.GetDirectories(jobsRoot).Length : 0;
+
+            McpException exception = await Assert.ThrowsAsync<McpException>(
+                () => ClaustrumTools.CoordinateAsync(brief: "hi", cwd: cwd, cancellationToken: CancellationToken.None));
+
+            Assert.Contains("claustrum.json", exception.Message, StringComparison.Ordinal);
+            int after = Directory.Exists(jobsRoot) ? Directory.GetDirectories(jobsRoot).Length : 0;
+            Assert.Equal(before, after);
+        }
+        finally
+        {
+            TempTree.Delete(cwd);
+        }
+    }
+
+    // Same issue #23 gate, the delegate_async door: JobManager.Start(DelegateRequest, ct) calls
+    // DelegateEngine.Prepare before JobDirectory.Create.
+    [Fact]
+    public void DelegateStartWithABrokenConfigThrowsMcpExceptionAndStartsNoJob()
+    {
+        string cwd = CreateGitRepo("claustrum-mcp-delegatestart-badconfig-");
+        try
+        {
+            File.WriteAllText(Path.Combine(cwd, "claustrum.json"), "{ not json");
+            string jobsRoot = JobDirectory.ResolveRoot(fixture.Platform);
+            int before = Directory.Exists(jobsRoot) ? Directory.GetDirectories(jobsRoot).Length : 0;
+
+            McpException exception = Assert.Throws<McpException>(
+                () => ClaustrumTools.DelegateStart(role: "builder", brief: "hi", cwd: cwd));
+
+            Assert.Contains("claustrum.json", exception.Message, StringComparison.Ordinal);
+            int after = Directory.Exists(jobsRoot) ? Directory.GetDirectories(jobsRoot).Length : 0;
+            Assert.Equal(before, after);
+        }
+        finally
+        {
+            TempTree.Delete(cwd);
+        }
+    }
+
     // The tool is async by construction (its own [Description]): a cast plus a brief must return the
     // {job_id, log_path} pair at once, and the architect's run — backend "nonexistent" so nothing real
     // spawns — reaches "done" with status backend_missing and a request.json recording Stream: true
@@ -462,5 +546,39 @@ public sealed class ClaustrumToolsTests(AppServicesHomeFixture fixture) : IDispo
         Directory.CreateDirectory(directory);
         BudgetLedgerEntry entry = new("seed", "builder", 5.00m, 5.00m, DateTimeOffset.UtcNow.AddMinutes(-5), DateTimeOffset.UtcNow);
         File.WriteAllText(Path.Combine(directory, "seed.json"), JsonSerializer.Serialize(entry, ClaustrumJsonContext.Default.BudgetLedgerEntry));
+    }
+
+    // Config.Load only reads claustrum.json from the git root (GitRootLocator walks up from cwd), so
+    // the broken-config tests need a real repo, unlike every other cwd in this file — the same
+    // CreateRepo/RunGit duplicated locally DelegateEngineTests already carries for the same reason.
+    private static string CreateGitRepo(string prefix)
+    {
+        string dir = Directory.CreateTempSubdirectory(prefix).FullName;
+        RunGit(dir, "init", "-q");
+        RunGit(dir, "config", "user.email", "test@example.com");
+        RunGit(dir, "config", "user.name", "claustrum-tests");
+        File.WriteAllText(Path.Combine(dir, "seed.txt"), "seed\n");
+        RunGit(dir, "add", "-A");
+        RunGit(dir, "commit", "-q", "-m", "seed");
+        return dir;
+    }
+
+    private static void RunGit(string cwd, params string[] args)
+    {
+        ProcessStartInfo startInfo = new("git")
+        {
+            WorkingDirectory = cwd,
+            UseShellExecute = false,
+            RedirectStandardError = true,
+            CreateNoWindow = true,
+        };
+        foreach (string arg in args)
+            startInfo.ArgumentList.Add(arg);
+
+        using Process process = Process.Start(startInfo) ?? throw new InvalidOperationException("git failed to start");
+        string stderr = process.StandardError.ReadToEnd();
+        process.WaitForExit();
+        if (process.ExitCode != 0)
+            throw new InvalidOperationException($"git {string.Join(' ', args)} failed ({process.ExitCode}): {stderr}");
     }
 }
