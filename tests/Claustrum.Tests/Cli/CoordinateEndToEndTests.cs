@@ -174,6 +174,10 @@ public sealed class CoordinateEndToEndTests : IDisposable
         (int exitCode, string stdout, string stderr) = await RunAsync(["coordinate", "--brief", "x"], PathStrippedToGit());
 
         Assert.Equal(ExitCodes.Ok, exitCode);
+        // These two must be checked before the "done" substring below: a parse failure that falls
+        // back to raw text still contains "done" (it's inside the raw JSON), so asserting "done"
+        // alone cannot catch ClaudeBackend.Parse silently not firing (2026-09-22, PR #27's
+        // windows-latest leg passed this way with cost_usd null and no "architect cost" line).
         Assert.Contains("architect cost $0.25", stdout, StringComparison.Ordinal);
         Assert.Contains("tree spent $0.25 (architect $0.25 included), reserved $0.00", stdout, StringComparison.Ordinal);
         // Exactly the fake script's own output, not a real model's reply — the strongest proof this
@@ -227,7 +231,15 @@ public sealed class CoordinateEndToEndTests : IDisposable
         string json = $$"""{"result":"done","total_cost_usd":{{costLiteral}},"is_error":false}""";
 
         if (OperatingSystem.IsWindows())
-            File.WriteAllText(scriptPath, $"@echo off\r\necho {json.Replace("\"", "\\\"")}\r\n");
+        {
+            // cmd.exe's `echo` has no `\"` escape — a backslash-quote prints literally, so
+            // ClaudeBackend.Parse sees `{\"result\":...}` and falls back to raw text instead of
+            // JSON (2026-09-22, PR #27's windows-latest leg: exit 0 and "done" in stdout, but no
+            // "architect cost" line because cost_usd stayed null). `echo` prints an unescaped `"`
+            // as-is, so the JSON goes out verbatim; it contains none of cmd's own metacharacters
+            // (`&`, `|`, `<`, `>`, `^`, `%`) that this call would need to guard against.
+            File.WriteAllText(scriptPath, $"@echo off\r\necho {json}\r\n");
+        }
         else
         {
             File.WriteAllText(scriptPath, $"#!/bin/sh\necho '{json}'\n");
