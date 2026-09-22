@@ -162,13 +162,15 @@ public sealed class ProcessRunnerTests
     public async Task StdoutLogGrowsWhileTheProcessIsStillRunningAsync()
     {
         JobPaths job = CreateTempJob();
+        using CancellationTokenSource cts = new();
+        Task<ProcessOutcome>? run = null;
         try
         {
             (string exe, string[] args) = GrowingOutputCommand();
             ProcessSpec spec = new(exe, args, Path.GetTempPath(), [], []);
             ProcessRunner runner = new(new RealPlatform());
 
-            Task<ProcessOutcome> run = runner.RunAsync(spec, backendConfig: null, job, envPassthroughAll: false, onStreamLine: null, TimeSpan.FromSeconds(30), CancellationToken.None);
+            run = runner.RunAsync(spec, backendConfig: null, job, envPassthroughAll: false, onStreamLine: null, TimeSpan.FromSeconds(30), cts.Token);
 
             string firstLine = await PollForFirstLineAsync(job.StdoutLog, TimeSpan.FromSeconds(10));
             Assert.Equal("a", firstLine);
@@ -182,6 +184,22 @@ public sealed class ProcessRunnerTests
         }
         finally
         {
+            // Cancel and await the run before deleting: an assertion thrown mid-run left the child
+            // still holding stderr.log open, and Directory.Delete on Windows fails on that open
+            // handle instead of surfacing the assertion (windows-latest, PR #26).
+            cts.Cancel();
+            if (run is not null)
+            {
+                try
+                {
+                    await run;
+                }
+                catch
+                {
+                    // Already asserted on the success path above; here we only need the child gone.
+                }
+            }
+
             Directory.Delete(job.Directory, recursive: true);
         }
     }
@@ -204,8 +222,12 @@ public sealed class ProcessRunnerTests
         throw new TimeoutException($"'{logPath}' never gained a first line within {timeout}");
     }
 
+    // No spaces around `&`: cmd.exe echoes the text verbatim up to `&`, so "echo a & …" prints
+    // "a " (trailing space) and fails Assert.Equal("a", firstLine). `timeout /t 1` also doesn't work
+    // here — it refuses "Input redirection is not supported" when stdin is redirected, which
+    // ProcessRunner always does; `ping -n 2 127.0.0.1 >nul` is the one-second sleep that survives it.
     private static (string Exe, string[] Args) GrowingOutputCommand() => OperatingSystem.IsWindows()
-        ? ("cmd", ["/c", "echo a & ping -n 2 127.0.0.1 >nul & echo b"])
+        ? ("cmd", ["/c", "echo a&ping -n 2 127.0.0.1 >nul&echo b"])
         : ("sh", ["-c", "echo a; sleep 1; echo b"]);
 
     private static (string Exe, string[] Args) SleepCommand(int seconds) => OperatingSystem.IsWindows()
