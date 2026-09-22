@@ -71,6 +71,27 @@ public sealed class ClaustrumToolsTests(AppServicesHomeFixture fixture) : IDispo
         Assert.Equal("cursor", backends[4].GetProperty("name").GetString());
     }
 
+    // Issue #17: BackendDoctorEntry.Advisories mirrors Doctor.Advisories — every entry carries the
+    // field, and cursor is the only backend with anything in it.
+    [Fact]
+    public async Task DoctorEveryEntryHasAdvisoriesNonemptyOnlyForCursorAsync()
+    {
+        string json = await ClaustrumTools.DoctorAsync(CancellationToken.None);
+
+        using JsonDocument document = JsonDocument.Parse(json);
+        foreach (JsonElement entry in document.RootElement.GetProperty("backends").EnumerateArray())
+        {
+            string name = entry.GetProperty("name").GetString()!;
+            JsonElement advisories = entry.GetProperty("advisories");
+            Assert.Equal(JsonValueKind.Array, advisories.ValueKind);
+
+            if (name == "cursor")
+                Assert.NotEmpty(advisories.EnumerateArray());
+            else
+                Assert.Empty(advisories.EnumerateArray());
+        }
+    }
+
     [Fact]
     public async Task CastQuestionsIncludesEveryLibraryRoleAsync()
     {
