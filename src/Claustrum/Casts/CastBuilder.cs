@@ -10,24 +10,26 @@ public static class CastBuilder
     public const string NotNeeded = "not needed";
     public const string NoCap = "no cap";
 
+    /// <summary>The architect answer that names a model to spawn on: `spawned on claude:opus`.</summary>
+    public const string SpawnedOn = "spawned on ";
+
     // `roleNames` is the same list CastQuestionnaire asked about (callers pass
     // AppServices.RoleLibrary.ListRoles()), not a hardcoded builder/code-reviewer/tester trio —
     // that hardcoding silently dropped a later milestone's role answer (review finding #9).
     public static Cast FromAnswers(string name, string library, IReadOnlyList<string> roleNames, IReadOnlyDictionary<string, string> answers)
     {
-        // "architect" is the questionnaire's fixed mode-question key, asked once before the
-        // per-role loop; a role literally named "architect" would collide with it, so this is
-        // rejected here too even though CastQuestionnaire already refuses to emit that pair.
-        if (roleNames.Contains("architect"))
-            throw new CastException("a role named 'architect' would collide with the cast architect-mode question key");
-
-        string architectMode = answers.TryGetValue("architect", out string? mode) && mode.Length > 0 ? mode : "host";
+        CastArchitect architect = ParseArchitectAnswer(answers.GetValueOrDefault(Cast.ArchitectRole));
 
         int? maxParallel = ParseMaxParallelAnswer(answers.GetValueOrDefault(CastQuestionnaire.MaxParallelKey));
 
         Dictionary<string, CastRoleEntry?> roles = [];
         foreach (string role in roleNames)
         {
+            // The architect role's answer is the fixed host/spawned question (CastQuestionnaire asks
+            // it once, before the per-role ones) and lands in Cast.Architect, never in Cast.Roles.
+            if (role == Cast.ArchitectRole)
+                continue;
+
             CastRoleEntry? entry = ParseRoleAnswer(answers.GetValueOrDefault(role));
 
             // Only builder carries max_parallel: it is the one role a cast fans out (docs/PLAN.md
@@ -35,7 +37,25 @@ public static class CastBuilder
             roles[role] = role == "builder" && entry is not null ? entry with { MaxParallel = maxParallel } : entry;
         }
 
-        return new Cast(name, library, new CastArchitect(architectMode), roles, ParseBudgetAnswer(answers.GetValueOrDefault("budget")));
+        return new Cast(name, library, architect, roles, ParseBudgetAnswer(answers.GetValueOrDefault("budget")));
+    }
+
+    // docs/PLAN.md §D2's "architect (host | spawned on …)". Unanswered means `host`: the mode that
+    // needs nothing but the agent already in the room.
+    private static CastArchitect ParseArchitectAnswer(string? answer)
+    {
+        string value = (answer ?? "").Trim();
+        if (value.Length == 0 || value.Equals(CastArchitect.Host, StringComparison.OrdinalIgnoreCase))
+            return new CastArchitect(CastArchitect.Host);
+
+        if (value.Equals(CastArchitect.Spawned, StringComparison.OrdinalIgnoreCase))
+            return new CastArchitect(CastArchitect.Spawned);
+
+        if (value.StartsWith(SpawnedOn, StringComparison.OrdinalIgnoreCase) && value[SpawnedOn.Length..].Trim() is { Length: > 0 } model)
+            return new CastArchitect(CastArchitect.Spawned, Model: model);
+
+        throw new CastException(
+            $"architect answer '{value}' is not '{CastArchitect.Host}', '{CastArchitect.Spawned}', or '{SpawnedOn}<model>'");
     }
 
     // A bare model/alias string ("claude:opus", "cheap-coding") becomes CastRoleEntry.Model; the

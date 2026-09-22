@@ -72,16 +72,22 @@ public sealed class CastQuestionnaireTests : IDisposable
         Assert.Contains("fast", result.Questions.Single(q => q.Key == "builder").Options);
     }
 
-    // Finding #9's duplicate-key guard cannot be provoked directly: RoleLibrary is sealed, reads
-    // embedded assembly resources, and ListRoles ignores local overrides, so there is no seam to
-    // inject a role named "architect" — and adding one to production code for a single throw was
-    // judged not worth it (CastBuilder's equivalent guard is tested directly). These two pin the
-    // guard's precondition instead, and fail on the day a library role would collide.
+    // The library now ships a real "architect" role (roles/architect/role.json): the fixed
+    // host/spawned question at key "architect" must be the ONLY question at that key — the per-role
+    // loop skips the library role of the same name rather than asking about it twice (which would
+    // trip AddQuestion's duplicate-key guard).
     [Fact]
-    public void NoLibraryRoleCollidesWithAFixedQuestionKey()
+    public async Task ArchitectRoleGetsExactlyOneFixedHostSpawnedQuestionAsync()
     {
-        Assert.DoesNotContain("architect", roleLibrary.ListRoles());
-        Assert.DoesNotContain("budget", roleLibrary.ListRoles());
+        BackendRegistry backends = new([new FakeBackend("claude", found: true)]);
+
+        CastQuestionnaireResult result = await CastQuestionnaire.BuildAsync(roleLibrary, backends, EmptyConfig(), cwd, CancellationToken.None);
+
+        CastQuestion architect = Assert.Single(result.Questions, q => q.Key == "architect");
+        Assert.Equal(CastArchitect.Host, architect.Options[0]);
+        Assert.Contains($"{CastBuilder.SpawnedOn}frontier-coding", architect.Options);
+        Assert.Contains($"{CastBuilder.SpawnedOn}fast", architect.Options);
+        Assert.True(architect.AllowFreeForm);
     }
 
     [Fact]

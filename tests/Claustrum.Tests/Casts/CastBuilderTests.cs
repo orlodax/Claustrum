@@ -87,10 +87,38 @@ public sealed class CastBuilderTests
         Assert.False(cast.Roles.ContainsKey("builder"));
     }
 
+    // The library now ships a real "architect" role (roles/architect/role.json), so the loop that
+    // walks roleNames has to skip it rather than throw: its answer is the fixed host/spawned
+    // question and lands in Cast.Architect, never as a second entry in Cast.Roles.
     [Fact]
-    public void ARoleNamedArchitectThrowsInsteadOfCollidingWithTheModeQuestion()
+    public void ARoleNamedArchitectInRoleNamesIsSkippedAndNeverEntersRoles()
     {
-        Assert.Throws<CastException>(() => CastBuilder.FromAnswers("default", "1.0.0", ["architect"], new Dictionary<string, string>()));
+        Cast cast = CastBuilder.FromAnswers("default", "1.0.0", ["architect", "builder"], new Dictionary<string, string> { ["builder"] = "claude:opus" });
+
+        Assert.False(cast.Roles.ContainsKey("architect"));
+        Assert.Equal("claude:opus", cast.Roles["builder"]!.Model);
+    }
+
+    [Theory]
+    [InlineData("host", CastArchitect.Host, null)]
+    [InlineData("spawned", CastArchitect.Spawned, null)]
+    [InlineData("spawned on cheap-coding", CastArchitect.Spawned, "cheap-coding")]
+    public void ArchitectAnswerVariantsParseToTheExpectedCastArchitect(string answer, string expectedMode, string? expectedModel)
+    {
+        Dictionary<string, string> answers = new() { ["architect"] = answer };
+
+        Cast cast = CastBuilder.FromAnswers("default", "1.0.0", roleNames, answers);
+
+        Assert.Equal(expectedMode, cast.Architect.Mode);
+        Assert.Equal(expectedModel, cast.Architect.Model);
+    }
+
+    [Fact]
+    public void AnUnrecognisedArchitectAnswerThrowsCastException()
+    {
+        Dictionary<string, string> answers = new() { ["architect"] = "some junk" };
+
+        Assert.Throws<CastException>(() => CastBuilder.FromAnswers("default", "1.0.0", roleNames, answers));
     }
 
     // Review finding: docs/PLAN.md §D2 asks for "builder model + max_parallel", but CastBuilder never

@@ -30,10 +30,10 @@ public static class CastQuestionnaire
         List<CastQuestion> questions = [];
         HashSet<string> keys = [];
 
-        // The fixed "architect" mode question and the per-role loop below both mint keys from the
-        // same namespace; a role literally named "architect" (or "budget") would silently steal the
-        // fixed question's answer instead of getting its own (review finding #9). Routing every add
-        // through this local makes that collision impossible rather than merely unlikely.
+        // The fixed architect question and the per-role loop below both mint keys from the same
+        // namespace; a role named "budget" would silently steal a fixed question's answer instead of
+        // getting its own (review finding #9). Routing every add through this local makes that
+        // collision impossible rather than merely unlikely.
         void AddQuestion(CastQuestion question)
         {
             if (!keys.Add(question.Key))
@@ -42,19 +42,25 @@ public static class CastQuestionnaire
             questions.Add(question);
         }
 
+        // This IS the architect role's question (docs/PLAN.md §D2 "architect (host | spawned on …)"),
+        // not a second question that happens to share its key — which is why the loop below skips
+        // that role instead of asking about it twice.
         AddQuestion(new CastQuestion(
-            Key: "architect",
-            Prompt: "Architect: how should it run? Only 'host' (the agent you're chatting with adopts the role) " +
-                "works today — a spawned, headless architect lands in a later milestone.",
-            Options: ["host"],
+            Key: Cast.ArchitectRole,
+            Prompt: $"{Cast.ArchitectRole}: how should it run? '{CastArchitect.Host}' = the agent you're chatting with adopts the role; "
+                + $"'{CastBuilder.SpawnedOn}<model>' = `claustrum coordinate` runs it headlessly on that model.",
+            Options: [CastArchitect.Host, .. modelOptions.Select(model => CastBuilder.SpawnedOn + model)],
             AllowNotNeeded: false,
-            AllowFreeForm: false));
+            AllowFreeForm: true));
 
         // Every role.json in the library gets a question, "builder" excepted (§D2: "'not needed' for
         // every role but builder") — so a role added by a later milestone (ui-reviewer, M3) is asked
         // about automatically, with no change needed here.
         foreach (string role in roleLibrary.ListRoles())
         {
+            if (role == Cast.ArchitectRole)
+                continue;
+
             AddQuestion(new CastQuestion(
                 Key: role,
                 Prompt: $"{role}: which model should play this role? A claustrum.json alias, or a free-form 'backend:model-id'.",

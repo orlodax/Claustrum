@@ -15,7 +15,12 @@ public static class CastApplication
         string cwd, string role, string? castName, string? tierFlag, ConfigOverrides overrides)
     {
         Cast? cast = castName is { Length: > 0 } ? CastStore.Load(cwd, castName) : CastStore.TryLoadDefault(cwd);
-        CastRoleEntry? castRole = cast?.Roles.GetValueOrDefault(role);
+
+        // The architect's model/tier live in cast.Architect, not in cast.Roles (Cast.ArchitectRole),
+        // so `claustrum run architect --cast x` and `coordinate` resolve through this one path.
+        CastRoleEntry? castRole = role == Cast.ArchitectRole
+            ? cast is null ? null : new CastRoleEntry(cast.Architect.Model, Backend: null, cast.Architect.Tier)
+            : cast?.Roles.GetValueOrDefault(role);
         (string tier, ConfigOverrides resolvedOverrides) = CastResolution.ApplyRole(tierFlag, overrides, castRole);
 
         return (tier, resolvedOverrides, cast is null ? null : new CastBudget(cast.BudgetUsd), castRole?.MaxParallel, cast?.Name);
