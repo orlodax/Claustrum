@@ -89,7 +89,7 @@ what you will use, **on the same OS as the Claustrum binary** (see step 5).
 | `claude` | `npm i -g @anthropic-ai/claude-code` | Uses your Claude subscription login or `ANTHROPIC_API_KEY`. |
 | `opencode` | `npm i -g opencode-ai` | The usual route to OpenRouter/DeepSeek models. |
 | `copilot` | `npm i -g @github/copilot` | Authenticates with your GitHub account. |
-| `cursor` | Cursor's own `cursor-agent` installer script | Backend only — `sync` has no Cursor target yet. Beware: the `cursor-agent` **npm** package is an unrelated third-party tool, not Cursor's CLI (NOTES.md). On a Free plan only `--model auto` is accepted. |
+| `cursor` | Cursor's own `cursor-agent` installer script | Beware: the `cursor-agent` **npm** package is an unrelated third-party tool, not Cursor's CLI (NOTES.md). On a Free plan only `--model auto` is accepted. |
 | `api` | nothing but `curl` on `PATH` | A direct HTTP call, no tools — for reasoning-only roles such as a blind reviewer. |
 
 The npm ones need Node.js. `gh` ([GitHub CLI](https://cli.github.com/)), authenticated, is a
@@ -174,18 +174,21 @@ missing file (for CI), `--force` adopts a file Claustrum did not generate.
 | VS Code (agent mode, Copilot) | `.vscode/mcp.json` (`servers.claustrum`, stdio) — written by the `claude` target | the `claustrum` MCP tools |
 | opencode | `.opencode/agent/<role>.md`, `.opencode/command/claustrum.md`, `opencode.json` (`mcp.claustrum`) | `/claustrum` |
 | Copilot CLI | `.github/agents/<role>.agent.md`, `.github/skills/claustrum/SKILL.md` | `copilot --agent architect`; the skill surfaces by relevance, as Copilot has no slash commands |
-| Cursor | nothing yet — Cursor is a backend Claustrum can *delegate to*, not a host it syncs into | — |
+| Cursor | `.cursor/agents/<role>.md` + generated `-xhigh`/`-max` variants, `.cursor/skills/claustrum/SKILL.md`, `.cursor/mcp.json` (`mcpServers.claustrum`) | `/claustrum`, or the subagents by name |
 
 ```bash
-claustrum sync --only claude,opencode,copilot     # this repo
-claustrum sync --global --only claude             # your user-wide agents, ~/.claude/agents
-claustrum sync --check                            # CI: fail on drift
+claustrum sync --only claude,opencode,copilot,cursor   # this repo
+claustrum sync --global --only claude                 # your user-wide agents, ~/.claude/agents
+claustrum sync --check                                # CI: fail on drift
 ```
 
-`--global` targets `~/.claude/`, `~/.config/opencode/` and `~/.copilot/` and leaves repo-root files
-(`.mcp.json`, `.vscode/mcp.json`, `opencode.json`) alone. The Claude desktop app's own
-`claude_desktop_config.json` is not written by `sync`; register the server there by hand if you
-want Claustrum outside a repository.
+`--global` targets `~/.claude/`, `~/.config/opencode/`, `~/.copilot/` and `~/.cursor/` (Cursor's
+user-level `mcp.json` included) and leaves repo-root files (`.mcp.json`, `.vscode/mcp.json`,
+`opencode.json`) alone. On Windows and macOS, `sync --global --only claude` also registers the
+server in the Claude desktop app's own `claude_desktop_config.json`
+(`%APPDATA%\Claude\`, `~/Library/Application Support/Claude/`), with the absolute path of the
+running binary as its command and every other server in that file left untouched; on Linux there is
+no Claude desktop app, and `sync` prints one line saying so.
 
 Then make a cast — who plays which role — once per repo: type `/claustrum` in a chat host and
 answer the questions, or run `claustrum cast new` in a terminal. It lands in

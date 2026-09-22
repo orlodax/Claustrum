@@ -1,3 +1,4 @@
+using System.Text.Json.Nodes;
 using Claustrum.Roles.Sync;
 
 namespace Claustrum.Roles.Tests.Sync;
@@ -158,5 +159,114 @@ public sealed class ClaudeSyncTests : IDisposable
         SyncResult result = NewSync().Sync(cwd, roles: ["builder"]);
 
         Assert.Null(result.ProposedContent);
+    }
+
+    // issue #24: the fourth --global target, the Claude desktop app's own config — merged only under
+    // global: true and only when the caller has one to hand in (desktop is not null); the command is
+    // the caller-resolved absolute binary path, never the bare "claustrum" the repo-level .mcp.json
+    // entries use, because the desktop app spawns the server from a GUI process whose PATH rarely
+    // holds the install directory.
+    [Fact]
+    public void GlobalSyncWithADesktopTargetWritesOnlyTheClaustrumKeyWithTheAbsolutePath()
+    {
+        string desktopConfigPath = Path.Combine(fakeHome, "claude_desktop_config.json");
+
+        SyncResult result = NewSync().Sync(cwd, roles: ["builder"], global: true, desktop: new ClaudeDesktopTarget(desktopConfigPath, "/abs/claustrum"));
+
+        Assert.Contains(desktopConfigPath, result.Written);
+        JsonObject root = JsonNode.Parse(File.ReadAllText(desktopConfigPath))!.AsObject();
+        JsonObject servers = root["mcpServers"]!.AsObject();
+        Assert.Single(servers);
+        Assert.Equal("/abs/claustrum", servers["claustrum"]!["command"]!.GetValue<string>());
+        Assert.Equal("mcp", servers["claustrum"]!["args"]![0]!.GetValue<string>());
+    }
+
+    [Fact]
+    public void GlobalSyncWithADesktopTargetIsIdempotentOnRerun()
+    {
+        string desktopConfigPath = Path.Combine(fakeHome, "claude_desktop_config.json");
+        ClaudeSync sync = NewSync();
+        ClaudeDesktopTarget desktop = new(desktopConfigPath, "/abs/claustrum");
+        sync.Sync(cwd, roles: ["builder"], global: true, desktop: desktop);
+
+        SyncResult second = sync.Sync(cwd, roles: ["builder"], global: true, desktop: desktop);
+
+        Assert.Contains(desktopConfigPath, second.Skipped);
+        Assert.DoesNotContain(desktopConfigPath, second.Written);
+    }
+
+    [Fact]
+    public void GlobalSyncWithADesktopTargetPreservesAForeignSiblingServer()
+    {
+        string desktopConfigPath = Path.Combine(fakeHome, "claude_desktop_config.json");
+        File.WriteAllText(desktopConfigPath, /*lang=json,strict*/
+            """{"mcpServers":{"other-server":{"command":"other","args":[]}}}""");
+
+        NewSync().Sync(cwd, roles: ["builder"], global: true, desktop: new ClaudeDesktopTarget(desktopConfigPath, "/abs/claustrum"));
+
+        JsonObject servers = JsonNode.Parse(File.ReadAllText(desktopConfigPath))!.AsObject()["mcpServers"]!.AsObject();
+        Assert.Equal(2, servers.Count);
+        Assert.Equal("other", servers["other-server"]!["command"]!.GetValue<string>());
+        Assert.Equal("/abs/claustrum", servers["claustrum"]!["command"]!.GetValue<string>());
+    }
+
+    // McpProvenance.OwnKey: no repo, no manifest to consult for this target, so a differing
+    // `claustrum` entry (a stale path from a previous install, or a hand-written one — the exact gap
+    // INSTALL.md used to tell desktop users to close by hand) is rewritten without --force.
+    [Fact]
+    public void GlobalSyncWithADesktopTargetRewritesADifferingClaustrumEntryWithoutForce()
+    {
+        string desktopConfigPath = Path.Combine(fakeHome, "claude_desktop_config.json");
+        File.WriteAllText(desktopConfigPath, /*lang=json,strict*/
+            """{"mcpServers":{"claustrum":{"command":"/old/stale/claustrum","args":["mcp"]}}}""");
+
+        SyncResult result = NewSync().Sync(cwd, roles: ["builder"], global: true, desktop: new ClaudeDesktopTarget(desktopConfigPath, "/abs/claustrum"), force: false);
+
+        Assert.Contains(desktopConfigPath, result.Written);
+        Assert.DoesNotContain(desktopConfigPath, result.Foreign);
+        JsonObject servers = JsonNode.Parse(File.ReadAllText(desktopConfigPath))!.AsObject()["mcpServers"]!.AsObject();
+        Assert.Equal("/abs/claustrum", servers["claustrum"]!["command"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public void GlobalSyncWithADesktopTargetUnderCheckWritesNothing()
+    {
+        string desktopConfigPath = Path.Combine(fakeHome, "claude_desktop_config.json");
+
+        SyncResult result = NewSync().Sync(cwd, roles: ["builder"], global: true, desktop: new ClaudeDesktopTarget(desktopConfigPath, "/abs/claustrum"), mode: SyncMode.Check);
+
+        Assert.Contains(desktopConfigPath, result.Written);
+        Assert.False(File.Exists(desktopConfigPath));
+    }
+
+    [Fact]
+    public void GlobalSyncWithADesktopTargetUnderDryRunWritesNothing()
+    {
+        string desktopConfigPath = Path.Combine(fakeHome, "claude_desktop_config.json");
+
+        SyncResult result = NewSync().Sync(cwd, roles: ["builder"], global: true, desktop: new ClaudeDesktopTarget(desktopConfigPath, "/abs/claustrum"), mode: SyncMode.DryRun);
+
+        Assert.Contains(desktopConfigPath, result.Written);
+        Assert.NotNull(result.ProposedContent);
+        Assert.Contains(desktopConfigPath, result.ProposedContent!.Keys);
+        Assert.False(File.Exists(desktopConfigPath));
+    }
+
+    [Fact]
+    public void NonGlobalSyncNeverTouchesTheDesktopConfigEvenWhenOneIsGiven()
+    {
+        string desktopConfigPath = Path.Combine(fakeHome, "claude_desktop_config.json");
+
+        NewSync().Sync(cwd, roles: ["builder"], global: false, desktop: new ClaudeDesktopTarget(desktopConfigPath, "/abs/claustrum"));
+
+        Assert.False(File.Exists(desktopConfigPath));
+    }
+
+    [Fact]
+    public void GlobalSyncWithNoDesktopTargetNeverCreatesTheDesktopConfig()
+    {
+        NewSync().Sync(cwd, roles: ["builder"], global: true, desktop: null);
+
+        Assert.False(File.Exists(Path.Combine(fakeHome, "claude_desktop_config.json")));
     }
 }

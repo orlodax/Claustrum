@@ -199,11 +199,11 @@ Extraction rules: exactly one block expected; none → `report:null`, status sta
 ### B4. `claustrum sync` — render the library into every harness
 | Harness | Roles | Delegation skill/command | MCP snippet (merged, only the `claustrum` key touched) |
 |---|---|---|---|
-| claude | `.claude/agents/<role>.md` + generated tier stubs | `.claude/skills/delegate/SKILL.md` | `.mcp.json` → `mcpServers.claustrum` |
+| claude | `.claude/agents/<role>.md` + generated tier stubs | `.claude/skills/claustrum/SKILL.md` | `.mcp.json` → `mcpServers.claustrum` |
 | opencode | `.opencode/agents/<role>.md` (`mode: subagent`, `permission` block, body inlined) | `.opencode/commands/delegate.md` (`$1` role, `$2` brief path, body runs `` !`claustrum run …` ``) | `opencode.json` → `mcp.claustrum` (`type:"local"`, `command:[…]`) |
-| cursor | `.cursor/agents/<role>.md` (`name, description, model, readonly`) | `.cursor/skills/delegate/SKILL.md` | `.cursor/mcp.json` |
+| cursor | `.cursor/agents/<role>.md` (`name, description, model, readonly`) | `.cursor/skills/claustrum/SKILL.md` (§D2's rename) | `.cursor/mcp.json` (`mcpServers`) |
 | copilot / VS Code | `.github/agents/<role>.agent.md` | `.github/prompts/delegate.prompt.md` | `.vscode/mcp.json` (`servers`, `type:"stdio"`) + `.mcp.json` (Copilot reads it too; key shape UNCONFIRMED) |
-`--global` targets `~/.claude/agents`, `~/.config/opencode/agents`, `~/.copilot/agents`, and `%APPDATA%\Claude\claude_desktop_config.json` (absolute binary path).
+`--global` targets `~/.claude/agents`, `~/.config/opencode/agents`, `~/.copilot/agents`, `~/.cursor/{agents,skills,mcp.json}`, and the Claude desktop app's `claude_desktop_config.json` (absolute binary path; `%APPDATA%\Claude\` on Windows, `~/Library/Application Support/Claude/` on macOS, no such app on Linux).
 - Idempotency: first body line `<!-- claustrum:generated role=builder harness=claude library=1.0.0 sha256=… -->`; JSON targets tracked in `.claustrum/sync-manifest.json`. Files without marker/manifest entry are **never overwritten** (`--force` to adopt). The owner's `mc-*.md` are therefore untouched.
 - Flags: `--only claude,opencode`, `--roles a,b`, `--dry-run` (unified diff), `--check` (exit 2 on hand-edited/stale/missing; for CI), `--global`, `--force`.
 - Local override: `<repo>/.claustrum/roles/<role>/{ROLE.md,role.json,parts/}` wins over the library (role.json deep-merged); header records `source=local`.

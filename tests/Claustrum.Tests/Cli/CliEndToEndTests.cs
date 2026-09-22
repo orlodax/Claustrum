@@ -109,13 +109,41 @@ public sealed partial class CliEndToEndTests : IDisposable
         Assert.Contains("written:", stdout, StringComparison.Ordinal);
     }
 
+    // issue #25: CursorSync wired through the same --only door as every other harness.
+    [Fact]
+    public async Task SyncOnlyCursorWritesAgentsSkillAndMcpJsonAsync()
+    {
+        (int exitCode, string stdout, _) = await RunAsync("sync", "--only", "cursor", "--roles", "builder");
+
+        Assert.Equal(Ok, exitCode);
+        Assert.True(File.Exists(Path.Combine(cwd, ".cursor", "agents", "builder.md")));
+        Assert.True(File.Exists(Path.Combine(cwd, ".cursor", "skills", "claustrum", "SKILL.md")));
+        Assert.True(File.Exists(Path.Combine(cwd, ".cursor", "mcp.json")));
+        Assert.Contains("written:", stdout, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task SyncOnlyCursorThenCheckRoundTripsAsync()
+    {
+        Assert.Equal(Ok, (await RunAsync("sync", "--only", "cursor", "--roles", "builder")).ExitCode);
+
+        (int exitCode, string stdout, _) = await RunAsync("sync", "--only", "cursor", "--roles", "builder", "--check");
+
+        Assert.Equal(Ok, exitCode);
+        Assert.DoesNotContain("stale:", stdout, StringComparison.Ordinal);
+        Assert.DoesNotContain("missing:", stdout, StringComparison.Ordinal);
+    }
+
+    // "cursor" used to be the unsupported example here; it is a real target since issue #25, so a
+    // genuinely unknown name proves the same "unknown harness -> exit 2, names it, writes nothing"
+    // coverage without going stale the moment a fifth harness is added.
     [Fact]
     public async Task SyncOnlyUnsupportedHarnessExitsTwoNamingItAsync()
     {
-        (int exitCode, _, string stderr) = await RunAsync("sync", "--only", "cursor");
+        (int exitCode, _, string stderr) = await RunAsync("sync", "--only", "windsurf");
 
         Assert.Equal(Usage, exitCode);
-        Assert.Contains("cursor", stderr, StringComparison.Ordinal);
+        Assert.Contains("windsurf", stderr, StringComparison.Ordinal);
         Assert.False(Directory.Exists(Path.Combine(cwd, ".claude")));
     }
 
@@ -641,7 +669,25 @@ public sealed partial class CliEndToEndTests : IDisposable
         Assert.Contains("claude:", stdout, StringComparison.Ordinal);
         Assert.Contains("opencode:", stdout, StringComparison.Ordinal);
         Assert.Contains("copilot:", stdout, StringComparison.Ordinal);
+        Assert.Contains("cursor:", stdout, StringComparison.Ordinal);
         Assert.True(File.Exists(Path.Combine(cwd, ".opencode", "agent", "builder.md")));
+        Assert.True(File.Exists(Path.Combine(cwd, ".cursor", "agents", "builder.md")));
+    }
+
+    // InitCommand.DetectHarnesses: a repo with a .cursor/ directory already gets cursor synced even
+    // without --all, the same detection InitDetectsGithubDirectoryAndAlsoSyncsCopilotAsync proves for
+    // .github/ (issue #25).
+    [Fact]
+    public async Task InitDetectsCursorDirectoryAndAlsoSyncsCursorAsync()
+    {
+        Directory.CreateDirectory(Path.Combine(cwd, ".cursor"));
+
+        (int exitCode, string stdout, _) = await RunAsync("init");
+
+        Assert.Equal(Ok, exitCode);
+        Assert.Contains("cursor:", stdout, StringComparison.Ordinal);
+        Assert.True(File.Exists(Path.Combine(cwd, ".cursor", "agents", "builder.md")));
+        Assert.True(File.Exists(Path.Combine(cwd, ".cursor", "skills", "claustrum", "SKILL.md")));
     }
 
     [Fact]

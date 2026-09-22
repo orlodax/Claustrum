@@ -3,17 +3,17 @@ using Claustrum.Roles.Sync;
 
 namespace Claustrum.Cli;
 
-// docs/PLAN.md §A5/§B4 `claustrum sync [--only claude,opencode,copilot] [--roles a,b] [--global]
-// [--force] [--check|--dry-run]`. Bare `sync` (no --only) still targets only `claude`, matching
-// M1/M2's documented default; `--only` accepts any of supportedHarnesses, any other value is a usage
-// error (exit 2). cursor has no Sync implementation (fixture-only backend per NOTES.md).
+// docs/PLAN.md §A5/§B4 `claustrum sync [--only claude,opencode,copilot,cursor] [--roles a,b]
+// [--global] [--force] [--check|--dry-run]`. Bare `sync` (no --only) still targets only `claude`,
+// matching M1/M2's documented default; `--only` accepts any of supportedHarnesses, any other value
+// is a usage error (exit 2).
 public static class SyncCommand
 {
-    private static readonly string[] supportedHarnesses = ["claude", "opencode", "copilot"];
+    private static readonly string[] supportedHarnesses = ["claude", "opencode", "copilot", "cursor"];
 
     public static Command Build()
     {
-        Option<string?> only = new("--only") { Description = "Comma-separated harnesses to sync (claude, opencode, copilot)." };
+        Option<string?> only = new("--only") { Description = "Comma-separated harnesses to sync (claude, opencode, copilot, cursor)." };
         Option<string?> roles = new("--roles") { Description = "Comma-separated role names (default: every role)." };
         Option<bool> global = new("--global") { Description = "Write to the user-global agent directories instead of the repo." };
         Option<bool> force = new("--force") { Description = "Overwrite hand-edited files that lack the claustrum:generated marker." };
@@ -58,13 +58,39 @@ public static class SyncCommand
     private static SyncResult SyncOne(string harness, string[]? roleFilter, bool global, bool force, SyncMode mode) => harness switch
     {
         "claude" => new ClaudeSync(AppServices.RoleLibrary, AppServices.RoleRenderer, AppServices.Platform.HomeDirectory)
-            .Sync(Environment.CurrentDirectory, roleFilter, global, force, mode),
+            .Sync(Environment.CurrentDirectory, roleFilter, global, force, mode, global ? DesktopTarget() : null),
         "opencode" => new OpencodeSync(AppServices.RoleLibrary, AppServices.RoleRenderer, AppServices.Platform.HomeDirectory)
             .Sync(Environment.CurrentDirectory, roleFilter, global, force, mode),
         "copilot" => new CopilotSync(AppServices.RoleLibrary, AppServices.RoleRenderer, AppServices.Platform.HomeDirectory)
             .Sync(Environment.CurrentDirectory, roleFilter, global, force, mode),
+        "cursor" => new CursorSync(AppServices.RoleLibrary, AppServices.RoleRenderer, AppServices.Platform.HomeDirectory)
+            .Sync(Environment.CurrentDirectory, roleFilter, global, force, mode, global ? CursorGlobalBinary() : null),
         _ => throw new ArgumentOutOfRangeException(nameof(harness), harness, "not in supportedHarnesses"),
     };
+
+    // The absolute path comes from the running process, not from PATH: the desktop app spawns the
+    // server from a GUI process whose PATH rarely holds the install directory (issue #24).
+    private static ClaudeDesktopTarget? DesktopTarget()
+    {
+        (string? binaryPath, string? binaryReason) = ClaustrumBinaryPath.Resolve();
+        (ClaudeDesktopTarget? target, string? skipReason) = ClaudeDesktopConfig.Resolve(AppServices.Platform, binaryPath, binaryReason);
+        if (skipReason is not null)
+            Console.WriteLine($"claude desktop config: not written ({skipReason})");
+
+        return target;
+    }
+
+    // `~/.cursor/mcp.json` is read by a GUI Cursor, so it needs the absolute binary for the same
+    // reason (issue #25). Null skips that one merge: registering the dotnet host under the
+    // `claustrum` key would be worse than leaving the file alone.
+    private static string? CursorGlobalBinary()
+    {
+        (string? binaryPath, string? skipReason) = ClaustrumBinaryPath.Resolve();
+        if (skipReason is not null)
+            Console.WriteLine($"cursor global mcp.json: not written ({skipReason})");
+
+        return binaryPath;
+    }
 
     // Multiple --only harnesses report as one combined result: each list is a simple concatenation
     // (there is no overlap in the paths two different harnesses touch), and ProposedContent (DryRun
