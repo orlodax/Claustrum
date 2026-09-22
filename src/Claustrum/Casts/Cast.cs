@@ -10,4 +10,12 @@ public sealed record Cast(
     string Library,
     CastArchitect Architect,
     Dictionary<string, CastRoleEntry?> Roles,
-    decimal? BudgetUsd);
+    decimal? BudgetUsd)
+{
+    /// <summary>
+    /// The one role name that is never a key of <see cref="Roles"/>: the architect's model and tier
+    /// live in <see cref="Architect"/> (docs/PLAN.md §D3), which is where CastQuestionnaire,
+    /// CastBuilder and CastApplication all route it.
+    /// </summary>
+    public const string ArchitectRole = "architect";
+}

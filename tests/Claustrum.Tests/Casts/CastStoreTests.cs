@@ -132,4 +132,34 @@ public sealed class CastStoreTests : IDisposable
         CastException ex = Assert.Throws<CastException>(() => CastStore.Load(cwd, "noarchitect"));
         Assert.Contains(path, ex.Message, StringComparison.Ordinal);
     }
+
+    // CastArchitect.Model/Tier are the spawned architect's own model/tier — round-trip them
+    // explicitly rather than relying on SaveThenLoadRoundTripsEveryField's "host" sample.
+    [Fact]
+    public void ArchitectFieldRoundTripsModeModelAndTier()
+    {
+        Cast cast = SampleCast() with { Architect = new CastArchitect(CastArchitect.Spawned, Model: "claude:opus", Tier: "xhigh") };
+
+        CastStore.Save(cwd, cast);
+        Cast loaded = CastStore.Load(cwd, "default");
+
+        Assert.Equal(new CastArchitect(CastArchitect.Spawned, Model: "claude:opus", Tier: "xhigh"), loaded.Architect);
+    }
+
+    // CastArchitect's own doc comment: a cast written before M4 has `{"mode":"host"}` with no
+    // model/tier at all, and must still load — Model/Tier default to null rather than the document
+    // being rejected for missing fields.
+    [Fact]
+    public void LegacyArchitectJsonWithNoModelOrTierStillLoads()
+    {
+        Directory.CreateDirectory(CastStore.DirectoryFor(cwd));
+        string path = CastStore.PathFor(cwd, "legacy");
+        File.WriteAllText(path, /*lang=json,strict*/ """{"name":"legacy","library":"1.0.0","architect":{"mode":"host"},"roles":{},"budget_usd":null}""");
+
+        Cast loaded = CastStore.Load(cwd, "legacy");
+
+        Assert.Equal(CastArchitect.Host, loaded.Architect.Mode);
+        Assert.Null(loaded.Architect.Model);
+        Assert.Null(loaded.Architect.Tier);
+    }
 }

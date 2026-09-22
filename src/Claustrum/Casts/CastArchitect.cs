@@ -1,6 +1,12 @@
 namespace Claustrum.Casts;
 
-// docs/PLAN.md §D3: "host" (the chatting agent adopts the architect role itself) is the only mode
-// any code path acts on in M2 — "spawned" is recorded so a cast written now still round-trips once
-// `coordinate` (§D3, issue #5/M4) exists, but nothing reads Mode today.
-public sealed record CastArchitect(string Mode);
+// docs/PLAN.md §D3's two modes, and the architect's own model/tier: `host` (the agent you are
+// chatting with adopts the role, Model/Tier unused) or `spawned` (`claustrum coordinate` runs the
+// architect role headlessly on Model). Model/Tier are optional so a cast written before M4 —
+// `{"mode":"host"}` — still loads; they play the part Cast.Roles plays for every other role
+// (CastApplication.Resolve), because the architect is never a member of that dictionary.
+public sealed record CastArchitect(string Mode, string? Model = null, string? Tier = null)
+{
+    public const string Host = "host";
+    public const string Spawned = "spawned";
+}

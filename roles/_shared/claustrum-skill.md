@@ -24,3 +24,13 @@ tool instead of the shell command: `{role, brief, cwd?, backend?, model?, effort
 permission?, cast?, ...}`, still with the brief written to a file first if you already
 have one. With no `--cast`/`cast` given, a repo's `.claustrum/casts/default.json` applies
 itself automatically if present.
+
+## Coordinating (a spawned architect)
+If the cast's `architect.mode` is `spawned`, or the user asks Claustrum to coordinate issues
+end-to-end, run `claustrum coordinate --cast <name> --issues <n,m> --json` (or `--brief-file
+<path>`), or the MCP `coordinate` tool, which returns `{job_id, log_path}` at once; poll the
+`job_status` tool and fetch the `job_result` tool when it reports `done`. The architect runs
+headlessly on the cast's model, delegates builders → blind reviewer → tester itself, and leaves
+its work on branch `claustrum/<job_id>`; `claustrum jobs budget <job_id>` shows what the tree
+spent. If `architect.mode` is `host`, you are the architect: adopt the synced `architect` role
+and delegate with `--cast` yourself.

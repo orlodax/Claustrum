@@ -77,4 +77,36 @@ public sealed class CastApplicationTests : IDisposable
         Assert.Null(budget!.Value.Value);
         Assert.Null(maxParallel);
     }
+
+    // The architect is never a key of Cast.Roles (Cast.ArchitectRole's own doc comment): its
+    // model/tier live in Cast.Architect, and CastApplication.Resolve has to route "architect" there
+    // instead of looking it up in Roles (where it would always be a miss).
+    [Fact]
+    public void ArchitectRoleTakesModelAndTierFromCastArchitectNotFromRoles()
+    {
+        CastStore.Save(cwd, new Cast(
+            "default", "1.0.0", new CastArchitect(CastArchitect.Spawned, Model: "claude:opus", Tier: "xhigh"),
+            [], null));
+
+        (string tier, ConfigOverrides overrides, _, _, _) = CastApplication.Resolve(cwd, Cast.ArchitectRole, castName: null, tierFlag: null, new ConfigOverrides());
+
+        Assert.Equal("xhigh", tier);
+        Assert.Equal("claude:opus", overrides.Model);
+    }
+
+    // docs/PLAN.md §D1's precedence: an explicit --model/--tier still wins over the cast's own value,
+    // for the architect exactly as for any other role.
+    [Fact]
+    public void ExplicitModelAndTierFlagsStillWinOverTheCastsArchitectEntry()
+    {
+        CastStore.Save(cwd, new Cast(
+            "default", "1.0.0", new CastArchitect(CastArchitect.Spawned, Model: "claude:opus", Tier: "xhigh"),
+            [], null));
+
+        (string tier, ConfigOverrides overrides, _, _, _) = CastApplication.Resolve(
+            cwd, Cast.ArchitectRole, castName: null, tierFlag: "max", new ConfigOverrides(Model: "claude:haiku"));
+
+        Assert.Equal("max", tier);
+        Assert.Equal("claude:haiku", overrides.Model);
+    }
 }
