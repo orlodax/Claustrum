@@ -4,7 +4,7 @@
 # `run builder` per installed backend the builder role supports, two concurrent max_parallel
 # builders followed by `jobs clean`, and a spawned-architect `coordinate`. A backend that is not
 # installed SKIPs instead of failing, so one script works on any subset; only a FAIL row exits nonzero.
-# Usage: scripts/smoke.sh [path-to-claustrum-binary]   (falls back to $CLAUSTRUM, then a Release build)
+# Usage: scripts/smoke.sh [path-to-claustrum-binary]   (falls back to $CLAUSTRUM, then a Release publish)
 # Env: CLAUSTRUM_SMOKE_MODEL_<NAME> (e.g. …CURSOR=auto) gives that backend's paid run its model and
 # CLAUSTRUM_SMOKE_COORDINATE_MODEL the coordinate architect; unset SKIPs the row (claude: sonnet).
 set -uo pipefail
@@ -12,6 +12,25 @@ set -uo pipefail
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$script_dir/.." && pwd)"
 
+host_rid() {
+    local os arch
+    case "$(uname -s)" in
+        Linux) os=linux ;;
+        Darwin) os=osx ;;
+        *) echo "no host RID for $(uname -s): pass the binary as an argument or set \$CLAUSTRUM" >&2; return 1 ;;
+    esac
+    case "$(uname -m)" in
+        x86_64 | amd64) arch=x64 ;;
+        aarch64 | arm64) arch=arm64 ;;
+        *) echo "no host RID for $(uname -m): pass the binary as an argument or set \$CLAUSTRUM" >&2; return 1 ;;
+    esac
+    printf '%s-%s' "$os" "$arch"
+}
+
+# Publish, not build: PackAsTool=true suppresses the apphost, so `dotnet build` leaves a
+# claustrum.dll and no executable at all (issue #22, NOTES.md "Releasing: five RIDs, one tool
+# package"). A failed AOT publish is reported, never worked around — a framework-dependent binary
+# would exercise a different startup path than the one release.yml ships.
 resolve_binary() {
     if [ -n "${1:-}" ]; then
         echo "$1"
@@ -22,9 +41,25 @@ resolve_binary() {
         return
     fi
 
-    echo "Building claustrum (Release)..." >&2
-    dotnet build "$repo_root/src/Claustrum/Claustrum.csproj" -c Release >&2 || return 1
-    find "$repo_root/src/Claustrum/bin/Release" -type f -name "claustrum" | head -n1
+    local rid candidate
+    rid="$(host_rid)" || return 1
+
+    echo "Publishing claustrum (Release, AOT, $rid)..." >&2
+    if ! dotnet publish "$repo_root/src/Claustrum/Claustrum.csproj" -c Release -r "$rid" -p:PublishAot=true >&2; then
+        echo "AOT publish failed. Linux needs clang or gcc plus the zlib development headers" >&2
+        echo "(zlib1g-dev / zlib-devel); Windows needs the VS 'Desktop development with C++'" >&2
+        echo "workload. See AGENTS.md 'Build and gate'." >&2
+        return 1
+    fi
+
+    for candidate in "$repo_root/src/Claustrum/bin/Release"/*/"$rid"/publish/claustrum; do
+        if [ -x "$candidate" ]; then
+            echo "$candidate"
+            return
+        fi
+    done
+    echo "publish reported success but left no claustrum under bin/Release/*/$rid/publish" >&2
+    return 1
 }
 
 claustrum_bin="$(resolve_binary "${1:-}")"
