@@ -168,10 +168,12 @@ public static class BackendsCommands
     }
 
     // docs/PLAN.md §B6: "env key or login file present — value never printed". The env-var half is
-    // this repo's own confirmed variable names (EnvAllowList.cs, and the three `copilot help
-    // environment` documents in precedence order). The login-file half is checked only where the
-    // file has actually been read against a real install — copilot's, since 2026-09-22 — because
-    // guessing a path risks a wrong "not set" for someone who is, in fact, logged in.
+    // this repo's own confirmed names: copilot's three from EnvAllowList.cs and the `copilot help
+    // environment` documents in precedence order, opencode's three verbatim from the models.dev
+    // `env` entries it reads (`opencode auth list` here: "OpenRouter  OPENROUTER_API_KEY
+    // environment"). The login-file half is answered only where the store was actually looked at on
+    // a real install — copilot's and opencode's, both 2026-09-22 — because guessing a path risks a
+    // wrong "not set" for someone who is, in fact, logged in.
     private static string AuthStatusFor(string backendName)
     {
         string[] relevantVars = backendName switch
@@ -193,17 +195,37 @@ public static class BackendsCommands
         return LoginFileStatusFor(backendName) ?? "not set (env var absent; a login file may still work — not checked)";
     }
 
-    // `~/.copilot/config.json` (relocated by COPILOT_HOME) keeps a non-empty `loggedInUsers` array
-    // on a logged-in install — read from a real 1.0.87 one, which is what separates this from the
-    // guessed paths the other backends deliberately do not check. Comments are legal in the file
-    // ("This file is managed automatically"), hence CommentHandling.Skip. Null means "this code does
-    // not know where that backend's login file lives"; for copilot every outcome is a real answer,
-    // because the file was looked at. Nothing here throws: doctor must print its remaining lines.
-    private static string? LoginFileStatusFor(string backendName)
+    // Null means "this code does not know where that backend keeps a login", which is still true of
+    // claude and cursor; the three answers below were each read off a real install. Nothing here
+    // throws — doctor must still print its remaining lines.
+    private static string? LoginFileStatusFor(string backendName) => backendName switch
     {
-        if (backendName is not "copilot")
-            return null;
+        // `api` spawns curl with the key straight from the environment: there is no store to look in.
+        "api" => "not set (env var absent; this backend has no login file — it is a direct HTTPS call)",
+        "opencode" => OpencodeLoginFileStatus(),
+        "copilot" => CopilotLoginFileStatus(),
+        _ => null,
+    };
 
+    // opencode 2.0.12 has no `auth.json`: the v1 path is empty on a real install, and 2.x keeps
+    // credentials in a SQLite `opencode.db` this AOT binary will not take a dependency on to read.
+    private static string OpencodeLoginFileStatus()
+    {
+        string dataHome = AppServices.Platform.GetEnvironmentVariable("XDG_DATA_HOME") is { Length: > 0 } relocated
+            ? relocated
+            : Path.Combine(AppServices.Platform.HomeDirectory, ".local", "share");
+        string legacyAuth = Path.Combine(dataHome, "opencode", "auth.json");
+        return File.Exists(legacyAuth)
+            ? $"present (login file at {legacyAuth} — no env var set; contents not read)"
+            : $"not set (env var absent; {legacyAuth} not present, and 2.x keeps credentials in opencode.db, which this does not read)";
+    }
+
+    // `~/.copilot/config.json` (relocated by COPILOT_HOME) keeps a non-empty `loggedInUsers` array on
+    // a logged-in install — read from a real 1.0.87 one, which is what separates this from the
+    // guessed paths the other backends deliberately do not check. Comments are legal in the file
+    // ("This file is managed automatically"), hence CommentHandling.Skip.
+    private static string CopilotLoginFileStatus()
+    {
         string copilotHome = AppServices.Platform.GetEnvironmentVariable("COPILOT_HOME") is { Length: > 0 } relocated
             ? relocated
             : Path.Combine(AppServices.Platform.HomeDirectory, ".copilot");
