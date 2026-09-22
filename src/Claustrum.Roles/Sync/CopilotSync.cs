@@ -3,26 +3,14 @@ using System.Text;
 namespace Claustrum.Roles.Sync;
 
 /// <summary>
-/// Renders the role library into `.github/agents/&lt;role&gt;.agent.md` (+ generated `-xhigh`/`-max`
-/// tier stubs) and `.github/skills/claustrum/SKILL.md` — Copilot CLI's own analogue of ClaudeSync's
-/// `.claude/agents/*.md` + skill (2026-09-18 — see NOTES.md "CopilotSync" for exactly what
-/// `copilot --help`/`copilot skill --help` confirmed against a real @github/copilot 1.0.86 install).
-///
-/// Unlike opencode, Copilot CLI has no distinct "command" concept: its skill mechanism (`copilot
-/// skill list`, confirmed live) is the *only* reusable-instruction mechanism it has, and skills are
-/// auto-surfaced by relevance ("Use when the user mentions...", same as Claude Code's own skill
-/// semantics), not slash-invoked. So `/claustrum` cannot be made a literal typeable command in this
-/// harness the way it can in Claude Code or opencode — this writes a skill whose description
-/// front-loads the trigger phrasing instead, a genuine, confirmed limitation of this harness rather
-/// than an oversight.
-///
-/// Model mapping is deliberately just `auto` (`copilot --help`'s own "use 'auto' to let Copilot pick
-/// automatically"): only one real model id (`gpt-5.4`, from a --help example) was ever confirmed, not
-/// a tier catalog, so no model class -> id table was invented the way ClaudeSync's/OpencodeSync's are.
-///
-/// Marker/idempotency machinery comes from <see cref="SyncWriter"/> and the result lists from
-/// <see cref="SyncAccumulator"/>, shared with ClaudeSync and OpencodeSync; only the file layout and
-/// the frontmatter format are this harness's own.
+/// Renders the role library into `.github/agents/&lt;role&gt;.agent.md` (+ `-xhigh`/`-max` tier
+/// stubs) and `.github/skills/claustrum/SKILL.md` — Copilot CLI's analogue of ClaudeSync's
+/// `.claude/agents/*.md` + skill, on <see cref="SyncWriter"/>'s shared marker/idempotency
+/// machinery. NOTES.md "CopilotSync: agent + skill files" and "The copilot backend, validated
+/// against a real install" hold the why, including `model: auto`.
+/// Two receipts that decide code below: Copilot CLI has no command concept at all (skills are its
+/// only reusable-instruction mechanism, auto-surfaced by relevance and never typed as `/name`), and
+/// `description` is the one required frontmatter key.
 /// </summary>
 public sealed class CopilotSync(RoleLibrary library, RoleRenderer renderer, string homeDirectory)
 {
@@ -40,10 +28,10 @@ public sealed class CopilotSync(RoleLibrary library, RoleRenderer renderer, stri
             ? roles
             : [.. library.ListRoles().Where(role => library.LoadRole(role, cwd).Definition.Harnesses.Contains(Harness))];
 
-        // `copilot skill --help`'s own text confirms the personal skill location
-        // (`~/.copilot/skills/`); the personal *agent* location is an unconfirmed extrapolation from
-        // that same convention (only the project `.github/agents/` location is directly confirmed,
-        // via `--add-dir`'s own help text).
+        // Both halves are now measured, not extrapolated: `copilot skill --help` names
+        // `~/.copilot/skills/` as the personal skill location, and copilot 1.0.87 really does load
+        // `~/.copilot/agents/*.agent.md` — the exact files written here round-tripped through it
+        // (2026-09-22, NOTES.md "The copilot backend, validated against a real install").
         string githubRoot = global ? Path.Combine(homeDirectory, ".copilot") : Path.Combine(cwd, ".github");
         string agentDir = Path.Combine(githubRoot, "agents");
         if (mode == SyncMode.Write)
@@ -106,9 +94,16 @@ public sealed class CopilotSync(RoleLibrary library, RoleRenderer renderer, stri
         StringBuilder builder = new();
         builder.Append("---\n");
         builder.Append($"name: {name}\n");
-        builder.Append($"description: {description}\n");
+        builder.Append($"description: {YamlQuoted(description)}\n");
         builder.Append("model: auto\n");
         builder.Append("---");
         return builder.ToString();
     }
+
+    // Unquoted, a description containing ": " is not a valid plain YAML scalar: copilot 1.0.87 threw
+    // "mapping values are not allowed in this context" and silently skipped architect, code-reviewer
+    // and tester (2026-09-22, measured — NOTES.md "The copilot backend, validated against a real
+    // install"). Only the two characters a double-quoted YAML scalar reserves need escaping.
+    private static string YamlQuoted(string value) =>
+        $"\"{value.Replace("\\", "\\\\", StringComparison.Ordinal).Replace("\"", "\\\"", StringComparison.Ordinal)}\"";
 }

@@ -135,6 +135,49 @@ public sealed class CopilotSyncTests : IDisposable
         Assert.Contains("name: builder", content, StringComparison.Ordinal);
     }
 
+    // NOTES.md "The copilot backend, validated against a real install" box 1: an unquoted `": "` in a
+    // description is not a valid plain YAML scalar and copilot 1.0.87 silently dropped the file for
+    // it — the tester role's own description (`"Leaf role: it reports…"`) is one of the three that
+    // broke. A strict split on the opening/closing quote is what a hand-rolled YAML-shaped assertion
+    // can verify without a real parser.
+    [Fact]
+    public void DescriptionContainingColonSpaceIsEmittedAsADoubleQuotedYamlScalar()
+    {
+        NewSync().Sync(cwd, roles: ["tester"]);
+
+        string content = File.ReadAllText(Path.Combine(cwd, ".github", "agents", "tester.agent.md"));
+        string descriptionLine = content
+            .Split('\n')
+            .Single(line => line.StartsWith("description: ", StringComparison.Ordinal));
+
+        Assert.StartsWith("description: \"", descriptionLine, StringComparison.Ordinal);
+        Assert.EndsWith("\"", descriptionLine, StringComparison.Ordinal);
+        Assert.Contains("Leaf role: it reports", descriptionLine, StringComparison.Ordinal);
+
+        // The frontmatter is well-formed only if the quote that opens the scalar is the same one
+        // that closes it: an inner `"` that were left unescaped would end the scalar early and the
+        // next `"` — an entirely different one — would appear to close it correctly by accident.
+        string inner = descriptionLine["description: \"".Length..^1];
+        Assert.DoesNotContain("\"", inner.Replace("\\\"", "", StringComparison.Ordinal), StringComparison.Ordinal);
+    }
+
+    // A tier stub's description (SyncWriter.TierDescription) also goes through the same
+    // BuildAgentFrontmatter path, so it must be quoted too even though none of the built-in tier
+    // descriptions happen to contain "": "" today.
+    [Fact]
+    public void TierStubDescriptionIsAlsoAQuotedYamlScalar()
+    {
+        NewSync().Sync(cwd, roles: ["builder"]);
+
+        string content = File.ReadAllText(Path.Combine(cwd, ".github", "agents", "builder-xhigh.agent.md"));
+        string descriptionLine = content
+            .Split('\n')
+            .Single(line => line.StartsWith("description: ", StringComparison.Ordinal));
+
+        Assert.StartsWith("description: \"", descriptionLine, StringComparison.Ordinal);
+        Assert.EndsWith("\"", descriptionLine, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void SkillDescriptionFrontLoadsTriggerPhrasingSinceThereIsNoSlashCommand()
     {

@@ -534,6 +534,9 @@ it doesn't get mistaken for the real thing later. Cursor stays fixture-only per 
 
 ## The copilot backend (2026-09-18, issue #4/M3)
 
+*Its unconfirmed halves are superseded 2026-09-22 by "The copilot backend, validated against a real
+install" below — kept as the record of what was guessed and why. Three of the guesses were wrong.*
+
 Verified against a real `@github/copilot` 1.0.86 install (`npm install -g @github/copilot`). No
 GitHub Copilot subscription token was reachable from here — the sandbox's own repo-scoped
 `GITHUB_TOKEN` is a narrower credential meant for something else and was deliberately not pressed
@@ -643,6 +646,10 @@ detail, and it settled several things the original plan only guessed at:
   guessing from two data points; the plan is to do that once Cursor/CopilotSync exist too.
 
 ## CopilotSync: agent + skill files, verified against a real install (2026-09-18, issue #4/M3)
+
+*The frontmatter and `~/.copilot/agents` caveats below are superseded 2026-09-22 by "The copilot
+backend, validated against a real install": both are measured now, and the frontmatter it wrote was
+silently failing to load.*
 
 `.github/agents/<role>.agent.md` (+ tier stubs) and `.github/skills/claustrum/SKILL.md`, checked
 against the same real `@github/copilot` 1.0.86 install as the copilot backend.
@@ -1514,6 +1521,10 @@ owner's prose is a content decision the owner should see, not a renderer fix.
 
 ## Issue #13's non-cursor boxes stay open (2026-09-21)
 
+*Half superseded 2026-09-22: copilot 1.0.87 was installed and logged in the next day, and all four
+of its boxes are ticked in "The copilot backend, validated against a real install". `opencode` and
+`api` are still open.*
+
 The cursor checklist — the M3 gate — is ticked above with real captures. The `copilot`, `opencode`
 and `api` boxes are unchanged: as of 2026-09-21 this machine has none of those binaries installed
 and no `OPENROUTER_API_KEY`/`ANTHROPIC_API_KEY`, and `gh auth` carries no Copilot entitlement to
@@ -2367,3 +2378,276 @@ listing tools is not what takes the native `Agent` tool away. Separately,
 `SyncWriter.TierDescription` hardcodes "identical role, model, and rules", false for the three roles
 whose class changes at `xhigh` — the owner's own `code-reviewer-xhigh.md` says "a model+effort step
 up". None of that lives in `roles/`; all of it has its own issue, filed the same day.
+
+## The copilot backend, validated against a real install (2026-09-22, issue #13)
+
+Supersedes the unconfirmed halves of "The copilot backend (2026-09-18, issue #4/M3)" and
+"CopilotSync: agent + skill files, verified against a real install (2026-09-18, issue #4/M3)".
+**GitHub Copilot CLI 1.0.87** is installed at `~/.local/bin/copilot` and logged in, so all four of
+issue #13's copilot boxes were measured. **Four paid premium requests** in total (each run's own
+`result.usage.premiumRequests: 1`) — three on the boxes, one on the remediation pass's plan-mode
+probe below — all in throwaway `git init` repos under a scratch directory
+(`<tmp>` below), always with stdin closed, never in a real checkout.
+
+Two of the four boxes were wrong, and the pass turned up two further defects nobody had listed:
+`--model` was never passed to copilot at all, and `CopilotSync`'s unquoted `description:` silently
+kept three of the four roles from loading.
+
+- **The free probe that did most of the work.** Agent selection happens *before* the first API call,
+  so asking for a name that does not exist prints the discovered agents and costs nothing:
+  `copilot -C <dir> -p "say hi" --agent definitely-not-an-agent --allow-all-tools --output-format
+  json --stream off` → exit **1** in ~1s, **empty stdout**, one stderr line: `No such agent:
+  definitely-not-an-agent, available: probe-personal, probe-project, probe-adddir`. Adding
+  `COPILOT_PROVIDER_BASE_URL=http://127.0.0.1:9/v1` (BYOK against a dead local port — `copilot help
+  environment`: "GitHub authentication is not required") removes even the GitHub round trip. Probes
+  of this shape, plus `--log-level all --log-dir <tmp>/logs` for the loader's own diagnostics,
+  answered boxes 1 and 4 and both regressions below without spending anything.
+
+| box | verdict | what decided it |
+|---|---|---|
+| 1 `.agent.md` frontmatter schema | **corrected** | `description` is the *only* required key; three of four synced roles were being dropped for an unquoted `": "` |
+| 2 JSONL success-event field names | **corrected** | real 42-event capture; every key `Parse` looked for was wrong |
+| 3 `shell` level's `--deny-tool write` | **corrected** | the name is right, the mapping was not: `write` excludes shell redirection by design |
+| 4 `~/.copilot/agents` for `sync --global` | **confirmed** | the exact files `sync --global --only copilot` writes round-tripped through it |
+
+1. **Box 1 — the frontmatter schema, measured key by key.** Six `.agent.md` files with different
+   frontmatter went into one `--add-dir` tree and the free probe said which loaded, with
+   `--log-level all` giving the reason for each that did not:
+   - `name:` is **optional** and, when present, **wins over the file name** (`file-a.agent.md` with
+     `name: renamed-a` was listed as `renamed-a`; a file with no `name` was listed as its stem).
+   - `description:` is **required**: a file with `name` and a body but no description is rejected —
+     `file-f.agent.md: custom agent markdown frontmatter is malformed: description: Required`. No
+     frontmatter at all is rejected the same way (`missing or malformed YAML frontmatter`).
+   - The accepted set is `name`, `description`, `model`, `tools`, `infer`, `skills`. Everything else
+     is dropped with a warning — one file carrying thirteen candidates produced
+     `unknown fields ignored: displayName, mcpServers, prompt, reasoningEffort, reasoning_effort,
+     effortLevel, userInvocable, disableModelInvocation, allowedTools, argument-hint, color, target,
+     license`. Note **`reasoningEffort` is not a frontmatter key** even though the SDK's programmatic
+     `CustomAgentConfig` has one: per-agent effort is unreachable from a file.
+   - So `CopilotSync`'s `name`/`description`/`model: auto` are all real keys. **But they were not
+     loading.** A role description containing `": "` is not a valid plain YAML scalar, and after
+     `claustrum sync --only copilot` the same free probe listed only `builder` and the eight tier
+     stubs, with three errors in the log: `.github/agents/architect.agent.md: … failed to parse YAML
+     frontmatter: mapping values are not allowed in this context at line 2 column 283`, and the same
+     for `code-reviewer.agent.md` (column 173) and `tester.agent.md` (column 172) — the `": "` in
+     *"It does not ship production code itself: it hands…"* and *"Leaf role: it reports…"*. Fixed by
+     emitting a double-quoted scalar (`CopilotSync.YamlQuoted`); re-synced, the probe lists **all
+     twelve** agents and the log holds zero warnings. `CopilotBackend`'s own ephemeral agent file
+     carries a constant description with no `": "`, so it was never broken — it is quoted now anyway.
+   - **Live proof the agent file is really used**: the end-to-end run in box 2 came back with the
+     `claustrum-report` fence, which only the rendered role body asks for, and `--agent
+     claustrum-builder` would have exited 1 with `No such agent` had `--add-dir` not loaded it.
+
+   ⚠ **The other three syncs emit the same unquoted `description:`** (`ClaudeSync`, `OpencodeSync`,
+   `CursorSync`) and were *not* measured here. Claude Code demonstrably tolerates it (the owner's own
+   agent files have carried `": "` for months); opencode and cursor are unknown and want their own
+   probe rather than a blind copy of this fix.
+
+2. **Box 2 — the success JSONL, captured and committed to.** `claustrum run builder --backend copilot
+   --brief "create hello.txt containing hi" --budget 0.5 --model auto --json --cwd <tmp>/run1` →
+   `status: success` in **19.1s**, `changed_files: [{"path":"hello.txt","kind":"A"}]`, a real diff,
+   `report_status: ok` with every builder-report field filled, `session_id:
+   4226b2e4-4a96-45e2-bdd8-35c8b5f63e07`, `cost_usd: null`, `usage: null`, exit 0. Its `stdout.log`
+   is **42 JSON lines** and is now `tests/fixtures/copilot/success.jsonl`. **Every key the old
+   `Parse` looked for was wrong**, and the old fabricated fixture agreed with it, so the two were
+   consistently wrong together:
+   - Each line is a **session event**: `{"type":…,"data":{…},"id","timestamp","parentId"}`, plus
+     `ephemeral`; `agentId` is declared by the shipped schema but **never observed** (see the
+     sub-agent note below). Assistant text is `data.content` on
+     `type:"assistant.message"` — **not** a top-level `content`/`text`/`message`.
+   - Of the four `assistant.message` events only the **last** has non-empty `content`; the other
+     three carry `content: ""` and their work in `toolRequests`, so "last non-empty" is the rule.
+   - There is **no `session.start` event** in the stream. The session id arrives only on the CLI's own
+     closing line, which is not a session event at all:
+     `{"type":"result","timestamp":…,"sessionId":"4226b2e4-…","exitCode":0,"usage":{"premiumRequests":1,
+     "totalApiDurationMs":12626,"sessionDurationMs":15971,"codeChanges":{"linesAdded":2,
+     "linesRemoved":0,"filesModified":["…/hello.txt"]}}}`. `Parse` reads `session.start` too, since
+     the schema shipped in the package declares it and it costs one `case`.
+   - **No token counts and no dollar cost exist anywhere in the stream.** `assistant.usage` — the one
+     event carrying `inputTokens`/`outputTokens`/`cacheReadTokens`/`cost` — is on the CLI's own
+     suppression list for `--output-format json`, and the closing `result` reports only
+     `premiumRequests` and durations. `session.usage_checkpoint` adds `totalNanoAiu: 482334000`
+     (AI units, not dollars). So `Usage` and `CostUsd` are null **by measurement**: `--budget` neither
+     caps nor accounts for a copilot run, and the §D4 ledger records nothing for a copilot child —
+     the same gap cursor has. `--usage-output-file <file>` is the documented route to token counts if
+     it is ever wanted; it would need `Parse` to read a file, which it cannot today.
+   - `result.usage.codeChanges.filesModified` carries absolute paths of what the model edited. It is
+     deliberately **not** mapped to `ReportedEdits`: the git snapshot is truth (docs/PLAN.md §A2) and
+     already produced the right `changed_files` here.
+   - `--model auto` really is Auto: `session.auto_mode_resolved` reports
+     `{"chosenModel":"gpt-5.6-luna","routingMethod":"auto_v2","fallback":false}`.
+   - **Redactions in the fixture**, and nothing else: the `assistant.message` events' opaque
+     provider blobs (`encryptedContent`, `reasoningOpaque`, `apiCallId`, and `encrypted_content`
+     inside `reasoningBlocks`) and `session.usage_checkpoint`'s `model_call_id` are replaced with
+     `"<redacted>"`, and the scratch path that contains the owner's username is rewritten to
+     `/tmp/claustrum-copilot-capture`. Two more opaque provider handles joined that list on review:
+     `previousResponseId` (3 occurrences) and the `id` beside each `encrypted_content` inside
+     `reasoningBlocks.blocks` (4). Nothing else is touched — same line count, same key order,
+     75502 bytes down to 25716. The readable `reasoningText`, the tool calls, the request ids and the
+     whole `result` line are the genuine article.
+
+3. **Box 3 — `--deny-tool write` is the right name and the wrong mapping.** `copilot help permissions`
+   documents the pattern kinds first-hand: `shell(command:*?)`, `write(path?)`,
+   `<mcp-server-name>(tool-name?)` and `url(domain-or-url?)`, with "Denial rules always take
+   precedence over allow rules, even `--allow-all-tools`". So `--deny-tool write` and `--deny-tool
+   "shell(git push)"` are both valid — the latter is `copilot --help`'s own example, and the same
+   page confirms shell arguments match "on a first-level subcommand basis, e.g. 'git push'". What the
+   same page also says is the problem: `write(path?)` "matches tools that create and modify files,
+   **except shell tool invocations**… To allow all shell redirections, set `--allow-all-tools`" —
+   which every Claustrum level does, because `--help` calls it "required for non-interactive mode".
+   The `shell` rung therefore promised "run commands, change nothing" while `echo x > f` stayed wide
+   open. **Fixed** by giving `shell` the `--mode plan` that `readonly` already had (the same rung
+   `ClaudeBackend`'s own `shell` row gets from claude's plan mode), and by applying the role's deny
+   list there, which it silently dropped. One paid run is the proof — `claustrum run builder
+   --backend copilot --permission shell --brief "create denied.txt containing x, then run the shell
+   command: echo ran > shell-wrote.txt" --budget 0.5 --model auto --json --cwd <tmp>/run2`:
+   exit 0 in **22.4s**, `changed_files: []`, the directory afterwards holding only `.git` and
+   `seed.txt` — **neither file was created, by either route** — and `final_message` = *"I'm in plan
+   mode and the task requires approval before modifying files outside the session folder, so I can't
+   execute the requested file creation yet."* `report_status: ok`, with the builder schema and
+   `status: "blocked"`: **plan mode does not cost the report fence**, which was the open worry about
+   using it for a non-`readonly` rung.
+
+   | level | argv `Build` emits (after `-C <cwd> --agent claustrum-<role> --add-dir <job>/copilot-agents --model X --output-format json --log-level none --stream off`) |
+   |---|---|
+   | `readonly` | `--allow-all-tools --mode plan --deny-tool write --deny-tool shell` |
+   | `shell` | `--allow-all-tools --mode plan --deny-tool write` + `--deny-tool shell(<pattern>)` per deny entry |
+   | `edit` | `--allow-all-tools --allow-all-paths --deny-tool shell` |
+   | `edit+shell` | `--allow-all-tools --allow-all-paths` + `--deny-tool shell(<pattern>)` per deny entry |
+   | `full` | `--allow-all` |
+
+   All five verified as emitted, without paying, by pointing `backends.copilot.path` at a fake
+   `copilot` that dumps its argv. `--reasoning-effort <effort>` and `--resume <id>` follow, then
+   `-p <brief>` last.
+
+4. **Box 4 — `~/.copilot/agents` is real, and the files this repo writes load from it.** Two
+   independent confirmations. The CLI's own agent-creation wizard offers exactly two destinations,
+   `Project (.github/agents/)` and `User (<COPILOT_HOME>/agents)`. And the free probe, run from a
+   directory with no `.github` of its own after copying `code-reviewer.agent.md` and
+   `tester-max.agent.md` **from a `sync --global --only copilot` run** into `~/.copilot/agents/`:
+   `No such agent: definitely-not-an-agent, available: code-reviewer, tester-max`. Both files were
+   removed afterwards. Measured alongside: discovery covers **three** roots at once — personal
+   `~/.copilot/agents`, the session cwd's own `.github/agents`, and any `--add-dir <dir>`'s
+   `.github/agents` — listed in that order. The cwd root means a repo that has run `sync --only
+   copilot` exposes `builder`/`tester`/… to an interactive `copilot` session, which is the point of
+   the sync; the backend's ephemeral agent is namespaced `claustrum-<role>`, so the two never collide.
+   No code change was needed for this box.
+
+5. **Two defects the checklist did not list.**
+   - **`--model` was never passed.** `Build` emitted `-C`, `--agent`, `--add-dir`, `--output-format`,
+     `--log-level`, `--stream`, the permission args, `--reasoning-effort`, `--resume` and `-p` — and
+     no `--model`, though docs/PLAN.md §A3's copilot row spells it out and `OpencodeBackend` passes
+     its own. Every `claustrum run --backend copilot --model X` was silently running on copilot's
+     default model, which made `CLAUSTRUM_SMOKE_MODEL_COPILOT` decorative. Now emitted — and, exactly
+     as for cursor, **the built-in default is now a hard failure rather than a silent lie**: with no
+     alias, `frontier-coding` resolves to `claude:opus`, copilot is handed the bare id `opus`, and
+     `claustrum run builder --backend copilot` exits 1 in 3.4s with `Error: Model "opus" from --model
+     flag is not available.` (free — it refuses before the first API call). A user needs an alias,
+     e.g. `{"models": {"frontier-coding": "copilot:auto"}}`, and the smoke row needs
+     `CLAUSTRUM_SMOKE_MODEL_COPILOT=auto`.
+   - **`--model auto` and `--reasoning-effort` are mutually exclusive.** The first attempt at the box-2
+     run died in 4.5s, before any API call, with `Error: Model "auto" does not support reasoning
+     effort configuration (requested: "high").` A role's effort is always set, and `auto` is the model
+     id every account can use, so `Build` now omits `--reasoning-effort` when the model is `auto`;
+     any other model that refuses effort still fails loudly with that same unambiguous message.
+
+6. **The startup-failure shape is not "empty stdout" — `Parse` had to change for it.** The
+   2026-09-18 note recorded stdout as empty on a fatal startup failure. That was an *unauthenticated*
+   failure, which dies before the MCP servers come up. Both refusals measured today printed **two
+   `session.mcp_server_status_changed` lines to stdout first**, so the old `stdout.Trim().Length == 0`
+   branch never fired and the RunResult's `error` was a dump of that plumbing instead of the real
+   message. `Parse` now prefers stderr whenever no assistant text and no `session.error` were seen,
+   and keeps the raw stream as the last resort. Captured genuinely as
+   `tests/fixtures/copilot/effort-refused-stdout.jsonl` + `effort-refused-stderr.txt` — byte-identical
+   to the job's own logs, since neither carried anything to redact. Related and load-bearing: with
+   `--output-format json` a *mid-session* failure is the opposite shape — the CLI routes
+   `session.error` to stdout as an event and writes **nothing** to stderr — so `Parse` reads
+   `session.error` → `data.message` rather than leaving it to the stderr branch.
+
+7. **`auth:` and `--probe`.** `copilot help environment` names `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`,
+   `GITHUB_TOKEN` "in order of precedence" — verbatim the three `AuthStatusFor` already listed, so
+   that half was right. The login file is now read too, because it was confirmed on a real install:
+   `~/.copilot/config.json` (relocated by `COPILOT_HOME`) holds a `loggedInUsers` array — `[{"host":
+   "https://github.com", "login": "<user>"}]` on this logged-in machine — and the file legally
+   contains `//` comments, so it needs `JsonCommentHandling.Skip`. Which of `/login` and `gh auth
+   login` writes it was not separately tested; only that a logged-in install has it non-empty. `backends doctor
+   copilot --probe` on this machine, with no env var set, prints
+   `auth: present (logged in, /home/…/.copilot/config.json — no env var set)` and
+   `probe: OK (7.1s, cost not reported, reply "OK")` — the third paid request. ⚠ The probe needs a
+   model alias resolving to copilot **and a `claustrum.json` at the git root**: in a directory that is
+   not a git repo the repo config layer is not read at all and the probe skips with "no model alias
+   in claustrum.json resolves to this backend", which looks like a copilot problem and is not one.
+
+   ⚠ **A non-object `config.json` used to kill the whole command.** `RootElement.TryGetProperty`
+   throws `InvalidOperationException` when the root is an array/string/number/null, and that type was
+   not in the catch filter, so `doctor --probe` died on copilot's `auth:` line *after* paying for the
+   probes and never printed cursor, `mcp:` or the merged config. The kind is checked before the
+   lookup now, and — since this is the one backend whose login file is actually read — every outcome
+   is a real answer instead of the generic "not checked", which stays only for the backends whose
+   file this code does not know: `present (logged in, <path> — no env var set)`,
+   `not set (env var absent; <path> lists no logged-in user)`,
+   `not set (env var absent; <path> not present)`, and
+   `not set (env var absent; <path> present but unreadable)` for unparseable, non-object or
+   unreadable-by-IO files alike. Nothing on this path throws.
+
+### `shell` rung: what plan mode actually blocks (2026-09-22)
+
+The rung promises "run commands, change nothing", and the guarantee is carried by **plan mode's
+command-string analyser**, not by the permission layer: `--deny-tool write` explicitly exempts shell
+invocations (box 3). One paid request (the **fourth**, `premiumRequests: 1`) went to probing the
+analyser with writes that carry no `>` redirection, in a throwaway `git init` toy with
+`CLAUSTRUM_HOME` pointed at a scratch dir:
+
+```
+claustrum run builder --backend copilot --model auto --permission shell --json --cwd <toy> \
+  --brief "$BRIEF"
+# BRIEF = Run exactly this shell command and report its exit code:
+#         python3 -c "open('leak.txt','w').write('x')"
+#         — then run this second command and report its exit code too: tee leak2.txt <<< y
+```
+
+**Nothing leaked.** `status: success`, `exit_code: 0`, `changed_files: []` in **24.3s**; afterwards
+the toy held only `.git` and `seed.txt` — no `leak.txt`, no `leak2.txt`, `git status` clean.
+`report_status: ok` with `status: "blocked"`, so the fence survives plan mode here too.
+
+⚠ **But the interpreter write was never tested on its own, and the log says the analyser did not see
+it.** The model fused both commands into a single `bash` call — `python3 -c "open('leak.txt','w')
+.write('x')"; echo EXIT:$?; tee leak2.txt <<< y; echo EXIT2:$?` — and the `tool.execution_start`
+event carries the analyser's verdict: `"shellToolInfo": {"possiblePaths": ["leak2.txt"],
+"hasWriteFileRedirection": false}`. Only the `tee` target was recognised as a path; the `open(…,'w')`
+inside the `python3 -c` string was **not**. The whole compound was then denied
+(`tool.execution_complete`, `error.code: "denied"`): *"This shell command would modify files outside
+the session folder and was blocked. Plan mode does not permit changes outside the session folder. Do
+not implement yet — finish the plan and call `exit_plan_mode` to request approval before making any
+changes."* So the denial is fully explained by `leak2.txt`, and an interpreter-only write is
+**unsettled — with the evidence pointing the wrong way**. Not fixed, deliberately: the same shape is
+house precedent on claude, whose `shell` row leans on plan mode in exactly the same way.
+
+**The over-block side of the same trade** (read out of the box-3 session log,
+`~/.copilot/session-state/cb6093c4-…/events.jsonl`, no new spend): plan mode *mandates* a plan file
+and `--deny-tool write` forbids it — a `create` of `<session-state>/cb6093c4-…/plan.md` came back
+*"Permission to run this tool was denied due to the following rules: `write`"*. And the
+escape hatch the denial text names does not exist here: **`exit_plan_mode` is never offered as a
+tool** — no `tool.execution_start` for it in either plan-mode session, only the denial prose naming
+it. The model is told to call a tool it does not have, which is why "blocked" is the honest report
+status for this rung rather than a failure.
+
+### Sub-agent tagging is unobserved, so `Parse` does not special-case it (2026-09-22)
+
+`Parse` briefly skipped `assistant.message` events carrying a top-level `agentId`, on the theory that
+a delegated agent's chatter could displace the root agent's final answer. **There is no such event.**
+`agentId` occurs **zero** times in the committed capture and zero times across every
+`~/.copilot/session-state/*/events.jsonl` on this machine, at root or under `data`. The only
+delegation-shaped event that does exist is `subagent.selected`, and it names the *root* custom agent
+(`{"agentName":"claustrum-builder","agentDisplayName":"claustrum-builder","tools":["*"]}`), not a
+delegate. The filter was therefore removing nothing and could only mis-fire, so `FinalMessage` is the
+last non-empty `assistant.message` content, full stop — the root agent speaks last in every session
+observed. If copilot ever does tag delegated output, this is the note to revisit.
+
+**Still unverified, for the record:** every model id other than `auto` (only `opus` was tried, to
+measure the refusal); whether a named model accepts `--reasoning-effort` in practice; `--resume`
+against a real session id; the `full` rung's `--allow-all`; a `session.error` event, which nothing
+here got far enough to produce; `--usage-output-file`; whether `infer`/`tools`/`skills` in an
+`.agent.md` do what their names suggest, as opposed to merely being accepted; an interpreter-only
+write under the `shell` rung, which no run has yet attempted in isolation (see the plan-mode section
+above — the analyser demonstrably did not recognise one); and the Windows leg.

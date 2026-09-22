@@ -6,18 +6,13 @@ using Claustrum.Core.Process;
 
 namespace Claustrum.Core.Backends.Copilot;
 
-// docs/PLAN.md §A3 "copilot" row, checked against a real `@github/copilot` 1.0.86 install (2026-09-18
-// — see NOTES.md "The copilot backend" for exactly what `copilot --help`/`copilot help environment`
-// confirmed vs. what stayed a best-effort guess). Confirmed live: `-C`, `--agent`, `--output-format
-// json` (JSONL), `--allow-tool`/`--deny-tool` with `shell(...)`/`write` tool names, `--mode`
-// [interactive|plan|autopilot], `--reasoning-effort` (not `--effort`, and "high"/"xhigh"/"max" are
-// valid values there), and that `--add-dir <dir>` "loads that directory's .github/skills and
-// .github/agents as trusted configuration" — a real, cwd-relative mechanism, not the `COPILOT_HOME`
-// relocation the original plan guessed. No authenticated session was reachable from this environment
-// (no GitHub Copilot subscription token here — the sandbox's own repo-scoped GITHUB_TOKEN is a
-// different, narrower credential and was deliberately not pressed into this instead), so the exact
-// `.agent.md` frontmatter schema and every JSONL success-event field name are unconfirmed inference,
-// flagged the same way as the other M3 backends' fixtures.
+// docs/PLAN.md §A3 "copilot" row, validated end to end against a real, authenticated GitHub Copilot
+// CLI 1.0.87 (2026-09-22, issue #13 — NOTES.md "The copilot backend, validated against a real
+// install" holds the box-by-box evidence). Measured there, not guessed here: `--add-dir <dir>` does
+// load that directory's `.github/agents`; the `.agent.md` frontmatter accepts `name`, `description`,
+// `model`, `tools`, `infer` and `skills`, of which only `description` is required; and the JSONL is a
+// stream of session events (`assistant.message` → `data.content`, `session.start` → `data.sessionId`)
+// closed by the CLI's own `{"type":"result","sessionId":…,"exitCode":…}` line.
 public sealed class CopilotBackend(IPlatform platform) : IBackend
 {
     private static readonly TimeSpan detectTimeout = TimeSpan.FromSeconds(10);
@@ -44,12 +39,19 @@ public sealed class CopilotBackend(IPlatform platform) : IBackend
             "-C", run.Cwd,
             "--agent", agentName,
             "--add-dir", agentRoot,
+            "--model", run.Role.Model,
             "--output-format", "json",
             "--log-level", "none",
             "--stream", "off",
         ];
         args.AddRange(PermissionArgs(run.Role.Permission));
-        if (!string.IsNullOrEmpty(run.Role.Effort))
+
+        // `--model auto` and `--reasoning-effort` are mutually exclusive: copilot 1.0.87 exits 1
+        // before its first API call with `Model "auto" does not support reasoning effort
+        // configuration` (measured 2026-09-22). `auto` is the one model id every account can use, so
+        // the effort is dropped rather than the run; any other model that refuses effort still fails
+        // loudly, with that same unambiguous message.
+        if (!string.IsNullOrEmpty(run.Role.Effort) && run.Role.Model is not "auto")
             args.AddRange(["--reasoning-effort", run.Role.Effort]);
         if (run.ResumeSession is { Length: > 0 } resumeSession)
             args.AddRange(["--resume", resumeSession]);
@@ -61,17 +63,9 @@ public sealed class CopilotBackend(IPlatform platform) : IBackend
     public ParsedOutput Parse(string stdout, string stderr, int exitCode)
     {
         string trimmed = stdout.Trim();
-
-        // Confirmed live (2026-09-18): an unauthenticated/fatal-startup failure prints a
-        // human-readable message to stderr and leaves stdout empty, exit code 1 — not a JSON error
-        // object the way opencode's own startup failures are. This branch is a real, not fabricated,
-        // observation; everything past it (the JSONL success shape) is unconfirmed inference.
-        if (trimmed.Length == 0)
-            return new ParsedOutput(stderr, null, null, null, [], null, IsError: exitCode != 0);
-
         string? sessionId = null;
         string? lastText = null;
-        Usage? usage = null;
+        string? lastError = null;
         JsonElement? lastEvent = null;
 
         foreach (string rawLine in trimmed.Split('\n'))
@@ -94,92 +88,116 @@ public sealed class CopilotBackend(IPlatform platform) : IBackend
             {
                 JsonElement root = document.RootElement;
                 lastEvent = root.Clone();
-                sessionId = FirstString(root, "session_id", "sessionID") ?? sessionId;
-                lastText = ExtractText(root) ?? lastText;
-                usage = ExtractUsage(root) ?? usage;
+                switch (StringProperty(root, "type"))
+                {
+                    case "session.start":
+                        sessionId = DataString(root, "sessionId") ?? sessionId;
+                        break;
+
+                    // Last non-empty `assistant.message`, with no sub-agent filter: no delegation
+                    // marker has ever been observed in a copilot stream (NOTES.md "The copilot
+                    // backend, validated against a real install", sub-agent tagging).
+                    case "assistant.message":
+                        lastText = DataString(root, "content") ?? lastText;
+                        break;
+
+                    case "session.error":
+                        lastError = DataString(root, "message") ?? lastError;
+                        break;
+
+                    case "result":
+                        sessionId = StringProperty(root, "sessionId") ?? sessionId;
+                        break;
+
+                    default:
+                        break;
+                }
             }
         }
 
-        // Every JSONL line failed to parse (or none carried recognizable text): fall back to the raw
-        // stream rather than reporting an empty message, same fallback ClaudeBackend/OpencodeBackend
-        // use for their own malformed/unrecognized-shape inputs.
-        string finalMessage = lastText ?? trimmed;
-        return new ParsedOutput(finalMessage, sessionId, null, usage, [], lastEvent, IsError: exitCode != 0);
+        // Nothing the model said: a startup failure. It goes to stderr, and stdout is *not*
+        // necessarily empty — a `--model auto` + `--reasoning-effort` refusal still emitted two
+        // `session.mcp_server_status_changed` lines first (measured 2026-09-22), which is why stderr
+        // is preferred here over a stdout that only ever carried plumbing. The raw stream stays the
+        // last resort, as it is for ClaudeBackend/OpencodeBackend's own unrecognized shapes.
+        string? spoken = exitCode == 0 ? lastText ?? lastError : lastError ?? lastText;
+        string finalMessage = spoken ?? (stderr.Trim().Length > 0 ? stderr : trimmed);
+
+        // Usage is null by measurement, not by omission: the CLI suppresses `assistant.usage` from
+        // the JSONL stream and its closing `result` event reports only `premiumRequests` and
+        // durations — no token counts and no dollar cost anywhere (NOTES.md "The copilot backend,
+        // validated against a real install"; `--usage-output-file` is the route if it is ever wanted).
+        return new ParsedOutput(finalMessage, sessionId, null, null, [], lastEvent, IsError: exitCode != 0);
     }
 
-    // ReadOnly/Edit intentionally diverge from a literal reading of docs/PLAN.md §A3's permission
-    // table: `--allow-all-tools` is documented by `copilot --help` itself as "required for
-    // non-interactive mode", so a mapping that omits it (as the original table's ReadOnly/Edit rows
-    // did) risks `-p` hanging on an interactive confirmation prompt that can never be answered
-    // headlessly. Every level below instead grants broadly via --allow-all-tools and narrows with
-    // --deny-tool, which the CLI's own examples show composing (deny wins) — the same
-    // allow-broad-deny-narrow shape ClaudeBackend already uses for EditShell.
+    // Deviates from a literal reading of docs/PLAN.md §A3's permission table twice over; NOTES.md
+    // "The copilot backend" and "The copilot backend, validated against a real install" (box 3) hold
+    // the reasoning and the measurements. Every rung grants broadly with `--allow-all-tools`, which
+    // `copilot --help` calls "required for non-interactive mode", and narrows with `--deny-tool`
+    // (deny always wins) — ClaudeBackend's EditShell shape. And `--deny-tool write` cannot carry the
+    // Shell rung alone: `copilot help permissions` excludes shell invocations from `write`, so a
+    // redirection still writes, hence `--mode plan` there too.
     private static List<string> PermissionArgs(PermissionPolicy permission) => permission.Level switch
     {
         PermissionLevel.ReadOnly => ["--allow-all-tools", "--mode", "plan", "--deny-tool", "write", "--deny-tool", "shell"],
-        PermissionLevel.Shell => ["--allow-all-tools", "--deny-tool", "write"],
+        PermissionLevel.Shell => ShellArgs(permission.Deny),
         PermissionLevel.Edit => ["--allow-all-tools", "--allow-all-paths", "--deny-tool", "shell"],
         PermissionLevel.EditShell => EditShellArgs(permission.Deny),
         PermissionLevel.Full => ["--allow-all"],
         _ => throw new ArgumentOutOfRangeException(nameof(permission)),
     };
 
-    private static List<string> EditShellArgs(string[] deny)
+    // ⚠ Not proven airtight: "no write by any route" rests on plan mode's command-string analyser,
+    // not on the permission layer. Measured 2026-09-22 — it flagged `tee leak2.txt` but *not* an
+    // `open(...,'w')` inside a `python3 -c` string in the same command; nothing leaked, because the
+    // compound was denied for the `tee`. NOTES.md "`shell` rung: what plan mode actually blocks".
+    private static List<string> ShellArgs(string[] deny)
     {
-        List<string> args = ["--allow-all-tools", "--allow-all-paths"];
-        foreach (string pattern in deny)
-            args.AddRange(["--deny-tool", $"shell({pattern})"]);
+        List<string> args = ["--allow-all-tools", "--mode", "plan", "--deny-tool", "write"];
+        AddDenyPatterns(args, deny);
         return args;
     }
 
-    // Frontmatter shape is an unconfirmed guess (no authenticated session to check it against),
-    // modeled on the same name/description convention Claude Code's own .claude/agents/*.md uses,
-    // since GitHub Copilot CLI's .github/agents/*.agent.md is documented as an analogous mechanism.
+    private static List<string> EditShellArgs(string[] deny)
+    {
+        List<string> args = ["--allow-all-tools", "--allow-all-paths"];
+        AddDenyPatterns(args, deny);
+        return args;
+    }
+
+    // `shell(git push)` is `copilot --help`'s own example, and `copilot help permissions` confirms
+    // the argument is matched against the first-level subcommand — exactly, unless the pattern ends
+    // in `:*`, so a deny entry stops the command it names and not its arguments.
+    private static void AddDenyPatterns(List<string> args, string[] deny)
+    {
+        foreach (string pattern in deny)
+            args.AddRange(["--deny-tool", $"shell({pattern})"]);
+    }
+
+    // `description` is the one required key (`name` falls back to the file stem); `model`, `tools`,
+    // `infer` and `skills` are the rest of the accepted set, and everything else is warned about and
+    // ignored — measured 2026-09-22, see NOTES.md "The copilot backend, validated against a real
+    // install". Quoted because an unquoted `: ` in a description is a YAML parse error there.
     private static string BuildAgentFile(string agentName, string systemPrompt) =>
         $"""
         ---
         name: {agentName}
-        description: Claustrum-rendered role, do not edit by hand.
+        description: "Claustrum-rendered role, do not edit by hand."
         ---
         {systemPrompt}
         """;
 
-    private static string? FirstString(JsonElement root, params string[] propertyNames)
+    private static string? StringProperty(JsonElement parent, string propertyName) =>
+        parent.TryGetProperty(propertyName, out JsonElement value) && value.ValueKind == JsonValueKind.String
+            ? value.GetString()
+            : null;
+
+    // Every session event but the CLI's own closing `result` line nests its payload under `data`.
+    private static string? DataString(JsonElement root, string propertyName)
     {
-        foreach (string name in propertyNames)
-            if (root.TryGetProperty(name, out JsonElement value) && value.ValueKind == JsonValueKind.String)
-                return value.GetString();
-        return null;
-    }
-
-    // No confirmed example of a successful run's JSONL shape exists (see the class comment), so this
-    // tries every plausible key an assistant-text event might use rather than committing to one.
-    private static string? ExtractText(JsonElement root)
-    {
-        if (FirstString(root, "content", "text") is { Length: > 0 } direct)
-            return direct;
-
-        if (root.TryGetProperty("message", out JsonElement message))
-        {
-            if (message.ValueKind == JsonValueKind.String)
-                return message.GetString();
-            if (FirstString(message, "content", "text") is { Length: > 0 } nested)
-                return nested;
-        }
-
-        return null;
-    }
-
-    private static Usage? ExtractUsage(JsonElement root)
-    {
-        if (!root.TryGetProperty("usage", out JsonElement usageElement))
+        if (!root.TryGetProperty("data", out JsonElement data) || data.ValueKind != JsonValueKind.Object)
             return null;
 
-        int? input = TryGetInt(usageElement, "input_tokens") ?? TryGetInt(usageElement, "prompt_tokens");
-        int? output = TryGetInt(usageElement, "output_tokens") ?? TryGetInt(usageElement, "completion_tokens");
-        return input is null && output is null ? null : new Usage(input, output, null, null);
+        return StringProperty(data, propertyName) is { Length: > 0 } value ? value : null;
     }
-
-    private static int? TryGetInt(JsonElement parent, string propertyName) =>
-        parent.TryGetProperty(propertyName, out JsonElement property) && property.TryGetInt32(out int value) ? value : null;
 }
