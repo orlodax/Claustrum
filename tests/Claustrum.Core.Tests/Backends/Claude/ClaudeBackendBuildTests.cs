@@ -1,5 +1,6 @@
 using Claustrum.Core.Backends;
 using Claustrum.Core.Backends.Claude;
+using Claustrum.Core.Jobs;
 using Claustrum.Core.Model;
 using Claustrum.Core.Tests.Testing;
 
@@ -17,7 +18,8 @@ public sealed class ClaudeBackendBuildTests
         decimal? budget = null,
         string effort = "high",
         string? resume = null,
-        bool stream = false) => new(
+        bool stream = false,
+        Dictionary<string, string>? env = null) => new(
             Role: new ResolvedRole("builder", "system body", "claude", "sonnet", effort, permission, Blind: false, HasReport: true),
             Brief: "do the thing",
             Cwd: "/repo",
@@ -27,7 +29,7 @@ public sealed class ClaudeBackendBuildTests
             Stream: stream,
             SystemPromptFilePath: "/job/system.md",
             JobDirectory: "/job",
-            Env: []);
+            Env: env ?? []);
 
     [Fact]
     public void ReadOnlySetsPlanModeAndAllowedTools()
@@ -219,5 +221,166 @@ public sealed class ClaudeBackendBuildTests
         ProcessSpec spec = backend.Build(MakeRun(new PermissionPolicy(PermissionLevel.Shell, ["git push"])));
 
         Assert.Contains("Bash(git push*)", spec.Args);
+    }
+
+    // issue #19: a spawned architect (request env carries BudgetLedger.TreeVariable) must not keep
+    // Claude Code's native subagent tool — a native subagent would run outside the cast and outside
+    // the tree budget ledger. Every permission level's own exact argv, with the tree block landing
+    // immediately after the level's own flags and before session/budget/effort — golden-exact, the
+    // same style as the plain per-level tests above, so a reorder or a dropped flag fails loudly.
+    private static Dictionary<string, string> TreeEnv() => new() { [BudgetLedger.TreeVariable] = "job-x" };
+
+    [Fact]
+    public void ReadOnlyUnderATreeAddsDisallowedToolsRightAfterItsOwnAllowedTools()
+    {
+        ProcessSpec spec = backend.Build(MakeRun(new PermissionPolicy(PermissionLevel.ReadOnly, []), env: TreeEnv()));
+
+        Assert.Equal(
+        [
+            "-p", "--output-format", "json", "--model", "sonnet",
+            "--append-system-prompt-file", "/job/system.md",
+            "--permission-mode", "plan", "--permission-prompts", "none",
+            "--allowedTools", "Read,Glob,Grep,Bash(git diff*),Bash(git log*),Bash(git show*),Bash(git status*),Bash(gh pr *),Bash(gh issue *)",
+            "--disallowedTools", "Agent,Task",
+            "--no-session-persistence",
+            "--effort", "high",
+            "do the thing",
+        ], spec.Args);
+    }
+
+    [Fact]
+    public void ShellUnderATreeAddsDisallowedToolsAsASecondOccurrence()
+    {
+        ProcessSpec spec = backend.Build(MakeRun(new PermissionPolicy(PermissionLevel.Shell, []), env: TreeEnv()));
+
+        Assert.Equal(
+        [
+            "-p", "--output-format", "json", "--model", "sonnet",
+            "--append-system-prompt-file", "/job/system.md",
+            "--permission-mode", "plan", "--permission-prompts", "none",
+            "--disallowedTools", "Edit,Write,NotebookEdit",
+            "--disallowedTools", "Agent,Task",
+            "--no-session-persistence",
+            "--effort", "high",
+            "do the thing",
+        ], spec.Args);
+    }
+
+    [Fact]
+    public void EditUnderATreeAddsDisallowedToolsAsASecondOccurrence()
+    {
+        ProcessSpec spec = backend.Build(MakeRun(new PermissionPolicy(PermissionLevel.Edit, []), env: TreeEnv()));
+
+        Assert.Equal(
+        [
+            "-p", "--output-format", "json", "--model", "sonnet",
+            "--append-system-prompt-file", "/job/system.md",
+            "--permission-mode", "acceptEdits", "--permission-prompts", "none",
+            "--disallowedTools", "Bash",
+            "--disallowedTools", "Agent,Task",
+            "--no-session-persistence",
+            "--effort", "high",
+            "do the thing",
+        ], spec.Args);
+    }
+
+    [Fact]
+    public void EditShellUnderATreeAddsDisallowedToolsRightAfterItsOwnAllowedTools()
+    {
+        ProcessSpec spec = backend.Build(MakeRun(new PermissionPolicy(PermissionLevel.EditShell, []), env: TreeEnv()));
+
+        Assert.Equal(
+        [
+            "-p", "--output-format", "json", "--model", "sonnet",
+            "--append-system-prompt-file", "/job/system.md",
+            "--permission-mode", "acceptEdits", "--permission-prompts", "none",
+            "--allowedTools", "Edit,Write,Read,Glob,Grep,Bash(*)",
+            "--disallowedTools", "Agent,Task",
+            "--no-session-persistence",
+            "--effort", "high",
+            "do the thing",
+        ], spec.Args);
+    }
+
+    [Fact]
+    public void FullUnderATreeStillAddsDisallowedToolsDespiteSkippingPermissions()
+    {
+        ProcessSpec spec = backend.Build(MakeRun(new PermissionPolicy(PermissionLevel.Full, []), env: TreeEnv()));
+
+        Assert.Equal(
+        [
+            "-p", "--output-format", "json", "--model", "sonnet",
+            "--append-system-prompt-file", "/job/system.md",
+            "--dangerously-skip-permissions", "--permission-prompts", "none",
+            "--disallowedTools", "Agent,Task",
+            "--no-session-persistence",
+            "--effort", "high",
+            "do the thing",
+        ], spec.Args);
+    }
+
+    // Resume drops --no-session-persistence, but --effort still follows the tree block before
+    // --resume and the brief — the block is never adjacent to the brief either way (NOTES.md
+    // "--disallowedTools is variadic and swallows the following positional": the brief must never be
+    // the flag's own next argument).
+    [Fact]
+    public void ResumingUnderATreeStillAddsDisallowedToolsRightAfterThePermissionBlock()
+    {
+        ProcessSpec spec = backend.Build(MakeRun(new PermissionPolicy(PermissionLevel.Full, []), env: TreeEnv(), resume: "sess-123"));
+
+        Assert.Equal(
+        [
+            "-p", "--output-format", "json", "--model", "sonnet",
+            "--append-system-prompt-file", "/job/system.md",
+            "--dangerously-skip-permissions", "--permission-prompts", "none",
+            "--disallowedTools", "Agent,Task",
+            "--effort", "high",
+            "--resume", "sess-123",
+            "do the thing",
+        ], spec.Args);
+    }
+
+    [Theory]
+    [InlineData(PermissionLevel.ReadOnly)]
+    [InlineData(PermissionLevel.Shell)]
+    [InlineData(PermissionLevel.Edit)]
+    [InlineData(PermissionLevel.EditShell)]
+    [InlineData(PermissionLevel.Full)]
+    public void EveryLevelAddsDisallowedToolsExactlyOnceUnderATreeAndNeverAsTheLastArgumentBeforeTheBrief(PermissionLevel level)
+    {
+        ProcessSpec spec = backend.Build(MakeRun(new PermissionPolicy(level, []), env: TreeEnv()));
+
+        int occurrences = 0;
+        for (int i = 0; i < spec.Args.Length - 1; i++)
+        {
+            if (spec.Args[i] == "--disallowedTools" && spec.Args[i + 1] == "Agent,Task")
+                occurrences++;
+        }
+
+        Assert.Equal(1, occurrences);
+        Assert.NotEqual("do the thing", spec.Args[Array.IndexOf(spec.Args, "Agent,Task") + 1]);
+    }
+
+    [Theory]
+    [InlineData(PermissionLevel.ReadOnly)]
+    [InlineData(PermissionLevel.Shell)]
+    [InlineData(PermissionLevel.Edit)]
+    [InlineData(PermissionLevel.EditShell)]
+    [InlineData(PermissionLevel.Full)]
+    public void NoTreeVariableOmitsDisallowedToolsForTheSubagent(PermissionLevel level)
+    {
+        ProcessSpec spec = backend.Build(MakeRun(new PermissionPolicy(level, [])));
+
+        Assert.DoesNotContain("Agent,Task", spec.Args);
+    }
+
+    // An env key that is not BudgetLedger.TreeVariable must change nothing — the block is keyed on
+    // that one name, not on "any env was passed".
+    [Fact]
+    public void AnUnrelatedEnvKeyAddsNothing()
+    {
+        ProcessSpec spec = backend.Build(MakeRun(new PermissionPolicy(PermissionLevel.Full, []), env: new Dictionary<string, string> { ["FOO"] = "bar" }));
+
+        Assert.DoesNotContain("Agent,Task", spec.Args);
     }
 }
