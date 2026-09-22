@@ -1497,7 +1497,8 @@ files with header-only diffs" — was never evidenced. Measured 2026-09-21 on th
     a change is correct by writing and running its tests…", has a "The quality gate — run it, report
     the exact result" section and the "a declared skip is an honest result" paragraph; the owner's
     ui-reviewer is a different document (Preconditions, the browser-adapter verb table, data rules
-    on shared targets, its own tier section). The library still renders the older texts.
+    on shared targets, its own tier section). The library still renders the older texts — re-ported
+    2026-09-22 (#16), see "tester and ui-reviewer re-ported from the owner's current files".
 - **`architect` is not in the library at all** — the plan's "five files" counts it, but no
   `roles/architect/` exists; it arrives with M4's `coordinate`.
 - The owner's files are themselves mid-edit: `tester.md` carries the 2026-09-21 "whichever shell
@@ -2280,3 +2281,89 @@ written and `sync` prints one line saying exactly that.
   skip prints through the one line the Linux skip already used: `claude desktop config: not written
   (<reason>)`. Order is OS → directory → binary, so a Linux user is told there is no such app instead
   of being sent to install a binary that would not help.
+
+## doctor advisories are not problems (2026-09-22, issue #17)
+
+docs/PLAN.md §A3 promised that cursor's prompt-only deny list is something "`doctor` marks
+advisory"; "The cursor backend, validated against a real install" box 11 confirmed the gap and named
+the trap. `Doctor` therefore grew a field of its own rather than borrowing `Problems`:
+
+- **Why not a `Problems` entry.** `BackendsCommands.ProbeLineAsync` reads
+  `doctor.Problems.FirstOrDefault()` as "this backend is not worth paying for" and returns
+  `skipped (<problem>)`. A note that blocks nothing would therefore have silently turned off
+  cursor's `--probe` round trip — the diagnostic would have disabled the diagnostic. `Advisories` is
+  printed (`  advisory: <text>`, after the `problem:` lines) and serialized, and is read by nothing
+  that decides anything. `ProbeLineAsync` is deliberately unchanged.
+- **The cursor line, verbatim:** `deny list is enforced by prompt only: cursor-agent has no native
+  deny flag (NOTES.md "The cursor backend, validated against a real install", box 11)`.
+- **Emitted whether or not the binary was found.** `CursorBackend.DetectAsync` appends it with
+  `probe with { Advisories = [...] }`, so an install-less machine is told the same thing — it is a
+  property of cursor-agent, not of this install. The other four backends emit none.
+- **Shape: `string[]? Advisories = null` with a declared non-null `Advisories` property** returning
+  `[]`. A record cannot default an array parameter to `[]` in a primary constructor, and the point of
+  the default is that every existing `new Doctor(found, path, version, problems)` (five in
+  `VersionProbe`, plus the test fakes) keeps compiling and keeps reading as `[]`, never null.
+- MCP `doctor`'s `BackendDoctorEntry` carries `advisories` as an additive field; the source-generated
+  `McpJsonContext` already covers the record, and the AOT publish stays at zero trim warnings.
+
+## tester and ui-reviewer re-ported from the owner's current files (2026-09-22, issue #16)
+
+"`sync --global --only claude` … not header-only" (2026-09-21) found the library rendering texts the
+owner had already replaced — `~/.claude/agents/tester.md` rewritten 2026-09-14, `ui-reviewer.md`
+2026-09-18. Both are now ported from those files sentence by sentence, the way `builder`,
+`code-reviewer` and `architect` were.
+
+**Method, and the measurement that closes the issue's done-when.** Rendered into a scratch repo
+(`sync --only claude --roles tester,ui-reviewer`) and compared block by block against the owner's
+file — frontmatter, the `claustrum:generated` marker and the generated `## Report format`/
+`## House rules` sections dropped, every markdown block (paragraph, list item, heading, or a whole table)
+whitespace-collapsed, so the owner's 80-column wrap and the library's 100 cannot register as a
+difference. **tester: 14 blocks against 14, one differing**, and only because his wrap falls after a
+slash (`read their testing/ quality-gate sections` vs `testing/quality-gate`). **ui-reviewer: 50
+owner blocks against 50**, two differences, both deliberate: the tool names in How-you-work step 2
+neutralised to "the *snapshot* verb below" (§B1 keeps tool names in parts), and the tier section
+below. A third one — a paragraph added to `parts/browser.claude.md` from the owner's global
+CLAUDE.md rule of 2026-09-10/2026-09-20 about relaunching a browser that answers "not connected" —
+was removed after a blind review the same day: it is not in the owner's ui-reviewer file, and this
+port carries that file only. Its source rule is untouched where it lives. No `--global` adoption
+was run: taking these files over is the owner's call, not the port's.
+
+**What became a part.** tester keeps exactly one, `{{part:environment}}`, and it now carries the
+whole "Assume nothing about the environment either" paragraph — the owner folded the standalone
+`## Environment` section into "The quality gate — run it, report the exact result", so the token
+moved with it; the claude variant is his 2026-09-21 "whichever shell tools you actually have"
+wording, the `.default` one keeps "the one appropriate to the OS you are running on". ui-reviewer
+gains a second part, `parts/browser.claude.md`: the verb table names `preview_start`, `read_page`,
+`computer`, `resize_window` and the Browser-pane-vs-Claude-in-Chrome choice, which is Claude's
+surface and nobody else's. It has **no `.default.md`**, deliberately — `harnesses` is `["claude"]`,
+and the missing fallback is what makes a forced non-claude render fail loudly instead of handing a
+host a table of tools it does not have. That is the property `environment` already had, and the
+stated reason OpencodeSyncTests/CopilotSyncTests assert the default role set filters the role out.
+
+**The tier section could not be ported as written.** The owner's file says "model is fixed, effort
+scales" — `opus` at all three tiers — while `roles/ui-reviewer/role.json` says `standard-coding` at
+`high` and `frontier-coding` above it. Measured the same day, the mismatch runs both ways: his
+`tester{,-xhigh,-max}.md` are `sonnet` at all three tiers, where this library jumps that role to
+`frontier-coding` at `xhigh`. So the section states the invariant instead of the models, as the
+architect port did: effort is what a heavier tier buys, and which model each tier runs on is the
+library's call (`role.json`) and the cast's, never the reviewer's. Whether the two ladders should
+become the owner's — ui-reviewer `frontier-coding` everywhere, tester `standard-coding` everywhere —
+is left open on purpose: it is a cast/cost decision, not a port decision (issue filed the same day).
+
+**role.json.** Both descriptions are the owner's current frontmatter flattened to one line (the
+recorded by-design delta); `ui-reviewer.color` follows him from `yellow` to `cyan`, which also stops
+it colliding with `code-reviewer`; `nonNegotiable` — the three lines the tier stubs repeat — was
+refreshed to his current load-bearing rules. Tiers, permission, `harnesses`, `report` and `blind`
+are untouched.
+
+**Frontmatter the port cannot fix, recorded because the re-port is what surfaced it.** ClaudeSync's
+`ToolsFor` keys off `permission` alone, so `ui-reviewer` (`permission: "shell"`) is emitted with
+`tools: … Edit, Write, NotebookEdit …` and **no browser tool at all**, against the owner's
+`tools: Read, Grep, Glob, Bash, mcp__Claude_Browser, mcp__claude-in-chrome` +
+`disallowedTools: Agent, Edit, Write, NotebookEdit`. A synced ui-reviewer therefore cannot open a
+browser — the one thing the role exists for — while it can edit the tree, which its own ground rules
+forbid; and `disallowedTools` is emitted for `readonly` roles only, though issue #19 measured that
+listing tools is not what takes the native `Agent` tool away. Separately,
+`SyncWriter.TierDescription` hardcodes "identical role, model, and rules", false for the three roles
+whose class changes at `xhigh` — the owner's own `code-reviewer-xhigh.md` says "a model+effort step
+up". None of that lives in `roles/`; all of it has its own issue, filed the same day.
