@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text.Json;
 using Claustrum.Core.Config;
+using Claustrum.Core.Jobs;
 using Claustrum.Core.Model;
 using Claustrum.Core.Platform;
 using Claustrum.Core.Process;
@@ -23,6 +24,11 @@ public sealed class ClaudeBackend(IPlatform platform) : IBackend
     // code-reviewer read the diff it was asked to review (git/gh are read-only queries, not edits).
     private const string ReadOnlyTools = "Read,Glob,Grep,Bash(git diff*),Bash(git log*),Bash(git show*),Bash(git status*),Bash(gh pr *),Bash(gh issue *)";
 
+    // Claude Code's native subagent tool: `Agent` on 2.1.278, `Task` on older builds — an unknown
+    // name is silently ignored, so naming both costs nothing (NOTES.md "The native subagent tool is
+    // called Agent, and only --disallowedTools takes it away").
+    private const string SubagentTools = "Agent,Task";
+
     public string Name => "claude";
 
     public Task<Doctor> DetectAsync(BackendConfig? config, CancellationToken cancellationToken) =>
@@ -37,6 +43,13 @@ public sealed class ClaudeBackend(IPlatform platform) : IBackend
         args.AddRange(["--model", run.Role.Model]);
         args.AddRange(["--append-system-prompt-file", run.SystemPromptFilePath]);
         args.AddRange(PermissionArgs(run.Role.Permission));
+
+        // Spawned by `coordinate` (§D3): a native subagent would run outside the cast and outside
+        // the tree ledger, and no permission level withholds it — measured 2026-09-22, `Agent` is in
+        // the request's tool list even under `--permission-mode plan --allowedTools`. Repeated
+        // --disallowedTools merge, so this adds to the level's own entry instead of replacing it.
+        if (run.Env.ContainsKey(BudgetLedger.TreeVariable))
+            args.AddRange(["--disallowedTools", SubagentTools]);
 
         // A resumed session must keep its own persisted history; --no-session-persistence would
         // wipe exactly the state --resume is asking to reuse.
