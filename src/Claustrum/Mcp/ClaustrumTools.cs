@@ -215,7 +215,7 @@ public sealed class ClaustrumTools
             {
                 BackendConfig? backendConfig = config.Merged.Backends?.GetValueOrDefault(backend.Name);
                 Doctor doctor = await backend.DetectAsync(backendConfig, cancellationToken);
-                entries.Add(new BackendDoctorEntry(backend.Name, doctor.Found, doctor.Path, doctor.Version, doctor.Problems));
+                entries.Add(new BackendDoctorEntry(backend.Name, doctor.Found, doctor.Path, doctor.Version, doctor.Problems, doctor.Advisories));
             }
 
             return JsonSerializer.Serialize(new DoctorReport([.. entries]), McpJsonContext.Default.DoctorReport);

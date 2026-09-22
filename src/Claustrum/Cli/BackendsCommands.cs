@@ -78,6 +78,11 @@ public static class BackendsCommands
             foreach (string problem in doctor.Problems)
                 Console.WriteLine($"  problem: {problem}");
 
+            // Printed after the problems and kept out of them on purpose: ProbeLineAsync below keys
+            // the paid-probe skip on Problems alone (issue #17).
+            foreach (string advisory in doctor.Advisories)
+                Console.WriteLine($"  advisory: {advisory}");
+
             if (probe)
             {
                 Console.WriteLine($"  auth:    {AuthStatusFor(backend.Name)}");

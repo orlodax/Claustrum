@@ -631,6 +631,71 @@ public sealed partial class CliEndToEndTests : IDisposable
         Assert.Contains(".vscode/mcp.json: registers claustrum", stdout, StringComparison.Ordinal);
     }
 
+    // Issue #17: cursor's prompt-only deny list prints as its own `advisory:` line, never folded into
+    // `problem:` (which would make ProbeLineAsync below skip the paid probe for a note that blocks
+    // nothing).
+    [Fact]
+    public async Task DoctorCursorPrintsExactlyOneAdvisoryLineAsync()
+    {
+        (int exitCode, string stdout, _) = await RunAsync("backends", "doctor", "cursor");
+
+        Assert.Equal(Ok, exitCode);
+        string[] advisoryLines = [.. stdout.Split('\n').Where(line => line.StartsWith("  advisory: ", StringComparison.Ordinal))];
+        Assert.Single(advisoryLines);
+        Assert.Equal(
+            """  advisory: deny list is enforced by prompt only: cursor-agent has no native deny flag (NOTES.md "The cursor backend, validated against a real install", box 11)""",
+            advisoryLines[0].TrimEnd('\r'));
+    }
+
+    [Fact]
+    public async Task DoctorClaudePrintsNoAdvisoryLineAsync()
+    {
+        (int exitCode, string stdout, _) = await RunAsync("backends", "doctor", "claude");
+
+        Assert.Equal(Ok, exitCode);
+        Assert.DoesNotContain("advisory:", stdout, StringComparison.Ordinal);
+    }
+
+    // Forces `found: false` (and therefore a `problem:` line) by handing the child process a PATH
+    // that resolves to nothing — a `backends.cursor.path` override pointed at a missing file falls
+    // back to a normal PATH search (BinaryLocator.ResolveCandidate), so on a machine with a real
+    // cursor-agent installed (this dev box included) that override alone would not reproduce
+    // `found: false`. An emptied PATH is deterministic regardless of what is actually installed.
+    [Fact]
+    public async Task DoctorProblemLinesPrecedeAdvisoryLinesForCursorAsync()
+    {
+        string emptyPathDir = Directory.CreateTempSubdirectory("claustrum-empty-path-").FullName;
+        try
+        {
+            (int exitCode, string stdout, _) = await RunAsync(
+                new Dictionary<string, string> { ["PATH"] = emptyPathDir },
+                "backends", "doctor", "cursor");
+
+            Assert.Equal(Ok, exitCode);
+            Assert.Contains("  found:   False", stdout, StringComparison.Ordinal);
+            int problemIndex = stdout.IndexOf("  problem: ", StringComparison.Ordinal);
+            int advisoryIndex = stdout.IndexOf("  advisory: ", StringComparison.Ordinal);
+            Assert.True(problemIndex >= 0, "expected a problem: line when cursor-agent is not on PATH");
+            Assert.True(advisoryIndex > problemIndex, "expected advisory: to come after problem:");
+        }
+        finally
+        {
+            Directory.Delete(emptyPathDir, recursive: true);
+        }
+    }
+
+    // Regression guard (issue #17): the advisory must never become ProbeLineAsync's skip reason —
+    // with CLAUSTRUM_SKIP_PROBE=1 (RunAsync's default), the skip reason is always the env var, never
+    // "skipped (deny list is enforced ...)".
+    [Fact]
+    public async Task DoctorProbeCursorSkipsOnTheEnvVarNotTheAdvisoryAsync()
+    {
+        (int exitCode, string stdout, _) = await RunAsync("backends", "doctor", "cursor", "--probe");
+
+        Assert.Equal(Ok, exitCode);
+        Assert.Contains("  probe:   skipped (CLAUSTRUM_SKIP_PROBE set)", stdout, StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task InitScaffoldsClaustrumDirectoryAndClaudeSyncOnAFreshRepoAsync()
     {

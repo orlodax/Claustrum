@@ -18,10 +18,20 @@ public sealed class CursorBackend(IPlatform platform) : IBackend
 {
     private static readonly TimeSpan detectTimeout = TimeSpan.FromSeconds(10);
 
+    // docs/PLAN.md §A3's "doctor marks it advisory", finally said out loud (issue #17). An advisory,
+    // not a Problem: a problem would make `--probe` skip cursor's paid round trip.
+    private const string DenyAdvisory =
+        """deny list is enforced by prompt only: cursor-agent has no native deny flag (NOTES.md "The cursor backend, validated against a real install", box 11)""";
+
     public string Name => "cursor";
 
-    public Task<Doctor> DetectAsync(BackendConfig? config, CancellationToken cancellationToken) =>
-        VersionProbe.RunAsync("cursor-agent", ["--version"], config, platform, cancellationToken, detectTimeout);
+    // The advisory holds whether or not the binary is here: it describes cursor-agent itself, not
+    // this install, so a machine without cursor is told the same thing before it installs one.
+    public async Task<Doctor> DetectAsync(BackendConfig? config, CancellationToken cancellationToken)
+    {
+        Doctor doctor = await VersionProbe.RunAsync("cursor-agent", ["--version"], config, platform, cancellationToken, detectTimeout);
+        return doctor with { Advisories = [DenyAdvisory] };
+    }
 
     public ProcessSpec Build(ResolvedRun run)
     {
