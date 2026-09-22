@@ -16,13 +16,21 @@ public sealed class JobManager
 {
     private readonly ConcurrentDictionary<string, Entry> jobs = new();
 
-    public (string JobId, string LogPath) Start(DelegateRequest request, CancellationToken cancellationToken) =>
-        Start((job, token) => DelegateEngine.RunAsync(request, job, token), cancellationToken);
+    public (string JobId, string LogPath) Start(DelegateRequest request, CancellationToken cancellationToken)
+    {
+        // Prepared here, before the JobPaths below exists (issue #23): a malformed claustrum.json, a
+        // tier this role has no model class for or an unresolvable alias is then the delegate_async
+        // tool call's own error, not a `pending (no result.json)` directory nobody will ever close.
+        PreparedDelegation prepared = DelegateEngine.Prepare(request);
+
+        return Start((job, token) => DelegateEngine.RunAsync(prepared, job, token), cancellationToken);
+    }
 
     /// <summary>
-    /// The same background job for a caller that needs the job id *before* it can build its request:
+    /// The same background job for a caller whose run needs the job id *before* it starts:
     /// `coordinate`'s tree id is the job id it will run under (docs/PLAN.md §D3), so it reads
-    /// <see cref="JobPaths.Id"/> out of the directory this creates and only then prepares the run.
+    /// <see cref="JobPaths.Id"/> out of the directory this creates and binds its already-prepared
+    /// delegation to it (<see cref="PreparedDelegation.ForJob"/>).
     /// </summary>
     public (string JobId, string LogPath) Start(Func<JobPaths, CancellationToken, Task<RunResult>> run, CancellationToken cancellationToken)
     {

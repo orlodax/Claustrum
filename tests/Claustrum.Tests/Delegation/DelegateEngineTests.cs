@@ -120,6 +120,49 @@ public sealed class DelegateEngineTests(AppServicesHomeFixture fixture) : IDispo
         Assert.NotEqual(first.Branch, second.Branch);
     }
 
+    // issue #20: RoleConcurrencyGate.AcquireAsync's TimeoutException must not escape RunAsync — every
+    // other pre-spawn refusal on this path (BackendMissing, BudgetExceeded, a ledger error) already
+    // yields a RunResult document, and an architect parsing --json cannot read an exception on
+    // stderr. Both slots held by this test itself (not a real sibling process), so the wait is
+    // exactly the run's own --timeout, not RoleConcurrencyGate's default.
+    [Fact]
+    public async Task GateTimeoutYieldsAFailedRunResultThenTheSameRequestIsolatesOnceSlotsFreeAsync()
+    {
+        string gateKey = RoleConcurrencyGate.KeyFor("default", "builder");
+        RoleConcurrencyGate first = await RoleConcurrencyGate.AcquireAsync(
+            cwd, gateKey, maxParallel: 2, TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        RoleConcurrencyGate second = await RoleConcurrencyGate.AcquireAsync(
+            cwd, gateKey, maxParallel: 2, TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+
+        DelegateRequest request = MissingBackendRequest(maxParallel: 2) with
+        {
+            CastName = "default",
+            Overrides = new ConfigOverrides(Backend: "nonexistent", TimeoutSeconds: 1),
+        };
+
+        RunResult refused = await DelegateEngine.RunAsync(DelegateEngine.Prepare(request), job: null, TestContext.Current.CancellationToken);
+
+        Assert.Equal(RunStatus.Failed, refused.Status);
+        Assert.Contains("'default__builder' slots", refused.Error, StringComparison.Ordinal);
+        Assert.Null(refused.Worktree);
+        Assert.Null(refused.Branch);
+
+        string refusedResultJson = Path.Combine(JobDirectory.ResolveRoot(fixture.Platform), refused.JobId, "result.json");
+        Assert.True(File.Exists(refusedResultJson));
+        Assert.False(Directory.Exists(Path.Combine(cwd, ".claustrum", "worktrees", refused.JobId)));
+        Assert.DoesNotContain(ListBranches(cwd), branch => branch == $"claustrum/{refused.JobId}");
+
+        // Freed, the same request isolates normally — the timeout refusal changed nothing about the
+        // gate itself (the slot files are never deleted, only closed).
+        await first.DisposeAsync();
+        await second.DisposeAsync();
+
+        RunResult isolated = await DelegateEngine.RunAsync(DelegateEngine.Prepare(request), job: null, TestContext.Current.CancellationToken);
+
+        Assert.NotNull(isolated.Worktree);
+        Assert.Equal($"claustrum/{isolated.JobId}", isolated.Branch);
+    }
+
     // Review finding: the worktree and branch were created before Runner's own gates ran, and nothing
     // removed them when the run never reached a result.json — which is exactly the state `jobs clean`
     // refuses to touch, so the orphan was permanent.
@@ -258,6 +301,28 @@ public sealed class DelegateEngineTests(AppServicesHomeFixture fixture) : IDispo
         Assert.Equal(RunStatus.BackendMissing, result.Status);
         Assert.NotNull(result.Worktree);
         Assert.False(Directory.Exists(BudgetLedger.DirectoryFor(fixture.Platform, treeId)));
+    }
+
+    // issue #23: config, role and model resolution happen in Prepare, before any job directory is
+    // minted — a syntactically broken claustrum.json is this call's own ConfigException, not
+    // something discovered after a `pending (no result.json)` directory already exists.
+    [Fact]
+    public void PrepareOnABrokenClaustrumJsonThrowsConfigExceptionAndMintsNoJobDirectory()
+    {
+        // Diffed, not asserted absent outright: jobsRoot is the fixture-wide home shared by every
+        // test in this collection (AppServicesHomeFixture's own doc comment), so an earlier test's
+        // own job may already be there — proving *this* call added nothing is still exact.
+        string jobsRoot = JobDirectory.ResolveRoot(fixture.Platform);
+        string[] before = Directory.Exists(jobsRoot) ? Directory.GetDirectories(jobsRoot) : [];
+
+        File.WriteAllText(Path.Combine(cwd, "claustrum.json"), "{ not json");
+        DelegateRequest request = MissingBackendRequest(maxParallel: null);
+
+        ConfigException exception = Assert.Throws<ConfigException>(() => DelegateEngine.Prepare(request));
+
+        Assert.Contains("claustrum.json", exception.Message, StringComparison.Ordinal);
+        string[] after = Directory.Exists(jobsRoot) ? Directory.GetDirectories(jobsRoot) : [];
+        Assert.Equal(before.OrderBy(path => path, StringComparer.Ordinal), after.OrderBy(path => path, StringComparer.Ordinal));
     }
 
     private void AssertRefusedBeforeIsolating(RunResult result, string ledgerDirectory)

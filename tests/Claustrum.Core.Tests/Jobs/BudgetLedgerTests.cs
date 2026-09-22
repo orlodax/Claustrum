@@ -327,6 +327,47 @@ public sealed class BudgetLedgerTests : IDisposable
         Assert.Contains(directory, ex.Message, StringComparison.Ordinal);
     }
 
+    // issue #21: `coordinate`'s architect is deliberately not a member of its own tree (nothing
+    // reserved its cap), so its own cost is recorded through this seam instead of a normal
+    // Admit/Complete round trip — a finished entry with no `.live` file at all, since nothing was
+    // ever reserved, only spent.
+    [Fact]
+    public async Task RecordFinishedAsyncWritesADoneRowReadableByReadAsyncAndReducesTheRemainderAsync()
+    {
+        JobTreeBudget tree = new("tree-record-finished", 10.00m);
+        DateTimeOffset startedAt = DateTimeOffset.UtcNow.AddMinutes(-1);
+
+        await BudgetLedger.RecordFinishedAsync(platform, tree.TreeId, "architect-job", "architect", cap: 10.00m, cost: 0.25m, startedAt);
+
+        BudgetLedgerState state = await BudgetLedger.ReadAsync(platform, tree.TreeId);
+        BudgetLedgerRow row = Assert.Single(state.Rows);
+        Assert.Equal("architect-job", row.Entry.JobId);
+        Assert.Equal("architect", row.Entry.Role);
+        Assert.Equal(10.00m, row.Entry.Cap);
+        Assert.Equal(0.25m, row.Entry.Cost);
+        Assert.Equal(startedAt, row.Entry.StartedAt);
+        Assert.NotNull(row.Entry.FinishedAt);
+        Assert.False(row.Entry.Abandoned);
+        Assert.Equal(BudgetEntryState.Done, row.State);
+        Assert.Equal(0.25m, state.Spent);
+        Assert.Equal(0m, state.Reserved);
+
+        decimal remaining = await BudgetLedger.PeekRemainingAsync(platform, tree);
+        Assert.Equal(9.75m, remaining);
+    }
+
+    [Fact]
+    public async Task RecordFinishedAsyncWritesNoLiveFileSinceNothingWasReservedAsync()
+    {
+        JobTreeBudget tree = new("tree-record-no-live", 5.00m);
+
+        await BudgetLedger.RecordFinishedAsync(platform, tree.TreeId, "architect-job", "architect", cap: 5.00m, cost: 0.10m, DateTimeOffset.UtcNow);
+
+        string directory = BudgetLedger.DirectoryFor(platform, tree.TreeId);
+        Assert.True(File.Exists(Path.Combine(directory, "architect-job.json")));
+        Assert.False(File.Exists(Path.Combine(directory, "architect-job.live")));
+    }
+
     [Fact]
     public async Task PeekRemainingForAMissingTreeReturnsTheFullBudgetAndCreatesNothingAsync()
     {

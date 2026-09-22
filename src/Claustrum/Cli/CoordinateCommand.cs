@@ -13,7 +13,8 @@ namespace Claustrum.Cli;
 // docs/PLAN.md §D3/§D5 `claustrum coordinate --cast <name> [--issues …|--brief-file …]`: the
 // spawned architect. It is `run architect` with three things added — the cast in the system body,
 // the job id exported as the children's budget tree, and `gh` issues folded into the brief — so the
-// verb is a thin shell over CoordinateEngine.PlanAsync + the same DelegateEngine `run` uses.
+// verb is a thin shell over CoordinateEngine (plan, prepare, run) and the same DelegateEngine `run`
+// uses; the MCP `coordinate` tool calls the same three steps in the same order.
 public static class CoordinateCommand
 {
     public static Command Build()
@@ -92,11 +93,16 @@ public static class CoordinateCommand
             // store, and a job minted for a run that never starts stays `pending` forever.
             CoordinatePlan plan = await CoordinateEngine.PlanAsync(request, new GhIssueSource(AppServices.Platform), cts.Token);
 
-            // The job exists before the request does: its id is the budget tree every child the
-            // architect spawns will join (docs/PLAN.md §D3), and the appendix prints it.
+            // Config, role render and model alias belong to that same "before" (issue #23): a broken
+            // claustrum.json or a tier the architect has no model class for used to throw *after* the
+            // mint and leave exactly such a directory behind.
+            PreparedDelegation prepared = plan.Prepare();
+
+            // The job exists before the run does: its id is the budget tree every child the architect
+            // spawns will join (docs/PLAN.md §D3), and the appendix prints it (DelegateRequest.JobIdToken).
             JobPaths job = JobDirectory.Create(AppServices.Platform);
 
-            RunResult result = await DelegateEngine.RunAsync(plan.ToDelegateRequest(job), job, cts.Token);
+            RunResult result = await CoordinateEngine.RunAsync(plan, prepared, job, cts.Token);
             RunResult output = rawMode ? result : result with { Raw = null };
 
             // Only a capped cast has a ledger at all (DelegateEngine builds no JobTreeBudget without
@@ -150,9 +156,10 @@ public static class CoordinateCommand
         Console.WriteLine($"tree:   claustrum jobs budget {job.Id}");
         Console.WriteLine($"logs:   claustrum jobs logs {job.Id}");
 
-        // Two amounts, always both: the architect is not a member of its own tree, so its own cost
-        // and its children's ledger totals are separate spends of the same cast budget, and printing
-        // both is what keeps the doubling visible (NOTES.md "coordinate: a spawned architect…").
+        // Two amounts, still both: this one is what the backend reported for this run (`-` when it
+        // reported nothing), the tree line below is the ledger total the architect's own entry is now
+        // part of (issue #21). They differ exactly when a cost-less backend had the cap charged
+        // instead (NOTES.md "M4 follow-ups…").
         Console.WriteLine($"architect cost {(result.CostUsd is { } cost ? BudgetLedger.Dollars(cost) : "-")}");
         await WriteTreeCostAsync(job, Console.Out, capped);
 
@@ -166,8 +173,9 @@ public static class CoordinateCommand
             Console.Error.WriteLine($"error: {error}");
     }
 
-    // The children's spend. The ledger is a file other processes hold a lock on, so a run that has
-    // already finished must keep its own exit code whatever this read does (the same three
+    // The whole tree's spend: the children's entries plus the architect's own, which CoordinateEngine
+    // records after its run (issue #21). The ledger is a file other processes hold a lock on, so a run
+    // that has already finished must keep its own exit code whatever this read does (the same three
     // exceptions DelegateEngine.TryAdmitAsync swallows).
     // ⚠ An uncapped cast writes no ledger entries at all, so `$0.00` would be a measurement nobody
     // took — it says `unlimited` instead, and `jobs budget <id>` is empty for the same reason.
@@ -183,15 +191,23 @@ public static class CoordinateCommand
         {
             decimal spent = 0m;
             decimal reserved = 0m;
+            string architect = "";
 
-            // No ledger directory means no child ever ran — $0.00, and no lock taken to learn it.
+            // No ledger directory at all means not even the architect's entry was written — $0.00,
+            // and no lock taken to learn it.
             if (Directory.Exists(BudgetLedger.DirectoryFor(AppServices.Platform, job.Id)))
             {
                 BudgetLedgerState ledger = await BudgetLedger.ReadAsync(AppServices.Platform, job.Id);
                 (spent, reserved) = (ledger.Spent, ledger.Reserved);
+
+                // The tree id is the coordinate job's own id, so the architect's row is the one whose
+                // job id *is* the tree: naming its share is what keeps the doubling visible now that
+                // the total includes it.
+                if (ledger.Rows.FirstOrDefault(row => row.Entry.JobId == job.Id) is { } own)
+                    architect = $" (architect {BudgetLedger.Dollars(own.Entry.Cost ?? 0m)} included)";
             }
 
-            writer.WriteLine($"tree spent {BudgetLedger.Dollars(spent)}, reserved {BudgetLedger.Dollars(reserved)}");
+            writer.WriteLine($"tree spent {BudgetLedger.Dollars(spent)}{architect}, reserved {BudgetLedger.Dollars(reserved)}");
         }
         catch (Exception ex) when (ex is TimeoutException or IOException or UnauthorizedAccessException)
         {

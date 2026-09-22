@@ -115,6 +115,25 @@ public static class BudgetLedger
     }
 
     /// <summary>
+    /// Records a run that never went through <see cref="AdmitAsync"/> as a finished entry of one tree:
+    /// `coordinate`'s own architect, which is deliberately not a member of the tree it hands down and
+    /// so has no reservation for anything to complete (issue #21). Same entry shape and the same lock;
+    /// no `.live` file, because nothing was ever reserved for it — only spent. The caller decides
+    /// <paramref name="cost"/> the way <see cref="BudgetReservation.CompleteAsync"/> does: the reported
+    /// cost, or the cap when the backend ran and reported none.
+    /// </summary>
+    public static async Task RecordFinishedAsync(
+        IPlatform platform, string treeId, string jobId, string role, decimal? cap, decimal? cost, DateTimeOffset startedAt)
+    {
+        string directory = DirectoryFor(platform, treeId);
+        Directory.CreateDirectory(directory);
+
+        using FileStream guard = await LockAsync(directory);
+
+        Write(EntryPath(directory, jobId), new BudgetLedgerEntry(jobId, role, cap, cost, startedAt, DateTimeOffset.UtcNow));
+    }
+
+    /// <summary>
     /// What the tree has left right now: the admission's arithmetic without its decision, and without
     /// writing anything at all — a report, for a caller that only wants to show the number.
     /// ⚠ Read-only means non-binding: a sibling's reservation is released the moment it finishes, so a

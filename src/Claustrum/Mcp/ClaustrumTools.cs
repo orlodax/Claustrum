@@ -59,7 +59,12 @@ public sealed class ClaustrumTools
         });
 
     [McpServerTool(Name = "delegate_async")]
-    [Description("Like delegate, but returns immediately with a job id instead of blocking — for a task expected to run longer than the calling host's own tool-call timeout. Poll job_status for progress and job_result for the final RunResult once state is 'done'.")]
+    [Description(
+        "Like delegate, but returns immediately with a job id instead of blocking — for a task expected to run " +
+        "longer than the calling host's own tool-call timeout. Only the run is deferred: config, role and model " +
+        "resolution happen in this call, so an unknown role, a broken claustrum.json or a tier this role has no " +
+        "model for is an error here, with no job created. Poll job_status for progress and job_result for the " +
+        "final RunResult once state is 'done'.")]
     public static string DelegateStart(
         string role, string brief, string? cwd = null, string? backend = null, string? model = null, string? effort = null,
         string? tier = null, string? permission = null, string[]? deny = null, decimal? budgetUsd = null,
@@ -116,17 +121,26 @@ public sealed class ClaustrumTools
             // job_result nobody knows to ask for — and no job directory is minted for it.
             CoordinatePlan plan = await CoordinateEngine.PlanAsync(request, new GhIssueSource(AppServices.Platform), cancellationToken);
 
-            // The job id has to exist before the request does — it is the tree the architect's
-            // children join — so this takes JobManager's JobPaths-first overload. CancellationToken.
-            // None for the same reason delegate_async does: the job outlives this tool call.
+            // Config, role render and model alias too (issue #23): a broken claustrum.json or a tier
+            // the architect lacks must be answered on this call, with no job minted for it either.
+            PreparedDelegation prepared = plan.Prepare();
+
+            // The job id has to exist before the run does — it is the tree the architect's children
+            // join, and DelegateRequest.JobIdToken stands in for it until here — so this takes
+            // JobManager's JobPaths-first overload. CancellationToken.None for the same reason
+            // delegate_async does: the job outlives this tool call.
             (string jobId, string logPath) = AppServices.JobManager.Start(
-                (job, token) => DelegateEngine.RunAsync(plan.ToDelegateRequest(job), job, token), CancellationToken.None);
+                (job, token) => CoordinateEngine.RunAsync(plan, prepared, job, token), CancellationToken.None);
 
             return JsonSerializer.Serialize(new DelegateAsyncResult(jobId, logPath), McpJsonContext.Default.DelegateAsyncResult);
         });
 
     [McpServerTool(Name = "job_status")]
-    [Description("Check a delegate_async job's progress: state (running|done|failed), elapsed seconds, and the last captured output line. 'failed' means the job itself threw before producing a RunResult (e.g. a blind-gate rejection) — call job_result for the underlying error. State 'unknown' means no such job id.")]
+    [Description(
+        "Check a delegate_async job's progress: state (running|done|failed), elapsed seconds, and the last " +
+        "captured output line. 'failed' means the job threw after it was started instead of finishing with a " +
+        "RunResult (e.g. a blind-gate rejection) — call job_result for the underlying error. State 'unknown' " +
+        "means no such job id.")]
     public static string JobStatus(string jobId)
     {
         JobStatusInfo status = AppServices.JobManager.GetStatus(jobId) ?? new JobStatusInfo("unknown", 0, null);

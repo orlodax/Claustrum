@@ -180,10 +180,10 @@ to use it. While it is in play it governs every delegation you make:
   not substitute another role for it, and do not do its work yourself. Name the stage it switched
   off in your report, so the caller knows what the batch was not given.
 - **Fan builders out no wider than the cast's `max_parallel`.** Over-fanning does not run wider: the
-  extra jobs wait for a slot — but only up to the run's `--timeout` (default 1800 s), after which
-  the waiting run fails with an error on stderr and no JSON at all. So do not start more builders at
-  once than `max_parallel`. Each parallel builder works in its own git worktree on its own
-  branch.
+  extra jobs wait for a slot — but only up to the run's `--timeout` (default 1800 s), after which the
+  waiting run comes back `status: failed` with the cap named in `error` (`all N '<cast>__<role>'
+  slots … stayed unavailable for Ns`), having done nothing. So do not start more builders at once
+  than `max_parallel`. Each parallel builder works in its own git worktree on its own branch.
 - **Brief files use the fixed H2s** `## Task`, `## Scope`, `## Must still work`, `## Diff`,
   `## Access` and — for non-blind roles only — `## Context`. Claustrum *refuses* a blind role's
   brief that carries `## Context`, `## Plan`, `## Rationale` or a pasted `claustrum-report` block:
