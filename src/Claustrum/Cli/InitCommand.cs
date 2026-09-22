@@ -64,15 +64,12 @@ public static class InitCommand
         // server into .mcp.json/.vscode/mcp.json, which every host that reads those two files picks
         // up (opencode registers itself in opencode.json instead, issue #15), and its own agent files
         // are harmless even in a repo that has not adopted Claude Code.
-        string[] harnesses = all ? ["claude", "opencode", "copilot"] : DetectHarnesses(cwd);
+        string[] harnesses = all ? ["claude", "opencode", "copilot", "cursor"] : DetectHarnesses(cwd);
 
         Console.WriteLine($"claustrum.json: {(wroteConfig ? "written" : "already present, left unchanged")}");
         Console.WriteLine($".gitignore: {(updatedGitignore ? "updated" : "already up to date")}");
         foreach (string harness in harnesses)
             SyncHarness(harness, cwd);
-
-        if (Directory.Exists(Path.Combine(cwd, ".cursor")))
-            Console.WriteLine("detected .cursor/, but cursor has no sync support yet (fixture-only backend — see NOTES.md)");
 
         bool appendedAgentsMd = AppendAgentsMdPointer(cwd);
         Console.WriteLine($"AGENTS.md: {(appendedAgentsMd ? "pointer appended" : "unchanged")}");
@@ -89,6 +86,8 @@ public static class InitCommand
             harnesses.Add("opencode");
         if (Directory.Exists(Path.Combine(cwd, ".github")))
             harnesses.Add("copilot");
+        if (Directory.Exists(Path.Combine(cwd, ".cursor")))
+            harnesses.Add("cursor");
 
         return [.. harnesses];
     }
@@ -100,6 +99,7 @@ public static class InitCommand
             "claude" => new ClaudeSync(AppServices.RoleLibrary, AppServices.RoleRenderer, AppServices.Platform.HomeDirectory).Sync(cwd),
             "opencode" => new OpencodeSync(AppServices.RoleLibrary, AppServices.RoleRenderer, AppServices.Platform.HomeDirectory).Sync(cwd),
             "copilot" => new CopilotSync(AppServices.RoleLibrary, AppServices.RoleRenderer, AppServices.Platform.HomeDirectory).Sync(cwd),
+            "cursor" => new CursorSync(AppServices.RoleLibrary, AppServices.RoleRenderer, AppServices.Platform.HomeDirectory).Sync(cwd),
             _ => throw new ArgumentOutOfRangeException(nameof(harness), harness, "not a supported harness"),
         };
 

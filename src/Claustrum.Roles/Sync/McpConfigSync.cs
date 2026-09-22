@@ -15,7 +15,8 @@ namespace Claustrum.Roles.Sync;
 /// no room for the inline <c>claustrum:generated</c> marker <see cref="SyncWriter"/>'s Markdown
 /// targets carry, so idempotency and foreign-key protection are decided from
 /// <see cref="SyncManifestStore"/> instead: a <c>claustrum</c> key with no matching manifest entry is
-/// a human's, left untouched without <c>--force</c>.
+/// a human's, left untouched without <c>--force</c> (<see cref="McpProvenance"/> names the one
+/// exception, for targets that live outside any repo).
 /// </summary>
 internal static class McpConfigSync
 {
@@ -39,11 +40,14 @@ internal static class McpConfigSync
             return;
         }
 
-        bool weWroteTheExistingEntry = existingEntry is not null
-            && existingManifest.TryGetValue(path, out SyncManifestFile? recorded)
-            && recorded.Sha256 == ComputeSha256(existingEntry.ToJsonString());
+        // Under McpProvenance.OwnKey there is no manifest to consult (the target sits outside any
+        // repo), so the `claustrum` key's own name is what says the entry is claustrum's to rewrite.
+        bool claustrumOwnsTheExistingEntry = existingEntry is not null
+            && (target.Provenance == McpProvenance.OwnKey
+                || (existingManifest.TryGetValue(path, out SyncManifestFile? recorded)
+                    && recorded.Sha256 == ComputeSha256(existingEntry.ToJsonString())));
 
-        if (existingEntry is not null && !weWroteTheExistingEntry && !force)
+        if (existingEntry is not null && !claustrumOwnsTheExistingEntry && !force)
         {
             into.Foreign.Add(path);
             return;
@@ -102,6 +106,8 @@ internal static class McpConfigSync
 /// <paramref name="Harness"/> is what the <c>sync-manifest.json</c> record is attributed to.
 /// <paramref name="RootOnCreate"/> seeds the root object when the file does not exist yet (opencode's
 /// <c>$schema</c>); merging into an existing file never adds those properties.
+/// <paramref name="Provenance"/> picks which rule protects a key that is already there.
 /// </summary>
 internal sealed record McpConfigTarget(
-    string Harness, string Path, string SectionKey, JsonObject Entry, JsonObject? RootOnCreate = null);
+    string Harness, string Path, string SectionKey, JsonObject Entry, JsonObject? RootOnCreate = null,
+    McpProvenance Provenance = McpProvenance.Manifest);

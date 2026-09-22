@@ -97,6 +97,7 @@ public static class BackendsCommands
             Console.WriteLine("mcp:");
             Console.WriteLine($"  .mcp.json:        {DescribeMcpFile(Path.Combine(cwd, ".mcp.json"), "mcpServers")}");
             Console.WriteLine($"  .vscode/mcp.json: {DescribeMcpFile(Path.Combine(cwd, ".vscode", "mcp.json"), "servers")}");
+            Console.WriteLine($"  .cursor/mcp.json: {DescribeMcpFile(Path.Combine(cwd, ".cursor", "mcp.json"), "mcpServers")}");
 
             // opencode registers MCP servers under its own top-level "mcp" key in the same file that
             // holds the rest of its settings, and accepts either extension. doctor only reads it:

@@ -1,3 +1,4 @@
+using System.Collections.ObjectModel;
 using System.Text;
 using System.Text.Json.Nodes;
 using Claustrum.Roles.Model;
@@ -17,7 +18,13 @@ public sealed class ClaudeSync(RoleLibrary library, RoleRenderer renderer, strin
 
     private readonly SyncWriter writer = new(Harness, library.Version);
 
-    public SyncResult Sync(string cwd, IReadOnlyList<string>? roles = null, bool global = false, bool force = false, SyncMode mode = SyncMode.Write)
+    /// <summary>
+    /// <paramref name="desktop"/> is §B4's Claude desktop config target; it is merged only under
+    /// <paramref name="global"/>, and a caller that has no desktop app to write to (Linux) passes null.
+    /// </summary>
+    public SyncResult Sync(
+        string cwd, IReadOnlyList<string>? roles = null, bool global = false, bool force = false,
+        SyncMode mode = SyncMode.Write, ClaudeDesktopTarget? desktop = null)
     {
         IReadOnlyList<string> targetRoles = roles is { Count: > 0 } ? roles : library.ListRoles();
         // `--global` targets `~/.claude/...` throughout, not just the agents dir (review finding #3:
@@ -49,9 +56,12 @@ public sealed class ClaudeSync(RoleLibrary library, RoleRenderer renderer, strin
 
         // .mcp.json/.vscode/mcp.json (docs/PLAN.md §B4/§D5) are repo-root files, not part of any
         // --global target (B4's --global list is agent directories and the desktop app's own config
-        // file) — skipped entirely under --global, same as the manifest itself.
+        // file) — skipped entirely under --global, same as the manifest itself. The desktop app's
+        // config is the mirror image: a --global-only target, and only where such an app exists.
         if (!global)
             MergeMcpConfigs(cwd, mode, force, into);
+        else if (desktop is not null)
+            MergeDesktopConfig(desktop, mode, force, into);
 
         if (!global && mode == SyncMode.Write)
             SyncManifestStore.Update(cwd, library.Version, into.ManifestFiles);
@@ -69,6 +79,16 @@ public sealed class ClaudeSync(RoleLibrary library, RoleRenderer renderer, strin
 
         JsonObject vsCodeEntry = new() { ["type"] = "stdio", ["command"] = "claustrum", ["args"] = new JsonArray("mcp") };
         McpConfigSync.Merge(new McpConfigTarget(Harness, Path.Combine(cwd, ".vscode", "mcp.json"), "servers", vsCodeEntry), mode, force, into, existingManifest);
+    }
+
+    // issue #24: the desktop app reads no repo, so `.claustrum/sync-manifest.json` cannot prove who
+    // wrote the entry here — McpProvenance.OwnKey makes the `claustrum` key its own provenance, and
+    // every other server in the file stays untouched exactly as in the repo targets.
+    private static void MergeDesktopConfig(ClaudeDesktopTarget desktop, SyncMode mode, bool force, SyncAccumulator into)
+    {
+        JsonObject entry = new() { ["command"] = desktop.BinaryPath, ["args"] = new JsonArray("mcp") };
+        McpConfigTarget target = new(Harness, desktop.ConfigPath, "mcpServers", entry, Provenance: McpProvenance.OwnKey);
+        McpConfigSync.Merge(target, mode, force, into, ReadOnlyDictionary<string, SyncManifestFile>.Empty);
     }
 
     private void WriteBaseAgent(string agentsDir, string role, LoadedRole loaded, string cwd, bool force, SyncMode mode, SyncAccumulator into)
