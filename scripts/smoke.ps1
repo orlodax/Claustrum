@@ -8,7 +8,7 @@
     of them; only a FAIL exits nonzero.
 .PARAMETER Binary
     Path to an already-built claustrum executable. Falls back to $env:CLAUSTRUM, then to a Release
-    build of src/Claustrum/Claustrum.csproj.
+    publish of src/Claustrum/Claustrum.csproj for the host RID.
 .NOTES
     CLAUSTRUM_SMOKE_MODEL_<NAME> (e.g. CLAUSTRUM_SMOKE_MODEL_CURSOR=auto) gives that backend's paid
     run its model and CLAUSTRUM_SMOKE_COORDINATE_MODEL the coordinate architect; unset SKIPs the
@@ -27,17 +27,40 @@ $PSNativeCommandUseErrorActionPreference = $false
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 
+function Get-HostRid {
+    # Measured 2026-09-22 on Fedora: RuntimeIdentifier is "fedora.44-x64", a distro-flavoured id with
+    # no runtime pack to restore. Only a portable RID is taken as given; anything else is rebuilt
+    # from the platform and the architecture, which is what `dotnet publish -r` accepts.
+    $rid = [string][System.Runtime.InteropServices.RuntimeInformation]::RuntimeIdentifier
+    if ($rid -match "^(win|linux|osx)-(x64|arm64)$") { return $rid }
+
+    $os = if ($IsLinux) { "linux" } elseif ($IsMacOS) { "osx" } else { "win" }
+    $arch = if ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture -eq "Arm64") { "arm64" } else { "x64" }
+    return "$os-$arch"
+}
+
+# Publish, not build: PackAsTool=true suppresses the apphost, so `dotnet build` leaves a
+# claustrum.dll and no executable at all (issue #22, NOTES.md "Releasing: five RIDs, one tool
+# package"). A failed AOT publish is reported, never worked around — a framework-dependent binary
+# would exercise a different startup path than the one release.yml ships.
 function Resolve-ClaustrumBinary {
     if ($Binary) { return (Resolve-Path $Binary).Path }
     if ($env:CLAUSTRUM) { return (Resolve-Path $env:CLAUSTRUM).Path }
 
-    Write-Host "Building claustrum (Release)..."
-    dotnet build (Join-Path $repoRoot "src/Claustrum/Claustrum.csproj") -c Release | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "dotnet build failed" }
+    $rid = Get-HostRid
+    Write-Host "Publishing claustrum (Release, AOT, $rid)..."
+    dotnet publish (Join-Path $repoRoot "src/Claustrum/Claustrum.csproj") -c Release -r $rid -p:PublishAot=true | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw ("AOT publish failed. Windows needs the VS 'Desktop development with C++' workload; " +
+            "Linux needs clang or gcc plus the zlib development headers (zlib1g-dev / zlib-devel). " +
+            "See AGENTS.md 'Build and gate'.")
+    }
 
-    $exe = Get-ChildItem -Path (Join-Path $repoRoot "src/Claustrum/bin/Release") -Recurse -Filter "claustrum.exe" |
+    $name = if ($rid.StartsWith("win")) { "claustrum.exe" } else { "claustrum" }
+    $exe = Get-ChildItem -Path (Join-Path $repoRoot "src/Claustrum/bin/Release") -Recurse -Filter $name |
+        Where-Object { $_.Directory.Name -eq "publish" -and $_.Directory.Parent.Name -eq $rid } |
         Select-Object -First 1
-    if (-not $exe) { throw "could not find a built claustrum.exe under src/Claustrum/bin/Release" }
+    if (-not $exe) { throw "publish reported success but left no $name under src/Claustrum/bin/Release/*/$rid/publish" }
     return $exe.FullName
 }
 
