@@ -204,17 +204,18 @@ public sealed class ProcessRunnerTests
         }
     }
 
+    // Reads through JobLog, the same FileShare.ReadWrite path production takes to read a live log
+    // (NOTES.md "Reading a live job log needs FileShare.ReadWrite") — File.ReadAllLinesAsync's
+    // default FileShare.Read cannot open a file ProcessRunner's StreamWriter still holds for
+    // writing, which is exactly the windows-latest IOException this test used to hit (PR #26).
     private static async Task<string> PollForFirstLineAsync(string logPath, TimeSpan timeout)
     {
         DateTime deadline = DateTime.UtcNow + timeout;
         while (DateTime.UtcNow < deadline)
         {
-            if (File.Exists(logPath))
-            {
-                string[] lines = await File.ReadAllLinesAsync(logPath, TestContext.Current.CancellationToken);
-                if (lines.Length > 0)
-                    return lines[0];
-            }
+            string? firstLine = File.Exists(logPath) ? JobLog.ReadLines(logPath).FirstOrDefault() : null;
+            if (firstLine is not null)
+                return firstLine;
 
             await Task.Delay(20, TestContext.Current.CancellationToken);
         }

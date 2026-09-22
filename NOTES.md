@@ -1901,3 +1901,34 @@ publishes nothing). The tag is the version: `v0.1.0` → `-p:Version=0.1.0`, der
 - `NUGET_API_KEY` is declared as **job**-level `env` in the pack job, not on the push step: a step's
   own `env:` block is not visible to that step's own `if:`, so a step-level declaration would make
   the guard read empty and always skip.
+
+## Reading a live job log needs FileShare.ReadWrite (2026-09-22, PR #26 windows leg)
+
+`ProcessRunner` holds `stdout.log`/`stderr.log` open for the whole life of the child process
+(`new StreamWriter(path, append: false)`, which is `FileShare.Read`). Every reader in the repo used
+the .NET default share mode — also `FileShare.Read` — and on Windows that is not enough: the
+*reader* must permit the writer as well, so a read of a still-running job's log failed outright:
+
+```
+IOException: The process cannot access the file '…\stdout.log' because it is being used by another process.
+```
+
+Measured on CI's `windows-latest` leg of PR #26. It hit MCP `job_status` for **every** running job
+(`JobManager.LastLine`, `File.ReadLines`) and `claustrum jobs logs <id>` on a running job
+(`JobsCommands.Logs`, `File.ReadAllText`). Linux never noticed: POSIX advisory sharing lets any
+reader in regardless of the writer's handle, so the bug is invisible on the platform this was
+developed on.
+
+The comment that used to sit above `JobManager.LastLine` — "ProcessRunner opens stdout.log with
+FileShare.Read … so a concurrent read here is safe" — had exactly one half of the truth. A writer's
+share mode says what *other* handles it tolerates; it says nothing about what the reader must
+itself tolerate. Both sides have to agree, and only one side was ever considered.
+
+The fix is one place that knows this: `Claustrum.Core.Jobs.JobLog` opens
+`new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite)` under a UTF-8
+`StreamReader` and exposes `ReadLines` / `ReadAllText` / `LastLine`. Every reader of a job log goes
+through it. `result.json` and `request.json` are deliberately *not* in scope: they are written whole
+after the run, with no handle held across the read, so the plain `File.*` calls on them are correct.
+
+⚠ Do not "simplify" `JobLog` back to `File.ReadLines`/`File.ReadAllText`: they carry the default
+share mode and reintroduce the Windows failure, which no Linux run will ever tell you about.

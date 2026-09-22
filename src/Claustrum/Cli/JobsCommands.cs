@@ -117,7 +117,7 @@ public static class JobsCommands
             return ExitCodes.Usage;
         }
 
-        Console.Write(File.ReadAllText(logPath));
+        Console.Write(JobLog.ReadAllText(logPath));
         return ExitCodes.Ok;
     }
 

@@ -43,7 +43,7 @@ public sealed class JobManager
                 _ => "running",
             };
             double elapsed = (DateTimeOffset.UtcNow - entry.StartedAt).TotalSeconds;
-            return new JobStatusInfo(state, elapsed, LastLine(entry.Job.StdoutLog));
+            return new JobStatusInfo(state, elapsed, JobLog.LastLine(entry.Job.StdoutLog));
         }
 
         string resultPath = Path.Combine(JobDirectory.ResolveRoot(AppServices.Platform), jobId, "result.json");
@@ -71,12 +71,6 @@ public sealed class JobManager
     // deterministically without either flaky timing or actually spawning a backend process.
     public static async Task<RunResult?> ResolveTaskAsync(Task<RunResult> task) =>
         task.IsCompleted ? await task : null;
-
-    // ProcessRunner opens stdout.log with FileShare.Read (StreamWriter(path, append) default), so a
-    // concurrent read here while the backend is still running is safe — the line read back may be
-    // mid-write, which is fine for a best-effort progress indicator.
-    private static string? LastLine(string logPath) =>
-        File.Exists(logPath) ? File.ReadLines(logPath).LastOrDefault() : null;
 
     private sealed record Entry(JobPaths Job, Task<RunResult> Task, DateTimeOffset StartedAt);
 }
