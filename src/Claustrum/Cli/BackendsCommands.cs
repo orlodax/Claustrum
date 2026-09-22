@@ -167,12 +167,11 @@ public static class BackendsCommands
         return !File.Exists(jsonPath) && File.Exists(jsoncPath) ? jsoncPath : jsonPath;
     }
 
-    // docs/PLAN.md §B6: "env key or login file present — value never printed". Only the env-var half
-    // is checked: this repo's own confirmed variable names (EnvAllowList.cs, and copilot's own
-    // documented GH_TOKEN/GITHUB_TOKEN precedence — NOTES.md "The copilot backend") are trustworthy;
-    // a backend's actual login-file path was never independently confirmed for any of the four (only
-    // opencode's and copilot's own CLI *behavior* were verified, not their credential storage), so
-    // guessing one risks a wrong "not set" for someone who is, in fact, logged in.
+    // docs/PLAN.md §B6: "env key or login file present — value never printed". The env-var half is
+    // this repo's own confirmed variable names (EnvAllowList.cs, and the three `copilot help
+    // environment` documents in precedence order). The login-file half is checked only where the
+    // file has actually been read against a real install — copilot's, since 2026-09-22 — because
+    // guessing a path risks a wrong "not set" for someone who is, in fact, logged in.
     private static string AuthStatusFor(string backendName)
     {
         string[] relevantVars = backendName switch
@@ -188,10 +187,50 @@ public static class BackendsCommands
         if (relevantVars.Length == 0)
             return "unknown (no known env var for this backend)";
 
-        bool present = relevantVars.Any(variable => !string.IsNullOrEmpty(AppServices.Platform.GetEnvironmentVariable(variable)));
-        return present
-            ? "present (env var set — a login file may also work even if not)"
-            : "not set (env var absent; a login file may still work — not checked)";
+        if (relevantVars.Any(variable => !string.IsNullOrEmpty(AppServices.Platform.GetEnvironmentVariable(variable))))
+            return "present (env var set — a login file may also work even if not)";
+
+        return LoginFileStatusFor(backendName) ?? "not set (env var absent; a login file may still work — not checked)";
+    }
+
+    // `~/.copilot/config.json` (relocated by COPILOT_HOME) keeps a non-empty `loggedInUsers` array
+    // on a logged-in install — read from a real 1.0.87 one, which is what separates this from the
+    // guessed paths the other backends deliberately do not check. Comments are legal in the file
+    // ("This file is managed automatically"), hence CommentHandling.Skip. Null means "this code does
+    // not know where that backend's login file lives"; for copilot every outcome is a real answer,
+    // because the file was looked at. Nothing here throws: doctor must print its remaining lines.
+    private static string? LoginFileStatusFor(string backendName)
+    {
+        if (backendName is not "copilot")
+            return null;
+
+        string copilotHome = AppServices.Platform.GetEnvironmentVariable("COPILOT_HOME") is { Length: > 0 } relocated
+            ? relocated
+            : Path.Combine(AppServices.Platform.HomeDirectory, ".copilot");
+        string path = Path.Combine(copilotHome, "config.json");
+        if (!File.Exists(path))
+            return $"not set (env var absent; {path} not present)";
+
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(File.ReadAllText(path), new JsonDocumentOptions { CommentHandling = JsonCommentHandling.Skip });
+            // TryGetProperty throws InvalidOperationException on a root that is not an object, so the
+            // kind is checked first: a stray array or string is unreadable, not a crash.
+            if (document.RootElement.ValueKind != JsonValueKind.Object)
+                return $"not set (env var absent; {path} present but unreadable)";
+
+            bool loggedIn = document.RootElement.TryGetProperty("loggedInUsers", out JsonElement users)
+                && users.ValueKind == JsonValueKind.Array
+                && users.GetArrayLength() > 0;
+
+            return loggedIn
+                ? $"present (logged in, {path} — no env var set)"
+                : $"not set (env var absent; {path} lists no logged-in user)";
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
+        {
+            return $"not set (env var absent; {path} present but unreadable)";
+        }
     }
 
     // docs/PLAN.md §A4/§B6: "Claustrum spawns backends on the OS it runs on ... doctor warns when a

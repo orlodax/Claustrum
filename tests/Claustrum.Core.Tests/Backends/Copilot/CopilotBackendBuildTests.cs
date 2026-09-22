@@ -15,8 +15,9 @@ public sealed class CopilotBackendBuildTests : IDisposable
     private ResolvedRun MakeRun(
         PermissionPolicy permission,
         string effort = "high",
-        string? resume = null) => new(
-            Role: new ResolvedRole("builder", "system body", "copilot", "gpt-5", effort, permission, Blind: false, HasReport: true),
+        string? resume = null,
+        string model = "gpt-5") => new(
+            Role: new ResolvedRole("builder", "system body", "copilot", model, effort, permission, Blind: false, HasReport: true),
             Brief: "do the thing",
             Cwd: "/repo",
             BudgetUsd: null,
@@ -116,9 +117,19 @@ public sealed class CopilotBackendBuildTests : IDisposable
     }
 
     [Fact]
-    public void EffortIsPassedAsReasoningEffort()
+    public void ModelIsAlwaysEmittedAsAFlag()
     {
-        ProcessSpec spec = backend.Build(MakeRun(new PermissionPolicy(PermissionLevel.Full, []), effort: "xhigh"));
+        ProcessSpec spec = backend.Build(MakeRun(new PermissionPolicy(PermissionLevel.Full, []), model: "gpt-5.1"));
+
+        int index = Array.IndexOf(spec.Args, "--model");
+        Assert.True(index >= 0);
+        Assert.Equal("gpt-5.1", spec.Args[index + 1]);
+    }
+
+    [Fact]
+    public void EffortIsPassedAsReasoningEffortForANamedModel()
+    {
+        ProcessSpec spec = backend.Build(MakeRun(new PermissionPolicy(PermissionLevel.Full, []), effort: "xhigh", model: "gpt-5"));
 
         int index = Array.IndexOf(spec.Args, "--reasoning-effort");
         Assert.True(index >= 0);
@@ -131,6 +142,19 @@ public sealed class CopilotBackendBuildTests : IDisposable
         ProcessSpec spec = backend.Build(MakeRun(new PermissionPolicy(PermissionLevel.Full, []), effort: ""));
 
         Assert.DoesNotContain("--reasoning-effort", spec.Args);
+    }
+
+    // `--model auto` and `--reasoning-effort` are mutually exclusive on the real CLI (NOTES.md "The
+    // copilot backend, validated against a real install", box 5): copilot 1.0.87 refuses before its
+    // first API call rather than silently ignoring the flag.
+    [Fact]
+    public void AutoModelOmitsReasoningEffortEvenWhenARoleEffortIsSet()
+    {
+        ProcessSpec spec = backend.Build(MakeRun(new PermissionPolicy(PermissionLevel.Full, []), effort: "high", model: "auto"));
+
+        Assert.DoesNotContain("--reasoning-effort", spec.Args);
+        int modelIndex = Array.IndexOf(spec.Args, "--model");
+        Assert.Equal("auto", spec.Args[modelIndex + 1]);
     }
 
     [Fact]
@@ -152,14 +176,20 @@ public sealed class CopilotBackendBuildTests : IDisposable
         Assert.Equal("do the thing", spec.Args[^1]);
     }
 
+    // NOTES.md "The copilot backend, validated against a real install" box 3: `--deny-tool write`
+    // alone leaves shell redirection wide open (copilot excludes shell invocations from `write` by
+    // design), so `shell` also gets `--mode plan` — the same guarantee `readonly` already carries —
+    // and the role's own deny list, which the pre-fix build silently dropped.
     [Fact]
-    public void ShellAllowsToolsButDeniesWriteOnly()
+    public void ShellDeniesWriteUsesPlanModeAndAppliesTheDenyList()
     {
-        ProcessSpec spec = backend.Build(MakeRun(new PermissionPolicy(PermissionLevel.Shell, [])));
+        ProcessSpec spec = backend.Build(MakeRun(new PermissionPolicy(PermissionLevel.Shell, ["git push"])));
 
         Assert.Contains("--allow-all-tools", spec.Args);
+        Assert.Contains("plan", spec.Args);
         Assert.Contains("write", spec.Args);
+        Assert.Contains("shell(git push)", spec.Args);
         Assert.DoesNotContain("--allow-all-paths", spec.Args);
-        Assert.Equal(1, spec.Args.Count(a => a == "--deny-tool"));
+        Assert.Equal(2, spec.Args.Count(a => a == "--deny-tool"));
     }
 }
