@@ -28,7 +28,6 @@ public static partial class Splash
 
     public static void Run(bool animate = true)
     {
-        Console.OutputEncoding = Encoding.UTF8;
         EnableVirtualTerminal();
         TextWriter o = Console.Out;
         o.Write("\x1b[?25l");
