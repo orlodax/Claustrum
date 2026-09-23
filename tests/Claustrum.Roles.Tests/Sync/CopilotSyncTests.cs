@@ -137,22 +137,25 @@ public sealed class CopilotSyncTests : IDisposable
 
     // NOTES.md "The copilot backend, validated against a real install" box 1: an unquoted `": "` in a
     // description is not a valid plain YAML scalar and copilot 1.0.87 silently dropped the file for
-    // it — the tester role's own description (`"Leaf role: it reports…"`) is one of the three that
-    // broke. A strict split on the opening/closing quote is what a hand-rolled YAML-shaped assertion
-    // can verify without a real parser.
+    // it. The box measured that on tester, whose description the issue #16 re-port has since rewritten
+    // without a `": "`; architect is the role to anchor on now, and a better one — it carries both a
+    // `": "` and an inner `"`, so one render exercises both halves below. (ui-reviewer carries both
+    // too, but it declares `"harnesses": ["claude"]`, so copilot never renders it.) A strict
+    // split on the opening/closing quote is what a hand-rolled YAML-shaped assertion can verify
+    // without a real parser.
     [Fact]
     public void DescriptionContainingColonSpaceIsEmittedAsADoubleQuotedYamlScalar()
     {
-        NewSync().Sync(cwd, roles: ["tester"]);
+        NewSync().Sync(cwd, roles: ["architect"]);
 
-        string content = File.ReadAllText(Path.Combine(cwd, ".github", "agents", "tester.agent.md"));
+        string content = File.ReadAllText(Path.Combine(cwd, ".github", "agents", "architect.agent.md"));
         string descriptionLine = content
             .Split('\n')
             .Single(line => line.StartsWith("description: ", StringComparison.Ordinal));
 
         Assert.StartsWith("description: \"", descriptionLine, StringComparison.Ordinal);
         Assert.EndsWith("\"", descriptionLine, StringComparison.Ordinal);
-        Assert.Contains("Leaf role: it reports", descriptionLine, StringComparison.Ordinal);
+        Assert.Contains("It does not ship production code itself: it hands implementation", descriptionLine, StringComparison.Ordinal);
 
         // The frontmatter is well-formed only if the quote that opens the scalar is the same one
         // that closes it: an inner `"` that were left unescaped would end the scalar early and the
