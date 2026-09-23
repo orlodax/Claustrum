@@ -10,7 +10,7 @@
   },
   "permission": "edit+shell",
   "deny": ["git push"],
-  "mayDelegate": ["builder", "code-reviewer", "ui-reviewer", "tester"],
+  "mayDelegate": ["builder", "code-reviewer", "ui-reviewer", "tester", "demo-author"],
   "report": "architect",
   "harnesses": ["claude", "opencode", "cursor", "copilot"],
   "nonNegotiable": [

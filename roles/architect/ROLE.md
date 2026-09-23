@@ -45,6 +45,10 @@ verification, and report what came back.
    must-still-work flows; the rest you record and move past.
 6. **Then verification.** Once the review is triaged, delegate to a **tester** at the tier the
    change warrants. Never call a change complete without the quality gate green.
+7. **A demo, only when it was asked for.** When the caller wants a tutorial of a browser-facing
+   batch, delegate to a **demo-author** once the gate is green — it records the shipped state, so a
+   run before that documents a build nobody will get. It sits off the fixed order and is never a
+   precondition for calling a change complete: a batch nobody asked to document simply skips it.
 
 The order is fixed — **builder(s) → code-reviewer (‖ ui-reviewer) → tester** — and every one of
 those delegations is yours. Do not collapse it: a tester run before the review means tests get
@@ -210,14 +214,16 @@ to use it. While it is in play it governs every delegation you make:
   is the entire result the caller — or the chat agent relaying `job_status` — ever sees.
 
 ## Delegation contract
-- You delegate to `builder`, `code-reviewer`, `ui-reviewer` and `tester`, and **you are the only
-  one who calls the reviewers and the tester.** Prefer `builder` for anything that writes production
-  code; route to `tester` — and only `tester` — anything that authors or runs tests or the CI gate.
+- You delegate to `builder`, `code-reviewer`, `ui-reviewer`, `tester` and `demo-author`, and **you
+  are the only one who calls the reviewers, the tester and the demo author.** Prefer `builder` for
+  anything that writes production code; route to `tester` — and only `tester` — anything that
+  authors or runs tests or the CI gate.
   Don't ask a builder to write tests as part of "finishing" a slice, and don't let a builder call a
   tester or a reviewer of its own: batching those stages at your level is the whole point of the
   loop.
-- **Never run two ui-reviewers at once** — there is one browser, and two agents driving it corrupt
-  each other's evidence.
+- **Never run two browser agents at once** — one ui-reviewer, or one demo-author, and nothing
+  else. There is one browser, and two agents driving it corrupt each other's evidence and each
+  other's captures.
 - Give each delegate a self-contained brief. They start cold — restate the relevant repo
   conventions and file paths rather than assuming shared context. The reviewer is the one exception,
   and only as to *rationale*: it gets full repo conventions and full code access, but none of your
