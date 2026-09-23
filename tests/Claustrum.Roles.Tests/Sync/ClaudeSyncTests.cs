@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using Claustrum.Roles.Model;
 using Claustrum.Roles.Sync;
 
 namespace Claustrum.Roles.Tests.Sync;
@@ -31,6 +32,59 @@ public sealed class ClaudeSyncTests : IDisposable
         Assert.Contains(result.Written, p => p.EndsWith(Path.Combine("skills", "claustrum", "SKILL.md"), StringComparison.Ordinal));
         Assert.Empty(result.Skipped);
         Assert.Empty(result.Foreign);
+    }
+
+    // #29: `shell` used to fall through to the edit tool set, so a browser role was synced with
+    // Edit/Write its own ground rules forbid and no browser tool at all. Driven off ListRoles so a
+    // shell role added later is covered instead of silently skipped.
+    [Fact]
+    public void NoShellRoleIsSyncedWithEditAndEveryToolItAsksForIsGrantedNotDenied()
+    {
+        foreach (string role in library.ListRoles())
+        {
+            RoleDefinition definition = library.LoadRole(role, cwd).Definition;
+            if (definition.Permission != "shell")
+                continue;
+
+            NewSync().Sync(cwd, roles: [role]);
+            string file = File.ReadAllText(Path.Combine(cwd, ".claude", "agents", $"{role}.md"));
+            string tools = FrontmatterValue(file, "tools");
+            string disallowed = FrontmatterValue(file, "disallowedTools");
+
+            Assert.DoesNotContain("Edit", tools, StringComparison.Ordinal);
+            Assert.Contains("Edit", disallowed, StringComparison.Ordinal);
+            Assert.Contains("NotebookEdit", disallowed, StringComparison.Ordinal);
+
+            // Granting and denying the same tool is incoherent, so an extra drops out of the deny list.
+            foreach (string extra in definition.ExtraTools)
+            {
+                Assert.Contains(extra, tools, StringComparison.Ordinal);
+                Assert.DoesNotContain(extra, disallowed, StringComparison.Ordinal);
+            }
+        }
+    }
+
+    // The two browser-bound roles are the reason the rung exists: a ui-reviewer or demo-author that
+    // cannot open a browser cannot do the one thing it is for.
+    [Theory]
+    [InlineData("ui-reviewer")]
+    [InlineData("demo-author")]
+    public void ABrowserRoleIsSyncedWithTheBrowserTools(string role)
+    {
+        NewSync().Sync(cwd, roles: [role]);
+
+        string tools = FrontmatterValue(File.ReadAllText(Path.Combine(cwd, ".claude", "agents", $"{role}.md")), "tools");
+
+        Assert.Contains("mcp__Claude_Browser", tools, StringComparison.Ordinal);
+        Assert.Contains("mcp__claude-in-chrome", tools, StringComparison.Ordinal);
+    }
+
+    private static string FrontmatterValue(string file, string key)
+    {
+        string prefix = $"{key}: ";
+        string? line = file.Split('\n').FirstOrDefault(l => l.StartsWith(prefix, StringComparison.Ordinal));
+        Assert.NotNull(line);
+        return line[prefix.Length..];
     }
 
     [Fact]
