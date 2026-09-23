@@ -2,6 +2,9 @@ using System.CommandLine;
 using System.CommandLine.Parsing;
 using Claustrum.Cli;
 
+// Before anything writes a byte: on Windows the default is the console code page (ConsoleEncoding).
+ConsoleEncoding.ForceUtf8();
+
 RootCommand root = CliRoot.Build();
 
 if (args.Length == 0 && Splash.IsWanted)

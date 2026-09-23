@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Globalization;
+using System.Text;
 using Claustrum.Tests.Testing;
 
 namespace Claustrum.Tests.Cli;
@@ -88,6 +89,10 @@ public sealed class BackendsCommandsCopilotAuthTests : IDisposable
             RedirectStandardError = true,
             RedirectStandardInput = true,
             CreateNoWindow = true,
+            // Null would mean the parent's own console code page, which on Windows decodes the
+            // child's UTF-8 (ConsoleEncoding) into mojibake — both ends have to agree.
+            StandardOutputEncoding = Encoding.UTF8,
+            StandardErrorEncoding = Encoding.UTF8,
         };
         startInfo.ArgumentList.Add("backends");
         startInfo.ArgumentList.Add("doctor");

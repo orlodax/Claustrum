@@ -2651,3 +2651,33 @@ here got far enough to produce; `--usage-output-file`; whether `infer`/`tools`/`
 `.agent.md` do what their names suggest, as opposed to merely being accepted; an interpreter-only
 write under the `shell` rung, which no run has yet attempted in isolation (see the plan-mode section
 above — the analyser demonstrably did not recognise one); and the Windows leg.
+
+## Windows gave redirected stdout the console code page, so every em dash shipped as `?` (2026-09-23)
+
+`backends doctor --probe` punctuates with em dashes (`present (env var set — a login file may also
+work even if not)`), and on `windows-latest` the two auth suites that read them back through the real
+binary failed while every other assertion in the same files passed. The split is the whole diagnosis:
+**six failing assertions across two independently written PRs, and all six and only the six contained
+a `—`.** `BackendsCommandsCopilotAuthTests`' four non-em-dash `InlineData` cases passed next to them;
+so did `BackendsCommandsOpencodeApiAuthTests`' one em-dash-free case, alone among its five.
+
+The cause is not the tests. On Windows `Console.Out` is built over `Console.OutputEncoding`, which
+defaults to `GetConsoleOutputCP()` — 437 on a GitHub runner — **and that holds when stdout is
+redirected**, where .NET on Unix is UTF-8 regardless of locale (confirmed here: `LC_ALL=C` still
+emits `E2 80 94`). cp437 cannot represent U+2014, so the encoder fallback wrote `?` into the pipe.
+This was never only a test problem: `claustrum backends doctor --probe > out.txt` on Windows lost the
+character for anyone. The one place that set UTF-8 — `Splash.Run` — is reachable only behind
+`Splash.IsWanted`, which requires `!Console.IsOutputRedirected`, so no redirected run ever hit it.
+
+**Both ends had to move, and either alone still fails.** `Program` now calls
+`ConsoleEncoding.ForceUtf8()` before anything writes, and the subprocess tests set
+`StandardOutputEncoding`/`StandardErrorEncoding`: left null, the *parent* decodes with its own
+console code page and reads the now-correct UTF-8 bytes as mojibake. Fixing the writer without the
+reader just moves the failure.
+
+`ForceUtf8` does not reach for `Console.OutputEncoding` when the stream is redirected, which is why
+it is a class and not one line: the setter calls `SetConsoleOutputCP`, which changes the code page of
+the caller's console and **outlives the process**. A redirected stream gets a `StreamWriter` of our
+own instead; a real console still needs the property, because raw UTF-8 bytes into a cp437 console
+render as mojibake. `Splash.Run`'s own assignment went with it — startup covers every verb now, and
+leaving it would have put `SetConsoleOutputCP` back on the `claustrum splash > file` path.
