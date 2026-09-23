@@ -9,6 +9,7 @@
     "max": { "model": "frontier-coding", "effort": "max" }
   },
   "permission": "shell",
+  "tools": ["mcp__Claude_Browser", "mcp__claude-in-chrome"],
   "deny": ["git push"],
   "mayDelegate": [],
   "report": "code-reviewer",

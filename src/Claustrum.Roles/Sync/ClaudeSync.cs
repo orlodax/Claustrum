@@ -161,10 +161,26 @@ public sealed class ClaudeSync(RoleLibrary library, RoleRenderer renderer, strin
         _ => throw new RoleRenderException($"no Claude model mapping for class '{modelClass}'"),
     };
 
+    private static readonly string[] readTools = ["Read", "Grep", "Glob", "Bash", "PowerShell", "WebFetch", "WebSearch"];
+
+    // What `shell` denies unless the role asks for it back. Granting and denying the same tool is
+    // incoherent, so anything role.json names under `tools` drops out of this list (#29).
+    private static readonly string[] shellDenied = ["Agent", "Edit", "Write", "NotebookEdit"];
+
     private static (string Tools, string? DisallowedTools) ToolsFor(RoleDefinition definition)
     {
         if (definition.Permission == "readonly")
-            return ("Read, Grep, Glob, Bash, PowerShell, WebFetch, WebSearch", "Agent, Edit, Write");
+            return (string.Join(", ", readTools), "Agent, Edit, Write");
+
+        // `shell` is read + run, never edit — the rung M3 added for ui-reviewer. Before #29 it fell
+        // through to the edit set, so a browser role synced with Edit/Write its own ground rules
+        // forbid and no browser tool at all: the one thing it exists for.
+        if (definition.Permission == "shell")
+        {
+            string[] granted = definition.MayDelegate.Length > 0 ? [.. definition.ExtraTools, "Agent"] : definition.ExtraTools;
+            string[] denied = [.. shellDenied.Where(tool => !granted.Contains(tool, StringComparer.Ordinal))];
+            return (string.Join(", ", (string[])[.. readTools, .. granted]), denied.Length > 0 ? string.Join(", ", denied) : null);
+        }
 
         string editTools = "Read, Grep, Glob, Bash, PowerShell, Edit, Write, NotebookEdit, WebFetch, WebSearch";
         return definition.MayDelegate.Length > 0 ? ($"{editTools}, Agent", null) : (editTools, null);

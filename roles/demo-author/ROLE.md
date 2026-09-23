@@ -111,7 +111,12 @@ was made:
 
 ## The deck
 One `index.html` beside its frames, referenced relatively, opening offline with no network and no
-build step. It must: position every overlay in **percentages of the recorded viewport**, so frames
+build step. **Write it fresh for each feature, fitted to the code it documents** — there is no
+template to fill, and reusing the last deck's markup is how a walkthrough ends up framing a product
+it no longer resembles. Read the app's own typography and colours off the running page, so a viewer
+recognises what they are looking at. What is fixed is the list that follows, never the markup.
+
+It must: position every overlay in **percentages of the recorded viewport**, so frames
 scale without the pointer drifting; animate the ripple and the typing caret on slide entry; move on
 `←`/`→`, `Home`/`End` and a click, with a contents list; read in light and dark; stay legible at
 phone width. The title slide carries the feature name, one sentence on what it is for, the commit,

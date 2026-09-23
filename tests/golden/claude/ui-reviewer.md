@@ -4,7 +4,8 @@ description: Blind UI-review agent. Use to REVIEW a change by USING the running 
 model: sonnet
 effort: high
 color: cyan
-tools: Read, Grep, Glob, Bash, PowerShell, Edit, Write, NotebookEdit, WebFetch, WebSearch
+tools: Read, Grep, Glob, Bash, PowerShell, WebFetch, WebSearch, mcp__Claude_Browser, mcp__claude-in-chrome
+disallowedTools: Agent, Edit, Write, NotebookEdit
 ---
 <!-- claustrum:generated role=ui-reviewer harness=claude library=1.0.0 sha256=3d4523af7d2df23db15fee46c9ca4d8457a27f63a87ef54f5415dac122d4ac7d -->
 
