@@ -161,6 +161,9 @@ A release binary per OS, the .NET global tool, or a build from source —
 dotnet tool install -g Claustrum
 ```
 
+Then [docs/TEST-DRIVE.md](docs/TEST-DRIVE.md) walks the first run on a real task, step by step,
+and [docs/MANUAL.md](docs/MANUAL.md) is the reference for every verb, file, field and rule.
+
 ## Licence
 
 [MIT](LICENSE). Named after the thin sheet of neurons under the cortex that Crick and Koch (2005)

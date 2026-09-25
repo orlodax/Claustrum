@@ -209,6 +209,8 @@ blind review and the test run itself, and leaves its work on a `claustrum/<job-i
 ## Where to look next
 
 - [README](../README.md) — what Claustrum is, the two doors, the receipt.
+- [docs/TEST-DRIVE.md](TEST-DRIVE.md) — the ordered steps for the first run on a real task.
+- [docs/MANUAL.md](MANUAL.md) — the reference: every verb, file, field and rule.
 - [docs/PLAN.md](PLAN.md) — the design, milestone by milestone.
 - [AGENTS.md](../AGENTS.md) — the rules for changing this repo.
 - [NOTES.md](../NOTES.md) — the measured rationale behind the choices above.
