@@ -138,7 +138,7 @@ public sealed class OpencodeSync(RoleLibrary library, RoleRenderer renderer, str
         StringBuilder builder = new();
         builder.Append("---\n");
         builder.Append("mode: subagent\n");
-        builder.Append($"description: {description}\n");
+        builder.Append($"description: {SyncWriter.YamlQuoted(description)}\n");
         builder.Append($"model: {model}\n");
         builder.Append($"variant: {variant}\n");
         builder.Append("---");

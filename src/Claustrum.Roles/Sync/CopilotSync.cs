@@ -94,16 +94,9 @@ public sealed class CopilotSync(RoleLibrary library, RoleRenderer renderer, stri
         StringBuilder builder = new();
         builder.Append("---\n");
         builder.Append($"name: {name}\n");
-        builder.Append($"description: {YamlQuoted(description)}\n");
+        builder.Append($"description: {SyncWriter.YamlQuoted(description)}\n");
         builder.Append("model: auto\n");
         builder.Append("---");
         return builder.ToString();
     }
-
-    // Unquoted, a description containing ": " is not a valid plain YAML scalar: copilot 1.0.87 threw
-    // "mapping values are not allowed in this context" and silently skipped architect, code-reviewer
-    // and tester (2026-09-22, measured — NOTES.md "The copilot backend, validated against a real
-    // install"). Only the two characters a double-quoted YAML scalar reserves need escaping.
-    private static string YamlQuoted(string value) =>
-        $"\"{value.Replace("\\", "\\\\", StringComparison.Ordinal).Replace("\"", "\\\"", StringComparison.Ordinal)}\"";
 }

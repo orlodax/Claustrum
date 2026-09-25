@@ -140,7 +140,7 @@ public sealed class ClaudeSync(RoleLibrary library, RoleRenderer renderer, strin
         StringBuilder builder = new();
         builder.Append("---\n");
         builder.Append($"name: {name}\n");
-        builder.Append($"description: {description}\n");
+        builder.Append($"description: {SyncWriter.YamlQuoted(description)}\n");
         builder.Append($"model: {model}\n");
         builder.Append($"effort: {effort}\n");
         builder.Append($"color: {color}\n");

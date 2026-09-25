@@ -143,7 +143,7 @@ public sealed class CursorSync(RoleLibrary library, RoleRenderer renderer, strin
         StringBuilder builder = new();
         builder.Append("---\n");
         builder.Append($"name: {name}\n");
-        builder.Append($"description: {description}\n");
+        builder.Append($"description: {SyncWriter.YamlQuoted(description)}\n");
         // `inherit` is the field's documented default and the only value that works on a Free plan,
         // which refuses named model ids outright (NOTES.md "The cursor backend, validated against a
         // real install") — so a role's tier lives in its body here, not in this field.
