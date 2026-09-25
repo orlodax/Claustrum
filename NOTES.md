@@ -2451,7 +2451,9 @@ kept three of the four roles from loading.
    ⚠ **The other three syncs emit the same unquoted `description:`** (`ClaudeSync`, `OpencodeSync`,
    `CursorSync`) and were *not* measured here. Claude Code demonstrably tolerates it (the owner's own
    agent files have carried `": "` for months); opencode and cursor are unknown and want their own
-   probe rather than a blind copy of this fix.
+   probe rather than a blind copy of this fix. *Fixed 2026-09-25 (issue #33) — see "Sync frontmatter:
+   the unquoted `description:` fix reaches Claude/opencode/Cursor too" below for the shared helper and
+   what each harness's own probe could and could not confirm.*
 
 2. **Box 2 — the success JSONL, captured and committed to.** `claustrum run builder --backend copilot
    --brief "create hello.txt containing hi" --budget 0.5 --model auto --json --cwd <tmp>/run1` →
@@ -3051,6 +3053,39 @@ and `anthropic-success.json`; `--session <id>` resume against a real opencode se
 rung's `--auto`-plus-allow-all combination; whether
 `OPENCODE_DISABLE_FILEWATCHER` has a cost on a host that is *not* at its inotify cap; whether
 `opencode auth login` writes an `auth.json`; opencode's own `stats`/`db` as a cost source for
-defect 3; `OpencodeSync`'s synced agent files under 2.0.12 — including the unquoted `description:`
-that the copilot pass found breaks YAML there, which was flagged for opencode and is still not
-measured; and the Windows leg of every line above.
+defect 3; and the Windows leg of every line above. The unquoted `description:` line itself is fixed
+and measured now — see "Sync frontmatter: the unquoted `description:` fix reaches Claude/opencode/
+Cursor too (2026-09-25, issue #33)".
+
+## Sync frontmatter: the unquoted `description:` fix reaches Claude/opencode/Cursor too (2026-09-25, issue #33)
+
+"The copilot backend, validated against a real install" fixed `CopilotSync`'s unquoted
+`description:` (a plain YAML scalar containing `": "` is invalid, and copilot 1.0.87 silently
+dropped architect/code-reviewer/tester for it) but left `ClaudeSync`, `OpencodeSync` and
+`CursorSync` on the identical unquoted line, flagged there as unmeasured. `CopilotSync.YamlQuoted`
+moved onto `SyncWriter` unchanged (same two characters escaped, same doc comment) as
+`SyncWriter.YamlQuoted`, and all four `BuildFrontmatter`/`BuildAgentFrontmatter` methods now call it
+on the `description` field — the `tools`/`model`/`effort`/`color`/`readonly` fields are untouched,
+and the SKILL.md/command frontmatter blocks (none of which contain `": "` today) were left as
+literal here-strings rather than routed through a call that would be a no-op.
+
+- **Verified for real, not just re-read**: a scratch `git init` repo was synced with `--only
+  opencode` and `--only cursor` (debug build, no golden fixtures touched), and every emitted
+  `architect.md`/`code-reviewer.md`/`tester.md` frontmatter block — the three roles whose
+  description contains `": "` — was fed to `yaml.safe_load` (PyYAML, a strict parser, the same one
+  named in the brief as the bar to clear). All parsed clean; the pre-fix unquoted line reproduces the
+  same "mapping values are not allowed in this context" PyYAML raises for the copilot case if you
+  diff it back in by hand.
+- **Live agent-listing probe: attempted, blocked by environment, not by the fix.** `opencode debug
+  agents` is the free probe (no model call, just the loader's own list) but its background service
+  (`opencode service restart` confirmed a live URL) never answered `debug agents` within 60s, in the
+  synced scratch repo *and* in a bare empty directory with no config at all — so the hang is a
+  sandbox/daemon limitation, not something the quoted frontmatter caused. `cursor-agent`'s CLI
+  (`--help` read in full, `agent --help` too) has no agent-list or agent-select flag at all —
+  Cursor's `.cursor/agents/*.md` subagents are picked from the GUI's Agent chat only, confirmed
+  already unreachable from a CLI in "CursorSync: agents, skill and mcp.json, doc-confirmed but never
+  round-tripped" ("Not verified live … no GUI here"). Neither gap is new or caused by this change;
+  the strict-parse check above is the decisive evidence for both.
+- **Claude Code stays unmeasured on purpose**: the brief's own framing ("Claude Code demonstrably
+  tolerates it") was accepted as sufficient given goldens under `tests/golden/claude/` pin its output
+  and get re-recorded by the tester, not this pass.

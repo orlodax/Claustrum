@@ -64,6 +64,14 @@ public sealed class SyncWriter(string harness, string libraryVersion)
         into.ManifestFiles.Add(new SyncManifestFile(path, role, harness, sha256));
     }
 
+    // Unquoted, a description containing ": " is not a valid plain YAML scalar: copilot 1.0.87 threw
+    // "mapping values are not allowed in this context" and silently skipped architect, code-reviewer
+    // and tester (2026-09-22, measured — NOTES.md "The copilot backend, validated against a real
+    // install"). Claude/opencode/cursor emitted the identical unquoted line and are fixed the same way
+    // (issue #33) — only the two characters a double-quoted YAML scalar reserves need escaping.
+    public static string YamlQuoted(string value) =>
+        $"\"{value.Replace("\\", "\\\\", StringComparison.Ordinal).Replace("\"", "\\\"", StringComparison.Ordinal)}\"";
+
     /// <summary>The `-xhigh`/`-max` stub descriptions, identical across every harness.</summary>
     public static string TierDescription(string role, string tier)
     {
