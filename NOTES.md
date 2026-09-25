@@ -3071,11 +3071,16 @@ literal here-strings rather than routed through a call that would be a no-op.
 
 - **Verified for real, not just re-read**: a scratch `git init` repo was synced with `--only
   opencode` and `--only cursor` (debug build, no golden fixtures touched), and every emitted
-  `architect.md`/`code-reviewer.md`/`tester.md` frontmatter block — the three roles whose
-  description contains `": "` — was fed to `yaml.safe_load` (PyYAML, a strict parser, the same one
-  named in the brief as the bar to clear). All parsed clean; the pre-fix unquoted line reproduces the
-  same "mapping values are not allowed in this context" PyYAML raises for the copilot case if you
-  diff it back in by hand.
+  `architect.md`/`code-reviewer.md`/`tester.md` frontmatter block was fed to `yaml.safe_load`
+  (PyYAML, a strict parser, the same one named in the brief as the bar to clear). All parsed clean;
+  the pre-fix unquoted line reproduces the same "mapping values are not allowed in this context"
+  PyYAML raises for the copilot case if you diff it back in by hand. Checked against the current
+  `roles/<role>/role.json` library, the roles whose description contains `": "` are **architect,
+  code-reviewer, demo-author and ui-reviewer** — not tester, whose description was re-ported clean
+  for #16 (see "tester and ui-reviewer re-ported from the owner's current files"). Of those four,
+  only architect and code-reviewer sync to opencode/cursor at all (`harnesses` in their `role.json`);
+  demo-author and ui-reviewer carry `"harnesses": ["claude"]`, so they never emit a `.md` for those
+  two backends and fall outside what this scratch-repo check could exercise.
 - **Live agent-listing probe: attempted, blocked by environment, not by the fix.** `opencode debug
   agents` is the free probe (no model call, just the loader's own list) but its background service
   (`opencode service restart` confirmed a live URL) never answered `debug agents` within 60s, in the
@@ -3084,8 +3089,11 @@ literal here-strings rather than routed through a call that would be a no-op.
   (`--help` read in full, `agent --help` too) has no agent-list or agent-select flag at all —
   Cursor's `.cursor/agents/*.md` subagents are picked from the GUI's Agent chat only, confirmed
   already unreachable from a CLI in "CursorSync: agents, skill and mcp.json, doc-confirmed but never
-  round-tripped" ("Not verified live … no GUI here"). Neither gap is new or caused by this change;
-  the strict-parse check above is the decisive evidence for both.
+  round-tripped" ("Not verified live … no GUI here"). Neither gap is new or caused by this change,
+  and neither is closed by the PyYAML check above: that check is evidence the emitted frontmatter is
+  valid YAML, not evidence that opencode 2.0.12 or Cursor actually load the agents from it. Whether
+  the two loaders load architect/code-reviewer (or demo-author/ui-reviewer under Claude) stays
+  **unmeasured**.
 - **Claude Code stays unmeasured on purpose**: the brief's own framing ("Claude Code demonstrably
   tolerates it") was accepted as sufficient given goldens under `tests/golden/claude/` pin its output
   and get re-recorded by the tester, not this pass.
