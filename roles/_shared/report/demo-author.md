@@ -15,7 +15,7 @@ this shape, filling in real values:
     "mechanism": "..."
   },
   "shareable": true,
-  "video": null,
+  "video": "path of the recording, or null with the reason in gaps",
   "left_behind": ["records the deck depends on that you did not delete"],
   "defects_seen": ["what looked wrong on camera — described, never fixed"],
   "gaps": ["what the deck could not show, and why"]
@@ -26,6 +26,7 @@ this shape, filling in real values:
 `shareable` is false whenever the deck was recorded against anything but demo data — say in `gaps`
 which rung of the ladder failed and what this repo would need for rung 1 to work next time. List
 every record you created and did not remove under `left_behind`, so a human can decide its fate.
-`video` carries the path of a recording the brief asked for, or stays null. Anything that looked
-broken while you were recording goes in `defects_seen` for the architect to route — you describe it,
-you never fix it, and you never re-shoot around it to hide it.
+`video` carries the recording's path — one is made by default, so a null there needs a line in
+`gaps` saying why there is none. Anything that looked broken while you were recording goes in
+`defects_seen` for the architect to route — you describe it, you never fix it, and you never
+re-shoot around it to hide it.
