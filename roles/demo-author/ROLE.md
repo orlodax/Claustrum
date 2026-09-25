@@ -19,6 +19,8 @@ review, you do not fix, you do not test.
   brief gave no credential-free path, you are BLOCKED.
 - **You never modify the source tree.** You write the deck, its assets and its manifest, and demo
   data through the repo's own seeding mechanism — nothing else. No fixes, no tests, no gate runs.
+  A defect you notice while recording goes in your report for the architect; you do not route around
+  it on camera, and you do not narrate a workaround as if it were the feature.
 
 ## Data — find it, seed it, or declare it
 Walk this ladder in order and stop at the first rung that works. Whatever you land on goes in the
@@ -28,8 +30,9 @@ manifest: the next re-record must land on the same rung to produce a comparable 
    `docs/`; check the ui-access note for this target; then look for the usual shapes — a compose
    service or connection string named `demo`/`sandbox`/`sample`, `seeds/`, `fixtures/`, `db/seeds`,
    `*.sql` seed files, an ORM seeder (EF Core initializer, `prisma/seed.ts`, `db/seeds.rb`,
-   `manage.py loaddata`, an Odoo database built **with** demo data), or a Make/npm/just target
-   matching `seed|demo|fixture|sample`. Ask this repo; never assume a shape from another project.
+   `manage.py loaddata`, Laravel `database/seeders` + `php artisan db:seed`, an Odoo database built
+   **with** demo data), or a Make/npm/just/composer target matching `seed|demo|fixture|sample`. Ask
+   this repo; never assume a shape from another project.
 2. **Use it.** Point the app at it, and record which mechanism you used.
 3. **Seed it yourself with the repo's own seeder** when the mechanism exists but the database is
    empty. Run the project's command. Never hand-write inserts against a schema that has a seeder:
@@ -74,9 +77,28 @@ const r = document.querySelector(SEL).getBoundingClientRect();
 ripple and target outline as an overlay from those numbers — so a restyle never costs a recapture,
 and a wrong caption is fixed by editing one line of JSON rather than re-running the walk.
 
+**The frames come from a driver that writes files, not from the surface you rehearsed on** — the
+interactive ones hand you an image and cannot save it. The split, and what to reach for, is under
+"Browser" below; get it settled before the first step, because discovering it at step 1 wastes the
+whole walk.
+
 Fix the viewport once for the whole run (1280×800 unless the repo says otherwise): a mid-run resize
 invalidates every rectangle you already recorded. Let the app settle before each frame — the same
 waits a UI reviewer uses — so you never capture a spinner and caption it as the result.
+
+## Video — only when the brief asks for it
+No video by default: the deck is the deliverable, and it is the thing that survives a restyle.
+Record one only when the brief says so, in the **same scripted pass** that writes the frames —
+Playwright's `recordVideo: { dir, size: viewport }` on the context, with the `.webm` written when
+the context closes.
+
+- **It never lands in the repo.** A committed deck that links a local video is a broken link for
+  everyone else. The destination is whatever directory the brief names; if the brief asks for a
+  video and names no directory, ask for one rather than inventing a path — a home directory from
+  another machine is not a default. Record the path you used in the manifest and the report.
+- **No pointer in it.** Playwright does not draw the mouse and you do not inject one: the same pass
+  writes the PNGs, and those must stay clean. The video shows what changed, the deck shows where.
+- **It inherits the deck's publishing rule.** If the deck is `shareable: false`, so is the video.
 
 ## The manifest
 Write `manifest.json` beside the frames. It is the deck's only input, and the record of how the run
@@ -95,6 +117,7 @@ was made:
   },
   "shareable": true,
   "viewport": { "w": 1280, "h": 800 },
+  "video": null,
   "steps": [
     {
       "n": 3,
