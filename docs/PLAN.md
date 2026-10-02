@@ -193,7 +193,7 @@ Report schemas (`_shared/report/*.md`, extracted into `RunResult.report`):
 - tester: `{status, commands_run:[], passed, failed:[{test, root_cause, fault_in: test|code}], skipped:[]}`
 Extraction rules: exactly one block expected; none → `report:null`, status stays but `report_status:"missing"`; several → last wins + warning; nested inside another fence → inner found; invalid JSON → `report_status:"unparsed"`, raw kept.
 
-**Brief convention**: markdown with fixed H2s — `## Task` (user's words verbatim), `## Scope` (paths), `## Must still work`, `## Diff` (how to obtain it, e.g. `git diff main...HEAD`), `## Access` (ui-reviewer), `## Context` (non-blind roles only). Passed as `--brief-file` / `--brief` / stdin (`--brief-file -`), or MCP `brief`.
+**Brief convention**: markdown with fixed H2s — `## Task` (user's words verbatim), `## Scope` (paths), `## Must still work`, `## Diff` (how to obtain it, e.g. `git diff main...HEAD`), `## Access` (ui-reviewer, and the demo-author since PR #42), `## Context` (non-blind roles only). Passed as `--brief-file` / `--brief` / stdin (`--brief-file -`), or MCP `brief`.
 **Blind gate, by construction**: for roles with `blind:true` the runner rejects a brief containing `## Context`, `## Plan`, `## Rationale`, or a pasted `claustrum-report` block → exit 2, `"blind role: brief carries rationale"`. The MCP `delegate` tool description states this. Refusal, not advice, enforces architect.md:197.
 
 ### B4. `claustrum sync` — render the library into every harness

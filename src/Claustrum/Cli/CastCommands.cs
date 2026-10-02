@@ -56,10 +56,7 @@ public static class CastCommands
         foreach (CastQuestion question in result.Questions)
         {
             Console.WriteLine($"{question.Key}: {question.Prompt}");
-            if (question.Options.Length > 0)
-                Console.WriteLine($"  options: {string.Join(", ", question.Options)}");
-            if (question.AllowNotNeeded)
-                Console.WriteLine($"  (or '{CastBuilder.NotNeeded}')");
+            Console.WriteLine(OptionsLine(question));
         }
 
         return ExitCodes.Ok;
@@ -80,14 +77,12 @@ public static class CastCommands
         foreach (CastQuestion question in questionnaire.Questions)
         {
             Console.WriteLine(question.Prompt);
-            if (question.Options.Length > 0)
-                Console.WriteLine($"  options: {string.Join(", ", question.Options)}{(question.AllowNotNeeded ? $", or '{CastBuilder.NotNeeded}'" : "")}");
-
-            Console.Write($"{question.Key}> ");
-            answers[question.Key] = Console.ReadLine() ?? "";
+            Console.WriteLine(OptionsLine(question));
+            answers[question.Key] = AskUntilSupported(question.Key, config, cwd);
         }
 
         Cast cast = CastBuilder.FromAnswers(name, AppServices.RoleLibrary.Version, AppServices.RoleLibrary.ListRoles(), answers);
+        CastHarnessCheck.Require(cast, AppServices.RoleLibrary, AppServices.Backends, config, cwd);
         CastStore.Save(cwd, cast);
 
         Console.WriteLine(CastStore.PathFor(cwd, name));
@@ -99,10 +94,44 @@ public static class CastCommands
         string cwd = Environment.CurrentDirectory;
         Dictionary<string, string> answers = CastAnswers.Read(answersPath);
         Cast cast = CastBuilder.FromAnswers(name, AppServices.RoleLibrary.Version, AppServices.RoleLibrary.ListRoles(), answers);
+        CastHarnessCheck.Require(cast, AppServices.RoleLibrary, AppServices.Backends, Config.Load(AppServices.Platform, cwd), cwd);
         CastStore.Save(cwd, cast);
 
         Console.WriteLine(CastStore.PathFor(cwd, name));
         return ExitCodes.Ok;
+    }
+
+    // An empty list is an answer too — no claustrum.json alias lands on an installed backend the role
+    // runs on — and it must not hide 'not needed', which for the demo-author is the "no demo" switch.
+    private static string OptionsLine(CastQuestion question)
+    {
+        string options = question.Options.Length > 0
+            ? string.Join(", ", question.Options)
+            : "none here (no claustrum.json alias lands on an installed backend this role runs on); a free-form 'backend:model-id' still works";
+        return question.AllowNotNeeded ? $"  options: {options}, or '{CastBuilder.NotNeeded}'" : $"  options: {options}";
+    }
+
+    // A role answer is checked as it is typed, so a free-form one on the wrong harness is asked again
+    // rather than failing the whole questionnaire at the end. Non-role keys (budget, max_parallel)
+    // and the architect's host/spawned grammar are left to CastBuilder and the final Require.
+    // Piped input is never re-asked: the next line was written for the next question, and asking
+    // again shifted every later answer one slot (review, 2026-10-02: ui-reviewer saved as "2").
+    private static string AskUntilSupported(string key, Config config, string cwd)
+    {
+        while (true)
+        {
+            Console.Write($"{key}> ");
+            string answer = Console.ReadLine() ?? "";
+            bool isRole = key != Cast.ArchitectRole && AppServices.RoleLibrary.ListRoles().Contains(key, StringComparer.Ordinal);
+            bool notNeeded = answer.Trim().Equals(CastBuilder.NotNeeded, StringComparison.OrdinalIgnoreCase);
+            if (!isRole || notNeeded || CastHarnessCheck.Problem(key, answer.Trim(), AppServices.RoleLibrary, AppServices.Backends, config, cwd) is not { } problem)
+                return answer;
+
+            if (Console.IsInputRedirected)
+                throw new CastException($"cast not saved: {problem}");
+
+            Console.WriteLine($"  {problem}");
+        }
     }
 
     private static int List()

@@ -293,8 +293,16 @@ public sealed class OpencodeBackend(IPlatform platform) : IBackend
     {
         writer.WriteStartObject("bash");
         writer.WriteString("*", "allow");
+
+        // "<verb> *" matches the verb as a word ("git merge x", not "git merge-base"), and opencode's
+        // matcher makes a trailing " *" optional so it also catches the bare verb — on the dev branch
+        // read 2026-10-02 (util/wildcard.ts). The exact "<verb>" entry covers a build without that.
         foreach (string pattern in deny)
-            writer.WriteString($"{pattern}*", "deny");
+        {
+            writer.WriteString(pattern, "deny");
+            writer.WriteString($"{pattern} *", "deny");
+        }
+
         writer.WriteEndObject();
     }
 }

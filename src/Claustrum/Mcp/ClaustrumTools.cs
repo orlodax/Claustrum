@@ -234,14 +234,16 @@ public sealed class ClaustrumTools
         });
 
     [McpServerTool(Name = "cast_create")]
-    [Description("Create a cast from answered cast_questions (docs/PLAN.md §D1/§D2): answers keys must match each question's key ('architect', 'builder', 'code-reviewer', ..., 'budget'); a role's value may be 'not needed', and budget may be 'no cap'.")]
+    [Description("Create a cast from answered cast_questions (docs/PLAN.md §D1/§D2): answers keys must match each question's key ('architect', 'builder', 'code-reviewer', ..., 'budget'); a role's value may be 'not needed', and budget may be 'no cap'. An answer that puts a role on a harness its role.json does not list (the demo-author and ui-reviewer are claude-only) is refused.")]
     public static string CastCreate(
         [Description("Question key -> answer.")] Dictionary<string, string> answers,
         [Description("Cast name (default: 'default', which run/delegate use automatically when no --cast/cast is given).")] string name = "default") =>
         McpExceptionBoundary.Guard(() =>
         {
+            string cwd = Environment.CurrentDirectory;
             Cast cast = CastBuilder.FromAnswers(name, AppServices.RoleLibrary.Version, AppServices.RoleLibrary.ListRoles(), answers);
-            CastStore.Save(Environment.CurrentDirectory, cast);
+            CastHarnessCheck.Require(cast, AppServices.RoleLibrary, AppServices.Backends, Config.Load(AppServices.Platform, cwd), cwd);
+            CastStore.Save(cwd, cast);
 
             return JsonSerializer.Serialize(cast, CastJsonContext.Default.Cast);
         });

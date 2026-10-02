@@ -3103,3 +3103,145 @@ literal here-strings rather than routed through a call that would be a no-op.
 - **Claude Code stays unmeasured on purpose**: the brief's own framing ("Claude Code demonstrably
   tolerates it") was accepted as sufficient given goldens under `tests/golden/claude/` pin its output
   and get re-recorded by the tester, not this pass.
+
+## Roles re-ported from devkit's 2026-10-02 definitions (PR #42)
+
+The team settled its Claude Code agent files in devkit (`teksistemi-software/devkit`, pinned at
+`6795e8b`; the change is `git diff origin/main 6795e8b -- claude/agents claude/commands`, with
+`opencode/agents/*` and `rules/team.md` §1 read for the harness-neutral wording). The behaviour came
+over, not the files; everything Claustrum owns — the report blocks, the blind gate, model classes,
+house rules, tier stubs, the `ROLE.md`/parts split — is untouched.
+
+- **What changed.** demo-author: deck, frames, manifest **and** the default-on video go into the
+  main checkout's `docs/demos/<feature>/` (first `worktree` line of `git worktree list
+  --porcelain`), checked with `git check-ignore -q` before the first write, never staged, committed
+  or pushed (owner, 2026-10-02: "docs/demos/feature is fine, just gitignore them"); it records a
+  commit that contains what the gate passed, never "the merged state" and never uncommitted
+  changes; its report gains `gitignore` (the exact line added, and where) and a main-checkout `deck`
+  path, the manifest's `video` is relative. PR #42's first commit had sent the video to
+  `~/Videos/demos/…`, "never inside the working tree" — default-on stays, location and reasons do
+  not. architect: a demo-author for every browser-facing feature after the gate, unasked unless the
+  caller (or a cast's `null`) says no, never alongside a ui-reviewer, briefed sighted; it commits
+  exactly the `.gitignore` line the demo-author reports, nothing else of its output. builder: never creates, modifies or deletes a
+  test file, fixtures included. tester: runs the repo's full gate, pre-existing tests included.
+  Every role: "Clean up what you start".
+- **Where it went.** All of it is harness-neutral, so it is `ROLE.md`/`role.json`/`_shared`; the only
+  part edits are `architect/parts/delegation.claude.md` (a native demo-author spawn line, which was
+  missing) and `demo-author/parts/browser.claude.md` (frames and every other deck file are written by
+  the capture script).
+- **Claustrum's own wording, by design.** devkit's "the team removes a branch's worktree once it is
+  integrated" became "worktrees are temporary", citing `claustrum jobs clean`, which runs `git
+  worktree remove --force` on every finished parallel builder's. `## Access` now names the
+  demo-author too (architect parts, `/claustrum` skill, MANUAL). The tester's report contract lets
+  `fault_in: "test"` cover a pre-existing test the change legitimately outdated, or the full-gate
+  rule would force every stale old test onto the builder as `code`. A builder's needed test change
+  goes in `behaviour_to_cover`. The demo-author's `## Browser` heading fixes the dangling pointer in
+  "Capture" (devkit's fix); an `## Environment` heading was added as ui-reviewer already has.
+- **Not ported.** devkit's `/demo` command (Claustrum syncs no such command); the opencode
+  demo-author's Playwright-MCP binding (`browser_take_screenshot` + `mv`, `external_directory`
+  allows) — the role is `harnesses: ["claude"]` with no non-claude browser part, and `OpencodeSync`
+  emits no MCP tool permissions to carry one; model names (`sonnet`, `opus`) and
+  `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH`, as in "The architect role, ported last".
+- **`library.json` stays `1.0.0`.** Fourteen role-text commits since 92ca212 never bumped it, and
+  `sync --check` already flags a stale file by comparing it with a fresh render (whose marker
+  carries the body's `sha256`); a bump would only rewrite every marker line.
+
+### A delegated demo-author can write its deck (issue #43, fixed in PR #42)
+
+The blind review of the port found the default demo unable to run on the `claustrum run` path: the
+role sat on `shell`, which the claude backend maps to plan mode with `Edit,Write,NotebookEdit`
+disallowed, and every cast delegation goes through `claustrum run`. A cast mapping it to another
+backend failed differently — `RoleLibrary.ReadPart` threw for the missing `browser` part.
+
+- **Permission: `edit+shell`, with 24 git verbs denied.** `push`; the common verbs that stage or
+  commit (`add`, `stage`, `rm`, `mv`, `commit`, `commit-tree`, `apply`, `update-index`,
+  `read-tree`); and the common ones that move `HEAD`, refs or the tree (`checkout`, `switch`,
+  `restore`, `reset`, `stash`, `clean`, `merge`, `rebase`, `cherry-pick`, `revert`, `pull`, `am`,
+  `update-ref`, `symbolic-ref`). Not every one: `branch -f`/`-D`, `worktree remove`, `tag`, `notes`
+  stay open, the role needing `branch` and `worktree list` read-only. A new write-but-not-edit rung
+  would have cost an enum member, five backend mappings and their tests for a distinction the role
+  does not need — and `Edit` is the safe tool for one `.gitignore` line.
+- **Each entry matches its verb as a word, for every role.** claude now emits `Bash(<entry>)` and
+  `Bash(<entry> *)`, which "leave the tool available and deny only calls that match as written"
+  (code.claude.com/docs/en/cli-reference) and stop `git merge` bare or with arguments but not
+  `git merge-base` (permissions, "Wildcard patterns"; both read 2026-10-02) — the old
+  `Bash(git merge*)` also caught `merge-base`, `merge-tree`, `commit-graph`. The exact form is there
+  because a trailing ` *` matches the bare command only as a rule's sole wildcard, so a user entry
+  that ends in `*` (`git push*` → `Bash(git push* *)`) would otherwise stop denying bare `git push`.
+  Prefix-style entries in existing configs narrow (`rm -rf` no longer stops `rm -rfv`); MANUAL says
+  how to keep a prefix match. It is checked on
+  every subcommand of a compound command. opencode now gets `"<entry>": "deny"` and `"<entry> *":
+  "deny"` after `"*": "allow"`: its dev-branch matcher makes a trailing ` *` optional, and the exact
+  entry covers a build that does not. copilot's `shell(<entry>)` already matched the first-level
+  subcommand exactly; cursor has only a prompt rule. None of them sees `git -C <dir> commit`,
+  `git -c k=v …`, a quoted verb, a user alias, `sh -c`, or a Node script shelling out — Claude
+  Code's docs call a Bash rule "not a security boundary", the standing the builder's `git push` deny
+  has always had.
+- **A synced agent carries no deny list yet.** `disallowedTools` cannot hold one: an entry with a
+  specifier "such as `Bash(git push *)`, still removes the whole tool" (code.claude.com/docs/en/
+  sub-agents, read 2026-10-02). A frontmatter `PreToolUse` hook on `Bash` that exits 2 could — the
+  docs show that pattern — and is a follow-up issue. Until then `sync` renders `deny` nowhere and a
+  native demo-author or builder keeps it as prose.
+- **`withoutTools` trims synced Claude agents only.** It drops what a level grants but a role never
+  uses (the demo-author's `NotebookEdit`) from the synced file's `tools` and lists it under
+  `disallowedTools`. Under `claustrum run` nothing passes it on — Core never sees role.json tools,
+  and carrying it across the Roles→Core seam for one tool the role never touches was not worth a
+  new field on `RenderedRole`/`ResolvedRole` — so `acceptEdits` approves `NotebookEdit` there. A
+  local role.json override replaces the whole array, as for `tools` and `deny`.
+- **Non-claude backends: refused, not bound.** `DelegateEngine.Prepare` now checks role.json
+  `harnesses` against the resolved backend before Render, so `run`, `delegate`, `delegate_async`
+  and `coordinate` all stop with exit 2 and a sentence naming the role's harnesses — before any job
+  directory exists. Only registered backends are checked; an unknown name still reaches Runner's
+  `backend_missing` for a role that renders anywhere (the existing `--backend nonexistent` tests rely
+  on it), while a claude-only role fails first at its missing `browser` part. The message names every
+  source a cast entry can come from — they all arrive as overrides — and the local
+  `.claustrum/roles/<role>/role.json` `harnesses` escape. A `browser.default.md`
+  bound to Playwright MCP (devkit's opencode file is a worked one) was not taken: opencode below
+  `full` denies `external_directory`, so the deck could not reach the main checkout from a worktree
+  nor the script live outside the tree; cursor's deny list is advisory; and none of it can be tested
+  without a paid real install. The gate also covers ui-reviewer, which had the same latent failure.
+  `cast questions` offers each role only aliases landing on its harnesses, says where it runs, and
+  — when that leaves no option — says why and still offers `not needed`; `cast create`, `cast new`
+  and `cast_create` refuse an answer on another registered harness (`CastHarnessCheck`), so a
+  "no demo" cast is reachable and a doomed one is not saved. `cast new` asks again only on a
+  terminal: with piped input a re-ask consumed the next question's line and shifted every later
+  answer (the review saved `ui-reviewer: "2"` and an unlimited budget), so it exits 2 instead.
+  Loading `claustrum.json` for alias resolution means a malformed one now fails `cast create` even
+  when no answer uses an alias.
+- **ClaudeSync's edit rungs now add role.json `tools`**, or the demo-author would have lost its
+  browser tools by leaving `shell`; and a role that delegates to no one gets `disallowedTools: Agent`
+  on every rung, so the synced tester gains it too (issue #19: listing tools does not remove `Agent`).
+- **A deck never lands where git tracks, or ever tracked, files.** Decks committed under the old
+  rule make `check-ignore` fail for good, and an ignored file at a once-tracked path is overwritten
+  by a checkout of an older commit and deleted on the way back (measured 2026-10-02 in a scratch
+  repo: `ls-files` empty, `log --all -- <dir>` not, `checkout <old>` replaced the new file, switching
+  back removed it). So the demo-author checks both and records into `<dir>-<short commit>/` instead.
+  An "untrack and ignore" remedy was drafted and dropped: a brief naming tracked docs would have had
+  them untracked and deleted from every checkout that pulls.
+- **Only `docs/demos/` is ever committed to `.gitignore`.** Any other deck directory — brief-named,
+  or a sibling outside `docs/demos/` — is ignored through the local `info/exclude` only: a committed
+  `docs/user-guide-*/` for a sibling of tracked `docs/user-guide/` would silently ignore a real
+  `docs/user-guide-v2/` someone adds later. A pattern line was drafted and dropped for that.
+- **The ignore line goes into `info/exclude` every time, not only from a worktree.** Recording in the
+  main checkout on a feature branch, that branch's `.gitignore` line is the only ignore; once the
+  checkout is back on `main` before the merge, the deck is `?? docs/` for a `git add .`, `git clean
+  -fd` or `git stash -u` (confirmed in a scratch repo, 2026-10-02). The path is
+  `$(cd "$(git rev-parse --git-common-dir)" && pwd)`, not `--path-format=absolute`, which needs git
+  2.31 and garbles the path on older ones.
+- **Every deck file is written by the capture script.** Claude Code 2.1.284 checks `Write`/`Edit`,
+  shell redirections and `cp`/`mv`/`mkdir` targets against the session's working directories, and a
+  delegated run answers no prompt; from a linked worktree the main checkout is outside them, so
+  only the Node process writing frames and video — now also `index.html` and `manifest.json` — gets
+  through — and it writes the `info/exclude` line too, first, in every case. `.git` is on Claude
+  Code's protected-path list (permission-modes, "Protected paths"): a write there is prompted even
+  in `acceptEdits` and the redirect check covers it, so a shell append is refused on the delegated
+  path even in the main checkout, where the deck then sat ignored only by an uncommitted branch
+  line. A Node or Python script that opens files itself is outside those checks (permissions docs,
+  read 2026-10-02), so the capture script makes the one deliberate write into `.git`: one line in a
+  local file. From a linked worktree that line is the only thing
+  that ignores the deck in the main checkout (the worktree's `.gitignore` does not:
+  `check-ignore` 0 there, 1 in main, `?? docs/` — confirmed by the review, 2026-10-02), so if the
+  line is not in `info/exclude` afterwards, or the re-check in the main checkout still fails, the
+  demo-author writes no deck file and is BLOCKED, naming the line and the file; its report names
+  only what it actually wrote, a `.gitignore` line it added before the check included. The script
+  creates `info/` first: a repo can lack it, and an append alone would fail there.

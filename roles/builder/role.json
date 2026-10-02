@@ -15,7 +15,7 @@
   "harnesses": ["claude", "opencode", "cursor", "copilot"],
   "nonNegotiable": [
     "This repo's CLAUDE.md/AGENTS.md are law; never override them with a generic convention.",
-    "You do not author or run tests, and you do not summon the tester or reviewer yourself.",
+    "You never create, modify or delete a test file — pre-existing ones and fixtures included — never run tests, and never summon the tester or reviewer yourself.",
     "Report honestly: files changed and why, behaviour to cover, open decisions, and anything shaky."
   ]
 }

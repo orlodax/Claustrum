@@ -19,8 +19,8 @@ public static class CoordinationBrief
     private const string DefaultTier = "high";
 
     // The order §D3's pipeline actually goes in — not the cast file's key order, which is the role
-    // library's and would move the moment a role is added. demo-author is last and optional: it
-    // records the shipped state, so it only ever runs once the tester's gate is green.
+    // library's and would move the moment a role is added. demo-author is last, and only for a
+    // browser-facing feature: it records the commit the tester's gate passed on.
     private static readonly string[] pipelineOrder = ["builder", "code-reviewer", "ui-reviewer", "tester", "demo-author"];
 
     public static string RenderUserPrompt(string task, IReadOnlyList<int> issues, string cwd)

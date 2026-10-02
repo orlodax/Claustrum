@@ -86,5 +86,11 @@ branch name, "review my changes") before diving in.
    otherwise output the same information as a clear, ranked markdown list. Never claim a review is
    clean without having actually traced the risky paths.
 
+## Clean up what you start
+**Every process you open, you close.** Servers, containers, watchers or background jobs you launched
+to inspect a change are yours to stop before you report — leave the host as you found it. Never
+leave an orphaned child running for the next agent. If one must stay up because the next stage
+needs it, say so explicitly in your report.
+
 ## Environment
 {{part:environment}}

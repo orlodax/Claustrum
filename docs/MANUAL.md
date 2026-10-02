@@ -12,7 +12,7 @@ onto a machine is [INSTALL.md](INSTALL.md); running it on a real task for the fi
 |---|---|
 | **harness** | a coding-agent product with a CLI: Claude Code, opencode, Cursor's `cursor-agent`, GitHub Copilot CLI |
 | **backend** | Claustrum's adapter for one harness (`claude`, `opencode`, `cursor`, `copilot`) or for a bare HTTP call (`api`) |
-| **role** | a job description shipped in the binary: `architect`, `builder`, `code-reviewer`, `ui-reviewer`, `tester` |
+| **role** | a job description shipped in the binary: `architect`, `builder`, `code-reviewer`, `ui-reviewer`, `tester`, `demo-author` |
 | **tier** | how hard a role thinks: `high` (base), `xhigh`, `max`; each tier names a model class and an effort |
 | **model class** | an alias a role names (`frontier-coding`, `cheap-coding`, …) that `claustrum.json` maps to a real `backend:model` |
 | **cast** | a committed file saying who plays which role, how many builders run at once, and the budget |
@@ -49,8 +49,8 @@ the workspace); `--cwd` on the server and `cwd` on each call override it.
 ## 3. CLI reference
 
 Exit codes are fixed: `0` ok · `1` backend failure · `2` usage or config error (a bad flag, a
-refused brief, a missing cast, a `gh` failure) · `3` backend not found · `4` timeout · `5` budget
-· `130` cancelled.
+refused brief, a missing cast, a role sent to a harness it does not list, a `gh` failure) · `3`
+backend not found · `4` timeout · `5` budget · `130` cancelled.
 
 ### `claustrum run <role>`
 
@@ -138,17 +138,36 @@ The stdio server. Logging goes to stderr; stdout is the protocol.
 
 | Role | Blind | Permission | Deny | May delegate to | Harnesses | Tier `high` → `xhigh`/`max` |
 |---|---|---|---|---|---|---|
-| `architect` | no | edit+shell | `git push` | builder, code-reviewer, ui-reviewer, tester | claude, opencode, cursor, copilot | frontier-reasoning at every tier |
+| `architect` | no | edit+shell | `git push` | builder, code-reviewer, ui-reviewer, tester, demo-author | claude, opencode, cursor, copilot | frontier-reasoning at every tier |
 | `builder` | no | edit+shell | `git push` | architect (to ask, not to delegate work) | claude, opencode, cursor, copilot | frontier-coding at every tier |
 | `code-reviewer` | **yes** | readonly | — | — | claude, opencode, cursor, copilot, **api** | standard-coding → frontier-coding |
-| `ui-reviewer` | **yes** | shell (run, never edit) | `git push` | — | claude only (needs the Browser MCP) | standard-coding → frontier-coding |
+| `ui-reviewer` | **yes** | shell (run, never edit) | `git push` | — | claude only (its browser part) | standard-coding → frontier-coding |
 | `tester` | no | edit+shell | `git push` | — | claude, opencode, cursor, copilot | standard-coding → frontier-coding |
+| `demo-author` | no — briefed sighted | edit+shell (it writes its deck) | 24 git verbs: `push`, the common ones that stage or commit (`add`, `commit`, `apply`, `update-index`, `read-tree`, …) and that move `HEAD`, refs or the tree (`checkout`, `reset`, `stash`, `merge`, `pull`, `update-ref`, …) — not every one (`branch -f`/`-D`, `worktree remove`, `tag`, `notes` stay open); read-only git stays open, `merge-base` included | — | claude only (its browser part) | standard-coding, one tier |
+
+A role runs only on the harnesses it lists: `run`, `delegate` and `coordinate` refuse a registered
+backend outside that list with exit 2 before any job exists (a demo-author mapped to opencode, say),
+and `cast questions` offers each role only the aliases that land on one of its harnesses;
+`cast create`/`cast new`/`cast_create` refuse an answer that lands elsewhere. An unregistered backend
+name is not checked: a role that renders on any harness (builder, tester, …) comes back
+`backend_missing`, while the demo-author and ui-reviewer fail to render first (`no part 'browser'
+for harness '<name>'`, exit 2). A repo that ships a role's parts for another harness may list it in
+`.claustrum/roles/<role>/role.json` `harnesses`.
 
 The pipeline order is fixed and the architect owns every step of it: **builder(s) → code-reviewer
-(‖ ui-reviewer when something renders in a browser) → tester**. Builders do not test and do not
-call reviewers; the reviewers and the tester never fix code. "The architect never picks a model, it
-picks the tier": the model comes from the library class and the cast; a heavier tier also buys a
-stronger class for the three reviewing/testing roles.
+(‖ ui-reviewer when something renders in a browser) → tester → demo-author** (every browser-facing
+feature, once the gate is green, unless the caller says no demo). Builders do not test, never
+create, modify or delete a test file, and do not call reviewers; the tester runs the repo's full
+gate, pre-existing tests included; the reviewers, the tester and the demo-author never fix code. The
+demo-author's deck and video stay on disk, gitignored, in the main checkout's
+`docs/demos/<feature>/` and are never committed — at a path git tracks or ever tracked it records
+into a `<directory>-<short commit>/` sibling instead. The only line it ever adds to a `.gitignore`
+is `docs/demos/`, and that is all the architect commits of its output; any other deck directory is
+ignored through the local `info/exclude`, which it always writes and which needs no commit. It
+records a commit that contains the feature, never uncommitted changes. Every role stops what it
+started before it reports. "The architect never picks a model, it picks the tier": the model comes
+from the library class and the cast; a heavier tier also buys a stronger class for the three
+reviewing/testing roles.
 
 A role's source is `roles/<role>/ROLE.md` + `role.json` + `parts/<part>.<harness>.md`, embedded in
 the binary. A repo may override one under `.claustrum/roles/<role>/` (deep-merged, header says
@@ -166,7 +185,7 @@ Markdown with fixed H2 sections; the runner reads them, the roles are told to ex
 | `## Scope` | all | the paths in play |
 | `## Must still work` | all | behaviour that has to survive the change, stated behaviourally |
 | `## Diff` | reviewers | how to obtain it: branch and base, commit range, PR number, "the working diff" |
-| `## Access` | ui-reviewer | how to start and reach the app logged in, as a role, credential-free |
+| `## Access` | ui-reviewer, demo-author | how to start and reach the app logged in, as a role, credential-free |
 | `## Context` | **non-blind roles only** | plan, rationale, house-style reminders, previous reports |
 
 **The blind gate.** For `blind: true` roles the runner refuses, with exit 2 and
@@ -212,6 +231,7 @@ Every role must end its final message with exactly one fenced block tagged `clau
 - **code-reviewer / ui-reviewer**: `{status, findings[{severity, verdict: CONFIRMED|PLAUSIBLE, file, line, scenario, steps, evidence}], would_change_if_broader[]}`, most severe first; an empty list is a legitimate clean result.
 - **tester**: `{status, commands_run[], passed, failed[{test, root_cause, fault_in: test|code}], skipped[]}`.
 - **architect**: `{status, summary, delegations[{role, tier, job_id, status}], branch, closes[], findings_open[], open_decisions[], shaky[]}` — for a spawned architect this block is the entire result the caller sees.
+- **demo-author**: `{status, deck, commit, steps, dataset{rung, kind, mechanism}, shareable, video, gitignore, left_behind[], defects_seen[], gaps[]}` — `deck` is the path actually used in the main checkout (a `-<short commit>` sibling, explained in `gaps`, when the planned directory is or was tracked), `video` is recorded by default (a `null` needs its reason in `gaps`), `gitignore` names the line and where it went — `docs/demos/` in a root `.gitignore`, left uncommitted for the orchestrator, plus `info/exclude`; any other directory in `info/exclude` only, nothing to commit; `already ignored`; or `outside every checkout` — and a deck directory the main checkout still does not ignore is `blocked` with no deck file written (`gitignore` still lists any ignore line that was); `shareable: false` makes the deck and the video internal.
 
 ## 7. Configuration
 
@@ -287,20 +307,27 @@ variable is present.
 - Per-call `--model`/`--backend`/`--tier` flags override the cast for that call.
 
 **The questionnaire** is owned by the tool so it is identical in every host: `claustrum cast
-questions --json` returns seven questions with their live options (the aliases in `claustrum.json`;
-`not needed` where allowed; free-form `backend:id`; `no cap` for the budget):
+questions --json` returns eight questions with their live options (the aliases in `claustrum.json`
+that land on a harness the role lists; `not needed` where allowed; free-form `backend:id`; `no cap`
+for the budget):
 
 | key | prompt | allows |
 |---|---|---|
 | `architect` | `host` or `spawned on <alias>` | free form |
 | `builder` | model for the builder | free form |
-| `code-reviewer`, `tester`, `ui-reviewer` | model for the role | free form, `not needed` |
+| `code-reviewer`, `tester`, `ui-reviewer`, `demo-author` | model for the role — claude aliases only for `ui-reviewer` and `demo-author` | free form, `not needed` (for `demo-author`, that is the "no demo" switch) |
 | `builder_max_parallel` | `1`, `2`, `3`, … | free form |
 | `budget` | USD, or `no cap` | free form |
 
 Answer them with `claustrum cast new` on a terminal, `claustrum cast create --answers file.json`
 from a script, or `/claustrum` in a chat host (the synced skill asks with the host's own picker,
-then calls `cast_create`).
+then calls `cast_create`). An empty option list means no `claustrum.json` alias lands on an installed
+backend the role runs on — on a machine without `claude`, the demo-author and ui-reviewer have none;
+`cast questions` and `cast new` say so and still offer `not needed`. All three refuse an answer that
+puts a role on a harness it does not list, naming the role and its harnesses (`cast new` asks again
+on a terminal, and exits 2 when its input is piped, rather than shifting later answers). Because
+they load `claustrum.json` to resolve aliases, a malformed one makes `cast create`/`cast_create`
+fail even when no answer uses an alias.
 
 ## 9. Parallel builders
 
@@ -384,6 +411,21 @@ Generated markdown carries `<!-- claustrum:generated role=… harness=… librar
 as its first body line; generated JSON keys are tracked by hash in `.claustrum/sync-manifest.json`.
 A file without the marker or a manifest entry is **never overwritten** (`--force` adopts it).
 
+**A synced Claude agent carries no deny list today.** In agent frontmatter, `disallowedTools` cannot
+hold a per-command deny: an entry with a specifier such as `Bash(git push *)` removes the whole
+Bash tool ([code.claude.com/docs/en/sub-agents](https://code.claude.com/docs/en/sub-agents), read
+2026-10-02). A frontmatter `PreToolUse` hook on `Bash` that exits 2 could carry it, scoped to that
+agent; that is not implemented yet (a follow-up issue). Until then `sync` renders role.json `deny`
+nowhere, a native agent — the builder's `git push`, the demo-author's git verbs — keeps it as prose
+only, and the deny list is enforced only when a role runs through `claustrum run`/`delegate`.
+
+role.json `withoutTools` names tools a role's level grants but it never uses (the demo-author's
+`NotebookEdit`); a synced Claude agent leaves them out of `tools` and lists them under
+`disallowedTools`. It reaches **synced Claude agent files only**: under `claustrum run` the claude
+backend's `edit+shell` flags do not name it, and `acceptEdits` approves `NotebookEdit` like any
+edit. A local `.claustrum/roles/<role>/role.json` override replaces the whole array, as it does
+`tools` and `deny`.
+
 | Harness | Repo files | Global (`--global`) | In chat |
 |---|---|---|---|
 | `claude` | `.claude/agents/<role>.md` + `-xhigh`/`-max`, `.claude/skills/claustrum/SKILL.md`, `.mcp.json` (`mcpServers.claustrum`), `.vscode/mcp.json` (`servers.claustrum`, stdio) | `~/.claude/agents`, `~/.claude/skills`; on Windows/macOS also `claude_desktop_config.json` with the binary's absolute path | `/claustrum`, `@architect` … |
@@ -417,13 +459,27 @@ Permission levels and what each backend does with them:
 | `readonly` | code-reviewer | `--permission-mode plan` + read-only tool list | edit/bash deny | prompt rule (advisory) | `--mode plan --deny-tool write --deny-tool shell` |
 | `shell` | ui-reviewer | plan + `--disallowedTools Edit,Write,NotebookEdit`, MCP tools reachable | edit deny, bash allow with deny patterns | prompt rule | `--mode plan --deny-tool write` + deny patterns |
 | `edit` | — | `acceptEdits` + `--disallowedTools Bash` | edit allow, bash deny | prompt rule | `--allow-all-tools --allow-all-paths --deny-tool shell` |
-| `edit+shell` | architect, builder, tester | `acceptEdits`, built-in tools + `Bash(*)`, `--disallowedTools "Bash(git push*)"` | edit allow, bash allow, `git push*` deny | prompt rule | `--allow-all-tools --allow-all-paths --deny-tool "shell(git push)"` |
+| `edit+shell` | architect, builder, tester, demo-author | `acceptEdits`, built-in tools + `Bash(*)`, `--disallowedTools "Bash(<deny>),Bash(<deny> *)"` per deny entry; MCP tools are outside the allow-list | edit allow, bash allow, `<deny>` and `<deny> *` deny | prompt rule | `--allow-all-tools --allow-all-paths --deny-tool "shell(<deny>)"` per entry |
 | `full` | — | `--dangerously-skip-permissions` | `--auto` | `-f --sandbox disabled` | `--allow-all` |
 
 Where a harness has no native deny mechanism (cursor) the deny list is a rule in the prompt, and
-`doctor` calls it advisory. Claustrum launches backends on the OS it runs on and never translates
-paths: a WSL binary drives Linux harnesses against Linux paths, a Windows binary drives Windows
-ones; `doctor --probe` warns when binary and working directory straddle that line.
+`doctor` calls it advisory. Everywhere else a deny entry is a guard on how a command is written,
+not a sandbox — Claude Code's own docs say a Bash rule "isn't a security boundary around the
+program" ([permissions](https://code.claude.com/docs/en/permissions#bash-rule-limits)). It does not
+see `git -C <dir> commit`, `git -c k=v commit`, a quoted verb, a user alias (`git ci`), an absolute
+path to git, `sh -c "…"`, or a script that shells out to git; a verb the list does not name is
+simply allowed. Claude Code does split compound commands, so `cd x && git commit` is caught. Each
+entry matches its verb as a word, bare or with arguments: claude's `Bash(git merge)` +
+`Bash(git merge *)` and opencode's `"git merge"` + `"git merge *"` stop `git merge` and
+`git merge main` but not `git merge-base`; copilot's `shell(git merge)` matches the first-level
+subcommand exactly. This applies to every deny list, `--deny` and `claustrum.json`
+`roles.<role>.deny` included, and it narrows entries written for the old prefix meaning: `rm -rf`
+no longer stops `rm -rfv build`, and `git push --force` no longer stops `--force-with-lease`. Add
+the longer form as its own entry, or end the entry with `*` (`git push --force*`) to keep a prefix
+match on claude and opencode; copilot's `shell(…)` matches by subcommand, not by prefix, either way.
+Claustrum launches backends on the OS it runs on and never translates paths: a WSL binary
+drives Linux harnesses against Linux paths, a Windows binary drives Windows ones; `doctor --probe`
+warns when binary and working directory straddle that line.
 
 ## 14. Jobs on disk
 
@@ -438,6 +494,7 @@ created. Budget ledgers live beside them under `budget/<tree>/`.
 |---|---|---|
 | exit 2, `blind role: brief carries rationale` | the reviewer's brief has `## Context`/`## Plan`/`## Rationale` or a pasted report | remove it; add requirement or code, never reasoning |
 | exit 2, `cast '<x>' not found` / `coordinate needs a cast` | no `.claustrum/casts/<x>.json` in the cwd | `cast create`/`cast new`, or `--cast` the right name |
+| exit 2, ``role '<r>' runs on … only (its role.json `harnesses`)`` | the cast, `claustrum.json` or `--backend` sent the role to a harness it is not written for (the demo-author and ui-reviewer are claude-only) | point the role at an alias on one of its harnesses, mark it `not needed` in the cast, or — if the repo ships its parts for that harness — list it under `harnesses` in `.claustrum/roles/<role>/role.json` |
 | exit 3 | the backend's binary is not on `PATH` | install it, or `backends.<name>.path` in config |
 | `Error: Model "opus" … is not available` (copilot, cursor) | the built-in `claude:*` alias reached a non-claude backend | alias the class to `copilot:auto` / `cursor:auto` |
 | `api backend model must be 'openrouter:<model>' or 'anthropic:<model>'` | `--backend api` without a provider-prefixed model | `--model api:anthropic:<id>` |

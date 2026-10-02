@@ -13,7 +13,8 @@ public sealed record RoleDefinition(
     string Report,
     string[] Harnesses,
     string[] NonNegotiable,
-    string[]? Tools = null)
+    string[]? Tools = null,
+    string[]? WithoutTools = null)
 {
     /// <summary>
     /// Tool names this role needs on top of what `permission` grants — the browser MCP servers, or
@@ -21,4 +22,10 @@ public sealed record RoleDefinition(
     /// projection: a role that names none behaves exactly as before (#29).
     /// </summary>
     public string[] ExtraTools => Tools ?? [];
+
+    /// <summary>
+    /// Tool names `permission` grants that this role has no use for — the demo-author's
+    /// `NotebookEdit` on `edit+shell` (PR #42 review). Optional, like <see cref="Tools"/>.
+    /// </summary>
+    public string[] DroppedTools => WithoutTools ?? [];
 }

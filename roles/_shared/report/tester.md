@@ -15,5 +15,6 @@ Copy this shape, filling in real values:
 ````
 
 Attribute every failure honestly: `fault_in: "code"` when the code under test is wrong,
-`fault_in: "test"` only when you wrote the test incorrectly and then fixed it yourself. Never leave a
-failure unattributed.
+`fault_in: "test"` only when the test itself was wrong — one you wrote, or a pre-existing one the
+change legitimately outdated — and you fixed it yourself. `commands_run` must show the repo's full
+gate, pre-existing suites included, not only the tests you wrote. Never leave a failure unattributed.
