@@ -112,8 +112,8 @@ never overwritten.
 
 | Backend    | Role injection                                    | Permissions (edit + shell, never push)                 |
 |------------|---------------------------------------------------|--------------------------------------------------------|
-| `claude`   | `--append-system-prompt-file`                     | `--permission-mode acceptEdits --disallowedTools "Bash(git push*)"` |
-| `opencode` | inline agent in `OPENCODE_CONFIG_CONTENT`         | `permission: {"edit":"allow","bash":{"git push*":"deny"}}` |
+| `claude`   | `--append-system-prompt-file`                     | `--permission-mode acceptEdits --disallowedTools "Bash(git push),Bash(git push *)"` |
+| `opencode` | inline agent in `OPENCODE_CONFIG_CONTENT`         | `permission: {"edit":"allow","bash":{"git push":"deny","git push *":"deny"}}` |
 | `cursor`   | role prefixed to the prompt, fed on stdin         | `--mode plan` for read-only rungs, else `-f`; deny by prompt rule |
 | `copilot`  | per-job agent file                                | `--allow-all-tools --deny-tool "shell(git push)"`      |
 | `api`      | system message; no tools                          | reasoning-only roles                                   |

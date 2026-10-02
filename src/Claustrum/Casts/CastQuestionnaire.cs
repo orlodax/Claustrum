@@ -22,10 +22,18 @@ public static class CastQuestionnaire
                 availableBackends.Add(backend.Name);
         }
 
-        string[] modelOptions = [.. (config.Merged.Models ?? [])
-            .Where(entry => availableBackends.Contains(config.ResolveModelBackend(entry.Key)))
+        Dictionary<string, string> backendOf = (config.Merged.Models ?? [])
+            .ToDictionary(entry => entry.Key, entry => config.ResolveModelBackend(entry.Key), StringComparer.Ordinal);
+        string[] modelOptions = [.. backendOf
+            .Where(entry => availableBackends.Contains(entry.Value))
             .Select(entry => entry.Key)
             .OrderBy(name => name, StringComparer.Ordinal)];
+
+        // A role is offered only the aliases that land on a harness its role.json lists (#43): the
+        // demo-author and ui-reviewer are claude-only, and `run` refuses them anywhere else. Free-form
+        // answers stay open, so the prompt says where the role runs.
+        string[] HarnessesOf(string role) => roleLibrary.LoadRole(role, cwd).Definition.Harnesses;
+        string[] OptionsFor(string[] harnesses) => [.. modelOptions.Where(model => harnesses.Contains(backendOf[model], StringComparer.Ordinal))];
 
         List<CastQuestion> questions = [];
         HashSet<string> keys = [];
@@ -49,7 +57,7 @@ public static class CastQuestionnaire
             Key: Cast.ArchitectRole,
             Prompt: $"{Cast.ArchitectRole}: how should it run? '{CastArchitect.Host}' = the agent you're chatting with adopts the role; "
                 + $"'{CastBuilder.SpawnedOn}<model>' = `claustrum coordinate` runs it headlessly on that model.",
-            Options: [CastArchitect.Host, .. modelOptions.Select(model => CastBuilder.SpawnedOn + model)],
+            Options: [CastArchitect.Host, .. OptionsFor(HarnessesOf(Cast.ArchitectRole)).Select(model => CastBuilder.SpawnedOn + model)],
             AllowNotNeeded: false,
             AllowFreeForm: true));
 
@@ -61,10 +69,12 @@ public static class CastQuestionnaire
             if (role == Cast.ArchitectRole)
                 continue;
 
+            string[] harnesses = HarnessesOf(role);
             AddQuestion(new CastQuestion(
                 Key: role,
-                Prompt: $"{role}: which model should play this role? A claustrum.json alias, or a free-form 'backend:model-id'.",
-                Options: modelOptions,
+                Prompt: $"{role}: which model should play this role? A claustrum.json alias, or a free-form 'backend:model-id'. "
+                    + $"It runs on {string.Join(", ", harnesses)} only.",
+                Options: OptionsFor(harnesses),
                 AllowNotNeeded: role != "builder",
                 AllowFreeForm: true));
         }

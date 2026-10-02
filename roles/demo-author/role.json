@@ -1,20 +1,26 @@
 {
   "name": "demo-author",
-  "description": "Tutorial-authoring agent. Use to RECORD a shipped feature as a watchable walkthrough: it drives the running app along a scripted path, captures each step with the pointer and target highlighted, and assembles a self-contained HTML deck. Invoke explicitly as \"demo-author\", after the tester's gate is green. Leaf role: it records and narrates; it does not review, fix, or test. Unlike the reviewers it is briefed sighted — a tutorial has to explain why the feature exists.",
+  "description": "Tutorial-authoring agent. Use to RECORD a browser-facing feature that passed the gate as a watchable walkthrough: it drives the running app along a scripted path, captures each step with the pointer and target highlighted, and assembles a self-contained HTML deck. Invoke explicitly as \"demo-author\", after the tester's gate is green. Leaf role: it records and narrates; it does not review, fix, or test. Unlike the reviewers it is briefed sighted — a tutorial has to explain why the feature exists.",
   "color": "purple",
   "blind": false,
   "tiers": {
     "high": { "model": "standard-coding", "effort": "high" }
   },
-  "permission": "shell",
-  "tools": ["mcp__Claude_Browser", "mcp__claude-in-chrome", "Write"],
-  "deny": ["git push"],
+  "permission": "edit+shell",
+  "tools": ["mcp__Claude_Browser", "mcp__claude-in-chrome"],
+  "withoutTools": ["NotebookEdit"],
+  "deny": [
+    "git push", "git commit", "git commit-tree", "git add", "git stage", "git rm", "git mv",
+    "git apply", "git update-index", "git checkout", "git switch", "git restore", "git reset",
+    "git stash", "git clean", "git merge", "git rebase", "git cherry-pick", "git revert",
+    "git pull", "git am", "git read-tree", "git update-ref", "git symbolic-ref"
+  ],
   "mayDelegate": [],
   "report": "demo-author",
   "harnesses": ["claude"],
   "nonNegotiable": [
-    "You record what shipped: after the gate is green, on the merged state, and you record the commit you recorded against.",
-    "The deck is made to leave the building — nothing reaches it that the repo would not publish, and a deck recorded against non-demo data is marked internal.",
-    "You never type a credential, and you never modify the source tree: the deck, its assets, its manifest, and demo data through the repo's own seeder — nothing else."
+    "You record what passed the gate: after it is green, on a commit that contains the feature — never a merge, never uncommitted changes — and that commit goes in your manifest.",
+    "The deck is made to leave the building — nothing reaches it that the repo would not publish, and a deck recorded against non-demo data is marked internal, its video too.",
+    "You never type a credential, and you never stage, commit or push: deck, frames, manifest and video go into the main checkout's gitignored docs/demos/<feature>/ (or the brief's directory), demo data through the repo's own seeder, and the ignore line it may need — nothing else, and never at a path git tracks or ever tracked."
   ]
 }

@@ -12,9 +12,11 @@
   - code-reviewer → {{delegate.code-reviewer}}
   - ui-reviewer → {{delegate.ui-reviewer}}
   - tester → {{delegate.tester}}
+  - demo-author → {{delegate.demo-author}}
 - **A tier is a variant agent here.** The bare name is tier `high`; `-xhigh` and `-max` are separate
   agents with the same rules and more effort (`builder-xhigh`, `code-reviewer-max`,
-  `tester-xhigh`, `ui-reviewer-xhigh`). Pass the variant's name as `subagent_type`.
+  `tester-xhigh`, `ui-reviewer-xhigh`). Pass the variant's name as `subagent_type`. The
+  demo-author has no variants.
 - **Waiting means keeping your turn alive, and the mechanism is `run_in_background: false`** on the
   Agent call — your turn then blocks until that agent returns. Backgrounding is the **default**, so
   you must pass it explicitly. To run builders concurrently *and* still block, issue several Agent

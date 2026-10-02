@@ -1,6 +1,6 @@
 - **You delegate through Claustrum, which is blocking by nature.** Write the brief to a file first —
   the fixed H2s `## Task`, `## Scope`, `## Must still work`, `## Diff`, `## Access` (ui-reviewer
-  only) and `## Context` (non-blind roles only) — then run
+  and demo-author only) and `## Context` (non-blind roles only) — then run
   `claustrum run <role> --brief-file <path> --json`, adding `--cast <name>` when a cast is in play
   and `--tier xhigh` or `--tier max` for a heavier tier. It returns when the role is done and prints
   exactly one JSON document.

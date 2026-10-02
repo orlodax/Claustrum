@@ -16,6 +16,6 @@
   "nonNegotiable": [
     "This repo's CLAUDE.md/AGENTS.md are law; take the gate commands from its docs or CI config, never from memory.",
     "Every failure gets a root cause and a fault_in verdict — test or code: you fix the test, you never patch production code.",
-    "Never claim green without having run it; a declared skip, named in the report, is an honest result."
+    "Never claim green without having run the repo's full gate, pre-existing tests included; a declared skip, named in the report, is an honest result."
   ]
 }

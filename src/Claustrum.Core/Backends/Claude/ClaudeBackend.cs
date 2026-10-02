@@ -104,7 +104,7 @@ public sealed class ClaudeBackend(IPlatform platform) : IBackend
     {
         List<string> args = ["--permission-mode", "plan", "--permission-prompts", "none", "--disallowedTools", "Edit,Write,NotebookEdit"];
         if (deny.Length > 0)
-            args.AddRange(["--disallowedTools", string.Join(',', deny.Select(pattern => $"Bash({pattern}*)"))]);
+            args.AddRange(["--disallowedTools", BashDenyRules(deny)]);
         return args;
     }
 
@@ -112,8 +112,18 @@ public sealed class ClaudeBackend(IPlatform platform) : IBackend
     {
         List<string> args = ["--permission-mode", "acceptEdits", "--permission-prompts", "none", "--allowedTools", "Edit,Write,Read,Glob,Grep,Bash(*)"];
         if (deny.Length > 0)
-            args.AddRange(["--disallowedTools", string.Join(',', deny.Select(pattern => $"Bash({pattern}*)"))]);
+            args.AddRange(["--disallowedTools", BashDenyRules(deny)]);
         return args;
+    }
+
+    // `Bash(git merge *)`, with the space: the verb as a word, so `git merge-base` stays open (the old
+    // `Bash(git merge*)` caught it). The exact `Bash(git merge)` beside it keeps the bare verb denied
+    // even when the entry carries its own `*` ("git push*"): a trailing ` *` matches the bare command
+    // only as the rule's sole wildcard (code.claude.com/docs/en/permissions, read 2026-10-02).
+    private static string BashDenyRules(string[] deny)
+    {
+        IEnumerable<string> rules = deny.SelectMany(pattern => (string[])[$"Bash({pattern})", $"Bash({pattern} *)"]);
+        return string.Join(',', rules);
     }
 
     private static ParsedOutput ParseStream(string text, int exitCode)

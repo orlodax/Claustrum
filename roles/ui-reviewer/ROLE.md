@@ -126,5 +126,11 @@ is the library's call (this role's `role.json`) and the cast's, never yours. If 
 specified, estimate from the number of surfaces and roles in scope; honour an explicit request over
 your own estimate.
 
+## Clean up what you start
+**Every process you open, you close.** The app, server, containers and any temporary daemon you
+launched to reach the running UI are yours to stop before you report — leave the host as you found
+it. Close your browser sessions too. Never leave an orphaned child running for the next agent. If
+one must stay up because the next stage needs it, say so explicitly in your report.
+
 ## Environment
 {{part:environment}}

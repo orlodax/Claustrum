@@ -4,6 +4,7 @@ using Claustrum.Core.Config;
 using Claustrum.Core.Git;
 using Claustrum.Core.Jobs;
 using Claustrum.Core.Model;
+using Claustrum.Roles;
 
 namespace Claustrum.Delegation;
 
@@ -27,8 +28,9 @@ public static class DelegateEngine
     /// <summary>
     /// Everything this pipeline can decide — and refuse — before a job directory exists (issue #23):
     /// a malformed `claustrum.json`, a tier the role has no model class for, an unresolvable model
-    /// alias and an unknown permission all throw here, where the caller that would have minted the
-    /// directory has not yet. Nothing on disk is written and no backend is looked up.
+    /// alias, a role resolved to a harness its role.json does not list and an unknown permission all
+    /// throw here, where the caller that would have minted the directory has not yet. Nothing on disk
+    /// is written and no backend binary is looked up — only the registry's names are consulted.
     /// </summary>
     public static PreparedDelegation Prepare(DelegateRequest request)
     {
@@ -38,6 +40,7 @@ public static class DelegateEngine
         Config config = Config.Load(AppServices.Platform, request.Cwd);
         string tierModelClass = AppServices.RoleRenderer.TierModelClass(request.Role, request.Tier, request.Cwd);
         string harness = config.ResolveBackend(request.Role, tierModelClass, request.Overrides);
+        RequireSupportedHarness(request.Role, harness, request.Cwd);
 
         RenderedRole rendered = AppServices.RoleRenderer.Render(request.Role, request.Tier, harness, request.Cwd);
 
@@ -167,6 +170,27 @@ public static class DelegateEngine
             if (worktree is not null && await JobWorktree.TryRemoveAbandonedAsync(request.Cwd, job.Id, CancellationToken.None) is { } cleanupFailure)
                 throw new AggregateException($"{ex.Message} (and cleaning up {worktree.Path} failed)", ex, cleanupFailure);
             throw;
+        }
+    }
+
+    // role.json `harnesses` is where a role is written to run (#43): anywhere else it fails to render
+    // (demo-author's and ui-reviewer's browser part is claude-only) or runs without the tools it needs,
+    // so it is refused here, before Render and before any job exists. Only a backend Claustrum knows is
+    // checked: an unknown name is left to Render (a claude-only part fails there) or to Runner's
+    // backend_missing, as before. Cast entries arrive as overrides, so the message cannot tell a flag
+    // from the cast and names every source.
+    private static void RequireSupportedHarness(string role, string harness, string cwd)
+    {
+        if (!AppServices.Backends.TryGet(harness, out _))
+            return;
+
+        string[] supported = AppServices.RoleLibrary.LoadRole(role, cwd).Definition.Harnesses;
+        if (!supported.Contains(harness, StringComparer.Ordinal))
+        {
+            throw new RoleRenderException(
+                $"role '{role}' runs on {string.Join(", ", supported)} only (its role.json `harnesses`), but this run resolved it to "
+                + $"'{harness}' through --backend/--model, the cast or claustrum.json — point it at one of those there; or, if this "
+                + $"repo ships the role's parts for '{harness}', add it to `harnesses` in .claustrum/roles/{role}/role.json");
         }
     }
 

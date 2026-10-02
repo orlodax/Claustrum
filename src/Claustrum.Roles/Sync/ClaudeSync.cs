@@ -163,6 +163,8 @@ public sealed class ClaudeSync(RoleLibrary library, RoleRenderer renderer, strin
 
     private static readonly string[] readTools = ["Read", "Grep", "Glob", "Bash", "PowerShell", "WebFetch", "WebSearch"];
 
+    private static readonly string[] editTools = ["Read", "Grep", "Glob", "Bash", "PowerShell", "Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch"];
+
     // What `shell` denies unless the role asks for it back. Granting and denying the same tool is
     // incoherent, so anything role.json names under `tools` drops out of this list (#29).
     private static readonly string[] shellDenied = ["Agent", "Edit", "Write", "NotebookEdit"];
@@ -182,7 +184,17 @@ public sealed class ClaudeSync(RoleLibrary library, RoleRenderer renderer, strin
             return (string.Join(", ", (string[])[.. readTools, .. granted]), denied.Length > 0 ? string.Join(", ", denied) : null);
         }
 
-        string editTools = "Read, Grep, Glob, Bash, PowerShell, Edit, Write, NotebookEdit, WebFetch, WebSearch";
-        return definition.MayDelegate.Length > 0 ? ($"{editTools}, Agent", null) : (editTools, null);
+        // The edit rungs add role.json's `tools` too: the demo-author moved here from `shell` (#43) and
+        // still needs its browser. A role that delegates to no one gets `Agent` disallowed, as on the
+        // two rungs above — listing tools does not take it away (NOTES.md, issue #19).
+        // role.json `deny` is NOT rendered into `disallowedTools`, deliberately: there `Bash(git push *)`
+        // removes the whole Bash tool (code.claude.com/docs/en/sub-agents, read 2026-10-02). A
+        // frontmatter PreToolUse hook could carry it and is a follow-up issue; until then a synced
+        // agent's deny list is its prose, and only `claustrum run` enforces it.
+        string[] kept = [.. editTools.Where(tool => !definition.DroppedTools.Contains(tool, StringComparer.Ordinal))];
+        string[] extra = [.. definition.ExtraTools.Where(tool => !kept.Contains(tool, StringComparer.Ordinal))];
+        string[] disallowed = definition.MayDelegate.Length > 0 ? definition.DroppedTools : ["Agent", .. definition.DroppedTools];
+        string[] tools = definition.MayDelegate.Length > 0 ? [.. kept, .. extra, "Agent"] : [.. kept, .. extra];
+        return (string.Join(", ", tools), disallowed.Length > 0 ? string.Join(", ", disallowed) : null);
     }
 }

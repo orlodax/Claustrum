@@ -10,9 +10,9 @@ differs.
 
 ## Delegating
 Write the brief to a file first — fixed H2 sections `## Task`, `## Scope`,
-`## Must still work`, `## Diff`, `## Access` (ui-reviewer: how to start and reach the
-running app — command, URL, viewports, credentials), `## Context` (non-blind roles only);
-see this repo's `docs/PLAN.md` §B3 for the exact convention — then invoke:
+`## Must still work`, `## Diff`, `## Access` (ui-reviewer and demo-author: how to start and
+reach the running app — command, URL, viewports, credentials), `## Context` (non-blind roles
+only); see this repo's `docs/PLAN.md` §B3 for the exact convention — then invoke:
 
 ```
 claustrum run <role> --brief-file <path> --json [--cast <name>]
@@ -30,7 +30,7 @@ If the cast's `architect.mode` is `spawned`, or the user asks Claustrum to coord
 end-to-end, run `claustrum coordinate --cast <name> --issues <n,m> --json` (or `--brief-file
 <path>`), or the MCP `coordinate` tool, which returns `{job_id, log_path}` at once; poll the
 `job_status` tool and fetch the `job_result` tool when it reports `done`. The architect runs
-headlessly on the cast's model, delegates builders → blind reviewer → tester itself, and leaves
-its work on branch `claustrum/<job_id>`; `claustrum jobs budget <job_id>` shows what the tree
-spent. If `architect.mode` is `host`, you are the architect: adopt the synced `architect` role
-and delegate with `--cast` yourself.
+headlessly on the cast's model, delegates builders → blind reviewer → tester (→ demo-author,
+for a browser-facing feature) itself, and leaves its work on branch `claustrum/<job_id>`;
+`claustrum jobs budget <job_id>` shows what the tree spent. If `architect.mode` is `host`, you
+are the architect: adopt the synced `architect` role and delegate with `--cast` yourself.
