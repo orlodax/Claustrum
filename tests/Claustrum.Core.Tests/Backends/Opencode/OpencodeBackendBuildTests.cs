@@ -78,7 +78,7 @@ public sealed class OpencodeBackendBuildTests
         yield return new object[]
         {
             PermissionLevel.Shell, new[] { "git push" },
-            /*lang=json,strict*/ """{"edit":"deny","bash":{"*":"allow","git push*":"deny"},"external_directory":"deny","question":"deny","read":{"*.env":"deny","*.env.*":"deny","*.env.example":"allow"}}""",
+            /*lang=json,strict*/ """{"edit":"deny","bash":{"*":"allow","git push":"deny","git push *":"deny"},"external_directory":"deny","question":"deny","read":{"*.env":"deny","*.env.*":"deny","*.env.example":"allow"}}""",
         };
         yield return new object[]
         {
@@ -88,7 +88,7 @@ public sealed class OpencodeBackendBuildTests
         yield return new object[]
         {
             PermissionLevel.EditShell, new[] { "git push" },
-            /*lang=json,strict*/ """{"edit":"allow","bash":{"*":"allow","git push*":"deny"},"external_directory":"deny","question":"deny","read":{"*.env":"deny","*.env.*":"deny","*.env.example":"allow"}}""",
+            /*lang=json,strict*/ """{"edit":"allow","bash":{"*":"allow","git push":"deny","git push *":"deny"},"external_directory":"deny","question":"deny","read":{"*.env":"deny","*.env.*":"deny","*.env.example":"allow"}}""",
         };
         yield return new object[]
         {
@@ -113,6 +113,27 @@ public sealed class OpencodeBackendBuildTests
 
         Assert.Equal(expectedJson, agentPermission.GetRawText());
         Assert.Equal(expectedJson, topPermission.GetRawText());
+    }
+
+    // Every deny entry is written twice — the exact key and the " *" word form — and both come after
+    // the allow-all, because opencode takes the last matching rule (the "*" allow would win over a
+    // deny written before it). An entry that carries its own `*` keeps it in both keys.
+    [Theory]
+    [InlineData(PermissionLevel.Shell)]
+    [InlineData(PermissionLevel.EditShell)]
+    public void EveryDenyEntryIsWrittenExactAndAsAWordFormAfterTheAllowAll(PermissionLevel level)
+    {
+        ProcessSpec spec = backend.Build(MakeRun(new PermissionPolicy(level, ["git push", "rm -rf*"])));
+
+        using JsonDocument config = JsonDocument.Parse(spec.Env["OPENCODE_CONFIG_CONTENT"]);
+        JsonProperty[] agentBash = [.. config.RootElement.GetProperty("agent").GetProperty("claustrum-builder").GetProperty("permission").GetProperty("bash").EnumerateObject()];
+        JsonProperty[] topBash = [.. config.RootElement.GetProperty("permission").GetProperty("bash").EnumerateObject()];
+
+        string[] keys = ["*", "git push", "git push *", "rm -rf*", "rm -rf* *"];
+        Assert.Equal(keys, agentBash.Select(property => property.Name));
+        Assert.Equal(keys, topBash.Select(property => property.Name));
+        Assert.Equal("allow", agentBash[0].Value.GetString());
+        Assert.All(agentBash.Skip(1), property => Assert.Equal("deny", property.Value.GetString()));
     }
 
     // Order is load-bearing at runtime — opencode's matcher is `rules.findLast(...)`, not

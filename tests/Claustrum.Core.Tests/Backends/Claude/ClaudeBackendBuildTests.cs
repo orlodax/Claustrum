@@ -76,7 +76,7 @@ public sealed class ClaudeBackendBuildTests
             "--append-system-prompt-file", "/job/system.md",
             "--permission-mode", "acceptEdits", "--permission-prompts", "none",
             "--allowedTools", "Edit,Write,Read,Glob,Grep,Bash(*)",
-            "--disallowedTools", "Bash(git push*)",
+            "--disallowedTools", "Bash(git push),Bash(git push *)",
             "--no-session-persistence",
             "--effort", "high",
             "do the thing",
@@ -89,7 +89,51 @@ public sealed class ClaudeBackendBuildTests
         ProcessSpec spec = backend.Build(MakeRun(new PermissionPolicy(PermissionLevel.EditShell, ["git push", "rm -rf"])));
 
         Assert.Contains("--disallowedTools", spec.Args);
-        Assert.Contains("Bash(git push*),Bash(rm -rf*)", spec.Args);
+        Assert.Contains("Bash(git push),Bash(git push *),Bash(rm -rf),Bash(rm -rf *)", spec.Args);
+    }
+
+    // The word form (`git push *`) is what keeps `git push-all`-style siblings of a denied verb open, and
+    // the exact form beside it keeps the bare verb denied (ClaudeBackend.BashDenyRules): both per entry,
+    // in entry order, in the one --disallowedTools value (EditShell) or beside the built-in write-tool
+    // block (Shell), and never the old `Bash(git push*)` prefix.
+    [Fact]
+    public void EveryDenyEntryBecomesItsExactAndItsWordFormInOrder()
+    {
+        ProcessSpec spec = backend.Build(MakeRun(new PermissionPolicy(PermissionLevel.EditShell, ["git push", "git commit", "rm -rf"])));
+
+        int flag = Array.IndexOf(spec.Args, "--disallowedTools");
+        Assert.Equal(
+            "Bash(git push),Bash(git push *),Bash(git commit),Bash(git commit *),Bash(rm -rf),Bash(rm -rf *)",
+            spec.Args[flag + 1]);
+        Assert.Single(spec.Args, arg => arg == "--disallowedTools");
+        Assert.DoesNotContain(spec.Args, arg => arg.Contains("push*", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ShellKeepsTheWriteToolBlockAndAddsTheDenyRulesAsASecondDisallowedTools()
+    {
+        ProcessSpec spec = backend.Build(MakeRun(new PermissionPolicy(PermissionLevel.Shell, ["git push", "rm -rf"])));
+
+        int start = Array.IndexOf(spec.Args, "--permission-mode");
+        Assert.Equal(
+        [
+            "--permission-mode", "plan", "--permission-prompts", "none",
+            "--disallowedTools", "Edit,Write,NotebookEdit",
+            "--disallowedTools", "Bash(git push),Bash(git push *),Bash(rm -rf),Bash(rm -rf *)",
+        ], spec.Args[start..(start + 8)]);
+    }
+
+    // An entry that carries its own `*` ("git push*", the old prefix style a user's claustrum.json may
+    // still hold) is not rewritten: the exact rule and the word-form rule are both built from it as
+    // typed, which is why the bare `Bash(git push*)` survives as the exact one.
+    [Theory]
+    [InlineData(PermissionLevel.Shell)]
+    [InlineData(PermissionLevel.EditShell)]
+    public void ADenyEntryThatEndsInAStarYieldsBothItsExactAndItsWordForm(PermissionLevel level)
+    {
+        ProcessSpec spec = backend.Build(MakeRun(new PermissionPolicy(level, ["git push*"])));
+
+        Assert.Contains("Bash(git push*),Bash(git push* *)", spec.Args);
     }
 
     [Fact]
@@ -220,7 +264,7 @@ public sealed class ClaudeBackendBuildTests
     {
         ProcessSpec spec = backend.Build(MakeRun(new PermissionPolicy(PermissionLevel.Shell, ["git push"])));
 
-        Assert.Contains("Bash(git push*)", spec.Args);
+        Assert.Contains("Bash(git push),Bash(git push *)", spec.Args);
     }
 
     // issue #19: a spawned architect (request env carries BudgetLedger.TreeVariable) must not keep
