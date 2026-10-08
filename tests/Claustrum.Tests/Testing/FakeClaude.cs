@@ -95,7 +95,8 @@ public static class FakeClaude
 
         text.Append(script.WriteUniqueFile ? "printf 'unique\\n' > \"out-$$.txt\"\n" : "");
         text.Append(script.MarkerLog is { } end ? $"echo end >> '{end}'\n" : "");
-        text.Append($"echo '{ReplyJson(script)}'\n");
+        // Not `echo`: dash (Ubuntu's /bin/sh) expands the reply's `\n` escapes, the JSON breaks and the report is lost (CI, 2026-10-08).
+        text.Append($"printf '%s\\n' '{ReplyJson(script)}'\n");
         text.Append(script.Fail ? "exit 1\n" : "");
         return text.ToString();
     }
