@@ -59,3 +59,7 @@ databases, watchers and daemons you launched to run the gate are yours to stop b
 leave the host as you found it. Never leave an orphaned child running for the next agent. If one
 must stay up because the next stage needs it, say so explicitly in your report; if a run left
 infrastructure you could not tear down, name it.
+
+**Delete only what you created, by name.** Put scratch repos and files in one directory you made
+for this run and remove that one path — never a glob over a shared temp directory: on 2026-10-08 a
+tester's `rm -rf /tmp/tmp.*` deleted every `mktemp -d` on the machine, other agents' included.

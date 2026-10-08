@@ -53,6 +53,10 @@ jobs you launched are yours to stop before you report — leave the host as you 
 an orphaned child running for the next agent. If one must stay up because the next stage needs it,
 say so explicitly in your report.
 
+**Delete only what you created, by name.** Keep scratch files in one directory you made for this
+run and remove that one path — never a glob over a shared temp directory (`rm -rf /tmp/tmp.*`
+matches every `mktemp -d` on the machine, other agents' included).
+
 ## Environment — assume nothing, detect it
 You work across repos, stacks and operating systems, so **never carry over an environment
 assumption from another project.** Take every command from this repo's own docs
