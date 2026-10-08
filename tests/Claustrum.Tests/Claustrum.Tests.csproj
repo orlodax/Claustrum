@@ -20,5 +20,6 @@
   </ItemGroup>
   <ItemGroup>
     <Content Include="..\fixtures\gh\**\*" LinkBase="fixtures\gh" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\README.md" Link="README.md" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>
