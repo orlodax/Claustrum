@@ -292,6 +292,7 @@ variable is present.
   "roles": {
     "builder":       { "model": "standard-coding", "backend": null, "tier": null, "max_parallel": 2 },
     "code-reviewer": { "model": "frontier-coding", "backend": null, "tier": "xhigh", "max_parallel": null },
+    "demo-author":   null,
     "tester":        { "model": "standard-coding", "backend": null, "tier": null, "max_parallel": null },
     "ui-reviewer":   null },
   "budget_usd": 15 }

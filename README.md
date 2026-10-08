@@ -86,18 +86,25 @@ Who plays which role is decided once and stored as a file, `.claustrum/casts/<na
 committable and shared:
 
 ```json
-{ "architect":     { "mode": "host" },
-  "builder":       { "model": "opencode:openrouter/deepseek/deepseek-v4-pro", "max_parallel": 3 },
-  "code-reviewer": { "model": "claude:opus", "tier": "xhigh" },
-  "ui-reviewer":   null,
-  "tester":        { "model": "opencode:openrouter/deepseek/deepseek-v4-flash" },
-  "budget_usd":    10 }
+{ "name": "default", "library": "1.0.0",
+  "architect": { "mode": "host", "model": null, "tier": null },
+  "roles": {
+    "builder":       { "model": "opencode:openrouter/deepseek/deepseek-v4-pro", "backend": null, "tier": null, "max_parallel": 3 },
+    "code-reviewer": { "model": "claude:opus", "backend": null, "tier": "xhigh", "max_parallel": null },
+    "demo-author":   null,
+    "tester":        { "model": "opencode:openrouter/deepseek/deepseek-v4-flash", "backend": null, "tier": null, "max_parallel": null },
+    "ui-reviewer":   null },
+  "budget_usd": 10 }
 ```
 
-`/claustrum` in any chat asks seven questions — architect (host or spawned), builders and their
-parallel cap, reviewers and tester (or "not needed"), a budget (or "no cap") — and the *tool* owns
-the questionnaire (`claustrum cast questions --json`) so the questions and their live options are
-identical in every host. `budget_usd: null` disables the cap; `cast show` then says so.
+`claustrum cast create` writes exactly this shape, and a document without `roles` or `architect` is
+refused on load — don't hand-write a flat one. A role set to `null` is "not needed".
+
+`/claustrum` in any chat asks eight questions — architect (host or spawned), builder, reviewers,
+demo-author and tester (or "not needed"), the builders' parallel cap, a budget (or "no cap") — and
+the *tool* owns the questionnaire (`claustrum cast questions --json`) so the questions and their
+live options are identical in every host. `budget_usd: null` disables the cap; `cast show` then
+says so.
 
 ## Roles: one source, every harness
 
