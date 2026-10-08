@@ -141,8 +141,8 @@ The stdio server. Logging goes to stderr; stdout is the protocol.
 | `architect` | no | edit+shell | `git push` | builder, code-reviewer, ui-reviewer, tester, demo-author | claude, opencode, cursor, copilot | frontier-reasoning at every tier |
 | `builder` | no | edit+shell | `git push` | architect (to ask, not to delegate work) | claude, opencode, cursor, copilot | frontier-coding at every tier |
 | `code-reviewer` | **yes** | readonly | — | — | claude, opencode, cursor, copilot, **api** | standard-coding → frontier-coding |
-| `ui-reviewer` | **yes** | shell (run, never edit) | `git push` | — | claude only (its browser part) | standard-coding → frontier-coding |
-| `tester` | no | edit+shell | `git push` | — | claude, opencode, cursor, copilot | standard-coding → frontier-coding |
+| `ui-reviewer` | **yes** | shell (run, never edit) | `git push` | — | claude only (its browser part) | frontier-coding at every tier |
+| `tester` | no | edit+shell | `git push` | — | claude, opencode, cursor, copilot | standard-coding at every tier |
 | `demo-author` | no — briefed sighted | edit+shell (it writes its deck) | 24 git verbs: `push`, the common ones that stage or commit (`add`, `commit`, `apply`, `update-index`, `read-tree`, …) and that move `HEAD`, refs or the tree (`checkout`, `reset`, `stash`, `merge`, `pull`, `update-ref`, …) — not every one (`branch -f`/`-D`, `worktree remove`, `tag`, `notes` stay open); read-only git stays open, `merge-base` included | — | claude only (its browser part) | standard-coding, one tier |
 
 A role runs only on the harnesses it lists: `run`, `delegate` and `coordinate` refuse a registered

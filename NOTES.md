@@ -3245,3 +3245,26 @@ backend failed differently — `RoleLibrary.ReadPart` threw for the missing `bro
   demo-author writes no deck file and is BLOCKED, naming the line and the file; its report names
   only what it actually wrote, a `.gitignore` line it added before the check included. The script
   creates `info/` first: a repo can lack it, and an append alone would fail there.
+
+## Tier ladders follow the owner's files; TierDescription says "model" only when it is true (2026-10-08, issue #30)
+
+"tester and ui-reviewer re-ported from the owner's current files" (#16) measured that `role.json`
+and the owner's `~/.claude/agents/` ladders disagreed both ways and left the decision open. Decided
+by the owner on 2026-10-08: **match his files.** `ui-reviewer` is `frontier-coding` at `high`,
+`xhigh` and `max` (his files: `opus` at all three); `tester` is `standard-coding` at all three (his:
+`sonnet` at all three). The reason is the README's cost argument: strong reviewers, a cheap tester,
+and never a reviewer weaker than the builder it reviews — a `standard-coding` ui-reviewer at `high`
+was exactly that. `code-reviewer` keeps `standard-coding` → `frontier-coding` at `xhigh`, so it is
+now **the only role whose model class changes with the tier**; architect, builder, tester and
+ui-reviewer buy only effort. Both ROLE.md tier sections already said "effort is what a heavier tier
+buys, the model is the library's and the cast's call", so no prose was touched; the
+`docs/MANUAL.md` §4 roles table, which listed the old ladders, was updated.
+
+**`SyncWriter.TierDescription(role, tier, sameModel)`.** The stub description used to claim
+"identical role, model, and rules" for every `-xhigh`/`-max` stub. It now takes `sameModel`, computed
+by the new `RoleDefinition.KeepsModelAt(tier)` (`Tiers[tier].Model == Tiers["high"].Model`) at each of
+the four `WriteTierStub` call sites. True keeps the old wording byte for byte; false says "identical
+role and rules as the `<role>` agent, a model+effort step up" (the owner's own `code-reviewer-xhigh.md`
+phrase), same sentence shape for `xhigh` and `max`. Only the `code-reviewer` stubs take the second
+form today. Do not hardcode the claim back into the template: the ladder is data in `role.json`, and
+a stub that states the model must derive it from there.

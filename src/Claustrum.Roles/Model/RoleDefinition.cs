@@ -28,4 +28,7 @@ public sealed record RoleDefinition(
     /// `NotebookEdit` on `edit+shell` (PR #42 review). Optional, like <see cref="Tools"/>.
     /// </summary>
     public string[] DroppedTools => WithoutTools ?? [];
+
+    /// <summary>Whether <paramref name="tier"/> runs the same model class as `high`, so a stub may say "identical model".</summary>
+    public bool KeepsModelAt(string tier) => Tiers[tier].Model == Tiers["high"].Model;
 }

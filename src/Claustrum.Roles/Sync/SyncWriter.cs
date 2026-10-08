@@ -72,16 +72,21 @@ public sealed class SyncWriter(string harness, string libraryVersion)
     public static string YamlQuoted(string value) =>
         $"\"{value.Replace("\\", "\\\\", StringComparison.Ordinal).Replace("\"", "\\\"", StringComparison.Ordinal)}\"";
 
-    /// <summary>The `-xhigh`/`-max` stub descriptions, identical across every harness.</summary>
-    public static string TierDescription(string role, string tier)
+    /// <summary>
+    /// The `-xhigh`/`-max` stub descriptions, identical across every harness. <paramref name="sameModel"/>
+    /// is whether the tier runs the base tier's model class (<see cref="RoleDefinition.KeepsModelAt"/>):
+    /// only then is "identical model" true; otherwise the stub says it is a model+effort step up (#30).
+    /// </summary>
+    public static string TierDescription(string role, string tier, bool sameModel)
     {
         string capitalized = char.ToUpperInvariant(role[0]) + role[1..];
+        string identical = sameModel ? "identical role, model, and rules" : "identical role and rules";
         return tier switch
         {
-            "xhigh" => $"{capitalized} at EXTRA (xhigh) reasoning effort — identical role, model, and rules as the "
-                + $"`{role}` agent, but thinks harder. Routine work → `{role}`; the hardest cases → `{role}-max`.",
-            "max" => $"{capitalized} at MAX reasoning effort — identical role, model, and rules as the `{role}` "
-                + "agent, with the deepest reasoning and no token-spend constraint. Reserve for genuinely hard, "
+            "xhigh" => $"{capitalized} at EXTRA (xhigh) reasoning effort — {identical} as the "
+                + $"`{role}` agent, {(sameModel ? "but thinks harder" : "a model+effort step up")}. Routine work → `{role}`; the hardest cases → `{role}-max`.",
+            "max" => $"{capitalized} at MAX reasoning effort — {identical} as the `{role}` "
+                + $"agent, {(sameModel ? "with" : "a model+effort step up with")} the deepest reasoning and no token-spend constraint. Reserve for genuinely hard, "
                 + $"high-stakes, or previously-stuck cases. For everyday work use `{role}`; for a step up use `{role}-xhigh`.",
             _ => throw new RoleRenderException($"no stub description template for tier '{tier}'"),
         };
