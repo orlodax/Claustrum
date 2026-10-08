@@ -98,4 +98,51 @@ public sealed class EnvAllowListTests
 
         Assert.Equal("deliberate-tree-id", result[BudgetLedger.TreeVariable]);
     }
+
+    // #57: a delegated claude reads the caller's login, CLAUDE.md and agents through CLAUDE_CONFIG_DIR.
+    // It is allowed by exact name, not as a CLAUDE_ prefix, which would also forward a parent Claude
+    // Code session's identity and messaging token (28 CLAUDE_ names counted in one session, 23 of
+    // them CLAUDE_CODE_*; NOTES.md "CLAUDE_CONFIG_DIR by exact name").
+    [Fact]
+    public void ClaudeConfigDirPassesByExactName()
+    {
+        FakePlatform platform = new();
+        platform.EnvironmentVariables["CLAUDE_CONFIG_DIR"] = "/home/me/.claude-work";
+
+        Dictionary<string, string> result = EnvAllowList.Build(platform, callerEnv: new Dictionary<string, string>(), passthroughAll: false);
+
+        Assert.Equal("/home/me/.claude-work", result["CLAUDE_CONFIG_DIR"]);
+    }
+
+    [Theory]
+    [InlineData("CLAUDE_CODE_SESSION_ID")]
+    [InlineData("CLAUDE_CODE_CHILD_SESSION")]
+    [InlineData("CLAUDE_CODE_ENTRYPOINT")]
+    [InlineData("CLAUDE_CODE_MESSAGING_TOKEN")]
+    [InlineData("CLAUDE_CONFIG_DIRECTORY")]
+    [InlineData("CLAUDE_CONFIG_DIR_EXTRA")]
+    public void OtherClaudeVariablesAreNotForwarded(string name)
+    {
+        FakePlatform platform = new();
+        platform.EnvironmentVariables["CLAUDE_CONFIG_DIR"] = "/home/me/.claude-work";
+        platform.EnvironmentVariables[name] = "parent-session-identity";
+
+        Dictionary<string, string> result = EnvAllowList.Build(platform, callerEnv: new Dictionary<string, string>(), passthroughAll: false);
+
+        Assert.False(result.ContainsKey(name));
+        Assert.True(result.ContainsKey("CLAUDE_CONFIG_DIR"));
+    }
+
+    [Fact]
+    public void ClaudeConfigDirPassesUnderPassthroughAllWhileTheTreeVariableStillDoesNot()
+    {
+        FakePlatform platform = new();
+        platform.EnvironmentVariables["CLAUDE_CONFIG_DIR"] = "/home/me/.claude-work";
+        platform.EnvironmentVariables[BudgetLedger.TreeVariable] = "inherited-tree-id";
+
+        Dictionary<string, string> result = EnvAllowList.Build(platform, callerEnv: new Dictionary<string, string>(), passthroughAll: true);
+
+        Assert.Equal("/home/me/.claude-work", result["CLAUDE_CONFIG_DIR"]);
+        Assert.False(result.ContainsKey(BudgetLedger.TreeVariable));
+    }
 }
