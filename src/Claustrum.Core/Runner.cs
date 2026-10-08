@@ -122,6 +122,11 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
             ResolvedRun run = new(role, brief, request.Cwd, request.BudgetUsd, request.ResumeSession, request.AttachFiles, request.Stream, job.SystemMd, job.Directory, request.Env);
             spec = backend.Build(run);
         }
+        catch (OperationCanceledException ex) when (cancellationToken.IsCancellationRequested)
+        {
+            // A cancel during the before-snapshot is still a cancel, not a failure (PR #75's Windows CI).
+            return await FinishAsync(job, reservation, NoProcessResult(job, role, RunStatus.Cancelled, ex.Message), ran: false, worktree);
+        }
         catch (Exception ex)
         {
             return await FinishAsync(job, reservation, FailureResult(job, role, outcome: null, ex), ran: false, worktree);

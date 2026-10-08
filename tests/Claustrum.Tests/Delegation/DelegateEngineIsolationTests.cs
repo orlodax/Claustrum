@@ -131,7 +131,8 @@ public sealed class DelegateEngineIsolationTests(AppServicesHomeFixture fixture)
 
         Assert.Contains($"(and cleaning up {repo.WorktreePath(job.Id)} failed)", ex.Message, StringComparison.Ordinal);
         Assert.Contains("work.txt", TestGit.Status(repo.WorktreePath(job.Id)), StringComparison.Ordinal);
-        Assert.Equal("the work\n", File.ReadAllText(Path.Combine(repo.WorktreePath(job.Id), "work.txt")));
+        // The Windows fake writes through cmd's `echo`, which ends the line with CRLF.
+        Assert.Equal("the work\n", File.ReadAllText(Path.Combine(repo.WorktreePath(job.Id), "work.txt")).ReplaceLineEndings("\n"));
         Assert.Contains($"claustrum/{job.Id}", TestGit.Branches(repo.Repo));
     }
 
