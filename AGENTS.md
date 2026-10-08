@@ -13,6 +13,8 @@ approved plan and milestone definitions are summarised in `docs/PLAN.md`.
   push, 2026-09-12).
   Never pass `-nologo`/`--nologo` to `dotnet test`: the flag is forwarded to the test app and the run
   reports "Zero tests ran" with exit code 5 (measured 2026-09-13 on SDK 10.0.401).
+  The suite clears `CLAUSTRUM_PARENT_JOB` from every process it spawns, so `dotnet test` is green
+  inside a Claustrum job tree (2026-10-08, #66).
 - `dotnet publish src/Claustrum/Claustrum.csproj -c Release -r <rid> -p:PublishAot=true` must produce
   **zero** IL2026/IL3050 trim warnings. Warnings are errors in this repo.
 - Solution-level `dotnet publish -c Release -r <rid> -p:PublishAot=true` also works: the test projects

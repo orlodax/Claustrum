@@ -100,6 +100,7 @@ public sealed class BackendsCommandsCopilotAuthTests : IDisposable
         startInfo.ArgumentList.Add("--probe");
         startInfo.Environment["CLAUSTRUM_HOME"] = home;
         startInfo.Environment["CLAUSTRUM_SKIP_PROBE"] = "1";
+        startInfo.Environment.Remove("CLAUSTRUM_PARENT_JOB"); // #66
         startInfo.Environment["COPILOT_HOME"] = copilotHome;
         startInfo.Environment["PATH"] = emptyPath;
 

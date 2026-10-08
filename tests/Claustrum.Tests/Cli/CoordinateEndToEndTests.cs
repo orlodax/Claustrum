@@ -329,6 +329,9 @@ public sealed class CoordinateEndToEndTests : IDisposable
             startInfo.ArgumentList.Add(arg);
         startInfo.Environment["CLAUSTRUM_HOME"] = home;
         startInfo.Environment["CLAUSTRUM_SKIP_PROBE"] = "1";
+        // #66: `coordinate` mints its own tree id; an inherited one would put this architect in the
+        // caller's tree, so a gate run inside a Claustrum job tree went red on the ledger lines.
+        startInfo.Environment.Remove("CLAUSTRUM_PARENT_JOB");
         if (extraEnv is not null)
             foreach (KeyValuePair<string, string> entry in extraEnv)
                 startInfo.Environment[entry.Key] = entry.Value;
