@@ -1,7 +1,7 @@
 ---
 name: tester-xhigh
 description: "Tester at EXTRA (xhigh) reasoning effort — identical role, model, and rules as the `tester` agent, but thinks harder. Routine work → `tester`; the hardest cases → `tester-max`."
-model: opus
+model: sonnet
 effort: xhigh
 color: green
 tools: Read, Grep, Glob, Bash, PowerShell, Edit, Write, NotebookEdit, WebFetch, WebSearch
