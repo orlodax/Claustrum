@@ -86,7 +86,7 @@ Role injection & argv per backend (representative: builder, EditShell, deny `git
 | Backend | Injection | argv (abridged) | Parse |
 |---|---|---|---|
 | `claude` | `--append-system-prompt-file <job>/system.md` (file-based: avoids inline JSON through the npm `.cmd` shim); optional `injection:"agents"` mode uses `--agents '{...}' --agent <role>` | `claude -p --output-format json --model X --append-system-prompt-file … --permission-mode acceptEdits --permission-prompts none --allowedTools "Edit,Write,Read,Glob,Grep,Bash(*)" --disallowedTools "Bash(git push*)" --no-session-persistence --max-budget-usd N --effort E "<prompt>"` | `json` object: `result`, `session_id`, `total_cost_usd`, `usage`, `is_error`; `stream-json` when `--stream` (last `type:result` line; `tool_use` Edit/Write → ReportedEdits) |
-| `opencode` | env `OPENCODE_CONFIG_CONTENT={"agent":{"claustrum-builder":{"mode":"primary","prompt":"{file:<job>/system.md}","permission":{…}}},"permission":{"*":"allow"}}` — process-scoped, touches neither repo nor `~/.config` (UNCONFIRMED: `{file:}` with absolute path inside inline config → fallback: inline the escaped prompt string) | `opencode run --model openrouter/deepseek/deepseek-v4-flash --format json --dir <cwd> --agent claustrum-builder "<prompt>"` | JSONL; final assistant text, `session.id`, usage from step/usage events (event names UNCONFIRMED → fixture-driven at M3) |
+| `opencode` | env `OPENCODE_CONFIG_CONTENT={"agent":{"claustrum-builder":{"mode":"primary","prompt":"{file:<job>/system.md}","permission":{…}}},"permission":{"*":"allow"}}` — process-scoped, touches neither repo nor `~/.config` (`{file:}` with an absolute path inside the inline config: confirmed live, so the fallback of inlining an escaped prompt string was never needed) | `opencode run --model openrouter/deepseek/deepseek-v4-flash --format json --dir <cwd> --agent claustrum-builder "<prompt>"` | JSONL; final assistant text, `session.id`, usage from step/usage events (event names UNCONFIRMED → fixture-driven at M3) |
 | `cursor` | no system-prompt hook → role body **prefixed** into the prompt, and the whole prompt goes in on **stdin**, never argv (measured 2026-09-21: `cursor-agent -p` reads stdin when argv carries no prompt); deny list becomes prompt rules; `readonly`/`shell` use the native `--mode plan` | `cursor-agent -p --output-format json --model X [--mode plan] -f [--sandbox disabled] --workspace <cwd> [--resume <id>]` (`-f`/`--trust` is mandatory headless: an untrusted workspace is a fast exit 1, not a stall) | one `json` document: `result`, `session_id`, `is_error`, `usage{inputTokens,outputTokens,cacheReadTokens,cacheWriteTokens}`; **no cost field**; failures are stderr text + empty stdout + exit 1 — real captures in `tests/fixtures/cursor/` (NOTES.md "The cursor backend, validated against a real install") |
 | `copilot` | per-job `COPILOT_HOME=<job>/copilot-home` containing `agents/claustrum-builder.agent.md` (UNCONFIRMED that COPILOT_HOME relocates agents → fallback: versioned file in `~/.copilot/agents/`, removed after) | `copilot -p "<prompt>" --output-format json --allow-all-tools --deny-tool "shell(git push)" --model X --effort E -C <cwd> --agent claustrum-builder --no-color --stream off --log-level none` | JSONL; last assistant text; session id; usage if present |
 | `api` | system message = role body; user = brief; no tools | HTTP POST `https://openrouter.ai/api/v1/chat/completions` or `https://api.anthropic.com/v1/messages` chosen by model prefix `openrouter:` / `anthropic:` | `choices[0].message.content` / `content[0].text`, `usage`; `changed_files` always empty |
@@ -134,14 +134,14 @@ Tool descriptions spell out permission semantics so the calling architect choose
 ### A7. Config (JSON only, AOT-friendly)
 Resolution: built-in defaults → `~/.config/claustrum/config.json` (`%APPDATA%\claustrum\config.json`) → `<git-root>/claustrum.json` → `CLAUSTRUM_*` env → flags. Later wins per key; `deny` lists concatenate; `doctor` prints merged config with the winning layer per key.
 ```json
-{ "$schema": ".../schema/config.schema.json",
-  "models":   { "cheap-builder": "opencode:openrouter/deepseek/deepseek-v4-flash", "strong": "claude:opus", "reviewer": "api:anthropic/claude-sonnet-5" },
+{ "models":   { "cheap-builder": "opencode:openrouter/deepseek/deepseek-v4-flash", "strong": "claude:opus", "reviewer": "api:anthropic:claude-sonnet-5" },
   "roles":    { "builder": { "model": "cheap-builder", "effort": "medium", "permission": "edit+shell", "deny": ["git push"] },
                 "code-reviewer": { "model": "reviewer", "permission": "readonly" } },
-  "backends": { "claude": { "path": null, "injection": "append-file" }, "api": { "openrouter_base_url": "https://openrouter.ai/api/v1" } },
+  "backends": { "claude": { "path": null, "injection": "append-file" } },
   "defaults": { "timeout_seconds": 1800, "budget_usd": 5, "env_passthrough": "allowlist" },
   "jobs":     { "keep_last": 200 } }
 ```
+*(As shipped, 2026-10-03, #54: no `config.schema.json` exists — an unknown key such as `$schema` is ignored, not refused; `backends.<name>` has only `path` and `injection`, and no backend reads `injection` yet; the api endpoints are fixed, so there is no `openrouter_base_url`; an api model is `api:<provider>:<id>`, colon not slash. #51 proposes a `validate` verb and a schema.)*
 Model grammar `[backend:]<model-id>`; aliases resolve recursively (depth 3). Role files (Part B) reference **model classes** (`frontier-coding`, `cheap-coding`, …) that are themselves aliases in this file, so a Claude user and a DeepSeek-only user share one role file.
 
 ### A8. CI / release
@@ -185,7 +185,7 @@ code-reviewer: `blind:true`, `permission:"readonly"`, tiers high→`standard-cod
 Renderer API consumed by Core: `RoleRenderer.Render(role, tier, backend, cwd) → RenderedRole{SystemBody, ModelClass, Effort, Permission, ReportSchema, Blind}` and `ReportExtractor.Extract(text) → ClaustrumReport?`. `RenderedRole` is what `Config.Resolve` turns into A2's `ResolvedRole`.
 
 ### B3. Headless injection, brief convention, blind gate
-**SystemBody** = (1) ROLE.md rendered for `harness=<backend>` + (2) `## House rules` ("Read `AGENTS.md` and `CLAUDE.md` in the working directory first; they are law") + (3) `## Report format` ("Your final message ends with exactly one fenced block tagged `claustrum-report` containing JSON matching: …"). The **brief goes in the user prompt**, never the system body (api backend: system + user). Injection per backend is the table in A3 (reconciled: Claude = `--append-system-prompt-file` by default; opencode = prompt string **inlined** in `OPENCODE_CONFIG_CONTENT`, no `{file:}` dependency; Copilot = per-job `COPILOT_HOME` if it relocates `agents/`, else jobid-suffixed file in `~/.copilot/agents/` removed afterwards).
+**SystemBody** = (1) the opening paragraph of ROLE.md rendered for `harness=<backend>` + (2) `## Report format` ("Your final message ends with exactly one fenced block tagged `claustrum-report` containing JSON matching: …") + (3) the rest of ROLE.md + (4) `## House rules` ("Read `AGENTS.md` and `CLAUDE.md` in the working directory first; they are law"). *(Shipped in this order, not report-format last: a live smoke test caught a model skipping a last-position report section on short tasks — `RoleRenderer.ComposeSystemBody`; recorded here 2026-10-03, #54.)* The **brief goes in the user prompt**, never the system body (api backend: system + user). Injection per backend is the table in A3 (as shipped, 2026-10-03, #54: Claude = `--append-system-prompt-file`; opencode = `{"prompt": "{file:<job>/system.md}"}` inside `OPENCODE_CONFIG_CONTENT` — `{file:}` was confirmed live, so the inlined-string fallback was never built; Copilot = a per-job `claustrum-<role>.agent.md` loaded through `--add-dir`).
 
 Report schemas (`_shared/report/*.md`, extracted into `RunResult.report`):
 - builder: `{status: done|partial|blocked, summary, files_changed:[{path,why}], behaviour_to_cover:[], open_decisions:[], shaky:[], departed_from_brief:[]}`
@@ -200,13 +200,13 @@ Extraction rules: exactly one block expected; none → `report:null`, status sta
 | Harness | Roles | Delegation skill/command | MCP snippet (merged, only the `claustrum` key touched) |
 |---|---|---|---|
 | claude | `.claude/agents/<role>.md` + generated tier stubs | `.claude/skills/claustrum/SKILL.md` | `.mcp.json` → `mcpServers.claustrum` |
-| opencode | `.opencode/agents/<role>.md` (`mode: subagent`, `permission` block, body inlined) | `.opencode/commands/delegate.md` (`$1` role, `$2` brief path, body runs `` !`claustrum run …` ``) | `opencode.json` → `mcp.claustrum` (`type:"local"`, `command:[…]`) |
+| opencode | `.opencode/agent/<role>.md` (`mode: subagent`, `permission` block, body inlined) | `.opencode/command/claustrum.md` (the shared `/claustrum` skill body) | `opencode.json` → `mcp.claustrum` (`type:"local"`, `command:[…]`) |
 | cursor | `.cursor/agents/<role>.md` (`name, description, model, readonly`) | `.cursor/skills/claustrum/SKILL.md` (§D2's rename) | `.cursor/mcp.json` (`mcpServers`) |
-| copilot / VS Code | `.github/agents/<role>.agent.md` | `.github/prompts/delegate.prompt.md` | `.vscode/mcp.json` (`servers`, `type:"stdio"`) + `.mcp.json` (Copilot reads it too; key shape UNCONFIRMED) |
-`--global` targets `~/.claude/agents`, `~/.config/opencode/agents`, `~/.copilot/agents`, `~/.cursor/{agents,skills,mcp.json}`, and the Claude desktop app's `claude_desktop_config.json` (absolute binary path; `%APPDATA%\Claude\` on Windows, `~/Library/Application Support/Claude/` on macOS, no such app on Linux).
+| copilot / VS Code | `.github/agents/<role>.agent.md` | `.github/skills/claustrum/SKILL.md` | none of its own: `.vscode/mcp.json` (`servers`, `type:"stdio"`) and `.mcp.json` are written by the claude sync |
+*(Paths as shipped, corrected 2026-10-03, #54.)* `--global` targets `~/.claude/agents`, `~/.config/opencode/agent`, `~/.copilot/agents`, `~/.cursor/{agents,skills,mcp.json}`, and the Claude desktop app's `claude_desktop_config.json` (absolute binary path; `%APPDATA%\Claude\` on Windows, `~/Library/Application Support/Claude/` on macOS, no such app on Linux).
 - Idempotency: first body line `<!-- claustrum:generated role=builder harness=claude library=1.0.0 sha256=… -->`; JSON targets tracked in `.claustrum/sync-manifest.json`. Files without marker/manifest entry are **never overwritten** (`--force` to adopt). The owner's `mc-*.md` are therefore untouched.
 - Flags: `--only claude,opencode`, `--roles a,b`, `--dry-run` (unified diff), `--check` (exit 2 on hand-edited/stale/missing; for CI), `--global`, `--force`.
-- Local override: `<repo>/.claustrum/roles/<role>/{ROLE.md,role.json,parts/}` wins over the library (role.json deep-merged); header records `source=local`.
+- Local override: `<cwd>/.claustrum/roles/<role>/{ROLE.md,role.json,parts/}` wins over the library (role.json deep-merged; `_shared/` is never overridable); header records `source=local`. *(2026-10-03, #54: the working directory, not the git root `claustrum.json` comes from — #49 proposes the git root; `source=local` shipped only then — the flag existed, nothing wrote it.)*
 
 ### B5. In-chat UX per host (the thing teammates actually do)
 Human: "delegate this to a cheap builder". The architect writes `.claustrum/briefs/<n>.md`, then:
@@ -219,7 +219,7 @@ Human: "delegate this to a cheap builder". The architect writes `.claustrum/brie
 In every host the architect's reply quotes status, changed files, `shaky`, and which reviewer tier it chose and why (architect.md:279).
 
 ### B6. Bootstrap, doctor, docs, governance
-- `claustrum init [--all]`: writes `claustrum.json` (library version, default model aliases incl. `cheap-coding → opencode:openrouter/deepseek/deepseek-v4-flash`, `frontier-coding → claude:opus`, …), runs `sync` for harnesses detected by `.claude/ .cursor/ .github/ opencode.json` presence, merges MCP snippets, appends a 3-line "Claustrum delegation" pointer to `AGENTS.md` if present (never creates `CLAUDE.md`).
+- `claustrum init [--all]`: writes `claustrum.json` (library version, default model aliases incl. `cheap-coding → opencode:openrouter/deepseek/deepseek-v4-flash`, `frontier-coding → claude:opus`, …), always runs `sync` for claude (its sync is the one that registers the MCP server in `.mcp.json`/`.vscode/mcp.json`) plus opencode/copilot/cursor when `.opencode/` or `opencode.json[c]`, `.github/`, `.cursor/` are present, merges MCP snippets, appends a 3-line "Claustrum delegation" pointer to `AGENTS.md` if present (never creates `CLAUDE.md`).
 - `claustrum backends doctor [--probe]`: per backend `binary` (path/version) · `auth` (env key or login file present — value never printed) · `probe` (1-token "reply OK" call, cost shown) · `mcp` (which config files register claustrum) · `os` (warns when binary path and cwd mix `C:\` and `/mnt/c`). The `probe` round trip (2026-09-21, issue #12) is a real `doctor-probe` role run through `Runner` on the cheapest configured alias that resolves to the backend, capped at $0.50 (raised from $0.05 the same day: a cold-cache claude probe measured $0.12); `CLAUSTRUM_SKIP_PROBE=1` turns every probe into a named skip — the test suite and CI set it so `dotnet test` never spends money.
 - `docs/INSTALL.md`: 1 get binary (Release asset per OS; `dotnet tool install -g claustrum`) · 2 install the backends you want (`npm i -g @anthropic-ai/claude-code`, `npm i -g opencode-ai`, Cursor `agent` installer, `npm i -g @github/copilot`) · 3 keys (`OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY`, `DEEPSEEK_API_KEY`, `CURSOR_API_KEY`, `GH_TOKEN`) · 4 `claustrum init && claustrum backends doctor` · 5 **Windows/WSL rule**: run Claustrum and its backends on the same OS as your host; never point a WSL Claustrum at `C:\` paths or vice versa · 6 per-host MCP hookup.
 - Governance: roles change by PR to `orlodax/Claustrum` (linear history, rebase); `library.json.version` semver; `sync --check` in consumers' CI flags drift. The owner's `~/.claude/agents/` becomes `claustrum sync --global --only claude` output — first adoption once with `--force --roles architect,builder,code-reviewer,tester,ui-reviewer`.
@@ -230,14 +230,16 @@ In every host the architect's reply quotes status, changed files, `shaky`, and w
 ```json
 // .claustrum/casts/default.json  (committable; teammates share `cheap`, `premium`, `deepseek-only`)
 { "name": "default", "library": "1.0.0",
-  "architect":     { "mode": "host" },                                   // or {"mode":"spawned","model":"claude:opus","tier":"xhigh"}
-  "builder":       { "model": "opencode:openrouter/deepseek/deepseek-v4-pro", "max_parallel": 3 },
-  "code-reviewer": { "model": "claude:opus", "tier": "xhigh" },
-  "ui-reviewer":   null,                                                  // "not needed" for this cast
-  "tester":        { "model": "opencode:openrouter/deepseek/deepseek-v4-flash" },
-  "budget_usd": 10, "permission_overrides": {} }     // "budget_usd": null  ⇒ cap disabled
+  "architect": { "mode": "host" },                                       // or {"mode":"spawned","model":"claude:opus","tier":"xhigh"}
+  "roles": {
+    "builder":       { "model": "opencode:openrouter/deepseek/deepseek-v4-pro", "max_parallel": 3 },
+    "code-reviewer": { "model": "claude:opus", "tier": "xhigh" },
+    "ui-reviewer":   null,                                                // "not needed" for this cast
+    "tester":        { "model": "opencode:openrouter/deepseek/deepseek-v4-flash" } },
+  "budget_usd": 10 }                                                      // "budget_usd": null  ⇒ cap disabled
 ```
-Budget cap is optional: `null` (or `--budget none`, or answering "no cap" in the questionnaire) disables it for the cast; per-call `--budget` still applies if given. When disabled, no `--max-budget-usd` is passed to backends and `BudgetExceeded` can never fire; `doctor`/`cast show` print `budget: unlimited` so the choice is visible.
+*(As shipped, 2026-10-03, #54: the roles sit under a required `roles` map, not at the top level — a cast without one is refused — and `permission_overrides` was never built; a cast carrying it loads with the key silently ignored.)*
+Budget cap is optional: `null` (or `--budget none`, or answering "no cap" in the questionnaire) disables it for the cast; per-call `--budget` still applies if given. When disabled, no `--max-budget-usd` is passed to backends and `BudgetExceeded` can never fire. *(As shipped: `cast show` prints the cast's JSON, so the choice shows as `"budget_usd": null`, and `coordinate` prints `tree: unlimited (children not accounted)`; neither prints `budget: unlimited`.)*
 Any value may be an alias from `claustrum.json.models`. Every `delegate`/`run` accepts `--cast <name>` (default: `.claustrum/casts/default.json` if present); explicit `--model`/`--backend` flags still override per call.
 
 ### D2. Claustrum owns the questionnaire — the chat-agent is only the UI

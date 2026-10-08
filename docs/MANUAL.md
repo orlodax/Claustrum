@@ -1,7 +1,8 @@
 # Claustrum manual
 
 The reference for using Claustrum — every verb, file, field and rule, in one place. It restates
-what the code does today (binary `0.1.0-alpha`, role library `1.0.0`, 2026-09-22); the *why* stays
+what the code does today (binary `0.1.0-alpha`, role library `1.0.0`; checked against the code
+2026-10-08, #54); the *why* stays
 in [NOTES.md](../NOTES.md) and the plan in [PLAN.md](PLAN.md). Getting the binary and the backends
 onto a machine is [INSTALL.md](INSTALL.md); running it on a real task for the first time is
 [TEST-DRIVE.md](TEST-DRIVE.md).
@@ -124,11 +125,12 @@ prints the unified diff; `--force` adopts a file Claustrum did not generate.
 ### `claustrum init [--all]`
 
 Scaffolds the current directory (no `--cwd`): writes `claustrum.json` if absent, creates
-`.claustrum/casts/` and git-ignores `.claustrum/{briefs,worktrees,locks}/`, runs `sync` for the
-harnesses the repo already shows signs of (`.claude/`, `.cursor/`, `.github/`, `opencode.json`;
-`--all` for every one), appends a "Claustrum delegation" pointer to an existing `AGENTS.md`. It
-never creates `AGENTS.md`/`CLAUDE.md` and never overwrites a file it did not generate; a rerun
-reports "already present, left unchanged".
+`.claustrum/casts/` and git-ignores `.claustrum/{briefs,worktrees,locks}/`, runs `sync` for `claude`
+**always** — its sync is the one that registers the MCP server in `.mcp.json`/`.vscode/mcp.json` —
+plus each harness the repo already shows signs of (`.opencode/` or `opencode.json[c]`, `.github/`,
+`.cursor/`; `--all` for every one), and appends a "Claustrum delegation" pointer to an existing
+`AGENTS.md`. It never creates `AGENTS.md`/`CLAUDE.md` and never overwrites a file it did not
+generate; a rerun reports "already present, left unchanged".
 
 ### `claustrum mcp [--cwd <dir>]`
 
@@ -170,10 +172,17 @@ from the library class and the cast; a heavier tier also buys a stronger class f
 reviewing/testing roles.
 
 A role's source is `roles/<role>/ROLE.md` + `role.json` + `parts/<part>.<harness>.md`, embedded in
-the binary. A repo may override one under `.claustrum/roles/<role>/` (deep-merged, header says
-`source=local`). Each role's system body is: the rendered `ROLE.md` for the target harness, then
-`## House rules` ("read `AGENTS.md` and `CLAUDE.md` first; they are law"), then `## Report format`.
-The brief always goes in the **user** prompt.
+the binary. A repo may override one under `.claustrum/roles/<role>/` in the **working directory**
+(`--cwd`, else the process's own) — not the git root `claustrum.json` is read from. `ROLE.md` and
+each `parts/` file replace the library's; `role.json` is deep-merged (objects merge, arrays
+replace); `_shared/` (house rules, report formats, tier stub) is not overridable. A file synced
+from an overridden role carries `source=local` in its marker, `roles show` prints `source: local`,
+and a malformed local `role.json` is exit 2 naming the file.
+
+Each role's system body is: the opening paragraph of the rendered `ROLE.md`, then `## Report format`,
+then the rest of `ROLE.md`, then `## House rules` ("read `AGENTS.md` and `CLAUDE.md` first; they are
+law"). The report format sits second because a model skipped it on short tasks when it came last
+(`RoleRenderer.ComposeSystemBody`). The brief always goes in the **user** prompt.
 
 ## 5. The brief
 
@@ -249,11 +258,15 @@ Layers, later wins per key, `deny` lists concatenate:
                 "standard-coding": "claude:sonnet", "cheap-coding": "opencode:openrouter/deepseek/deepseek-v4-flash",
                 "fast": "claude:haiku", "reviewer": "api:anthropic:claude-sonnet-5" },
   "roles":    { "builder": { "model": "cheap-coding", "effort": "medium", "permission": "edit+shell", "deny": ["git push"] } },
-  "backends": { "claude": { "path": null, "injection": "append-file" }, "copilot": { "path": "/opt/copilot/bin/copilot" } },
+  "backends": { "copilot": { "path": "/opt/copilot/bin/copilot" } },
   "defaults": { "timeout_seconds": 1800, "budget_usd": 5, "env_passthrough": "allowlist" },
   "jobs":     { "keep_last": 200 }
 }
 ```
+
+`backends.<name>` takes `path` and `injection`; `doctor` shows `injection`, but no backend reads it
+— `claude` always injects with `--append-system-prompt-file`. There is no JSON schema file, and a key
+Claustrum does not know (a `$schema`, say) is ignored rather than refused.
 
 **Model grammar**: `[backend:]<model-id>`; a bare name is looked up as an alias (recursively,
 depth 3), then handed to the backend as an id. `claustrum init` writes only two aliases
@@ -275,16 +288,19 @@ the filter. `CLAUSTRUM_*` is deliberately **not** forwarded except `CLAUSTRUM_PA
 `CLAUSTRUM_HOME`, which the runner sets itself for a tree.
 
 **Claustrum's own variables**: `CLAUSTRUM_HOME` (jobs, budget ledgers; default `~/.claustrum`),
-`CLAUSTRUM_PARENT_JOB` (membership in a tree, §10), `CLAUSTRUM_SKIP_PROBE=1`,
-`CLAUSTRUM_SMOKE_MODEL_<BACKEND>` and `CLAUSTRUM_SMOKE_COORDINATE_MODEL` (the smoke scripts' paid
-rows), and the three config overrides above.
+`CLAUSTRUM_PARENT_JOB` (membership in a tree, §10), `CLAUSTRUM_SKIP_PROBE=1`, `CLAUSTRUM_DEBUG=1`
+(print the stack trace behind an unexpected `error:`), `CLAUSTRUM_NO_SPLASH` (any value: no logo on a
+bare `claustrum`, as with `NO_COLOR` or a redirected stdout), and the three config overrides above.
+`CLAUSTRUM_SMOKE_MODEL_<BACKEND>` and `CLAUSTRUM_SMOKE_COORDINATE_MODEL` choose the smoke scripts'
+paid rows; only the scripts read them, never the binary.
 
 Keys never go in `claustrum.json` or a cast: both are committable. `doctor` prints only whether a
 variable is present.
 
 ## 8. Casts
 
-`.claustrum/casts/<name>.json`, committable, shared with the team:
+`.claustrum/casts/<name>.json` in the working directory (like role overrides, not the git root),
+committable, shared with the team:
 
 ```json
 { "name": "default", "library": "1.0.0",
@@ -409,8 +425,9 @@ From MCP, `coordinate` returns `{job_id, log_path}` immediately; poll `job_statu
 
 `claustrum sync` renders the library into each harness's own format and registers the MCP server.
 Generated markdown carries `<!-- claustrum:generated role=… harness=… library=… sha256=… -->`
-as its first body line; generated JSON keys are tracked by hash in `.claustrum/sync-manifest.json`.
-A file without the marker or a manifest entry is **never overwritten** (`--force` adopts it).
+as its first body line, with `source=local` before `sha256` when the role was overridden (§4);
+generated JSON keys are tracked by hash in `.claustrum/sync-manifest.json`. A file without the
+marker or a manifest entry is **never overwritten** (`--force` adopts it).
 
 **A synced Claude agent carries no deny list today.** In agent frontmatter, `disallowedTools` cannot
 hold a per-command deny: an entry with a specifier such as `Bash(git push *)` removes the whole
@@ -457,7 +474,7 @@ Permission levels and what each backend does with them:
 
 | Level | Roles | `claude` | `opencode` | `cursor` | `copilot` |
 |---|---|---|---|---|---|
-| `readonly` | code-reviewer | `--permission-mode plan` + read-only tool list | edit/bash deny | prompt rule (advisory) | `--mode plan --deny-tool write --deny-tool shell` |
+| `readonly` | code-reviewer | `--permission-mode plan` + read-only tool list, plus the same deny rules as `edit+shell` (its `gh pr *` would otherwise allow `gh pr merge`) | edit/bash deny | prompt rule (advisory) | `--mode plan --deny-tool write --deny-tool shell` |
 | `shell` | ui-reviewer | plan + `--disallowedTools Edit,Write,NotebookEdit`, MCP tools reachable | edit deny, bash allow with deny patterns | prompt rule | `--mode plan --deny-tool write` + deny patterns |
 | `edit` | — | `acceptEdits` + `--disallowedTools Bash` | edit allow, bash deny | prompt rule | `--allow-all-tools --allow-all-paths --deny-tool shell` |
 | `edit+shell` | architect, builder, tester, demo-author | `acceptEdits`, built-in tools + `Bash(*)`, `--disallowedTools "Bash(<deny>),Bash(<deny> *)"` per deny entry; MCP tools are outside the allow-list | edit allow, bash allow, `<deny>` and `<deny> *` deny | prompt rule | `--allow-all-tools --allow-all-paths --deny-tool "shell(<deny>)"` per entry |
