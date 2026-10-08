@@ -3069,18 +3069,25 @@ on the `description` field — the `tools`/`model`/`effort`/`color`/`readonly` f
 and the SKILL.md/command frontmatter blocks (none of which contain `": "` today) were left as
 literal here-strings rather than routed through a call that would be a no-op.
 
-- **Verified for real, not just re-read**: a scratch `git init` repo was synced with `--only
-  opencode` and `--only cursor` (debug build, no golden fixtures touched), and every emitted
-  `architect.md`/`code-reviewer.md`/`tester.md` frontmatter block was fed to `yaml.safe_load`
-  (PyYAML, a strict parser, the same one named in the brief as the bar to clear). All parsed clean;
-  the pre-fix unquoted line reproduces the same "mapping values are not allowed in this context"
-  PyYAML raises for the copilot case if you diff it back in by hand. Checked against the current
-  `roles/<role>/role.json` library, the roles whose description contains `": "` are **architect,
-  code-reviewer, demo-author and ui-reviewer** — not tester, whose description was re-ported clean
-  for #16 (see "tester and ui-reviewer re-ported from the owner's current files"). Of those four,
-  only architect and code-reviewer sync to opencode/cursor at all (`harnesses` in their `role.json`);
-  demo-author and ui-reviewer carry `"harnesses": ["claude"]`, so they never emit a `.md` for those
-  two backends and fall outside what this scratch-repo check could exercise.
+- **Verified for real, not just re-read**: a scratch `git init` repo outside the checkout was synced
+  with the debug build (`sync`, then `sync --only opencode`, `--only cursor`, `--only copilot`; no
+  golden fixtures touched), and the frontmatter block of every emitted file was fed to PyYAML 6.0.3
+  `yaml.safe_load` (pure-Python `SafeLoader`) and to `CSafeLoader`, once as emitted (quoted) and once
+  with only the `description:` line rewritten back to the old unquoted form. Files checked per
+  harness — the role files `sync` emits for that harness plus their `-xhigh`/`-max` tier stubs:
+  **Claude 16** (architect, builder, code-reviewer, demo-author, tester, ui-reviewer, with a stub
+  pair on each but demo-author), **opencode 12** and **Cursor 12** (architect, builder,
+  code-reviewer, tester, each with its stub pair). **All of them parse quoted, under both loaders.**
+  Unquoted, a strict parser **rejects** `architect` and `code-reviewer` on every harness, plus
+  `demo-author` and `ui-reviewer` under Claude, and **accepts** `builder`, `tester` and every
+  `-xhigh`/`-max` stub — so those never needed the fix. `yaml.safe_load` reports "mapping values are
+  not allowed here" at line 2; "mapping values are not allowed in this context" is `CSafeLoader`'s
+  (libyaml's) wording, and the one copilot printed. Checked against the current `roles/<role>/role.json`
+  library, the roles whose description contains `": "` are **architect, code-reviewer, demo-author
+  and ui-reviewer** — not tester, whose description was re-ported clean for #16 (see "tester and
+  ui-reviewer re-ported from the owner's current files"). Of those four, only architect and
+  code-reviewer sync to opencode/cursor at all (`harnesses` in their `role.json`); demo-author and
+  ui-reviewer carry `"harnesses": ["claude"]`, so they never emit a `.md` for those two backends.
 - **Live agent-listing probe: attempted, blocked by environment, not by the fix.** `opencode debug
   agents` is the free probe (no model call, just the loader's own list) but its background service
   (`opencode service restart` confirmed a live URL) never answered `debug agents` within 60s, in the
@@ -3092,8 +3099,7 @@ literal here-strings rather than routed through a call that would be a no-op.
   round-tripped" ("Not verified live … no GUI here"). Neither gap is new or caused by this change,
   and neither is closed by the PyYAML check above: that check is evidence the emitted frontmatter is
   valid YAML, not evidence that opencode 2.0.12 or Cursor actually load the agents from it. Whether
-  the two loaders load architect/code-reviewer (or demo-author/ui-reviewer under Claude) stays
-  **unmeasured**.
+  the two loaders load architect/code-reviewer stays **unmeasured**.
 - **Claude Code stays unmeasured on purpose**: the brief's own framing ("Claude Code demonstrably
   tolerates it") was accepted as sufficient given goldens under `tests/golden/claude/` pin its output
   and get re-recorded by the tester, not this pass.
