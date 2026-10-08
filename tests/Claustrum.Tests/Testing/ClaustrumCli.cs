@@ -42,7 +42,11 @@ public sealed class ClaustrumCli : IDisposable
     /// Replaces PATH for the child; an empty directory means no backend binary can be found on this
     /// machine, installed or not.
     /// </param>
-    public async Task<CliResult> RunAsync(string[] args, string stdin, string? pathOverride)
+    /// <param name="extraEnv">
+    /// Set on the child after the defaults; a null value removes the variable instead, for a test that must
+    /// not inherit one from the machine running it (CLAUDE_CONFIG_DIR).
+    /// </param>
+    public async Task<CliResult> RunAsync(string[] args, string stdin, string? pathOverride, IReadOnlyDictionary<string, string?>? extraEnv = null)
     {
         string binary = Path.Combine(AppContext.BaseDirectory, OperatingSystem.IsWindows() ? "claustrum.exe" : "claustrum");
         Assert.True(File.Exists(binary), $"built claustrum binary not found at '{binary}'");
@@ -62,12 +66,17 @@ public sealed class ClaustrumCli : IDisposable
         startInfo.Environment["CLAUSTRUM_HOME"] = Home;
         startInfo.Environment["HOME"] = Home;
         startInfo.Environment["APPDATA"] = Home;
+        // #66: a gate run from inside a Claustrum job tree inherits CLAUSTRUM_PARENT_JOB, which would
+        // enrol this child in that tree's budget ledger and turn its output red for the wrong reason.
+        startInfo.Environment.Remove("CLAUSTRUM_PARENT_JOB");
 
         // The real paid probe is a house rule violation waiting to happen on a machine with a backend
         // logged in (CliEndToEndTests' own comment): every spawn here skips it.
         startInfo.Environment["CLAUSTRUM_SKIP_PROBE"] = "1";
         if (pathOverride is not null)
             startInfo.Environment["PATH"] = pathOverride;
+        foreach ((string key, string? value) in extraEnv ?? new Dictionary<string, string?>())
+            startInfo.Environment[key] = value;
 
         using Process process = Process.Start(startInfo) ?? throw new InvalidOperationException("claustrum failed to start");
         try

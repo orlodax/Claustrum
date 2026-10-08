@@ -120,6 +120,7 @@ public sealed class BackendsCommandsOpencodeApiAuthTests : IDisposable
         startInfo.ArgumentList.Add("--probe");
         startInfo.Environment["CLAUSTRUM_HOME"] = home;
         startInfo.Environment["CLAUSTRUM_SKIP_PROBE"] = "1";
+        startInfo.Environment.Remove("CLAUSTRUM_PARENT_JOB"); // #66
         startInfo.Environment["HOME"] = home;
         startInfo.Environment["XDG_DATA_HOME"] = xdgDataHome;
         startInfo.Environment["PATH"] = emptyPath;

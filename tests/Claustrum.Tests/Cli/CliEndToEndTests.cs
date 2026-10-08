@@ -866,6 +866,9 @@ public sealed partial class CliEndToEndTests : IDisposable
         foreach (string arg in args)
             startInfo.ArgumentList.Add(arg);
         startInfo.Environment["CLAUSTRUM_HOME"] = home;
+        // #66: removed before extraEnv, so only a test that asks for a tree gets one (a gate run inside
+        // a Claustrum job tree otherwise enrols every child in that tree's budget ledger).
+        startInfo.Environment.Remove("CLAUSTRUM_PARENT_JOB");
         // §12's real paid call is a house rule violation waiting to happen the moment this suite runs
         // on a machine with a backend logged in — every spawn here skips it unless a test overrides it.
         startInfo.Environment["CLAUSTRUM_SKIP_PROBE"] = "1";

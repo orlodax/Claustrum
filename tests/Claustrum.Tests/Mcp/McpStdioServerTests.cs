@@ -71,6 +71,27 @@ public sealed class McpStdioServerTests : IDisposable
         Assert.Contains("coordinate", names);
     }
 
+    // #63 over the wire: the schema a host reads says `branch` exists, on both delegating tools.
+    [Theory]
+    [InlineData("delegate")]
+    [InlineData("delegate_async")]
+    public async Task ToolsListAdvertisesTheBranchParameterOnTheDelegatingToolsAsync(string tool)
+    {
+        CancellationToken ct = TestContext.Current.CancellationToken;
+        await using McpStdioClient client = StartServer();
+        await InitializeAsync(client, ct);
+
+        JsonNode? response = await client.RequestAsync("tools/list", [], ct);
+
+        Assert.NotNull(response);
+        JsonNode? schema = response["result"]?["tools"]?.AsArray().Single(entry => entry?["name"]?.GetValue<string>() == tool)?["inputSchema"];
+        JsonNode? branch = schema?["properties"]?["branch"];
+        Assert.NotNull(branch);
+        Assert.Contains("string", branch["type"]?.ToJsonString(), StringComparison.Ordinal);
+        Assert.Contains("existing branch", branch["description"]?.GetValue<string>(), StringComparison.Ordinal);
+        Assert.DoesNotContain("branch", schema?["required"]?.AsArray().Select(name => name?.GetValue<string>()) ?? [], StringComparer.Ordinal);
+    }
+
     private static async Task InitializeAsync(McpStdioClient client, CancellationToken cancellationToken)
     {
         JsonNode? handshake = await client.RequestAsync("initialize", new JsonObject
@@ -103,6 +124,8 @@ public sealed class McpStdioServerTests : IDisposable
         startInfo.ArgumentList.Add("--cwd");
         startInfo.ArgumentList.Add(work);
         startInfo.Environment["CLAUSTRUM_HOME"] = home;
+        startInfo.Environment["CLAUSTRUM_SKIP_PROBE"] = "1";
+        startInfo.Environment.Remove("CLAUSTRUM_PARENT_JOB"); // #66
         startInfo.Environment["PATH"] = GitDirectory();
 
         return new McpStdioClient(Process.Start(startInfo)!);
