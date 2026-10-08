@@ -101,18 +101,23 @@ public static class FakeClaude
         return text.ToString();
     }
 
+    // cmd's `>>` opens the file unshared: two runs appending at once lose one line to "file in use"
+    // (RunCapEndToEndTests' overlap case on PR #75's Windows CI), so a refused append is retried.
+    private static string WindowsAppend(string label, string line, string path) =>
+        $":{label}\r\n(echo {line}>> \"{path}\") 2>nul || (ping -n 1 127.0.0.1 > nul & goto {label})\r\n";
+
     // cmd.exe: `echo` prints an unescaped `"` as-is, so the reply goes out verbatim (CoordinateEndToEndTests'
     // 2026-09-22 finding). Not run in this repo's Linux gate; the argv/stdin capture is POSIX-only.
     private static string WindowsText(FakeClaudeScript script)
     {
         StringBuilder text = new("@echo off\r\nfindstr \"^\" > nul\r\n");
-        text.Append(script.MarkerLog is { } start ? $"echo start>> \"{start}\"\r\n" : "");
+        text.Append(script.MarkerLog is { } start ? WindowsAppend("markstart", "start", start) : "");
         text.Append(script.SleepSeconds > 0 ? $"ping -n {script.SleepSeconds + 1} 127.0.0.1 > nul\r\n" : "");
         foreach ((string path, string content) in script.Writes)
             text.Append($"echo {content}> \"{path}\"\r\n");
 
         text.Append(script.WriteUniqueFile ? "echo unique> \"out-%RANDOM%%RANDOM%.txt\"\r\n" : "");
-        text.Append(script.MarkerLog is { } end ? $"echo end>> \"{end}\"\r\n" : "");
+        text.Append(script.MarkerLog is { } end ? WindowsAppend("markend", "end", end) : "");
         text.Append($"echo {ReplyJson(script)}\r\n");
         text.Append(script.Fail ? "exit /b 1\r\n" : "");
         return text.ToString();
