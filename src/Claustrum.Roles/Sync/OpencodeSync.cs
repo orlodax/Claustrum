@@ -105,7 +105,7 @@ public sealed class OpencodeSync(RoleLibrary library, RoleRenderer renderer, str
         string frontmatter = BuildAgentFrontmatter(definition.Description, OpencodeModelFor(tier.Model), tier.Effort);
         string body = renderer.Render(role, "high", Harness, cwd).SystemBody;
         string path = Path.Combine(agentDir, $"{role}.md");
-        writer.Write(path, role, frontmatter, body, force, mode, into);
+        writer.Write(path, role, frontmatter, body, force, mode, into, localOverride: loaded.IsLocalOverride);
     }
 
     private void WriteTierStub(string agentDir, string role, string tier, LoadedRole loaded, string cwd, bool force, SyncMode mode, SyncAccumulator into)
@@ -115,7 +115,7 @@ public sealed class OpencodeSync(RoleLibrary library, RoleRenderer renderer, str
         string frontmatter = BuildAgentFrontmatter(SyncWriter.TierDescription(role, tier, sameModel), OpencodeModelFor(roleTier.Model), roleTier.Effort);
         string body = renderer.RenderTierStub(role, tier, cwd);
         string path = Path.Combine(agentDir, $"{role}-{tier}.md");
-        writer.Write(path, role, frontmatter, body, force, mode, into);
+        writer.Write(path, role, frontmatter, body, force, mode, into, localOverride: loaded.IsLocalOverride);
     }
 
     private void WriteCommand(string root, bool force, SyncMode mode, SyncAccumulator into)

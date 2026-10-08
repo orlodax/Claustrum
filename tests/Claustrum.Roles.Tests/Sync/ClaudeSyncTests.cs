@@ -34,6 +34,27 @@ public sealed class ClaudeSyncTests : IDisposable
         Assert.Empty(result.Foreign);
     }
 
+    // #54: docs/MANUAL.md §4 promised `source=local` in the marker; IsLocalOverride was computed but
+    // never written, so a file rendered from `.claustrum/roles/` looked exactly like a library one.
+    [Fact]
+    public void ALocallyOverriddenRoleIsMarkedSourceLocalAndOnlyThatRole()
+    {
+        string roleDir = Path.Combine(cwd, ".claustrum", "roles", "builder");
+        Directory.CreateDirectory(roleDir);
+        File.WriteAllText(Path.Combine(roleDir, "role.json"), /*lang=json,strict*/ """{"description":"Local builder"}""");
+
+        NewSync().Sync(cwd, roles: ["builder", "tester"]);
+        string agents = Path.Combine(cwd, ".claude", "agents");
+
+        foreach (string file in new[] { "builder.md", "builder-xhigh.md", "builder-max.md" })
+            Assert.Contains(" source=local sha256=", MarkerLine(Path.Combine(agents, file)), StringComparison.Ordinal);
+        Assert.DoesNotContain("source=", MarkerLine(Path.Combine(agents, "tester.md")), StringComparison.Ordinal);
+        Assert.DoesNotContain("source=", MarkerLine(Path.Combine(cwd, ".claude", "skills", "claustrum", "SKILL.md")), StringComparison.Ordinal);
+    }
+
+    private static string MarkerLine(string path) =>
+        File.ReadLines(path).Single(line => line.StartsWith(SyncWriter.MarkerPrefix, StringComparison.Ordinal));
+
     // #29: `shell` used to fall through to the edit tool set, so a browser role was synced with
     // Edit/Write its own ground rules forbid and no browser tool at all. Driven off ListRoles so a
     // shell role added later is covered instead of silently skipped.

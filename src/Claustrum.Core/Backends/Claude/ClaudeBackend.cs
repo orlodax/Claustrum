@@ -89,13 +89,23 @@ public sealed class ClaudeBackend(IPlatform platform) : IBackend
 
     private static List<string> PermissionArgs(PermissionPolicy permission) => permission.Level switch
     {
-        PermissionLevel.ReadOnly => ["--permission-mode", "plan", "--permission-prompts", "none", "--allowedTools", ReadOnlyTools],
+        PermissionLevel.ReadOnly => ReadOnlyArgs(permission.Deny),
         PermissionLevel.Shell => ShellArgs(permission.Deny),
+        // No deny patterns: they are all `Bash(...)`, and this level withholds Bash outright.
         PermissionLevel.Edit => ["--permission-mode", "acceptEdits", "--permission-prompts", "none", "--disallowedTools", "Bash"],
         PermissionLevel.EditShell => EditShellArgs(permission.Deny),
         PermissionLevel.Full => ["--dangerously-skip-permissions", "--permission-prompts", "none"],
         _ => throw new ArgumentOutOfRangeException(nameof(permission)),
     };
+
+    // Deny applies here too: `Bash(gh pr *)` in ReadOnlyTools also matches `gh pr merge` (#54).
+    private static List<string> ReadOnlyArgs(string[] deny)
+    {
+        List<string> args = ["--permission-mode", "plan", "--permission-prompts", "none", "--allowedTools", ReadOnlyTools];
+        if (deny.Length > 0)
+            args.AddRange(["--disallowedTools", BashDenyRules(deny)]);
+        return args;
+    }
 
     // Shell keeps ReadOnly's plan mode (nothing may be written) but opens Bash and leaves MCP tools
     // alone: --allowedTools names only the built-ins, so a Browser MCP server stays reachable, which

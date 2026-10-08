@@ -48,6 +48,16 @@ public sealed class ClaudeBackendBuildTests
         ], spec.Args);
     }
 
+    // #54: ReadOnly used to drop its deny list, though `Bash(gh pr *)` also allows `gh pr merge`.
+    [Fact]
+    public void ReadOnlyAppliesDenyPatternsRightAfterItsAllowedTools()
+    {
+        ProcessSpec spec = backend.Build(MakeRun(new PermissionPolicy(PermissionLevel.ReadOnly, ["gh pr merge"])));
+
+        int allowed = Array.IndexOf(spec.Args, "--allowedTools");
+        Assert.Equal(["--disallowedTools", "Bash(gh pr merge),Bash(gh pr merge *)"], spec.Args[(allowed + 2)..(allowed + 4)]);
+    }
+
     [Fact]
     public void EditDisallowsBash()
     {

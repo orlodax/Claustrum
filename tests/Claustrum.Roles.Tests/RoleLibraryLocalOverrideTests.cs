@@ -38,4 +38,31 @@ public sealed class RoleLibraryLocalOverrideTests : IDisposable
         Assert.False(loaded.IsLocalOverride);
         Assert.Equal(["git push"], loaded.Definition.Deny);
     }
+
+    // #54: a parts/ file is as much an override as ROLE.md, so it must earn the `source=local` marker.
+    [Fact]
+    public void ALocalPartAloneCountsAsALocalOverride()
+    {
+        string partsDir = Path.Combine(cwd, ".claustrum", "roles", "builder", "parts");
+        Directory.CreateDirectory(partsDir);
+        File.WriteAllText(Path.Combine(partsDir, "delegation.claude.md"), "local delegation");
+
+        Assert.True(new RoleLibrary().LoadRole("builder", cwd).IsLocalOverride);
+    }
+
+    // #54: both used to escape as a bare JsonException, which the CLI printed as `error: …`, exit 1.
+    [Theory]
+    [InlineData("{ not json")]
+    [InlineData(/*lang=json,strict*/ """{"blind":"yes"}""")]
+    public void AMalformedLocalRoleJsonIsARenderErrorNamingTheFile(string content)
+    {
+        string roleDir = Path.Combine(cwd, ".claustrum", "roles", "builder");
+        Directory.CreateDirectory(roleDir);
+        string path = Path.Combine(roleDir, "role.json");
+        File.WriteAllText(path, content);
+
+        RoleRenderException ex = Assert.Throws<RoleRenderException>(() => new RoleLibrary().LoadRole("builder", cwd));
+
+        Assert.Contains(path, ex.Message, StringComparison.Ordinal);
+    }
 }

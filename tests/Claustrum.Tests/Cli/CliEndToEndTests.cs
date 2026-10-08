@@ -187,6 +187,33 @@ public sealed partial class CliEndToEndTests : IDisposable
         Assert.Contains(".mcp.json", stderr, StringComparison.Ordinal);
     }
 
+    // #54: a local role.json that does not parse used to reach the boundary as a bare JsonException
+    // — `error: …`, exit 1, no file named.
+    [Fact]
+    public async Task RolesShowOnAMalformedLocalRoleJsonExitsTwoNamingTheFileAsync()
+    {
+        string roleDir = Path.Combine(cwd, ".claustrum", "roles", "builder");
+        Directory.CreateDirectory(roleDir);
+        File.WriteAllText(Path.Combine(roleDir, "role.json"), "{ not json");
+
+        (int exitCode, _, string stderr) = await RunAsync("roles", "show", "builder");
+
+        Assert.Equal(Usage, exitCode);
+        Assert.Contains(Path.Combine(".claustrum", "roles", "builder", "role.json"), stderr, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task RolesShowSaysWhetherALocalOverrideContributedAsync()
+    {
+        Assert.Contains("source:      library", (await RunAsync("roles", "show", "builder")).Stdout, StringComparison.Ordinal);
+
+        string roleDir = Path.Combine(cwd, ".claustrum", "roles", "builder");
+        Directory.CreateDirectory(roleDir);
+        File.WriteAllText(Path.Combine(roleDir, "ROLE.md"), "Local builder.");
+
+        Assert.Contains("source:      local", (await RunAsync("roles", "show", "builder")).Stdout, StringComparison.Ordinal);
+    }
+
     // Finding #2: the generated skill tells agents to run exactly this, and the CLI used to reject
     // it ("Unrecognized command or argument '--answers'").
     [Fact]
