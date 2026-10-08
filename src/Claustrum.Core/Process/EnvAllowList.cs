@@ -15,6 +15,9 @@ public static class EnvAllowList
         "PATH", "HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "TEMP", "TMP",
         "SystemRoot", "ComSpec", "LANG", "SHELL", "TERM", "GH_TOKEN", "GITHUB_TOKEN",
         "PATHEXT", "windir", "SystemDrive", "ProgramFiles", "ProgramFiles(x86)", "ProgramData",
+        // #57: Claude Code's home (login, CLAUDE.md, agents), so a delegated claude reads the caller's.
+        // By exact name: a CLAUDE_ prefix would also forward a parent session's CLAUDE_CODE_* markers.
+        "CLAUDE_CONFIG_DIR",
     ];
 
     // ⚠ Deliberately no CLAUSTRUM_ prefix (2026-09-21), and `passthroughAll` drops the tree variable

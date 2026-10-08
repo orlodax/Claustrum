@@ -83,6 +83,10 @@ public static class BackendsCommands
             foreach (string advisory in doctor.Advisories)
                 Console.WriteLine($"  advisory: {advisory}");
 
+            // #57: free, so printed without --probe — and a path, not a secret, so its value is shown.
+            if (backend.Name == "claude")
+                Console.WriteLine($"  config dir: {ClaudeConfigDirStatus()}");
+
             if (probe)
             {
                 Console.WriteLine($"  auth:    {AuthStatusFor(backend.Name)}");
@@ -157,6 +161,12 @@ public static class BackendsCommands
         ProbeOutcome outcome = await DoctorProbe.RunAsync(backend, config, AppServices.Runner, CancellationToken.None);
         return outcome.Line;
     }
+
+    // EnvAllowList passes CLAUDE_CONFIG_DIR to a delegated claude, so this is the home it will read.
+    private static string ClaudeConfigDirStatus() =>
+        AppServices.Platform.GetEnvironmentVariable("CLAUDE_CONFIG_DIR") is { Length: > 0 } configDir
+            ? $"{configDir} (CLAUDE_CONFIG_DIR)"
+            : "default (~/.claude; CLAUDE_CONFIG_DIR not set)";
 
     // opencode reads either extension; the .jsonc is only named when there is no .json, so the line
     // always describes the file that actually decides.
