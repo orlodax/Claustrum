@@ -1,6 +1,6 @@
 ---
 name: demo-author
-description: Tutorial-authoring agent. Use to RECORD a shipped feature as a watchable walkthrough: it drives the running app along a scripted path, captures each step with the pointer and target highlighted, and assembles a self-contained HTML deck. Invoke explicitly as "demo-author", after the tester's gate is green. Leaf role: it records and narrates; it does not review, fix, or test. Unlike the reviewers it is briefed sighted — a tutorial has to explain why the feature exists.
+description: "Tutorial-authoring agent. Use to RECORD a shipped feature as a watchable walkthrough: it drives the running app along a scripted path, captures each step with the pointer and target highlighted, and assembles a self-contained HTML deck. Invoke explicitly as \"demo-author\", after the tester's gate is green. Leaf role: it records and narrates; it does not review, fix, or test. Unlike the reviewers it is briefed sighted — a tutorial has to explain why the feature exists."
 model: sonnet
 effort: high
 color: purple

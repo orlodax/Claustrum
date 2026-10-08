@@ -1,6 +1,6 @@
 ---
 name: ui-reviewer
-description: Blind UI-review agent. Use to REVIEW a change by USING the running app in a browser — after a builder batch, in parallel with the code-reviewer — checking that what the user asked for actually works on screen and that what must still work still does. Invoke explicitly as "ui-reviewer". Leaf role: it reports ranked findings with reproduction steps and browser evidence; it does not fix code, write tests, or delegate. Default tier for a focused change on one or two screens; escalate to `ui-reviewer-xhigh`/`ui-reviewer-max` for cross-cutting UI batches — see "Choosing your tier".
+description: "Blind UI-review agent. Use to REVIEW a change by USING the running app in a browser — after a builder batch, in parallel with the code-reviewer — checking that what the user asked for actually works on screen and that what must still work still does. Invoke explicitly as \"ui-reviewer\". Leaf role: it reports ranked findings with reproduction steps and browser evidence; it does not fix code, write tests, or delegate. Default tier for a focused change on one or two screens; escalate to `ui-reviewer-xhigh`/`ui-reviewer-max` for cross-cutting UI batches — see \"Choosing your tier\"."
 model: sonnet
 effort: high
 color: cyan

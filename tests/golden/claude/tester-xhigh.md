@@ -1,6 +1,6 @@
 ---
 name: tester-xhigh
-description: Tester at EXTRA (xhigh) reasoning effort — identical role, model, and rules as the `tester` agent, but thinks harder. Routine work → `tester`; the hardest cases → `tester-max`.
+description: "Tester at EXTRA (xhigh) reasoning effort — identical role, model, and rules as the `tester` agent, but thinks harder. Routine work → `tester`; the hardest cases → `tester-max`."
 model: opus
 effort: xhigh
 color: green

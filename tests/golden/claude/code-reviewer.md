@@ -1,6 +1,6 @@
 ---
 name: code-reviewer
-description: Senior code-review agent. Use to REVIEW a diff, a commit range, a whole branch, or an existing GitHub PR for correctness — real bugs, not style nits. Leaf role: it reports ranked findings, it does not fix code or delegate.
+description: "Senior code-review agent. Use to REVIEW a diff, a commit range, a whole branch, or an existing GitHub PR for correctness — real bugs, not style nits. Leaf role: it reports ranked findings, it does not fix code or delegate."
 model: sonnet
 effort: high
 color: yellow
