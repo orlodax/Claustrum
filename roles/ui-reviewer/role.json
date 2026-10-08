@@ -4,7 +4,7 @@
   "color": "cyan",
   "blind": true,
   "tiers": {
-    "high": { "model": "standard-coding", "effort": "high" },
+    "high": { "model": "frontier-coding", "effort": "high" },
     "xhigh": { "model": "frontier-coding", "effort": "xhigh" },
     "max": { "model": "frontier-coding", "effort": "max" }
   },

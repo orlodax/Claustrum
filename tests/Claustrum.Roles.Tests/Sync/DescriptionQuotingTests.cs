@@ -141,7 +141,7 @@ public sealed class DescriptionQuotingTests : IDisposable
         foreach (string tier in new[] { "xhigh", "max" })
         {
             string line = DescriptionLine(Path.Combine(cwd, AgentDirectory(harness), $"builder-{tier}{suffix}"));
-            Assert.Equal(SyncWriter.TierDescription("builder", tier), UnquoteDoubleQuoted(line["description: ".Length..]));
+            Assert.Equal(SyncWriter.TierDescription("builder", tier, true), UnquoteDoubleQuoted(line["description: ".Length..]));
         }
     }
 

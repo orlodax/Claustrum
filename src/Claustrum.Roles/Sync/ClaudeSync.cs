@@ -107,7 +107,7 @@ public sealed class ClaudeSync(RoleLibrary library, RoleRenderer renderer, strin
         RoleDefinition definition = loaded.Definition;
         RoleTier roleTier = definition.Tiers[tier];
         (string tools, string? disallowedTools) = ToolsFor(definition);
-        string description = SyncWriter.TierDescription(role, tier);
+        string description = SyncWriter.TierDescription(role, tier, definition.KeepsModelAt(tier));
         string frontmatter = BuildFrontmatter($"{role}-{tier}", description, ClaudeModelFor(roleTier.Model), roleTier.Effort, definition.Color, tools, disallowedTools);
         string body = renderer.RenderTierStub(role, tier, cwd);
         string path = Path.Combine(agentsDir, $"{role}-{tier}.md");

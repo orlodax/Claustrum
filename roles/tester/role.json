@@ -5,8 +5,8 @@
   "blind": false,
   "tiers": {
     "high": { "model": "standard-coding", "effort": "high" },
-    "xhigh": { "model": "frontier-coding", "effort": "xhigh" },
-    "max": { "model": "frontier-coding", "effort": "max" }
+    "xhigh": { "model": "standard-coding", "effort": "xhigh" },
+    "max": { "model": "standard-coding", "effort": "max" }
   },
   "permission": "edit+shell",
   "deny": ["git push"],

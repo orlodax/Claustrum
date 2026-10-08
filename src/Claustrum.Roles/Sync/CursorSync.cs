@@ -82,7 +82,7 @@ public sealed class CursorSync(RoleLibrary library, RoleRenderer renderer, strin
 
     private void WriteTierStub(string agentDir, string role, string tier, LoadedRole loaded, string cwd, bool force, SyncMode mode, SyncAccumulator into)
     {
-        string frontmatter = BuildAgentFrontmatter($"{role}-{tier}", SyncWriter.TierDescription(role, tier), loaded.Definition.Permission);
+        string frontmatter = BuildAgentFrontmatter($"{role}-{tier}", SyncWriter.TierDescription(role, tier, loaded.Definition.KeepsModelAt(tier)), loaded.Definition.Permission);
         string body = renderer.RenderTierStub(role, tier, cwd);
         string path = Path.Combine(agentDir, $"{role}-{tier}.md");
         writer.Write(path, role, frontmatter, body, force, mode, into);

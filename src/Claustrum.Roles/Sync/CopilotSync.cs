@@ -46,7 +46,7 @@ public sealed class CopilotSync(RoleLibrary library, RoleRenderer renderer, stri
 
             foreach (string tier in generatedTiers)
                 if (loaded.Definition.Tiers.ContainsKey(tier))
-                    WriteTierStub(agentDir, role, tier, cwd, force, mode, into);
+                    WriteTierStub(agentDir, role, tier, loaded, cwd, force, mode, into);
         }
 
         WriteSkill(githubRoot, force, mode, into);
@@ -62,9 +62,9 @@ public sealed class CopilotSync(RoleLibrary library, RoleRenderer renderer, stri
         writer.Write(path, role, frontmatter, body, force, mode, into);
     }
 
-    private void WriteTierStub(string agentDir, string role, string tier, string cwd, bool force, SyncMode mode, SyncAccumulator into)
+    private void WriteTierStub(string agentDir, string role, string tier, LoadedRole loaded, string cwd, bool force, SyncMode mode, SyncAccumulator into)
     {
-        string frontmatter = BuildAgentFrontmatter($"{role}-{tier}", SyncWriter.TierDescription(role, tier));
+        string frontmatter = BuildAgentFrontmatter($"{role}-{tier}", SyncWriter.TierDescription(role, tier, loaded.Definition.KeepsModelAt(tier)));
         string body = renderer.RenderTierStub(role, tier, cwd);
         string path = Path.Combine(agentDir, $"{role}-{tier}.agent.md");
         writer.Write(path, role, frontmatter, body, force, mode, into);
