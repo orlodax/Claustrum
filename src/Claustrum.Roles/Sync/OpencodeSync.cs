@@ -111,7 +111,8 @@ public sealed class OpencodeSync(RoleLibrary library, RoleRenderer renderer, str
     private void WriteTierStub(string agentDir, string role, string tier, LoadedRole loaded, string cwd, bool force, SyncMode mode, SyncAccumulator into)
     {
         RoleTier roleTier = loaded.Definition.Tiers[tier];
-        string frontmatter = BuildAgentFrontmatter(SyncWriter.TierDescription(role, tier, loaded.Definition.KeepsModelAt(tier)), OpencodeModelFor(roleTier.Model), roleTier.Effort);
+        bool sameModel = OpencodeModelFor(roleTier.Model) == OpencodeModelFor(loaded.Definition.Tiers["high"].Model);
+        string frontmatter = BuildAgentFrontmatter(SyncWriter.TierDescription(role, tier, sameModel), OpencodeModelFor(roleTier.Model), roleTier.Effort);
         string body = renderer.RenderTierStub(role, tier, cwd);
         string path = Path.Combine(agentDir, $"{role}-{tier}.md");
         writer.Write(path, role, frontmatter, body, force, mode, into);

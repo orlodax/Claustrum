@@ -3261,10 +3261,22 @@ buys, the model is the library's and the cast's call", so no prose was touched; 
 `docs/MANUAL.md` §4 roles table, which listed the old ladders, was updated.
 
 **`SyncWriter.TierDescription(role, tier, sameModel)`.** The stub description used to claim
-"identical role, model, and rules" for every `-xhigh`/`-max` stub. It now takes `sameModel`, computed
-by the new `RoleDefinition.KeepsModelAt(tier)` (`Tiers[tier].Model == Tiers["high"].Model`) at each of
-the four `WriteTierStub` call sites. True keeps the old wording byte for byte; false says "identical
-role and rules as the `<role>` agent, a model+effort step up" (the owner's own `code-reviewer-xhigh.md`
-phrase), same sentence shape for `xhigh` and `max`. Only the `code-reviewer` stubs take the second
-form today. Do not hardcode the claim back into the template: the ladder is data in `role.json`, and
-a stub that states the model must derive it from there.
+"identical role, model, and rules" for every `-xhigh`/`-max` stub. It now takes `sameModel`, which
+each `WriteTierStub` decides from **the model its own harness file names**, not from the model class:
+a reader of the stub sees the `model:` line, and a class change that resolves to the same line is not
+a model change. First attempt (`RoleDefinition.KeepsModelAt`, comparing classes) was wrong and is
+removed; a blind review caught it. Measured per harness (2026-10-08):
+
+| Harness | `model:` the stub emits | `sameModel` |
+|---|---|---|
+| Claude | `ClaudeModelFor(Tiers[tier].Model)` — `sonnet`/`opus`/`haiku` | `ClaudeModelFor(tier) == ClaudeModelFor(high)` |
+| opencode | `OpencodeModelFor(...)` — `standard-coding` and `frontier-coding` both → `deepseek-v4-pro` | same comparison on the mapped ids |
+| Cursor | `model: inherit` for every stub | always `true` (constant, not computed) |
+| Copilot | `model: auto` for every stub | always `true` (constant, not computed) |
+
+True keeps the old wording byte for byte; false says "identical role and rules as the `<role>` agent,
+a model+effort step up" (the owner's own `code-reviewer-xhigh.md` phrase), same sentence shape for
+`xhigh` and `max`. Only the Claude `code-reviewer` stubs (sonnet → opus) take the second form today;
+on opencode the class step is invisible in the file, so those stubs keep "identical model". Do not
+hardcode the claim back into the template, and do not compare classes: the stub must state what its
+own `model:` line says.

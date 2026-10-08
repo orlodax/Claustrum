@@ -74,8 +74,8 @@ public sealed class SyncWriter(string harness, string libraryVersion)
 
     /// <summary>
     /// The `-xhigh`/`-max` stub descriptions, identical across every harness. <paramref name="sameModel"/>
-    /// is whether the tier runs the base tier's model class (<see cref="RoleDefinition.KeepsModelAt"/>):
-    /// only then is "identical model" true; otherwise the stub says it is a model+effort step up (#30).
+    /// is whether the model the harness file names for the tier equals the base agent's: only then is
+    /// "identical model" true; otherwise the stub says it is a model+effort step up (#30).
     /// </summary>
     public static string TierDescription(string role, string tier, bool sameModel)
     {
