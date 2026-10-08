@@ -111,7 +111,7 @@ prints it as `"budget_usd": null`.
 
 Roles live once, in `roles/<role>/ROLE.md` + `role.json`, and name model **classes**
 (`frontier-coding`, `cheap-coding`, `fast`) that each developer maps to real models in
-`claustrum.json`. `claustrum sync` renders them into `.claude/agents/`, `.opencode/agents/`,
+`claustrum.json`. `claustrum sync` renders them into `.claude/agents/`, `.opencode/agent/`,
 `.cursor/agents/`, `.github/agents/`, plus a `/claustrum` skill and the MCP registration for each
 host. Generated files carry a marker; `sync --check` flags hand edits in CI; unmarked files are
 never overwritten.

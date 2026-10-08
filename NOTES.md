@@ -3345,3 +3345,38 @@ step 11 skipped), `coordinate` through the MCP door, and every Windows leg.
 **The pattern worth keeping:** every builder was right on code and loose on prose, and every blind
 review caught the prose — three rounds on one NOTES paragraph in leg 1, one on the `sameModel`
 mechanism in leg 2 — which is the receipt-versus-essay rule measured from the other side.
+
+## Docs vs code: which side moved for each of #54's thirteen (2026-10-03, issue #54)
+
+The rule for #54 was that the code is what runs. A doc claim moved to match the code, except where
+the code had dropped something the design wanted and the fix was a line or two. Three items moved
+the code:
+
+- **`source=local` (item 1).** `LoadedRole.IsLocalOverride` was computed and tested, but nothing
+  read it. `SyncWriter.Write` now stamps ` source=local` before `sha256=`, but only for an
+  overridden role's agent and tier-stub files. Library files keep the old marker, so no consumer
+  repo's `sync --check` turns stale. `roles show` prints `source:`. A local `parts/` file now
+  counts as an override as well, since it changes the body just as `ROLE.md` does. This was also
+  item 4 of #50.
+- **A malformed local `role.json` (also observed).** It used to reach `ExceptionBoundary` as a
+  bare `JsonException`, which printed `error: …` and exited 1. It is now a `RoleRenderException`
+  that names the file and exits 2, the same treatment `CastStore.Load` and `Config.ReadDocument`
+  already gave their files.
+- **Claude `readonly` ignored `deny` (also observed).** For `edit` this is moot, because that
+  level withholds Bash outright. For `readonly` it was not: `Bash(gh pr *)` in `ReadOnlyTools`
+  also allows `gh pr merge`, and only a deny can take that back. `ReadOnlyArgs` uses PR #42's
+  `BashDenyRules`, the same word-boundary rules as `shell` and `edit+shell`.
+
+Main fixed items 4, 5 and 6 first. #32 made `cast show` and the questionnaire count honest, and
+#42 added the demo-author everywhere. On the 2026-10-08 rebase those MANUAL, README and TEST-DRIVE
+hunks took main's text. Everything else was a doc fix. The ones that are design, not drift:
+
+- **Item 2.** `## Report format` sits second, not last, because a model skipped it in last place
+  (`RoleRenderer.ComposeSystemBody`).
+- **Item 3.** `.claustrum/roles` and `.claustrum/casts` resolve from the working directory, not
+  the git root. #49 proposes the git root.
+- **Item 11.** `init` always syncs claude, because that sync owns `.mcp.json` and
+  `.vscode/mcp.json` (§"claustrum init").
+
+Left open as their own issues: the api backend's unreadable house rules (#55), and
+`backends.<name>.injection`, which nothing reads (#56).
