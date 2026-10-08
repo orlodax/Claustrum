@@ -122,9 +122,9 @@ public static class CoordinateCommand
 
             return RunCommand.ExitCodeFor(output.Status);
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException ex)
         {
-            return ExitCodes.Cancelled;
+            return RunCommand.Cancelled(ex);
         }
         finally
         {

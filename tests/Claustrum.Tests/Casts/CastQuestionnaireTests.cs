@@ -131,6 +131,19 @@ public sealed class CastQuestionnaireTests : IDisposable
             result.Questions.Select(question => question.Key));
     }
 
+    // #58: the question's answer `1` is a cap now (CastBuilder stores it as 1), and the prompt that asks it
+    // says what each end does: more than 1 isolates, 1 keeps every run in the repo itself, one at a time.
+    [Fact]
+    public async Task TheMaxParallelPromptSaysThatOneKeepsRunsInTheRepoOneAtATimeAsync()
+    {
+        CastQuestionnaireResult result = await CastQuestionnaire.BuildAsync(roleLibrary, EveryBackendFound(), AliasPerBackendConfig(), cwd, CancellationToken.None);
+
+        CastQuestion question = result.Questions.Single(q => q.Key == CastQuestionnaire.MaxParallelKey);
+        Assert.Contains("'1' keeps every run in the repo itself, one at a time", question.Prompt, StringComparison.Ordinal);
+        Assert.Contains("More than 1 gives each job its own git worktree and branch", question.Prompt, StringComparison.Ordinal);
+        Assert.Equal(["1", "2", "3"], question.Options);
+    }
+
     [Theory]
     [InlineData("demo-author")]
     [InlineData("ui-reviewer")]

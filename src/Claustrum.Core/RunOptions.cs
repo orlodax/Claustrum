@@ -1,4 +1,5 @@
 using Claustrum.Core.Config;
+using Claustrum.Core.Git;
 using Claustrum.Core.Jobs;
 
 namespace Claustrum.Core;
@@ -17,4 +18,7 @@ public sealed record RunOptions(
     bool EnvPassthroughAll = false,
     Action<string>? OnStreamLine = null,
     JobTreeBudget? Tree = null,
-    BudgetAdmission? Admission = null);
+    BudgetAdmission? Admission = null,
+    // Isolated runs only: the run's cwd is this worktree, and Runner stamps it on the receipt (#60),
+    // tells the role where it is (#62) and commits its leftovers on its branch (#61).
+    JobWorktreeInfo? Worktree = null);

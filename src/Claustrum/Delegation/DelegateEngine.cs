@@ -84,16 +84,51 @@ public static class DelegateEngine
     }
 
     /// <summary>
-    /// The half that needs a job: the concurrency gate and worktree isolation a fanned-out role pays
-    /// for up front, then Runner. A <paramref name="job"/> of null lets Runner mint one after its own
-    /// blind gate (the CLI `run` ordering); anything a caller minted itself is handed straight on, and
-    /// its id fills <see cref="DelegateRequest.JobIdToken"/> here, at the last moment.
+    /// The half that needs a job: the concurrency gate a cast role with a numeric max_parallel pays for
+    /// (#58: at every value, 1 included), worktree isolation from 2 or with --branch (#63), then Runner.
+    /// A <paramref name="job"/> of null lets Runner mint one after its own blind gate (the CLI `run`
+    /// ordering); anything a caller minted itself is handed straight on, and its id fills
+    /// <see cref="DelegateRequest.JobIdToken"/> here, at the last moment.
     /// </summary>
     public static async Task<RunResult> RunAsync(PreparedDelegation prepared, JobPaths? job, CancellationToken cancellationToken)
     {
-        if (prepared.Request.MaxParallel is { } maxParallel && maxParallel > 1)
-            return await RunIsolatedAsync(prepared, job ?? JobDirectory.Create(AppServices.Platform), maxParallel, cancellationToken);
+        DelegateRequest request = prepared.Request;
+        if (request.Branch is null && request.MaxParallel is null or < 1)
+            return await RunInPlaceAsync(prepared, job, cancellationToken);
 
+        // F7: both paths below mint a job, cut a worktree or wait for a slot before Runner's own checks
+        // run, so a brief Runner would reject is rejected here first: "a blind-gate rejection leaves no
+        // job directory" holds on every path. Runner checks again; that is its last line.
+        Runner.Validate(BuildRunRequest(prepared, request.Cwd), prepared.Role, AppServices.Platform);
+
+        if (request.Branch is not null || request.MaxParallel is not 1)
+            return await RunIsolatedAsync(prepared, job ?? JobDirectory.Create(AppServices.Platform), cancellationToken);
+
+        // #58: max_parallel 1 — the one cap that does not isolate — is a cap too, so two runs of one cast
+        // role queue instead of editing one tree at once. No pre-admission here: Runner admits itself
+        // under the slot held below — only isolation, which cuts a branch before Runner runs, has to
+        // admit first. A job is minted for the refusal only, so Runner still mints the CLI's.
+        RoleConcurrencyGate slot;
+        try
+        {
+            slot = await AcquireSlotAsync(request, cap: 1, prepared.TimeoutSeconds, cancellationToken);
+        }
+        catch (TimeoutException ex)
+        {
+            return await Runner.RefuseAsync(job ?? JobDirectory.Create(AppServices.Platform), prepared.Role, RunStatus.Failed, ex.Message);
+        }
+
+        await using RoleConcurrencyGate gate = slot;
+        return await RunInPlaceAsync(prepared, job, cancellationToken);
+    }
+
+    // #62's deny half: an isolated run may not move any checkout's HEAD, natively enforced where the
+    // harness has a deny mechanism, on top of the prompt trailer Runner adds. Internal for the tests.
+    internal static ResolvedRole IsolatedRole(ResolvedRole role) =>
+        role with { Permission = role.Permission with { Deny = [.. role.Permission.Deny.Union(JobWorktree.IsolationDeny, StringComparer.Ordinal)] } };
+
+    private static async Task<RunResult> RunInPlaceAsync(PreparedDelegation prepared, JobPaths? job, CancellationToken cancellationToken)
+    {
         PreparedDelegation bound = job is null ? prepared : prepared.ForJob(job.Id);
         RunRequest runRequest = BuildRunRequest(bound, bound.Request.Cwd);
 
@@ -102,76 +137,118 @@ public static class DelegateEngine
             : await AppServices.Runner.RunAsync(runRequest, bound.Role, bound.Options, job, cancellationToken);
     }
 
-    // max_parallel > 1 (docs/PLAN.md §D4): the job runs isolated in its own git worktree/branch
-    // instead of directly in request.Cwd, gated by a cross-process cap so at most maxParallel
-    // builders for this role run at once, however many separate `claustrum run` processes a
-    // spawned architect fans them out as. Prepare's config/tier/harness resolution still read
-    // request.Cwd — only the backend's own working directory moves.
-    private static async Task<RunResult> RunIsolatedAsync(PreparedDelegation prepared, JobPaths job, int maxParallel, CancellationToken cancellationToken)
+    // max_parallel > 1 (docs/PLAN.md §D4) or --branch (#63): the job runs in its own git worktree
+    // instead of directly in request.Cwd, behind the cast's cross-process cap when it has a numeric
+    // max_parallel, however many separate `claustrum run` processes a spawned architect fans out —
+    // and with --branch behind that branch's lock too (R1). Prepare's config/tier/harness resolution
+    // still read request.Cwd — only the backend's own working directory moves.
+    private static async Task<RunResult> RunIsolatedAsync(PreparedDelegation prepared, JobPaths job, CancellationToken cancellationToken)
     {
         PreparedDelegation bound = prepared.ForJob(job.Id);
         DelegateRequest request = bound.Request;
+        ResolvedRole role = IsolatedRole(bound.Role);
 
-        string gateKey = RoleConcurrencyGate.KeyFor(request.CastName, request.Role);
+        // Before the gate: a branch that does not exist is answered now, not after a wait for a slot.
+        if (request.Branch is { } branch && !await JobWorktree.BranchExistsAsync(request.Cwd, branch, cancellationToken))
+            return await Runner.RefuseAsync(job, role, RunStatus.Failed, JobWorktree.NoSuchBranch(request.Cwd, branch));
 
-        RoleConcurrencyGate slot;
-        try
+        RoleConcurrencyGate? slot = null;
+        if (request.MaxParallel is { } cap && cap >= 1)
         {
-            slot = await RoleConcurrencyGate.AcquireAsync(
-                request.Cwd, gateKey, maxParallel, TimeSpan.FromSeconds(bound.TimeoutSeconds), cancellationToken);
-        }
-        catch (TimeoutException ex)
-        {
-            // issue #20: every other pre-spawn refusal on this path is a RunResult document, and an
-            // architect parsing --json cannot read an exception on stderr. Nothing to undo — no
-            // worktree, no branch, and admission comes after the gate, so no reservation exists yet.
-            return await Runner.RefuseAsync(job, bound.Role, RunStatus.Failed, ex.Message);
+            try
+            {
+                slot = await AcquireSlotAsync(request, cap, bound.TimeoutSeconds, cancellationToken);
+            }
+            catch (TimeoutException ex)
+            {
+                // issue #20: every other pre-spawn refusal on this path is a RunResult document, and an
+                // architect parsing --json cannot read an exception on stderr. Nothing to undo — no
+                // worktree, no branch, and admission comes after the gate, so no reservation exists yet.
+                return await Runner.RefuseAsync(job, role, RunStatus.Failed, ex.Message);
+            }
         }
 
-        await using RoleConcurrencyGate gate = slot;
+        await using RoleConcurrencyGate? gate = slot;
+
+        // R1: one run per branch, from before its worktree is freed and added until its result.json is
+        // written: git has no lock between "checked out elsewhere?" and `worktree add` (two parallel adds
+        // of one branch succeeded 35/40, git 2.56), and two worktrees on one branch revert each other's
+        // commits. Always after the slot, so no run holds what another waits for; before admission.
+        RoleConcurrencyGate? branchLock = null;
+        if (request.Branch is { } locked)
+        {
+            try
+            {
+                branchLock = await AcquireBranchLockAsync(request.Cwd, locked, bound.TimeoutSeconds, cancellationToken);
+            }
+            catch (TimeoutException ex)
+            {
+                return await Runner.RefuseAsync(job, role, RunStatus.Failed, $"--branch {locked}: another run on this branch outlasted the wait — {ex.Message}");
+            }
+        }
+
+        await using RoleConcurrencyGate? branchGate = branchLock;
 
         // Binding, and before any isolation: this path cuts a branch and holds a slot before Runner
         // ever sees the request, so a job the ledger will refuse has to be refused here. The slot
         // comes first anyway — a reservation must never wait behind the gate, and a sibling that
         // finishes in that wait releases budget this job can then have.
-        BudgetAdmission? admission = await TryAdmitAsync(bound.Options.Tree, job.Id, bound.Role.Name, bound.BudgetUsd);
+        BudgetAdmission? admission = await TryAdmitAsync(bound.Options.Tree, job.Id, role.Name, bound.BudgetUsd);
         RunOptions isolatedOptions = bound.Options with { Admission = admission };
 
         if (admission is { Admitted: false })
         {
             // No worktree, no branch, no slot: Runner only writes the refusal's result.json, and
-            // the `await using` above disposes the gate a second time, which is a no-op.
-            await gate.DisposeAsync();
+            // the `await using`s above dispose both a second time, which is a no-op.
+            if (gate is not null)
+                await gate.DisposeAsync();
+            if (branchGate is not null)
+                await branchGate.DisposeAsync();
             RunRequest refusedRunRequest = BuildRunRequest(bound, request.Cwd);
-            return await AppServices.Runner.RunAsync(refusedRunRequest, bound.Role, isolatedOptions, job, cancellationToken);
+            return await AppServices.Runner.RunAsync(refusedRunRequest, role, isolatedOptions, job, cancellationToken);
         }
 
         JobWorktreeInfo? worktree = null;
         try
         {
-            worktree = await JobWorktree.AddAsync(request.Cwd, job.Id, cancellationToken);
+            worktree = request.Branch is { } existing
+                ? await JobWorktree.CheckOutBranchAsync(request.Cwd, job.Id, existing, JobDirectory.ResolveRoot(AppServices.Platform), cancellationToken)
+                : await JobWorktree.AddAsync(request.Cwd, job.Id, cancellationToken);
+
             RunRequest isolatedRunRequest = BuildRunRequest(bound, worktree.Path);
-            RunResult isolatedResult = await AppServices.Runner.RunAsync(isolatedRunRequest, bound.Role, isolatedOptions, job, cancellationToken);
-            return isolatedResult with { Worktree = worktree.Path, Branch = worktree.Branch };
+            return await AppServices.Runner.RunAsync(isolatedRunRequest, role, isolatedOptions with { Worktree = worktree }, job, cancellationToken);
+        }
+        catch (BranchRefusedException ex)
+        {
+            // A receipt, not a throw (F11), and after admission, so the reservation closes at $0
+            // through Runner's funnel instead of waiting to be read as abandoned. No worktree is left.
+            return await Runner.RefuseAsync(job, role, RunStatus.Failed, ex.Message, admission?.Reservation);
         }
         catch (Exception ex)
         {
-            // Runner writes a result.json for everything that fails once the backend process has
-            // run, so landing here means the run never produced one — a rejected blind gate, a
-            // non-positive --timeout, a `git worktree add` on a cwd that is no repo. Two things
-            // must be undone. The reservation, because Runner closes it through its funnel but may
-            // never have received it; releasing the handle is enough (the next admission then reads
-            // the entry as abandoned, worth $0) and disposing twice is harmless. And the worktree:
-            // `jobs clean` only removes worktrees whose job wrote a result.json, so one left behind
-            // here could never be cleaned and its branch would accumulate forever.
+            // Runner writes a result.json for everything that fails once the backend process has run,
+            // so landing here means none was written — a failed `-b` add or a cancel before the run (an
+            // add undoes what it made itself, T1), an unwritable result.json after it. Two things must
+            // be undone. The reservation, because Runner closes it through its funnel but may never have
+            // received it; releasing the handle is enough (the next admission reads the entry as
+            // abandoned, worth $0) and disposing twice is harmless. And the worktree: `jobs clean` only
+            // removes those of finished jobs, so one left here would never go — its branch too, unless
+            // the run moved it.
             if (admission?.Reservation is { } reservation)
                 await reservation.DisposeAsync();
 
-            if (worktree is not null && await JobWorktree.TryRemoveAbandonedAsync(request.Cwd, job.Id, CancellationToken.None) is { } cleanupFailure)
+            if (worktree is not null && await JobWorktree.TryRemoveAbandonedAsync(request.Cwd, worktree, CancellationToken.None) is { } cleanupFailure)
                 throw new AggregateException($"{ex.Message} (and cleaning up {worktree.Path} failed)", ex, cleanupFailure);
             throw;
         }
     }
+
+    private static async Task<RoleConcurrencyGate> AcquireSlotAsync(DelegateRequest request, int cap, int timeoutSeconds, CancellationToken cancellationToken) =>
+        await RoleConcurrencyGate.AcquireAsync(
+            request.Cwd, RoleConcurrencyGate.KeyFor(request.CastName, request.Role), cap, TimeSpan.FromSeconds(timeoutSeconds), cancellationToken);
+
+    private static async Task<RoleConcurrencyGate> AcquireBranchLockAsync(string cwd, string branch, int timeoutSeconds, CancellationToken cancellationToken) =>
+        await RoleConcurrencyGate.AcquireAsync(cwd, JobWorktree.LockKeyFor(branch), 1, TimeSpan.FromSeconds(timeoutSeconds), cancellationToken);
 
     // role.json `harnesses` is where a role is written to run (#43): anywhere else it fails to render
     // (demo-author's and ui-reviewer's browser part is claude-only) or runs without the tools it needs,

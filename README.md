@@ -134,8 +134,9 @@ worlds are visible at once, `backends doctor --probe` warns when the two disagre
 ## Enforced, not requested
 
 - **Blind review** — the runner rejects a brief for a `blind` role that carries rationale.
-- **Parallel builders** — with `max_parallel > 1` each job gets its own `git worktree` on a
-  `claustrum/<job>` branch; the cap is a semaphore shared by CLI and MCP; integration is by rebase.
+- **Parallel builders** — `max_parallel` is a cap at every value, a semaphore shared by CLI and MCP;
+  above 1 each job gets its own `git worktree` on a `claustrum/<job>` branch, where the runner commits
+  its work; integration is by rebase.
 - **Budget** — accounted over the whole job tree (`CLAUSTRUM_PARENT_JOB` names the tree); a child
   that would exceed what is left is refused; `claustrum jobs budget <tree>` shows the ledger.
 

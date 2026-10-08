@@ -232,15 +232,16 @@ Do not write tests: the tester runs after you.
 ```bash
 claustrum run builder --brief-file .claustrum/briefs/1-builder.md --json --stream \
   > /tmp/drive-1-builder.json
-jq '{status, model, backend, cost_usd, duration_seconds, changed_files, worktree, branch,
+jq '{status, model, backend, cost_usd, duration_seconds, changed_files, worktree, branch, commit,
      report_status, shaky: .report.data.shaky, open: .report.data.open_decisions, error}' \
   /tmp/drive-1-builder.json
 ```
 
 `--stream` echoes the backend to stderr so you can watch; stdout stays one JSON document.
 `max_parallel: 2` in the cast means this run gets **its own worktree** under
-`.claustrum/worktrees/<job>` on branch `claustrum/<job>` — `worktree` and `branch` are non-null and
-the repo's own working tree is untouched. Read, in this order:
+`.claustrum/worktrees/<job>` on branch `claustrum/<job>` — `worktree` and `branch` are non-null,
+`commit` is the commit the runner made on that branch of whatever the builder left, and the repo's
+own working tree is untouched. Read, in this order:
 
 1. `status` — `success`, else `error` says why (a `budget_exceeded` here means the cast budget,
    not a spent tree).
@@ -251,7 +252,7 @@ the repo's own working tree is untouched. Read, in this order:
 5. `cost_usd`, `duration_seconds` — write them down. The toy run was $0.18 / 9 s on sonnet; a
    real slice is the first number this drive produces.
 
-Then look at the diff yourself: `git -C .claustrum/worktrees/<job> diff HEAD`, or
+Then look at the diff yourself: `git diff drive/issue-17...claustrum/<job>`, or
 `jq -r .diff /tmp/drive-1-builder.json`.
 
 ### 10. Run the blind reviewer, and prove the gate
@@ -282,7 +283,9 @@ jq '{status, model, cost_usd, duration_seconds, changed_files, findings: .report
 
 `changed_files` must be `[]` — the reviewer is `readonly`, and claude's plan mode enforces it.
 Triage the findings yourself: real ones go back to the builder as a new brief (step 8 again, with
-`## Context` naming the finding), the rest you note.
+`## Context` naming the finding), the rest you note. Run it with
+`--branch claustrum/<first builder job id>`, so the fix lands on the branch the reviewed diff lives
+on instead of a fresh worktree cut from `HEAD`.
 
 ### 11. (Optional) The same builder brief on another harness
 
@@ -315,10 +318,16 @@ The report is `commands_run`, `passed`, `failed[{test, root_cause, fault_in}]`.
 ### 13. Integrate by rebase, never merge
 
 ```bash
+claustrum jobs clean                                    # removes finished worktrees, keeps branches
 git rebase drive/issue-17 claustrum/<builder job id>    # conflicts resolve here, on the builder branch
 git switch drive/issue-17 && git merge --ff-only claustrum/<builder job id>
-claustrum jobs clean                                    # removes finished worktrees, keeps branches
 ```
+
+`jobs clean` goes first: until it runs, the builder's branch is checked out in its worktree, and
+`git rebase` from your checkout stops at `fatal: 'claustrum/<id>' is already used by worktree at
+'…'`. (Rebasing inside the worktree, `git -C .claustrum/worktrees/<id> rebase drive/issue-17`, is
+the other way.) If the builder's receipt warned `work left uncommitted on …`, `jobs clean` leaves
+that worktree in place and says so: commit the work there first.
 
 Leg 1 is done when the drive branch carries a reviewed, tested fix and you have three receipts with
 costs. Record them (step 18) before going on.
@@ -419,11 +428,14 @@ git log --oneline drive/issue-17..claustrum/<job id>
 git diff drive/issue-17...claustrum/<job id> --stat
 ```
 
-Expect: linear history, a commit citing `Closes #<n>`, no merge commits, nothing pushed. The
-architect works **in your checkout** (only its builders get worktrees), so your working directory
-is on `claustrum/<job id>` when it returns: `git switch` back before touching anything. Run the
-gate yourself (`dotnet test`) before trusting the tester's report, then rebase and fast-forward the
-drive branch to it and open the PR by hand.
+Expect: linear history, a commit citing `Closes #<n>`, no merge commits, nothing pushed. Each
+builder child's receipt carries a `commit` on its own branch, and a remediation builder after review
+names the first builder's branch as its `branch` (`--branch claustrum/<first job>`) — a fresh branch
+of its own there is a role-text finding. The architect works **in your checkout** (only its builders
+get worktrees; #74 proposes moving the architect into a worktree too), so your working directory is
+on `claustrum/<job id>` when it returns: `git switch` back before touching anything. Run the gate
+yourself (`dotnet test`) before trusting the tester's report, then rebase and fast-forward the drive
+branch to it and open the PR by hand.
 
 The things most likely to go wrong, with the fix already known:
 
@@ -431,6 +443,7 @@ The things most likely to go wrong, with the fix already known:
 |---|---|---|
 | a child `budget_exceeded` in milliseconds, "$0.00 remaining", while a sibling runs | the sibling reserved the whole remainder | the architect should retry after the sibling finishes; if it reported "tree spent" instead, that is a role-text finding |
 | `status: failed`, error "all N '<cast>__builder' slots … stayed unavailable" | over-fanned past `max_parallel` and waited out `--timeout` | note it; the architect was told not to |
+| `status: failed`, error "--branch <name>: already checked out in …" or "--branch <name>: checked out in …, the worktree of job …, which has not finished (no result.json)" | your checkout, a worktree of yours, or an unfinished job's worktree holds that branch | switch that checkout off it, or wait for that job to finish |
 | `status: timeout` on the coordinate run | `--timeout` too small for the pipeline | rerun with more; the children that finished are still in `jobs list` and on their branches |
 | `report_status: missing` on a child | the model dropped the report fence | keep the job id; the log has the final message |
 | exit 2 before any job: `gh issue view … failed` | no remote, not logged in, wrong number | fix the environment, nothing was spent |

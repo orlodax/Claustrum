@@ -66,8 +66,9 @@ public static class CastBuilder
             ? null
             : new CastRoleEntry(Model: answer, Backend: null, Tier: null);
 
-    // 1 (or an unanswered question) means "no isolation", which CastRoleEntry spells as null rather
-    // than 1 so `cast show` does not imply a setting the user never made.
+    // 1 is kept as 1: it is a cap too, and only a numeric max_parallel is gated (#58). Storing it as
+    // null — the rule until 2026-10-08 — left every questionnaire cast with no cap at all. An
+    // unanswered question still means null, "no cap", like a hand-written cast without the key.
     private static int? ParseMaxParallelAnswer(string? answer)
     {
         if (string.IsNullOrWhiteSpace(answer) || answer.Equals(NotNeeded, StringComparison.OrdinalIgnoreCase))
@@ -76,7 +77,7 @@ public static class CastBuilder
         if (!int.TryParse(answer, NumberStyles.Integer, CultureInfo.InvariantCulture, out int value) || value < 1)
             throw new CastException($"max_parallel answer '{answer}' is not a whole number of 1 or more");
 
-        return value > 1 ? value : null;
+        return value;
     }
 
     private static decimal? ParseBudgetAnswer(string? answer)

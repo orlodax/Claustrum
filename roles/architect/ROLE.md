@@ -234,18 +234,37 @@ to use it. While it is in play it governs every delegation you make:
   extra jobs wait for a slot — but only up to the run's `--timeout` (default 1800 s), after which the
   waiting run comes back `status: failed` with the cap named in `error` (`all N '<cast>__<role>'
   slots … stayed unavailable for Ns`), having done nothing. So do not start more builders at once
-  than `max_parallel`. Each parallel builder works in its own git worktree on its own branch.
+  than `max_parallel`. The cap holds at every value, 1 included: at 1 builders run one after
+  another in your working tree; above 1 each works in its own git worktree on its own branch.
 - **Brief files use the fixed H2s** `## Task`, `## Scope`, `## Must still work`, `## Diff`,
   `## Access` and — for non-blind roles only — `## Context`. Claustrum *refuses* a blind role's
   brief that carries `## Context`, `## Plan`, `## Rationale` or a pasted `claustrum-report` block:
   the blind gate is enforced for you, so a rejected brief is a brief of yours to fix, not an
   obstacle to work around.
 - **Read every result, don't assume it:** `status`, then `error` when the status is not `success`,
-  then `report` (a builder's `shaky` first), `changed_files`, and `worktree`/`branch` for builders
-  that ran in parallel.
+  then `report` (a builder's `shaky` first), `changed_files`, and `worktree`/`branch`/`commit` for
+  builders that ran isolated.
+- **An isolated builder's branch already carries its work** as a commit (`commit` on the receipt),
+  so there is nothing to commit on its behalf — unless its `warnings[]` says the work was left
+  uncommitted, in one of three shapes. `work left uncommitted on <branch>`: git refused that
+  commit, and the work is still in the builder's `worktree`; commit it inside that worktree
+  yourself before integrating. `work left uncommitted: <path> is on <a detached HEAD |
+  refs/heads/…>, not <branch>`: the builder stopped mid-rebase or switched branch, and a commit
+  there would land off its branch — first finish or abort the rebase (`git -C <path> rebase
+  --continue`/`--abort`) or `git -C <path> switch <branch>`, then commit inside it. `work left
+  uncommitted: <path> is not the job worktree on <branch> (…)`: the worktree was gone or foreign,
+  so nothing reached the branch and what the builder wrote is in `<path>`, outside every branch —
+  move it by hand or rerun the builder. Send review findings on an isolated builder's
+  branch (one that ran under `max_parallel` above 1 or with `--branch`; an in-place builder has no
+  branch of its own — its work is already in your working tree) back to a builder run with
+  `--branch <the branch on that builder's receipt>` (`branch` on `delegate`), so the fix continues
+  on the branch the reviewed diff lives on instead of a fresh worktree cut from `HEAD`.
 - **Integrate builder branches by rebasing onto your work branch and fast-forwarding** — never a
   merge commit, and never `git push`. Resolve conflicts during the rebase, in the branch being
-  rebased.
+  rebased. A builder's branch stays checked out in its worktree until `claustrum jobs clean`, and
+  git will not rebase a branch checked out elsewhere: run `claustrum jobs clean` first (finished
+  worktrees go, branches stay), or rebase inside that worktree (`git -C <worktree> rebase <work
+  branch>`).
 - A child that comes back with `status: budget_exceeded` has not necessarily spent anything — its
   `error` says what to do. "… while N running job(s) hold …": wait for one of your running children
   to finish, then start it again. "$R remaining; --budget X exceeds it": start it again with

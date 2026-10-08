@@ -25,6 +25,15 @@ public sealed class ScriptedBackend(string exe, string[] args, ParsedOutput? par
     public ParsedOutput Parse(string stdout, string stderr, int exitCode) =>
         parseResult ?? new ParsedOutput(stdout, null, null, null, [], null, exitCode != 0);
 
+    /// <summary>
+    /// A one-line shell command run in the job's working directory (`sh -c` on Unix, `cmd /c` on Windows),
+    /// for the tests that need the "role" to leave something in its worktree. Both spellings must do the
+    /// same thing; `&amp;&amp;` chains in either shell.
+    /// </summary>
+    public static ScriptedBackend Shell(string unix, string windows, ParsedOutput? parseResult = null) => OperatingSystem.IsWindows()
+        ? new ScriptedBackend("cmd", ["/c", windows], parseResult)
+        : new ScriptedBackend("sh", ["-c", unix], parseResult);
+
     public static ScriptedBackend Success() => OperatingSystem.IsWindows()
         ? new ScriptedBackend("cmd", ["/c", "exit 0"])
         : new ScriptedBackend("sh", ["-c", "exit 0"]);

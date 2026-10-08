@@ -16,6 +16,9 @@ public static class RunCommand
     // §A2: 200 KB on the CLI door, 64 KB on MCP. Internal because `coordinate` is the same door.
     internal const int CliDiffCapBytes = 200 * 1024;
 
+    // Both framework defaults, looked up at runtime: they are localised resources, not constants.
+    private static readonly string[] defaultCancelMessages = [new OperationCanceledException().Message, new TaskCanceledException().Message];
+
     public static Command Build()
     {
         Argument<string> role = new("role") { Description = "Role to run (see `claustrum roles list`)." };
@@ -32,6 +35,10 @@ public static class RunCommand
         Option<string[]> deny = new("--deny") { Description = "Extra deny pattern (repeatable)." };
         Option<decimal?> budget = new("--budget") { Description = "Budget cap in USD." };
         Option<string?> cast = new("--cast") { Description = "Cast name (default: .claustrum/casts/default.json if present)." };
+        Option<string?> branch = new("--branch")
+        {
+            Description = "Run isolated in a new worktree checked out on this existing branch, e.g. claustrum/<job> to continue a reviewed builder's work.",
+        };
         Option<int?> timeout = new("--timeout") { Description = "Timeout in seconds." };
         Option<string?> resume = new("--resume") { Description = "Backend session id to resume." };
         Option<string[]> file = new("--file") { Description = "Attach a file (repeatable)." };
@@ -43,7 +50,7 @@ public static class RunCommand
         Command command = new("run", "Delegate a task to a role.")
         {
             role, brief, briefFile, cwd, backend, model, effort, tier, permission,
-            deny, budget, timeout, resume, file, env, cast, json, stream, raw,
+            deny, budget, timeout, resume, file, env, cast, branch, json, stream, raw,
         };
 
         command.SetAction(async parseResult => await ExecuteAsync(
@@ -64,6 +71,7 @@ public static class RunCommand
             parseResult.GetValue(file) ?? [],
             parseResult.GetValue(env) ?? [],
             parseResult.GetValue(cast),
+            parseResult.GetValue(branch),
             parseResult.GetValue(json),
             parseResult.GetValue(stream),
             parseResult.GetValue(raw)));
@@ -74,7 +82,7 @@ public static class RunCommand
     private static async Task<int> ExecuteAsync(
         string roleName, string? briefText, string? briefFilePath, string? cwdOption, string? tierFlag,
         ConfigOverrides overrides, string? resumeSession, string[] attachFiles, string[] envEntries,
-        string? castName, bool jsonMode, bool streamMode, bool rawMode)
+        string? castName, string? branch, bool jsonMode, bool streamMode, bool rawMode)
     {
         string cwd = Path.GetFullPath(cwdOption ?? Environment.CurrentDirectory);
 
@@ -114,7 +122,8 @@ public static class RunCommand
                 CastBudget: castBudget,
                 MaxParallel: maxParallel,
                 CastName: resolvedCastName,
-                OnStreamLine: streamMode ? Console.Error.WriteLine : null);
+                OnStreamLine: streamMode ? Console.Error.WriteLine : null,
+                Branch: branch is { Length: > 0 } ? branch : null);
 
             RunResult result = await DelegateEngine.RunAsync(request, cts.Token);
             RunResult output = rawMode ? result : result with { Raw = null };
@@ -131,9 +140,9 @@ public static class RunCommand
         // Program.cs's top-level ExceptionBoundary maps those uniformly for every verb, not just
         // `run` (review finding #1). OperationCanceledException stays local: it needs exit 130, which
         // the boundary's generic "anything else" branch does not know about.
-        catch (OperationCanceledException)
+        catch (OperationCanceledException ex)
         {
-            return ExitCodes.Cancelled;
+            return Cancelled(ex);
         }
         finally
         {
@@ -162,6 +171,15 @@ public static class RunCommand
         return env;
     }
 
+    // A cancel that says more than the framework's default — JobWorktree's undo naming what it left
+    // behind — is printed; a plain Ctrl-C stays silent. Shared with `coordinate`.
+    internal static int Cancelled(OperationCanceledException ex)
+    {
+        if (!defaultCancelMessages.Contains(ex.Message, StringComparer.Ordinal))
+            Console.Error.WriteLine($"warning: {ex.Message}");
+        return ExitCodes.Cancelled;
+    }
+
     /// <summary>docs/PLAN.md §A5's fixed status → exit code table, shared with `coordinate`.</summary>
     public static int ExitCodeFor(RunStatus status) => status switch
     {
@@ -178,6 +196,14 @@ public static class RunCommand
     {
         Console.WriteLine($"status: {result.Status} (exit {ExitCodeFor(result.Status)})");
 
+        // An isolated run's work is on its branch, not in the directory the reader is looking at (F3).
+        if (result.Branch is { } branch)
+            Console.WriteLine($"branch: {branch}");
+        if (result.Worktree is { } worktree)
+            Console.WriteLine($"worktree: {worktree}");
+        if (result.Commit is { } commit)
+            Console.WriteLine($"commit: {commit}");
+
         if (result.ChangedFiles.Length > 0)
         {
             Console.WriteLine("changed files:");
@@ -190,6 +216,10 @@ public static class RunCommand
             Console.WriteLine();
             Console.WriteLine(result.FinalMessage);
         }
+
+        // A "work left uncommitted" one says the branch is missing work; --json readers have warnings[].
+        foreach (string warning in result.Warnings)
+            Console.Error.WriteLine($"warning: {warning}");
 
         if (result.Error is { Length: > 0 } error)
             Console.Error.WriteLine($"error: {error}");

@@ -140,11 +140,37 @@ public sealed class CastBuilderTests
         Assert.Equal(3, cast.Roles["builder"]!.MaxParallel);
     }
 
-    // 1 means "no isolation", spelled as null so `cast show` does not imply a setting nobody made.
+    // review F1 (2026-10-08): the questionnaire's default answer `1` used to be stored as null, "so `cast show`
+    // does not imply a setting nobody made" — but since #58 only a numeric max_parallel is gated, so every cast
+    // `cast create` / `cast new` / MCP cast_create made with the default answer had no cap and no gate at all.
     [Theory]
-    [InlineData("1")]
+    [InlineData("1", 1)]
+    [InlineData(" 1 ", 1)]
+    [InlineData("01", 1)]
+    [InlineData("2", 2)]
+    public void ANumericMaxParallelAnswerIsStoredAsItIsAOneIncluded(string answer, int expected)
+    {
+        Dictionary<string, string> answers = new()
+        {
+            ["builder"] = "claude:opus",
+            ["code-reviewer"] = CastBuilder.NotNeeded,
+            ["tester"] = CastBuilder.NotNeeded,
+            [CastQuestionnaire.MaxParallelKey] = answer,
+            ["budget"] = CastBuilder.NoCap,
+        };
+
+        Cast cast = CastBuilder.FromAnswers("default", "1.0.0", roleNames, answers);
+
+        Assert.Equal(expected, cast.Roles["builder"]!.MaxParallel);
+    }
+
+    // No answer, or "not needed", is "no cap" — what a hand-written cast without the key means too.
+    [Theory]
     [InlineData("")]
-    public void OneOrNoAnswerLeavesMaxParallelUnset(string answer)
+    [InlineData("   ")]
+    [InlineData("not needed")]
+    [InlineData("NOT NEEDED")]
+    public void ABlankOrNotNeededMaxParallelAnswerLeavesItUnset(string answer)
     {
         Dictionary<string, string> answers = new()
         {
@@ -158,6 +184,29 @@ public sealed class CastBuilderTests
         Cast cast = CastBuilder.FromAnswers("default", "1.0.0", roleNames, answers);
 
         Assert.Null(cast.Roles["builder"]!.MaxParallel);
+    }
+
+    [Fact]
+    public void NoMaxParallelAnswerAtAllLeavesItUnset()
+    {
+        Dictionary<string, string> answers = new() { ["builder"] = "claude:opus" };
+
+        Cast cast = CastBuilder.FromAnswers("default", "1.0.0", roleNames, answers);
+
+        Assert.Null(cast.Roles["builder"]!.MaxParallel);
+    }
+
+    [Theory]
+    [InlineData("0")]
+    [InlineData("-1")]
+    [InlineData("1.5")]
+    public void AMaxParallelBelowOneOrNotWholeIsRejectedNamingTheAnswer(string answer)
+    {
+        Dictionary<string, string> answers = new() { ["builder"] = "claude:opus", [CastQuestionnaire.MaxParallelKey] = answer };
+
+        CastException ex = Assert.Throws<CastException>(() => CastBuilder.FromAnswers("default", "1.0.0", roleNames, answers));
+
+        Assert.Contains($"'{answer}'", ex.Message, StringComparison.Ordinal);
     }
 
     [Fact]
