@@ -91,9 +91,9 @@ public sealed class ProcessRunner(IPlatform platform)
     }
 
     // Stdin always ends up closed, and is never inherited: a child holding the MCP host's own live
-    // JSON-RPC pipe can block on it (NOTES.md "MCP child stdin inheritance hung git"). cursor is the
-    // only backend fed anything first — `cursor-agent -p` has no prompt-file flag and reads its whole
-    // prompt from stdin (issue #14), so ProcessSpec.StdinText arrives here.
+    // JSON-RPC pipe can block on it (NOTES.md "MCP child stdin inheritance hung git"). cursor and claude
+    // are fed their whole prompt first — `cursor-agent -p` has no prompt-file flag (issue #14), and a
+    // claude brief on argv was visible to `pgrep -f` (#68) — so ProcessSpec.StdinText arrives here.
     private static async Task WriteStdinAsync(System.Diagnostics.Process process, string? stdinText, CancellationToken cancellationToken)
     {
         try

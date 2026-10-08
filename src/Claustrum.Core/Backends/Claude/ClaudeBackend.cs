@@ -11,9 +11,10 @@ namespace Claustrum.Core.Backends.Claude;
 // argv and permission->flag mapping follow docs/PLAN.md A3. `--append-system-prompt-file` DOES
 // exist on `claude` 2.1.269 — `.hideHelp()` keeps it off `claude --help`, and claude silently
 // ignores unrecognized flags, so the M1 pass mistook silent-ignore for "flag missing" and switched
-// to inline `--append-system-prompt` (wrong; see NOTES.md "Role injection per backend"). Parse
-// auto-detects single-object `json` output vs `stream-json` JSONL by trying to parse stdout as one
-// JSON document first (IBackend.Parse has no `--stream` flag to consult); this holds because a
+// to inline `--append-system-prompt` (wrong; see NOTES.md "Role injection per backend"). The brief
+// goes in on stdin, never argv (#68, 2026-10-08, the cursor shape): `claude -p` reads its prompt
+// from stdin when argv carries none. Parse tells single-object `json` from `stream-json` JSONL by
+// parsing stdout as one JSON document first (IBackend.Parse has no `--stream` flag to consult): a
 // JSONL stream always has trailing content after the first line closes, which JsonDocument rejects.
 public sealed class ClaudeBackend(IPlatform platform) : IBackend
 {
@@ -65,9 +66,9 @@ public sealed class ClaudeBackend(IPlatform platform) : IBackend
         if (run.ResumeSession is { Length: > 0 } resumeSession)
             args.AddRange(["--resume", resumeSession]);
 
-        args.Add(run.Brief);
-
-        return new ProcessSpec(Name, [.. args], run.Cwd, run.Env, []);
+        // On argv the brief showed in every process listing: a `pgrep -f` pattern a brief quoted matched
+        // the job running it (#68, measured 2026-10-08). Stdin also lifts the argv length cap.
+        return new ProcessSpec(Name, [.. args], run.Cwd, run.Env, [], StdinText: run.Brief);
     }
 
     public ParsedOutput Parse(string stdout, string stderr, int exitCode)
