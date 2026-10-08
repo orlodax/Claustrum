@@ -3280,3 +3280,68 @@ a model+effort step up" (the owner's own `code-reviewer-xhigh.md` phrase), same 
 on opencode the class step is invisible in the file, so those stubs keep "identical model". Do not
 hardcode the claim back into the template, and do not compare classes: the stub must state what its
 own `model:` line says.
+
+## The first real tasks: the test drive, 2026-09-25 to 2026-10-08 (docs/TEST-DRIVE.md)
+
+Claustrum ran its first real tasks in the three legs docs/TEST-DRIVE.md prescribes, on this repo's
+own issues, all on the `default`/`spawned` casts (sonnet builders and tester, opus reviewers and
+architect, `max_parallel: 2`, `$15`). Every run returned a receipt with a parsed report fence; no
+run ever hit its timeout; the measured numbers are below, in the five columns step 18 asks for.
+`changed_files` matched the builder's own `files_changed` on every run.
+
+**Leg 1 — shell door, issue #33 (quote `description:` in every sync), PR #59 merged 2026-10-08.**
+
+| run | model | cost | time | note |
+|---|---|---|---|---|
+| builder, stale #17 | sonnet | $0.73 | 229 s | a GitHub rate-limit error had become `## Task`; honest empty diff |
+| builder, #33 | sonnet | $1.82 | 531 s | 6 files, left uncommitted |
+| code-reviewer, blind | opus | $0.85 | 106 s | 2 findings, both NOTES prose, both real |
+| builder, fix 1 | sonnet | $0.69 | 156 s | NOTES only |
+| code-reviewer, re-review | opus | $0.81 | 101 s | 3 findings, same paragraph, all real |
+| tester | sonnet | $0.62 | 176 s | 733 green, 9 goldens re-recorded, mutation check |
+| builder, fix 2 | sonnet | $0.35 | 67 s | NOTES only; no third review by the operator's decision |
+
+$5.87 and 23 minutes of agent time for 51 lines plus tests. The blind gate refused a brief with
+`## Context` in under a second, exit 2.
+
+**Leg 2 — MCP door, host architect (this Claude session), issue #30 (tier ladders), PR #65.**
+
+| run | model | cost | time | note |
+|---|---|---|---|---|
+| builder | sonnet | $0.47 | 154 s | 11 files, both parts of #30 |
+| code-reviewer, blind | opus | $0.76 | 81 s | 1 medium finding: class-level vs emitted model, real |
+| builder, fix | sonnet | $0.36 | 107 s | per-harness `sameModel` |
+| code-reviewer, re-review | opus | $0.87 | 92 s | clean |
+| tester | sonnet | $0.59 | 200 s | 756 green, 2 goldens, TierLadderTests |
+
+$3.05, under eleven minutes. `delegate_async` plus a wait on the job's `result.json` was the
+reliable shape; no host tool-call timeout was hit.
+
+**Leg 3 — `claustrum coordinate --cast spawned --issues 32`, unattended, job
+`20261008-142701-1c8b462a`.** `status: success` in 704 s. The spawned opus architect ran builder
+($0.30) → blind review ($0.80, three low real findings) → fix ($0.25) → re-review ($0.83, clean) →
+tester ($0.39, 759 green), left three commits on `claustrum/20261008-142701-1c8b462a` with
+`Closes #32`, pushed nothing, and ended with the mandatory report naming every job id. Its own run
+cost $1.61; the ledger (`jobs budget`) reads $4.18 spent, $0.00 reserved, and agrees with the five
+receipts to the cent. The architect also triaged the review (sent two findings back, left one that
+touched a file with the owner's uncommitted edits), re-ran the gate itself when the tester's
+process died, and declined to open issues on its own — all as its text says.
+
+**What broke or surprised, each an issue on the board:** no role commits its work, the operator did
+(#61); `result.json` on disk lacks `worktree`/`branch` that `job_result` returns (#60); a builder ran
+`git checkout` in the operator's main checkout (#62), and the spawned architect works there by
+design, so the checkout is on its branch when `coordinate` returns; a remediation builder cannot
+resume on the first builder's branch (#63); a tester's cleanup ran `rm -rf /tmp/tmp.*` (#64);
+`CoordinateEndToEndTests` fail under an inherited `CLAUSTRUM_PARENT_JOB`, so a delegated gate inside
+a tree is red for the wrong reason (#66); the cast loader accepts a nameless cast and a `null` role
+is honoured only by the architect (#67); the brief in `claude -p`'s argv let a `pgrep -f` from the
+brief match the job's own process (#68). One thing stays unexplained: leg 3's tester child exited
+137 after writing a complete green report — no `pkill` in the architect's log, no kernel OOM kill
+in the journal — and the runner kept the report and marked the job `failed`, which is the right
+answer for a kill of unknown origin. Not proved by this drive: opencode and `api` (no key on this
+box), ui-reviewer and demo-author (nothing rendered), copilot and cursor on a real brief (leg 1
+step 11 skipped), `coordinate` through the MCP door, and every Windows leg.
+
+**The pattern worth keeping:** every builder was right on code and loose on prose, and every blind
+review caught the prose — three rounds on one NOTES paragraph in leg 1, one on the `sameModel`
+mechanism in leg 2 — which is the receipt-versus-essay rule measured from the other side.

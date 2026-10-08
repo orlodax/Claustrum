@@ -93,11 +93,11 @@ The requirements, in order of importance:
 A clean working tree in that repo, on the branch the work should land on. Builders that run in
 parallel branch from `HEAD`; uncommitted changes are invisible to them and confuse the diff.
 
-Candidates in Claustrum itself (dogfooding, `gh issue list` on 2026-09-22): **#17** (doctor:
-mark cursor's prompt-only deny list as advisory) and **#29** (ClaudeSync syncs ui-reviewer with
-Edit/Write and no browser tool). Both are one-subsystem fixes with an obvious test. Do the drive on
-a **separate clone** or a fresh branch, never on `claude/issue-13-copilot`, which carries
-uncommitted work.
+Pick it from a **fresh** `gh issue list` and confirm with `git log --oneline | grep '#<n>'` that
+nothing citing it has landed: the two this guide named on 2026-09-22 (#17, #29) were both fixed
+within three days, and a builder handed a fixed issue spends real money reporting an empty diff
+(measured 2026-09-25: $0.73, 229 s, `changed_files: []`, an honest report). Dogfooding on
+Claustrum itself is fine; do the drive on a fresh branch off `main` with a clean tree.
 
 ```bash
 git status --short          # must be empty
@@ -194,7 +194,10 @@ drive: `15` caps the **tree** in leg 3; in legs 1 and 2 each shell `run` without
 ## Leg 1 — One delegation from the shell
 
 This leg costs one builder and one reviewer run and proves the receipt on a real diff. Everything
-is a blocking command that prints one JSON document; keep the outputs.
+is a blocking command that prints one JSON document; keep the outputs. **Run every command from
+the repo root**: `--cwd` defaults to the current directory, the cast is looked up there, and the
+brief paths below are relative to it (from inside `.claustrum/briefs/` the path doubles and the run
+fails before a job exists).
 
 ### 8. Write the builder brief
 
@@ -203,7 +206,9 @@ a `## Context`:
 
 ```markdown
 ## Task
-<the issue title and body, pasted verbatim — `gh issue view 17 --json title,body -q '.title, .body'`>
+<the issue title and body, pasted verbatim — `gh issue view 17 --json title,body -q '.title, .body'`;
+ read what you pasted: on 2026-09-25 a GitHub rate-limit error became a `## Task` and the builder
+ spent $0.73 finding that the stale issue was already fixed>
 
 ## Scope
 src/Claustrum/Cli/BackendsCommands.cs and the cursor backend's doctor output only. No new files
@@ -364,8 +369,9 @@ the report lists.
 
 ### 16. Try `/claustrum` once
 
-Type `/claustrum` in the same session. It must run `cast questions`, ask the seven questions with
-`AskUserQuestion`, and write a cast with `cast create`. Answer them to create a second cast named,
+Type `/claustrum` in the same session. It must run `cast questions`, ask one question per library
+role plus the parallel cap and the budget (eight on 2026-10-08, with `demo-author` in the library)
+with `AskUserQuestion`, and write a cast with `cast create`. Answer them to create a second cast named,
 say, `spawned` with `architect: spawned on frontier-reasoning` — that is the cast leg 3 uses.
 (Or write it by hand: it is the step 7 file with `"architect": {"mode": "spawned", "model":
 "frontier-reasoning", "tier": null}`.)
@@ -380,8 +386,8 @@ say, `spawned` with `architect: spawned on frontier-reasoning` — that is the c
 body becomes the brief's `## Task` through `gh issue view`. Then:
 
 ```bash
-claustrum coordinate --cast spawned --issues 17 --json --stream --timeout 5400 \
-  > /tmp/drive-coordinate.json
+claustrum coordinate --cast spawned --issues <n> --json --timeout 5400 \
+  > /tmp/drive-coordinate.json 2> /tmp/drive-coordinate.stderr
 ```
 
 - `--timeout 5400`: the default is 1800 s, and a real pipeline (opus architect, sonnet builder,
@@ -413,7 +419,9 @@ git log --oneline drive/issue-17..claustrum/<job id>
 git diff drive/issue-17...claustrum/<job id> --stat
 ```
 
-Expect: linear history, a commit citing `Closes #17`, no merge commits, nothing pushed. Run the
+Expect: linear history, a commit citing `Closes #<n>`, no merge commits, nothing pushed. The
+architect works **in your checkout** (only its builders get worktrees), so your working directory
+is on `claustrum/<job id>` when it returns: `git switch` back before touching anything. Run the
 gate yourself (`dotnet test`) before trusting the tester's report, then rebase and fast-forward the
 drive branch to it and open the PR by hand.
 
@@ -432,7 +440,8 @@ The things most likely to go wrong, with the fix already known:
 ## 18. Record what happened
 
 The drive is only worth doing if the numbers survive it. In `NOTES.md`, one dated section
-("First real task, 2026-09-xx"), keep:
+("First real task, 2026-09-xx"), keep (the first drive's record is NOTES.md "The first real
+tasks: the test drive, 2026-09-25 to 2026-10-08"):
 
 - per leg and per run: role, backend, model, `duration_seconds`, `cost_usd`, `report_status`,
   and whether `changed_files` matched the report — the same five columns every time;
