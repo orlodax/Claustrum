@@ -276,6 +276,49 @@ Any value may be an alias from `claustrum.json.models`. Every `delegate`/`run` a
 | **M3 backends + parallel** | `opencode`, `cursor`, `copilot`, `api` backends with recorded fixtures; their renderers + `/claustrum` skills; `ui-reviewer` (claude only); worktree isolation + `max_parallel` semaphore + tree budget; `init`, `doctor`, `sync --global` | `backends doctor` + `smoke.sh` green on Linux and `smoke.ps1` green on Windows for every installed backend (copilot, opencode after install); 3 parallel builders on a toy repo land on 3 branches with no clobbering; `sync --global --only claude` reproduces the owner's five files with only header diffs; cursor validated against a real `cursor-agent` (done 2026-09-21 on the owner's own install, issues #13/#14) |
 | **M4 coordinate + release** | `architect` role (last — it issues the delegations), `coordinate --cast --issues` (spawned architect, `gh` issue import, `Closes #n`), `INSTALL.md`, `release.yml` (5 RIDs + checksums + tool package), tier stubs generated | `claustrum coordinate --cast default --issues <n>` on a toy repo runs architect(opus) → 2 deepseek builders → opus review → flash tester unattended and leaves a rebased branch; tagged `v0.1.0` installs via binary on both OSes and via `dotnet tool install -g claustrum`; a fresh clone + INSTALL.md lets a teammate `/claustrum` from two different hosts |
 
+### M4 waves (2026-10-08)
+
+Measured on `main` 77627ff against the "done when" above: the `architect` role, `coordinate
+--cast --issues` with the `gh` import and `Closes #n`, `docs/INSTALL.md`, `release.yml` and the
+generated tier stubs are shipped, and the 2026-10-08 test drive (NOTES.md "The first real tasks")
+ran `coordinate` unattended on one issue and left a branch. What is not done: the branch is only
+trustworthy because the operator committed on the roles' behalf and watched a builder switch the
+main checkout (#61, #62); no `v0.1.0` tag or release exists. Three waves close the gap, each with
+its own gate; wave 1 is the agent team's, waves 2 and 3 need the owner's hands (a paid run, a tag,
+a NuGet secret, a Windows machine).
+
+**Wave 1 — a delegate's work lands on its branch, and only there** (#60 #61 #62 #63 #58 #68 #64
+#57 #66 #47). Code, roles and docs; gate = `dotnet build`, `dotnet test`, `dotnet format
+--verify-no-changes`, AOT publish with zero IL2026/IL3050.
+- The runner **commits an isolated run's leftover changes on the job branch** after the
+  after-snapshot and records `commit` on the receipt (#61, the runner-side option: roles stay
+  harness-neutral, the branch is never empty, `jobs clean` destroys nothing).
+- `worktree`/`branch` reach `result.json` because the Runner, not the caller, stamps them (#60).
+- An isolated run's user prompt ends with a trailer naming its worktree, its branch and the main
+  checkout it must not touch, and its deny list gains `git checkout`/`git switch` (#62).
+- `run --branch <name>` / MCP `branch`: an isolated run on an existing branch's tip, so a
+  remediation builder continues where the reviewed diff lives (#63).
+- A numeric `max_parallel` — 1 included — is always a cap: the concurrency gate runs for every
+  cast role that carries one; isolation still starts at 2 (#58).
+- The claude backend feeds the brief on stdin, never argv (#68, the cursor shape); the env
+  allow-list passes `CLAUDE_CONFIG_DIR` and `doctor` says whether it is set (#57).
+- builder/tester role text bounds cleanup to paths the run created by name (#64).
+- Tests: no spawned test process inherits `CLAUSTRUM_PARENT_JOB` (#66); worktree tests remove
+  their `/tmp/claustrum-*` directories (#47).
+Not in wave 1, filed as a follow-up: running the spawned architect itself in a worktree (today it
+works in the operator's checkout by design, TEST-DRIVE step 17); copilot's prompt on stdin.
+
+**Wave 2 — the acceptance drive** (new issue). The wave-1 binary runs `claustrum coordinate
+--cast default --issues <n>` unattended on a toy repo with `max_parallel: 2` and a remediation
+round; done when the children never touch the operator's checkout, every builder branch carries a
+commit, the remediation builder ran with `--branch`, and the work branch is linear with `Closes
+#<n>` — recorded with costs in NOTES.md and TEST-DRIVE step 18, every defect an issue on the board.
+
+**Wave 3 — release `v0.1.0`** (new issue). `release.yml` dry run via `workflow_dispatch`, then the
+tag; `SHA256SUMS.txt` checked; the binary installed per INSTALL.md on Linux and Windows; `dotnet
+tool install -g claustrum` from nuget.org when `NUGET_API_KEY` is set, otherwise from the release's
+`.nupkg` with `--add-source` (INSTALL.md says both). Closes #5.
+
 Phase 2 (not built now): `claustrum pipeline pipeline.json` — stages architect(api) → builders[] (parallel, git worktrees) → reviewer → tester, each stage a `RunRequest`; the runner feeds the reviewer only task + `RunResult.diff` (blind by construction), gates on `status`/verdict, aggregates one report.
 
 ## Verification (end-to-end)
