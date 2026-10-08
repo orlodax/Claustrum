@@ -35,8 +35,10 @@ public static class RolesCommands
     {
         try
         {
-            RoleDefinition definition = AppServices.RoleLibrary.LoadRole(role, Environment.CurrentDirectory).Definition;
+            LoadedRole loaded = AppServices.RoleLibrary.LoadRole(role, Environment.CurrentDirectory);
+            RoleDefinition definition = loaded.Definition;
             Console.WriteLine($"name:        {definition.Name}");
+            Console.WriteLine($"source:      {(loaded.IsLocalOverride ? "local (.claustrum/roles/)" : "library")}");
             Console.WriteLine($"description: {definition.Description}");
             Console.WriteLine($"blind:       {definition.Blind}");
             Console.WriteLine($"permission:  {definition.Permission}");

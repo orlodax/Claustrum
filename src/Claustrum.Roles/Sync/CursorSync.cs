@@ -77,7 +77,7 @@ public sealed class CursorSync(RoleLibrary library, RoleRenderer renderer, strin
         string frontmatter = BuildAgentFrontmatter(role, definition.Description, definition.Permission);
         string body = renderer.Render(role, "high", Harness, cwd).SystemBody;
         string path = Path.Combine(agentDir, $"{role}.md");
-        writer.Write(path, role, frontmatter, body, force, mode, into);
+        writer.Write(path, role, frontmatter, body, force, mode, into, localOverride: loaded.IsLocalOverride);
     }
 
     private void WriteTierStub(string agentDir, string role, string tier, LoadedRole loaded, string cwd, bool force, SyncMode mode, SyncAccumulator into)
@@ -86,7 +86,7 @@ public sealed class CursorSync(RoleLibrary library, RoleRenderer renderer, strin
         string frontmatter = BuildAgentFrontmatter($"{role}-{tier}", SyncWriter.TierDescription(role, tier, sameModel: true), loaded.Definition.Permission);
         string body = renderer.RenderTierStub(role, tier, cwd);
         string path = Path.Combine(agentDir, $"{role}-{tier}.md");
-        writer.Write(path, role, frontmatter, body, force, mode, into);
+        writer.Write(path, role, frontmatter, body, force, mode, into, localOverride: loaded.IsLocalOverride);
     }
 
     private void WriteSkill(string root, bool force, SyncMode mode, SyncAccumulator into)

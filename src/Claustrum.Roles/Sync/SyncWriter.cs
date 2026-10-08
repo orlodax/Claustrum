@@ -23,13 +23,15 @@ public sealed class SyncWriter(string harness, string libraryVersion)
 
     /// <summary>
     /// Writes (or, outside <see cref="SyncMode.Write"/>, proposes) one generated file and records the
-    /// outcome in <paramref name="into"/>.
+    /// outcome in <paramref name="into"/>. <paramref name="localOverride"/> stamps `source=local`
+    /// into the marker: the file was rendered from `.claustrum/roles/`, not the library alone.
     /// </summary>
-    public void Write(string path, string role, string frontmatter, string body, bool force, SyncMode mode, SyncAccumulator into)
+    public void Write(string path, string role, string frontmatter, string body, bool force, SyncMode mode, SyncAccumulator into, bool localOverride = false)
     {
         string trimmedBody = body.Trim();
         string sha256 = ComputeSha256(trimmedBody);
-        string marker = $"{MarkerPrefix} role={role} harness={harness} library={libraryVersion} sha256={sha256} -->";
+        string source = localOverride ? " source=local" : "";
+        string marker = $"{MarkerPrefix} role={role} harness={harness} library={libraryVersion}{source} sha256={sha256} -->";
         string content = $"{frontmatter.Trim()}\n{marker}\n\n{trimmedBody}\n";
 
         if (File.Exists(path))

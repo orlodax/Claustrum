@@ -46,7 +46,7 @@ public sealed class CopilotSync(RoleLibrary library, RoleRenderer renderer, stri
 
             foreach (string tier in generatedTiers)
                 if (loaded.Definition.Tiers.ContainsKey(tier))
-                    WriteTierStub(agentDir, role, tier, cwd, force, mode, into);
+                    WriteTierStub(agentDir, role, tier, loaded, cwd, force, mode, into);
         }
 
         WriteSkill(githubRoot, force, mode, into);
@@ -59,16 +59,16 @@ public sealed class CopilotSync(RoleLibrary library, RoleRenderer renderer, stri
         string frontmatter = BuildAgentFrontmatter(role, loaded.Definition.Description);
         string body = renderer.Render(role, "high", Harness, cwd).SystemBody;
         string path = Path.Combine(agentDir, $"{role}.agent.md");
-        writer.Write(path, role, frontmatter, body, force, mode, into);
+        writer.Write(path, role, frontmatter, body, force, mode, into, localOverride: loaded.IsLocalOverride);
     }
 
-    private void WriteTierStub(string agentDir, string role, string tier, string cwd, bool force, SyncMode mode, SyncAccumulator into)
+    private void WriteTierStub(string agentDir, string role, string tier, LoadedRole loaded, string cwd, bool force, SyncMode mode, SyncAccumulator into)
     {
         // Every copilot stub emits `model: auto`, so the model never differs from the base agent's (#30).
         string frontmatter = BuildAgentFrontmatter($"{role}-{tier}", SyncWriter.TierDescription(role, tier, sameModel: true));
         string body = renderer.RenderTierStub(role, tier, cwd);
         string path = Path.Combine(agentDir, $"{role}-{tier}.agent.md");
-        writer.Write(path, role, frontmatter, body, force, mode, into);
+        writer.Write(path, role, frontmatter, body, force, mode, into, localOverride: loaded.IsLocalOverride);
     }
 
     private void WriteSkill(string githubRoot, bool force, SyncMode mode, SyncAccumulator into)

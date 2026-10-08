@@ -9,7 +9,8 @@ namespace Claustrum.Roles;
 
 /// <summary>
 /// Loads the embedded `roles/` library (docs/PLAN.md §B2), with `&lt;cwd&gt;/.claustrum/roles/&lt;role&gt;/`
-/// winning over it file-by-file. `role.json` is deep-merged rather than replaced wholesale.
+/// overriding a role's own files: `ROLE.md` and each `parts/` file replace theirs, `role.json` is
+/// deep-merged. `_shared/` (house rules, report formats, tier stub) is never overridable.
 /// </summary>
 public sealed class RoleLibrary
 {
@@ -61,18 +62,31 @@ public sealed class RoleLibrary
         string localDir = Path.Combine(cwd, ".claustrum", "roles", role);
         string localRoleJsonPath = Path.Combine(localDir, "role.json");
         string localRoleMdPath = Path.Combine(localDir, "ROLE.md");
-        bool isLocalOverride = File.Exists(localRoleJsonPath) || File.Exists(localRoleMdPath);
+        string localPartsDir = Path.Combine(localDir, "parts");
+        bool hasLocalRoleJson = File.Exists(localRoleJsonPath);
+        bool isLocalOverride = hasLocalRoleJson || File.Exists(localRoleMdPath)
+            || (Directory.Exists(localPartsDir) && Directory.EnumerateFiles(localPartsDir).Any());
 
-        JsonNode mergedNode = baseNode;
-        if (File.Exists(localRoleJsonPath))
+        RoleDefinition definition;
+        try
         {
-            JsonNode overrideNode = JsonNode.Parse(File.ReadAllText(localRoleJsonPath))
-                ?? throw new RoleRenderException($"role '{role}': local role.json parsed to null");
-            mergedNode = DeepMerge(baseNode, overrideNode);
-        }
+            JsonNode mergedNode = baseNode;
+            if (hasLocalRoleJson)
+            {
+                JsonNode overrideNode = JsonNode.Parse(File.ReadAllText(localRoleJsonPath))
+                    ?? throw new RoleRenderException($"role '{role}': '{localRoleJsonPath}' parsed to null");
+                mergedNode = DeepMerge(baseNode, overrideNode);
+            }
 
-        RoleDefinition definition = JsonSerializer.Deserialize(mergedNode.ToJsonString(), RolesJsonContext.Default.RoleDefinition)
-            ?? throw new RoleRenderException($"role '{role}': merged role.json deserialized to null");
+            definition = JsonSerializer.Deserialize(mergedNode.ToJsonString(), RolesJsonContext.Default.RoleDefinition)
+                ?? throw new RoleRenderException($"role '{role}': merged role.json deserialized to null");
+        }
+        catch (JsonException ex) when (hasLocalRoleJson)
+        {
+            // The embedded role.json is pinned by RoleLibraryInvariantTests, so a parse or type error
+            // here is the local file's; without its path the CLI printed a bare `error:` and exit 1.
+            throw new RoleRenderException($"role '{role}': '{localRoleJsonPath}': {ex.Message}");
+        }
 
         string roleMd = File.Exists(localRoleMdPath)
             ? File.ReadAllText(localRoleMdPath)
