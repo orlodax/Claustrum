@@ -195,7 +195,22 @@ public sealed class RunnerTests : IDisposable
 
         RunResult result = await runner.RunAsync(request, MakeRole(), DefaultOptions(), cts.Token);
 
-        Assert.Equal(RunStatus.Cancelled, result.Status);
+        Assert.True(result.Status == RunStatus.Cancelled, $"{result.Status}: {result.Error}");
+        Assert.True(File.Exists(ResultJsonPath(result)));
+    }
+
+    // A cancel landing in the before-snapshot is a cancel, not a failure: on a Windows runner git is
+    // slow enough that the 300 ms cancel above landed there and read as Failed (PR #75 CI, 2026-10-08).
+    [Fact]
+    public async Task ACancelBeforeTheBackendStartsIsCancelledAndStillWritesAResultJsonAsync()
+    {
+        Runner runner = NewRunner(ScriptedBackend.Sleep(10));
+        using CancellationTokenSource cts = new();
+        await cts.CancelAsync();
+
+        RunResult result = await runner.RunAsync(MakeRequest(), MakeRole(), DefaultOptions(), cts.Token);
+
+        Assert.True(result.Status == RunStatus.Cancelled, $"{result.Status}: {result.Error}");
         Assert.True(File.Exists(ResultJsonPath(result)));
     }
 
