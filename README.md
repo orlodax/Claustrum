@@ -97,14 +97,15 @@ committable and shared:
   "budget_usd": 10 }
 ```
 
-`claustrum cast create` writes exactly this shape, and a document without `roles` or `architect` is
-refused on load — don't hand-write a flat one. A role set to `null` is "not needed".
+`claustrum cast create` writes this shape; `tier` and `backend` are hand edits it leaves `null`. A
+document without `roles` or `architect` is refused on load — don't hand-write a flat one. A role set
+to `null` is "not needed".
 
-`/claustrum` in any chat asks eight questions — architect (host or spawned), builder, reviewers,
-demo-author and tester (or "not needed"), the builders' parallel cap, a budget (or "no cap") — and
-the *tool* owns the questionnaire (`claustrum cast questions --json`) so the questions and their
-live options are identical in every host. `budget_usd: null` disables the cap; `cast show` then
-says so.
+`/claustrum` in any chat asks one question per library role — architect (host or spawned), builder,
+reviewers, demo-author and tester (or "not needed") — then the builders' parallel cap and a budget
+(or "no cap"). The *tool* owns the questionnaire (`claustrum cast questions --json`) so the questions
+and their live options are identical in every host. `budget_usd: null` disables the cap; `cast show`
+prints it as `"budget_usd": null`.
 
 ## Roles: one source, every harness
 

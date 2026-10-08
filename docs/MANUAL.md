@@ -303,14 +303,14 @@ variable is present.
 - A role set to `null` is "not needed": an architect under that cast neither delegates to it nor
   does its work.
 - `max_parallel` on the builder > 1 turns on worktree isolation for every builder run (§9).
-- `budget_usd: null` disables the cap (`cast show` prints `budget: unlimited`); a per-call
+- `budget_usd: null` disables the cap (`cast show` prints it as `"budget_usd": null`); a per-call
   `--budget` still applies.
 - Per-call `--model`/`--backend`/`--tier` flags override the cast for that call.
 
 **The questionnaire** is owned by the tool so it is identical in every host: `claustrum cast
-questions --json` returns eight questions with their live options (the aliases in `claustrum.json`
-that land on a harness the role lists; `not needed` where allowed; free-form `backend:id`; `no cap`
-for the budget):
+questions --json` returns one question per library role, then the builders' parallel cap and the
+budget, with their live options (the aliases in `claustrum.json` that land on a harness the role
+lists; `not needed` where allowed; free-form `backend:id`; `no cap` for the budget):
 
 | key | prompt | allows |
 |---|---|---|
