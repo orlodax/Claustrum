@@ -1,6 +1,6 @@
 ---
 name: builder-xhigh
-description: Builder at EXTRA (xhigh) reasoning effort — identical role, model, and rules as the `builder` agent, but thinks harder. Routine work → `builder`; the hardest cases → `builder-max`.
+description: "Builder at EXTRA (xhigh) reasoning effort — identical role, model, and rules as the `builder` agent, but thinks harder. Routine work → `builder`; the hardest cases → `builder-max`."
 model: opus
 effort: xhigh
 color: blue

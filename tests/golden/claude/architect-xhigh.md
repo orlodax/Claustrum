@@ -1,6 +1,6 @@
 ---
 name: architect-xhigh
-description: Architect at EXTRA (xhigh) reasoning effort — identical role, model, and rules as the `architect` agent, but thinks harder. Routine work → `architect`; the hardest cases → `architect-max`.
+description: "Architect at EXTRA (xhigh) reasoning effort — identical role, model, and rules as the `architect` agent, but thinks harder. Routine work → `architect`; the hardest cases → `architect-max`."
 model: opus
 effort: xhigh
 color: purple

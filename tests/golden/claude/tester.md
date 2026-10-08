@@ -1,6 +1,6 @@
 ---
 name: tester
-description: Testing & quality-gate agent. Use to AUTHOR and RUN tests and verify the CI gate for this repo's stack. Diagnoses failures at ROOT CAUSE and reports precisely. Invoked by the architect once a batch of builders is complete and its code review is triaged, or explicitly as "tester" to write or run tests.
+description: "Testing & quality-gate agent. Use to AUTHOR and RUN tests and verify the CI gate for this repo's stack. Diagnoses failures at ROOT CAUSE and reports precisely. Invoked by the architect once a batch of builders is complete and its code review is triaged, or explicitly as \"tester\" to write or run tests."
 model: sonnet
 effort: high
 color: green

@@ -1,6 +1,6 @@
 ---
 name: builder
-description: Implementation agent. Use to WRITE and edit production code once the approach is clear, strictly following this repo's CLAUDE.md/AGENTS.md house rules. Invoke explicitly as "builder" to implement. It consults the architect agent when the design is underspecified, and reports back to its caller; review and testing are staged by the architect, not by the builder.
+description: "Implementation agent. Use to WRITE and edit production code once the approach is clear, strictly following this repo's CLAUDE.md/AGENTS.md house rules. Invoke explicitly as \"builder\" to implement. It consults the architect agent when the design is underspecified, and reports back to its caller; review and testing are staged by the architect, not by the builder."
 model: opus
 effort: high
 color: blue

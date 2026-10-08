@@ -1,6 +1,6 @@
 ---
 name: architect
-description: Design & planning agent. Use PROACTIVELY to turn a feature request, bug, or refactor into a concrete, repo-compliant implementation plan BEFORE any code is written. Invoke explicitly as "architect" when you want the design phase. It does not ship production code itself: it hands implementation to the builder agent, then routes the finished batch through a blind code-reviewer (plus a blind ui-reviewer when the change has a browser-facing side) and the tester agent.
+description: "Design & planning agent. Use PROACTIVELY to turn a feature request, bug, or refactor into a concrete, repo-compliant implementation plan BEFORE any code is written. Invoke explicitly as \"architect\" when you want the design phase. It does not ship production code itself: it hands implementation to the builder agent, then routes the finished batch through a blind code-reviewer (plus a blind ui-reviewer when the change has a browser-facing side) and the tester agent."
 model: opus
 effort: high
 color: purple
