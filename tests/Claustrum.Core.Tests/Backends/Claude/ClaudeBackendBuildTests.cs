@@ -19,9 +19,10 @@ public sealed class ClaudeBackendBuildTests
         string effort = "high",
         string? resume = null,
         bool stream = false,
-        Dictionary<string, string>? env = null) => new(
+        Dictionary<string, string>? env = null,
+        string brief = "do the thing") => new(
             Role: new ResolvedRole("builder", "system body", "claude", "sonnet", effort, permission, Blind: false, HasReport: true),
-            Brief: "do the thing",
+            Brief: brief,
             Cwd: "/repo",
             BudgetUsd: budget,
             ResumeSession: resume,
@@ -44,7 +45,6 @@ public sealed class ClaudeBackendBuildTests
             "--allowedTools", "Read,Glob,Grep,Bash(git diff*),Bash(git log*),Bash(git show*),Bash(git status*),Bash(gh pr *),Bash(gh issue *)",
             "--no-session-persistence",
             "--effort", "high",
-            "do the thing",
         ], spec.Args);
     }
 
@@ -71,7 +71,6 @@ public sealed class ClaudeBackendBuildTests
             "--disallowedTools", "Bash",
             "--no-session-persistence",
             "--effort", "high",
-            "do the thing",
         ], spec.Args);
     }
 
@@ -89,7 +88,6 @@ public sealed class ClaudeBackendBuildTests
             "--disallowedTools", "Bash(git push),Bash(git push *)",
             "--no-session-persistence",
             "--effort", "high",
-            "do the thing",
         ], spec.Args);
     }
 
@@ -166,7 +164,6 @@ public sealed class ClaudeBackendBuildTests
             "--dangerously-skip-permissions", "--permission-prompts", "none",
             "--no-session-persistence",
             "--effort", "high",
-            "do the thing",
         ], spec.Args);
     }
 
@@ -247,12 +244,38 @@ public sealed class ClaudeBackendBuildTests
         Assert.Equal(["-p", "--output-format", "json"], spec.Args[..3]);
     }
 
+    // #68: the brief rides on stdin, so it shows in no process listing (a tester's `pgrep -f` pattern
+    // quoted in a brief matched the job running it) and no longer counts against the argv length cap.
     [Fact]
-    public void BriefIsTheFinalArgument()
+    public void BriefGoesOnStdinAndNowhereOnArgv()
     {
         ProcessSpec spec = backend.Build(MakeRun(new PermissionPolicy(PermissionLevel.Full, [])));
 
-        Assert.Equal("do the thing", spec.Args[^1]);
+        Assert.Equal("do the thing", spec.StdinText);
+        Assert.DoesNotContain(spec.Args, arg => arg.Contains("do the thing", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void AResumedRunStillTakesItsBriefOnStdin()
+    {
+        ProcessSpec spec = backend.Build(MakeRun(new PermissionPolicy(PermissionLevel.Full, []), resume: "sess-123"));
+
+        Assert.Equal("do the thing", spec.StdinText);
+        Assert.Equal(["--resume", "sess-123"], spec.Args[^2..]);
+        Assert.DoesNotContain(spec.Args, arg => arg.Contains("do the thing", StringComparison.Ordinal));
+    }
+
+    // A brief long enough to break a command line (Windows caps it at 32,767 characters) or to carry
+    // every shell metacharacter reaches the child byte for byte, because nothing parses stdin.
+    [Fact]
+    public void ALongAwkwardBriefIsPassedVerbatimOnStdin()
+    {
+        string brief = string.Concat(Enumerable.Repeat("quote \" backtick ` dollar $HOME newline\n \u20AC ", 2000));
+
+        ProcessSpec spec = backend.Build(MakeRun(new PermissionPolicy(PermissionLevel.Full, []), brief: brief));
+
+        Assert.Equal(brief, spec.StdinText);
+        Assert.True(spec.Args.Sum(arg => arg.Length) < 1000, "argv must not grow with the brief");
     }
 
     // The rung ui-reviewer needs: run the app, never change it. ReadOnly withholds the shell it uses
@@ -298,7 +321,6 @@ public sealed class ClaudeBackendBuildTests
             "--disallowedTools", "Agent,Task",
             "--no-session-persistence",
             "--effort", "high",
-            "do the thing",
         ], spec.Args);
     }
 
@@ -316,7 +338,6 @@ public sealed class ClaudeBackendBuildTests
             "--disallowedTools", "Agent,Task",
             "--no-session-persistence",
             "--effort", "high",
-            "do the thing",
         ], spec.Args);
     }
 
@@ -334,7 +355,6 @@ public sealed class ClaudeBackendBuildTests
             "--disallowedTools", "Agent,Task",
             "--no-session-persistence",
             "--effort", "high",
-            "do the thing",
         ], spec.Args);
     }
 
@@ -352,7 +372,6 @@ public sealed class ClaudeBackendBuildTests
             "--disallowedTools", "Agent,Task",
             "--no-session-persistence",
             "--effort", "high",
-            "do the thing",
         ], spec.Args);
     }
 
@@ -369,14 +388,12 @@ public sealed class ClaudeBackendBuildTests
             "--disallowedTools", "Agent,Task",
             "--no-session-persistence",
             "--effort", "high",
-            "do the thing",
         ], spec.Args);
     }
 
     // Resume drops --no-session-persistence, but --effort still follows the tree block before
-    // --resume and the brief — the block is never adjacent to the brief either way (NOTES.md
-    // "--disallowedTools is variadic and swallows the following positional": the brief must never be
-    // the flag's own next argument).
+    // --resume. Since #68 no positional follows the argv at all (the brief is on stdin), so the
+    // variadic --disallowedTools has nothing to swallow whatever comes last.
     [Fact]
     public void ResumingUnderATreeStillAddsDisallowedToolsRightAfterThePermissionBlock()
     {
@@ -390,7 +407,6 @@ public sealed class ClaudeBackendBuildTests
             "--disallowedTools", "Agent,Task",
             "--effort", "high",
             "--resume", "sess-123",
-            "do the thing",
         ], spec.Args);
     }
 
@@ -400,7 +416,7 @@ public sealed class ClaudeBackendBuildTests
     [InlineData(PermissionLevel.Edit)]
     [InlineData(PermissionLevel.EditShell)]
     [InlineData(PermissionLevel.Full)]
-    public void EveryLevelAddsDisallowedToolsExactlyOnceUnderATreeAndNeverAsTheLastArgumentBeforeTheBrief(PermissionLevel level)
+    public void EveryLevelAddsDisallowedToolsExactlyOnceUnderATree(PermissionLevel level)
     {
         ProcessSpec spec = backend.Build(MakeRun(new PermissionPolicy(level, []), env: TreeEnv()));
 
@@ -412,7 +428,6 @@ public sealed class ClaudeBackendBuildTests
         }
 
         Assert.Equal(1, occurrences);
-        Assert.NotEqual("do the thing", spec.Args[Array.IndexOf(spec.Args, "Agent,Task") + 1]);
     }
 
     [Theory]
