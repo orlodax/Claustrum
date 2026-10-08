@@ -28,7 +28,10 @@ public sealed record DelegateRequest(
     // Appended to the rendered role's system body before Config.Resolve — how `coordinate` gets the
     // cast into its architect's prompt without Roles/Core learning what a cast is (NOTES.md
     // "coordinate: a spawned architect is a job run with the cast injected…"). May carry JobIdToken.
-    string? SystemAppendix = null)
+    string? SystemAppendix = null,
+    // `run --branch` / MCP `branch` (#63): an existing local branch the run continues on, isolated in a
+    // new worktree whatever MaxParallel says — how a reviewed builder's branch gets its fix.
+    string? Branch = null)
 {
     /// <summary>
     /// The exact token <see cref="SystemAppendix"/> and <see cref="Env"/> values may carry in place of

@@ -14,5 +14,10 @@ public static class GitProcess
     private static readonly TimeSpan gitTimeout = TimeSpan.FromSeconds(30);
 
     public static async Task<(int ExitCode, string Stdout, string Stderr)> RunAsync(string cwd, string[] args, CancellationToken cancellationToken) =>
-        await CommandProcess.RunAsync("git", cwd, args, gitTimeout, cancellationToken);
+        await RunAsync(cwd, args, gitTimeout, cancellationToken);
+
+    // For the calls that run the repo's own code: `git commit` its hooks, `git add` its clean filters, `git worktree
+    // add` its smudge filters and post-checkout hook (JobWorktree.CommitAllAsync, TryAddAsync).
+    public static async Task<(int ExitCode, string Stdout, string Stderr)> RunAsync(string cwd, string[] args, TimeSpan timeout, CancellationToken cancellationToken) =>
+        await CommandProcess.RunAsync("git", cwd, args, timeout, cancellationToken);
 }

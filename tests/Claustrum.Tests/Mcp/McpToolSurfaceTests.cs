@@ -45,6 +45,22 @@ public sealed class McpToolSurfaceTests
         Assert.Contains(state, jobStatus.GetCustomAttribute<DescriptionAttribute>()!.Description, StringComparison.Ordinal);
     }
 
+    // #63: `branch` on delegate and delegate_async, the same words as `run --branch`, plus what comes back.
+    [Theory]
+    [InlineData("delegate")]
+    [InlineData("delegate_async")]
+    public void DelegateAndDelegateAsyncTakeAnOptionalBranchParameterThatSaysWhatItDoes(string tool)
+    {
+        MethodInfo method = Tools().Single(entry => entry.Name == tool).Method;
+
+        ParameterInfo branch = Assert.Single(method.GetParameters(), parameter => parameter.Name == "branch");
+        Assert.Equal(typeof(string), branch.ParameterType);
+        Assert.True(branch.IsOptional);
+        string description = branch.GetCustomAttribute<DescriptionAttribute>()?.Description ?? "";
+        Assert.Contains("Run isolated in a new worktree checked out on this existing branch", description, StringComparison.Ordinal);
+        Assert.Contains("The result's worktree and branch name it, and commit is the branch tip the run left.", description, StringComparison.Ordinal);
+    }
+
     private static IEnumerable<(string Name, MethodInfo Method)> Tools() =>
         typeof(ClaustrumTools)
             .GetMethods(BindingFlags.Public | BindingFlags.Static)

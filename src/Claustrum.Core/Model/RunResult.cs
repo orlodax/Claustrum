@@ -2,8 +2,8 @@ using System.Text.Json;
 
 namespace Claustrum.Core.Model;
 
-// Additive over docs/PLAN.md A2's original sketch: ReportStatus + Warnings were added once report
-// extraction (B3) was implemented — schema_version stays "1" because both are new optional fields.
+// Additive over docs/PLAN.md A2's original sketch, each a new optional field, so schema_version
+// stays "1": ReportStatus + Warnings (report extraction, B3), Worktree + Branch (§D4), Commit (#61).
 public sealed record RunResult(
     string SchemaVersion,
     string JobId,
@@ -26,8 +26,10 @@ public sealed record RunResult(
     ClaustrumReport? Report,
     ReportStatus ReportStatus,
     string[] Warnings,
-    // Set only for a max_parallel > 1 job (docs/PLAN.md §D4): the job ran inside its own
-    // `.claustrum/worktrees/<job>` on branch Branch rather than directly in the request's cwd.
-    // Additive like ReportStatus/Warnings above — schema_version stays "1".
+    // Set for an isolated run (docs/PLAN.md §D4: max_parallel > 1, or --branch, #63): it ran inside its
+    // own `.claustrum/worktrees/<job>` on branch Branch rather than directly in the request's cwd.
     string? Worktree = null,
-    string? Branch = null);
+    string? Branch = null,
+    // An isolated run's branch tip after the run, when the run moved it: the runner's commit of the
+    // leftovers, or the role's own (#61). Null when nothing changed or the commit failed (a warning).
+    string? Commit = null);

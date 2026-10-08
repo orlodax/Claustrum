@@ -60,17 +60,30 @@ claustrum run <role> [--brief <text> | --brief-file <path|->]
     [--cwd <dir>] [--backend <name>] [--model <alias|backend:id>] [--effort <e>] [--tier high|xhigh|max]
     [--permission readonly|shell|edit|edit+shell|full] [--deny <pattern>]…
     [--budget <usd>] [--timeout <sec>] [--resume <session>] [--file <path>]… [--env K=V]…
-    [--cast <name>] [--json] [--stream] [--raw]
+    [--cast <name>] [--branch <name>] [--json] [--stream] [--raw]
 ```
 
 - The brief is mandatory: `--brief`, `--brief-file`, or `--brief-file -` for stdin.
 - Precedence for model and tier: explicit flag > cast entry > role's tier default > built-in
   aliases. `--backend` alone changes the harness and keeps the model id, which is rarely what you
   want (`opus` is not a copilot id): prefer `--model backend:id`.
-- `--cast` defaults to `.claustrum/casts/default.json` when that file exists. With a cast whose
-  builder has `max_parallel > 1`, **every** builder run gets its own worktree and branch (§9).
+- `--cast` defaults to `.claustrum/casts/default.json` when that file exists. A cast role with a
+  numeric `max_parallel` — 1 included — caps how many of its runs go at once; above 1, **every**
+  builder run gets its own worktree and branch (§9).
+- `--branch <name>` runs isolated in a new worktree checked out on that **existing local branch**,
+  whatever the cast's `max_parallel` — e.g. `--branch claustrum/<job id>` to send a reviewed
+  builder's branch back for a fix (§9). Two runs on one branch run one after the other: the second
+  waits for the first's receipt, up to its `--timeout`. An unknown name, a branch checked out
+  anywhere but the clean worktree of a job finished under this `CLAUSTRUM_HOME`, one git itself
+  will not check out (mid-rebase in another worktree) or does not check out within 5 minutes, or a
+  wait for the branch that outlasts `--timeout` comes back `status: failed` (exit 1, a receipt like
+  any other) with the reason — and the holder, if any — in `error`, and no worktree left behind
+  (`error` names anything the undo could not remove).
 - `--stream` echoes the backend's output to **stderr** while it runs; stdout still carries only
   the final document. `--raw` adds the backend's untouched response under `raw`.
+- Without `--json`, stdout gets `status:`, then `branch:`/`worktree:`/`commit:` when the run was
+  isolated, the changed files and the final message; every warning goes to stderr as
+  `warning: …`, and the error as `error: …`.
 
 ### `claustrum coordinate`
 
@@ -105,7 +118,12 @@ backend, or it skips with "no model alias … resolves to this backend".
 - `list`: recent jobs, newest first — id, status, `role/backend`.
 - `show`: the receipt (`result.json`), or the request if it has not finished.
 - `logs`: the captured stdout (readable while the job runs); `--stderr` for the other stream.
-- `clean`: removes the **worktrees** of finished parallel jobs; their branches stay.
+- `clean`: removes the **worktrees** of finished isolated jobs; their branches stay, with the work
+  committed on them. It never forces: a worktree with anything uncommitted — new files included,
+  whatever `status.showUntrackedFiles` says (a commit the runner could not make, a hard-killed run)
+  — or one git will not remove plainly (a submodule the role populated) is printed as `could not
+  remove <job>: <path> left in place: <reason>` and exits 1. Commit or discard what is in it, then
+  rerun.
 - `budget <tree>`: the ledger of one tree (§10); `--reset` deletes it, refused while a member runs.
 
 ### `claustrum cast questions [--json] | create --answers <file> [--name n] | new [--name n] | list | show <name> | use <name>`
@@ -220,13 +238,14 @@ One JSON document, `schema_version: "1"`, snake_case, additive changes only:
 | `final_message` | backend | the agent's last message, report fence included |
 | `report` | extracted | `{data: <parsed JSON>, raw_text}` from the `claustrum-report` fence |
 | `report_status` | extracted | `ok`, `missing` (no fence), `unparsed` (fence, invalid JSON — `raw_text` kept) |
-| `changed_files[{path, kind}]` | **git**, before/after snapshots | `A`/`M`/`D`; right even when the harness does not list edits |
-| `diff`, `diff_truncated` | git | `git diff HEAD` on those paths plus `--no-index` for new files; 200 KB cap (64 KB via MCP) |
-| `worktree`, `branch` | runner | only for a parallel builder: where it ran, `claustrum/<job_id>` |
+| `changed_files[{path, kind}]` | **git**, before/after snapshots | `A`/`M`/`D`; right even when the harness does not list edits. An isolated run whose branch moved reports the branch's delta from the commit it started on instead — what the runner or the role committed, plus anything left uncommitted; empty when the run's worktree was no longer its own (`warnings[]` says so) |
+| `diff`, `diff_truncated` | git | `git diff HEAD` on those paths plus `--no-index` for new files (an isolated run whose branch moved: `git diff <starting commit>`); 200 KB cap (64 KB via MCP) |
+| `worktree`, `branch` | runner | for any isolated run (`max_parallel > 1` or `--branch`): where it ran, and the branch — `claustrum/<job_id>`, or the `--branch` name |
+| `commit` | runner, git | isolated runs: the branch tip after the run when the run moved it — the runner's commit of what was left uncommitted, or the role's own; `null` when nothing changed, or when the commit failed (then `warnings[]` says the work was left uncommitted, and on which branch), or was skipped because the worktree's path was no longer the job's worktree on its branch |
 | `cost_usd`, `usage` | backend | `null` for copilot and cursor, which report neither |
 | `session_id` | backend | for `--resume` |
 | `exit_code`, `duration_seconds`, `log_path` | runner | `log_path` is the job's `stdout.log` |
-| `warnings[]` | runner | e.g. several report fences, last one won |
+| `warnings[]` | runner | e.g. several report fences, last one won; work left uncommitted on an isolated run's branch |
 | `raw` | backend | only with `--raw` / `include_raw` |
 
 Renames arrive as an `A` plus a `D`; a non-git working directory falls back to an mtime/size scan
@@ -318,7 +337,8 @@ committable, shared with the team:
   it headlessly on `architect.model`.
 - A role set to `null` is "not needed": an architect under that cast neither delegates to it nor
   does its work.
-- `max_parallel` on the builder > 1 turns on worktree isolation for every builder run (§9).
+- `max_parallel` on the builder caps how many builders run at once, at any number; above 1 it also
+  turns on worktree isolation for every builder run (§9).
 - `budget_usd: null` disables the cap (`cast show` prints it as `"budget_usd": null`); a per-call
   `--budget` still applies.
 - Per-call `--model`/`--backend`/`--tier` flags override the cast for that call.
@@ -348,16 +368,63 @@ fail even when no answer uses an alias.
 
 ## 9. Parallel builders
 
-With `max_parallel > 1` each builder job runs in `git worktree add .claustrum/worktrees/<job> -b
-claustrum/<job>` from the repo's `HEAD`; `changed_files`/`diff` are computed inside the worktree and
-the receipt carries `worktree` and `branch`. The cap is a per-cast semaphore shared by the CLI and
-the MCP door: a job past the cap **waits** for a slot, up to its `--timeout` (default 1800 s), and
-then comes back `status: failed` with `all N '<cast>__<role>' slots … stayed unavailable`, having
-done nothing.
+**The cap.** A numeric `max_parallel` is a cap at every value, 1 included: a per-cast semaphore
+shared by the CLI and the MCP door. A job past the cap **waits** for a slot, up to its `--timeout`
+(default 1800 s), and then comes back `status: failed` with `all N '<cast>__<role>' slots … stayed
+unavailable`, having done nothing. At 1 the runs queue and each works in the working directory
+itself.
 
-Integration is the architect's and it is by **rebase onto the work branch, then fast-forward** —
-never a merge commit, never `git push` (every role's deny list). `claustrum jobs clean` removes the
-worktrees of finished jobs and keeps the branches.
+**Isolation** starts at 2, or with `--branch`. Each such job runs in `git worktree add
+.claustrum/worktrees/<job> -b claustrum/<job>` from the repo's `HEAD` — with `--branch <name>`,
+`git worktree add .claustrum/worktrees/<job> <name>` on that existing branch instead.
+`changed_files`/`diff` are computed inside the worktree and the receipt carries `worktree`,
+`branch` and `commit`. The checkout runs the repo's smudge filters and post-checkout hook, so it
+gets 5 minutes; one that fails, outlasts them or is cancelled is undone — a `-b` branch it cut
+included — before the run reports or exits, so no half-made worktree stays registered.
+
+**An isolated run stays in its worktree.** Its prompt ends with a trailer naming the worktree, its
+branch and the main checkout it must never touch, and its deny list gains `git checkout` and
+`git switch` — enforced natively on claude, opencode and copilot at every level that applies a deny
+list (not `full`), a prompt rule on cursor. The deny is a guard on how a command is written (§13):
+`git -C <main checkout> checkout …` is not matched, which is why the trailer is there too.
+
+**The runner commits the work.** When an isolated run ends — whatever its status, as long as the
+backend ran — the runner commits everything left uncommitted in the worktree on its branch:
+subject `claustrum <role> <job_id>`, the report's `summary` as the body, the repo's own git
+identity and hooks. `commit` on the receipt is the branch tip whenever the run moved it, so a role
+that committed by itself is recorded too, and `changed_files`/`diff` are then the branch's delta
+from the commit the run started on: what was committed — by the runner or by the role — and
+whatever is still uncommitted. A commit git refuses (no identity, a failing hook) leaves the work in
+the worktree and a `warnings[]` entry `work left uncommitted on <branch>: …`; the run's status is
+untouched. The runner commits only in a directory that is still the job's worktree on its branch:
+one whose worktree was removed under it (a `jobs clean` from another `CLAUSTRUM_HOME`) is, to git,
+part of the main checkout, so the runner commits nothing, reports no changes and no `commit`, and
+warns `work left uncommitted: <path> is not the job worktree on <branch> (…)`. A worktree that is
+still the job's but no longer on its branch — the role stopped mid-rebase (a detached `HEAD`) or
+switched it — gets no commit either; its receipt keeps the changes read inside it, `commit` is
+null, and it warns `work left uncommitted: <path> is on <a detached HEAD | refs/heads/…>, not
+<branch>`.
+
+**Integration** is the architect's and it is by **rebase onto the work branch, then fast-forward**
+— never a merge commit, never `git push` (every role's deny list). A builder's branch stays checked
+out in its worktree until `claustrum jobs clean`, and git will not rebase a branch checked out
+elsewhere (`fatal: '<branch>' is already used by worktree at '…'`): run `claustrum jobs clean`
+first, or rebase inside that worktree (`git -C <worktree> rebase <work branch>`) and fast-forward
+the work branch to it. A builder whose receipt warns `work left uncommitted on <branch>` has its
+work only in its worktree: commit it there first; the two other `work left uncommitted:` warnings
+are routed in §15. To send a reviewed builder back for a fix, run it
+with `--branch <the branch on its receipt>` — `claustrum/<that job id>`, or the name a `--branch`
+builder was given: it continues on the same branch in a fresh worktree, and the fix lands there as
+another commit. A branch can be checked out in one worktree at a time, so the finished job's
+worktree is removed first — only if it is clean (new files count, whatever
+`status.showUntrackedFiles` says), and only when it is a `.claustrum/worktrees/<job id>` whose job
+wrote its `result.json` under this `CLAUSTRUM_HOME`. A branch held by the main checkout, a running
+job, a job this `CLAUSTRUM_HOME` has no directory for (one run under another home, or pruned by
+`jobs.keep_last`: `claustrum jobs clean` under the home that ran it frees it) or anything else is
+refused with the holder named. Runs on one branch never overlap: a second `--branch` run on it waits
+for the first one's receipt (up to its `--timeout`), then takes the branch over from the finished
+worktree. `claustrum jobs clean` removes the worktrees of finished jobs, never with `--force`, and
+keeps the branches.
 
 ## 10. Budget
 
@@ -405,8 +472,12 @@ the same request `run` builds, for the `architect` role, and adds exactly three 
    to it"), the budget across the tree, the delegate command (`claustrum run <role> --cast "<name>"
    --brief-file <path> --json --cwd "<dir>"`), the four `budget_exceeded` routes, "write each brief
    to `.claustrum/briefs/<n>-<role>.md`", and the work branch: **`claustrum/<job id>`, created from
-   `HEAD` before delegating anything**, into which each parallel builder's branch is rebased and
-   fast-forwarded — never a merge, never a push.
+   `HEAD` before delegating anything**, into which each parallel builder's branch (which carries its
+   work as a commit, unless its receipt warns the work was left uncommitted) is rebased — after
+   `claustrum jobs clean`, or inside the builder's worktree — and fast-forwarded; never a merge,
+   never a push. An isolated builder sent back for a fix runs with `--branch <the branch on its
+   receipt>` (an in-place builder has no branch: its work is already in the working tree), and
+   `max_parallel` is a cap at every value.
 2. **`CLAUSTRUM_PARENT_JOB=<job id>`** in the architect's environment, so every `claustrum` it runs
    joins the tree.
 3. **`gh issue view <n> --json title,body,labels`** folded into the brief's `## Task` (`--issues`),
@@ -464,7 +535,7 @@ end, call `coordinate` and relay `job_status`.
 
 | Backend | Install | Auth | Role injection | Cost in receipt |
 |---|---|---|---|---|
-| `claude` | `npm i -g @anthropic-ai/claude-code` | Claude Code login or `ANTHROPIC_API_KEY` | `--append-system-prompt-file <job>/system.md` | yes (`total_cost_usd`) |
+| `claude` | `npm i -g @anthropic-ai/claude-code` | Claude Code login or `ANTHROPIC_API_KEY`; `CLAUDE_CONFIG_DIR` is passed through, and `doctor` prints it as `config dir:` | `--append-system-prompt-file <job>/system.md`; the brief fed on **stdin**, never argv | yes (`total_cost_usd`) |
 | `opencode` | `npm i -g opencode-ai` | `OPENROUTER_API_KEY` / `DEEPSEEK_API_KEY` / `opencode auth` | inline agent in `OPENCODE_CONFIG_CONTENT`, process-scoped | from the JSONL usage events |
 | `cursor` | Cursor's `cursor-agent` installer (not the npm package of that name) | `cursor-agent login` or `CURSOR_API_KEY` | role prefixed to the prompt, fed on **stdin**; `-f` always (an untrusted workspace is a fast exit 1) | **none**; usage tokens only |
 | `copilot` | `npm i -g @github/copilot` | logged in (`~/.copilot/config.json`) or `COPILOT_GITHUB_TOKEN`/`GH_TOKEN`/`GITHUB_TOKEN` | per-job `.agent.md` via `--add-dir`, agent `claustrum-<role>` | **none** (`assistant.usage` is suppressed in JSON mode); `--reasoning-effort` is omitted for `auto` |
@@ -518,6 +589,13 @@ created. Budget ledgers live beside them under `budget/<tree>/`.
 | `api backend model must be 'openrouter:<model>' or 'anthropic:<model>'` | `--backend api` without a provider-prefixed model | `--model api:anthropic:<id>` |
 | `report_status: missing` | the role never wrote its report fence | read `final_message`; the run still counts, the report does not |
 | `status: failed`, "… slots … stayed unavailable" | waited past `--timeout` for a `max_parallel` slot | start fewer at once, or raise `--timeout` |
+| `status: failed`, "`--branch <name>`: …" | the branch does not exist locally, another checkout holds it (the main checkout, a running job, a dirty finished worktree, a job unknown under this `CLAUSTRUM_HOME`), git would not check it out or did not within 5 minutes (a slow smudge filter or post-checkout hook), or another run on the branch outlasted `--timeout` | read `error`: it names the holder, or quotes git; switch that checkout off the branch, let the job finish, commit/discard its changes, or run `claustrum jobs clean` under the home that ran the job; after a slow checkout, `left behind: …` names anything the undo could not remove (a cancelled add prints it on stderr as `warning: git worktree add was cancelled; left behind: …`) — `git worktree remove -f -f <path>` removes a worktree git left locked |
+| `warnings[]`: "work left uncommitted on <branch>: …" | git refused the runner's commit of an isolated run (no identity, a hook) | the work is still in the job's worktree: commit it there; `jobs clean` leaves that worktree in place until you do |
+| `warnings[]`: "work left uncommitted: <path> is not the job worktree on <branch> (…)" | the job's worktree was removed while it ran — typically a `jobs clean` under a different `CLAUSTRUM_HOME` — and the role kept writing into a plain directory | nothing was committed, and the receipt lists no changes and no `commit`; what the role wrote after that is in `<path>`, outside every branch: move it by hand, or rerun the builder |
+| `warnings[]`: "work left uncommitted: <path> is on …, not <branch>" | the role left its own worktree off its branch — stopped mid-rebase (a detached `HEAD`) or switched branch | nothing was committed; `changed_files`/`diff` are what changed in that worktree. Finish or abort the rebase there (`git -C <path> rebase --continue`/`--abort`), or switch back to `<branch>`, then commit inside it |
+| `warnings[]`: "receipt delta unavailable, snapshot kept: …" | after the runner's commit, git could not read the branch's tip or diff it against the run's starting commit (a git past its 30 s bound) | `commit`, when set, is right and nothing is left to commit; `changed_files`/`diff` are the snapshot from before the commit, which can miss what the role committed itself — read the branch (`git log -p <branch>`) |
+| `jobs clean`: "could not remove <job>: <path> left in place: …" | that worktree has uncommitted changes (new files included), or a populated submodule | commit or discard them (`git -C <path> status --untracked-files=all`), then rerun; `git worktree remove --force <path>` only once you know what it drops |
+| `fatal: '<branch>' is already used by worktree at '…'` on `git rebase` | a builder's branch is still checked out in its worktree | `claustrum jobs clean` first, or `git -C <worktree> rebase <work branch>` |
 | `status: budget_exceeded` in milliseconds | admission refused it, nothing spent | read `error` — the four routes in §10 |
 | `status: timeout` on `coordinate` | the architect's `--timeout` (default 1800 s) is too small for a whole pipeline | rerun with more; finished children are still in `jobs list` |
 | MCP tools absent in the host | the host could not spawn `claustrum` (not on its `PATH`) | absolute `command` in `.mcp.json`, or install the binary where the GUI looks |

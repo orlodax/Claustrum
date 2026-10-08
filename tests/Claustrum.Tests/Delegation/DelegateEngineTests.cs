@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text.Json;
 using Claustrum.Casts;
+using Claustrum.Core;
 using Claustrum.Core.Config;
 using Claustrum.Core.Jobs;
 using Claustrum.Core.Json;
@@ -90,6 +91,8 @@ public sealed class DelegateEngineTests(AppServicesHomeFixture fixture) : IDispo
         Assert.Null(result.Branch);
     }
 
+    // #58: a cap of 1 is gated (through the same cross-process slot pool) but not isolated — the run is in
+    // the requested cwd, one at a time.
     [Fact]
     public async Task MaxParallelOneRunsDirectlyInTheRequestedCwdAsync()
     {
@@ -97,6 +100,23 @@ public sealed class DelegateEngineTests(AppServicesHomeFixture fixture) : IDispo
 
         Assert.Null(result.Worktree);
         Assert.Null(result.Branch);
+        Assert.Equal(RunStatus.BackendMissing, result.Status);
+        Assert.False(Directory.Exists(Path.Combine(cwd, ".claustrum", "worktrees")));
+        Assert.DoesNotContain(ListBranches(cwd), branch => branch.StartsWith("claustrum/", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task MaxParallelOneHoldsTheCastRolesSlotWhileItRunsAndReleasesItAfterwardsAsync()
+    {
+        DelegateRequest request = MissingBackendRequest(maxParallel: 1) with { CastName = "default" };
+
+        RunResult result = await DelegateEngine.RunAsync(request, TestContext.Current.CancellationToken);
+
+        Assert.Equal(RunStatus.BackendMissing, result.Status);
+        string slot = Path.Combine(cwd, ".claustrum", "locks", $"{RoleConcurrencyGate.KeyFor("default", "builder")}.0.lock");
+        Assert.True(File.Exists(slot), "a cap of 1 must have gone through the slot pool");
+        using FileStream openable = new(slot, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+        Assert.NotNull(openable);
     }
 
     [Fact]
@@ -163,23 +183,47 @@ public sealed class DelegateEngineTests(AppServicesHomeFixture fixture) : IDispo
         Assert.Equal($"claustrum/{isolated.JobId}", isolated.Branch);
     }
 
-    // Review finding: the worktree and branch were created before Runner's own gates ran, and nothing
-    // removed them when the run never reached a result.json — which is exactly the state `jobs clean`
-    // refuses to touch, so the orphan was permanent.
+    // F7: Runner.ValidateTimeout used to run after the worktree and branch were cut, so a zero timeout left
+    // them behind (a result.json never came, and `jobs clean` skips a job without one). It is now checked by
+    // DelegateEngine through Runner.Validate before anything exists on disk.
     [Fact]
-    public async Task ARunThatNeverProducesAResultLeavesNoWorktreeOrBranchBehindAsync()
+    public async Task AZeroTimeoutIsRejectedBeforeAnyWorktreeBranchOrJobExistsAsync()
     {
+        string jobsRoot = JobDirectory.ResolveRoot(fixture.Platform);
+        string[] jobsBefore = Directory.Exists(jobsRoot) ? Directory.GetDirectories(jobsRoot) : [];
         DelegateRequest request = MissingBackendRequest(maxParallel: 3) with
         {
-            // Rejected by Runner.ValidateTimeout, before any job output exists.
             Overrides = new ConfigOverrides(Backend: "nonexistent", TimeoutSeconds: 0),
         };
 
-        await Assert.ThrowsAnyAsync<Exception>(() => DelegateEngine.RunAsync(request, TestContext.Current.CancellationToken));
+        await Assert.ThrowsAsync<RunRequestException>(() => DelegateEngine.RunAsync(request, TestContext.Current.CancellationToken));
 
         Assert.False(Directory.Exists(Path.Combine(cwd, ".claustrum", "worktrees")) &&
             Directory.EnumerateDirectories(Path.Combine(cwd, ".claustrum", "worktrees")).Any());
         Assert.DoesNotContain(ListBranches(cwd), branch => branch.StartsWith("claustrum/", StringComparison.Ordinal));
+        Assert.Equal(jobsBefore, Directory.Exists(jobsRoot) ? Directory.GetDirectories(jobsRoot) : []);
+    }
+
+    // Review finding: the worktree and branch were created before Runner's own gates ran, and nothing
+    // removed them when the run never reached a result.json — which is exactly the state `jobs clean`
+    // refuses to touch, so the orphan was permanent. What can still go wrong once the worktree is cut and
+    // Runner is entered is its result.json not being writable (here: a directory sits where it goes), and
+    // the untouched worktree and the branch the run created are then removed again.
+    [Fact]
+    public async Task ARunThatNeverProducesAResultLeavesNoWorktreeOrBranchBehindAsync()
+    {
+        JobPaths job = JobDirectory.Create(fixture.Platform);
+        Directory.CreateDirectory(job.ResultJson);
+        PreparedDelegation prepared = DelegateEngine.Prepare(MissingBackendRequest(maxParallel: 3));
+
+        // UnauthorizedAccessException on Unix, IOException elsewhere: both are SystemExceptions, and what
+        // matters is that the failure comes out of the engine untouched (the cleanup succeeded).
+        await Assert.ThrowsAnyAsync<SystemException>(() => DelegateEngine.RunAsync(prepared, job, TestContext.Current.CancellationToken));
+
+        string worktreesRoot = Path.Combine(cwd, ".claustrum", "worktrees");
+        Assert.False(Directory.Exists(worktreesRoot) && Directory.EnumerateDirectories(worktreesRoot).Any());
+        Assert.DoesNotContain(ListBranches(cwd), branch => branch.StartsWith("claustrum/", StringComparison.Ordinal));
+        Assert.Single(WorktreePaths(cwd));
     }
 
     // §D4's tree budget, through the max_parallel > 1 path — a spent-or-reserved-exhausted tree must
@@ -375,6 +419,26 @@ public sealed class DelegateEngineTests(AppServicesHomeFixture fixture) : IDispo
         Directory.CreateDirectory(directory);
         BudgetLedgerEntry entry = new(jobId, "seed", cap, cost, DateTimeOffset.UtcNow.AddMinutes(-5), DateTimeOffset.UtcNow);
         File.WriteAllText(Path.Combine(directory, $"{jobId}.json"), JsonSerializer.Serialize(entry, ClaustrumJsonContext.Default.BudgetLedgerEntry));
+    }
+
+    private static string[] WorktreePaths(string dir)
+    {
+        ProcessStartInfo startInfo = new("git")
+        {
+            WorkingDirectory = dir,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true,
+        };
+        startInfo.ArgumentList.Add("worktree");
+        startInfo.ArgumentList.Add("list");
+        startInfo.ArgumentList.Add("--porcelain");
+
+        using SystemProcess process = SystemProcess.Start(startInfo) ?? throw new InvalidOperationException("git failed to start");
+        string stdout = process.StandardOutput.ReadToEnd();
+        process.WaitForExit();
+        return [.. stdout.Split('\n').Where(line => line.StartsWith("worktree ", StringComparison.Ordinal))];
     }
 
     private static string[] ListBranches(string dir)

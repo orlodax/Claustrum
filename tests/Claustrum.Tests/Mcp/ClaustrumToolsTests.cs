@@ -545,6 +545,143 @@ public sealed class ClaustrumToolsTests(AppServicesHomeFixture fixture) : IDispo
         }
     }
 
+    // review F1: cast_create stores the questionnaire answer `1` as 1 — a cap, since #58 — not as null.
+    [Fact]
+    public void CastCreateWithTheMaxParallelAnswerOneStoresOneOnTheBuilderEntryAndOnDisk()
+    {
+        string cwd = Directory.CreateTempSubdirectory("claustrum-mcp-cast-one-").FullName;
+        string previous = Environment.CurrentDirectory;
+        Environment.CurrentDirectory = cwd;
+        try
+        {
+            string createJson = ClaustrumTools.CastCreate(new Dictionary<string, string>
+            {
+                ["builder"] = "claude:opus",
+                [CastQuestionnaire.MaxParallelKey] = "1",
+            });
+
+            using JsonDocument created = JsonDocument.Parse(createJson);
+            Assert.Equal(1, created.RootElement.GetProperty("roles").GetProperty("builder").GetProperty("max_parallel").GetInt32());
+            using JsonDocument onDisk = JsonDocument.Parse(File.ReadAllText(CastStore.PathFor(cwd, "default")));
+            Assert.Equal(1, onDisk.RootElement.GetProperty("roles").GetProperty("builder").GetProperty("max_parallel").GetInt32());
+        }
+        finally
+        {
+            Environment.CurrentDirectory = previous;
+            Directory.Delete(cwd, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void CastCreateWithNoMaxParallelAnswerLeavesTheKeyNullOnDisk()
+    {
+        string cwd = Directory.CreateTempSubdirectory("claustrum-mcp-cast-none-").FullName;
+        string previous = Environment.CurrentDirectory;
+        Environment.CurrentDirectory = cwd;
+        try
+        {
+            ClaustrumTools.CastCreate(new Dictionary<string, string> { ["builder"] = "claude:opus", [CastQuestionnaire.MaxParallelKey] = "not needed" });
+
+            using JsonDocument onDisk = JsonDocument.Parse(File.ReadAllText(CastStore.PathFor(cwd, "default")));
+            JsonElement builder = onDisk.RootElement.GetProperty("roles").GetProperty("builder");
+            Assert.True(!builder.TryGetProperty("max_parallel", out JsonElement value) || value.ValueKind == JsonValueKind.Null);
+        }
+        finally
+        {
+            Environment.CurrentDirectory = previous;
+            Directory.Delete(cwd, recursive: true);
+        }
+    }
+
+    // #63: `branch` on delegate and delegate_async reaches DelegateRequest.Branch through BuildRequest — a
+    // branch that does not exist comes back as a `failed` RunResult naming it, not as an MCP error.
+    [Fact]
+    public async Task DelegateWithABranchThatDoesNotExistReturnsAFailedReceiptNamingItAsync()
+    {
+        string cwd = CreateGitRepo("claustrum-mcp-branch-");
+        try
+        {
+            string json = await ClaustrumTools.DelegateAsync(role: "builder", brief: "hi", cwd: cwd, backend: "nonexistent", branch: "nosuch", cancellationToken: CancellationToken.None);
+
+            using JsonDocument document = JsonDocument.Parse(json);
+            Assert.Equal("failed", document.RootElement.GetProperty("status").GetString());
+            Assert.Contains("--branch nosuch: no local branch of that name", document.RootElement.GetProperty("error").GetString(), StringComparison.Ordinal);
+            Assert.Equal(JsonValueKind.Null, document.RootElement.GetProperty("worktree").ValueKind);
+            Assert.False(Directory.Exists(Path.Combine(cwd, ".claustrum", "worktrees")));
+        }
+        finally
+        {
+            TempTree.Delete(cwd);
+        }
+    }
+
+    [Fact]
+    public async Task DelegateStartWithABranchThatDoesNotExistFailsTheJobsReceiptAsync()
+    {
+        string cwd = CreateGitRepo("claustrum-mcp-branch-async-");
+        try
+        {
+            string startJson = ClaustrumTools.DelegateStart(role: "builder", brief: "hi", cwd: cwd, backend: "nonexistent", branch: "nosuch");
+            using JsonDocument started = JsonDocument.Parse(startJson);
+            string jobId = started.RootElement.GetProperty("job_id").GetString() ?? "";
+
+            // job_result answers only for a finished job, and the branch check runs git, so the job is polled first.
+            Assert.Equal("done", (await PollUntilDoneAsync(jobId))?.State);
+            using JsonDocument result = JsonDocument.Parse(await ClaustrumTools.JobResultAsync(jobId));
+
+            Assert.Equal("failed", result.RootElement.GetProperty("status").GetString());
+            Assert.Contains("--branch nosuch: no local branch of that name", result.RootElement.GetProperty("error").GetString(), StringComparison.Ordinal);
+        }
+        finally
+        {
+            TempTree.Delete(cwd);
+        }
+    }
+
+    // An empty branch is "not given": the run is the ordinary one and reaches the missing backend.
+    [Fact]
+    public async Task DelegateWithAnEmptyBranchIsNotAnIsolatedRunAsync()
+    {
+        string cwd = CreateGitRepo("claustrum-mcp-branch-empty-");
+        try
+        {
+            string json = await ClaustrumTools.DelegateAsync(role: "builder", brief: "hi", cwd: cwd, backend: "nonexistent", branch: "", cancellationToken: CancellationToken.None);
+
+            using JsonDocument document = JsonDocument.Parse(json);
+            Assert.Equal("backend_missing", document.RootElement.GetProperty("status").GetString());
+            Assert.Equal(JsonValueKind.Null, document.RootElement.GetProperty("worktree").ValueKind);
+        }
+        finally
+        {
+            TempTree.Delete(cwd);
+        }
+    }
+
+    // A branch that does exist runs isolated on it: the receipt names the branch it was given, the worktree is
+    // the new job's, and (the backend being missing) no commit.
+    [Fact]
+    public async Task DelegateWithAnExistingBranchRunsIsolatedOnItAsync()
+    {
+        string cwd = CreateGitRepo("claustrum-mcp-branch-ok-");
+        try
+        {
+            RunGit(cwd, "branch", "feature/given");
+
+            string json = await ClaustrumTools.DelegateAsync(role: "builder", brief: "hi", cwd: cwd, backend: "nonexistent", branch: "feature/given", cancellationToken: CancellationToken.None);
+
+            using JsonDocument document = JsonDocument.Parse(json);
+            string jobId = document.RootElement.GetProperty("job_id").GetString() ?? "";
+            Assert.Equal("backend_missing", document.RootElement.GetProperty("status").GetString());
+            Assert.Equal("feature/given", document.RootElement.GetProperty("branch").GetString());
+            Assert.Equal(Path.Combine(cwd, ".claustrum", "worktrees", jobId), document.RootElement.GetProperty("worktree").GetString());
+            Assert.Equal(JsonValueKind.Null, document.RootElement.GetProperty("commit").ValueKind);
+        }
+        finally
+        {
+            TempTree.Delete(cwd);
+        }
+    }
+
     private static async Task<JobStatusInfo?> PollUntilDoneAsync(string jobId)
     {
         for (int attempt = 0; attempt < 300; attempt++)

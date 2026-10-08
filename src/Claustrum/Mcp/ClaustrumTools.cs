@@ -23,6 +23,11 @@ public sealed class ClaustrumTools
     // §A2: 200 KB on the CLI door, 64 KB on MCP.
     private const int McpDiffCapBytes = 64 * 1024;
 
+    // #63, shared by delegate and delegate_async: the same words as `run --branch`, plus what comes back.
+    private const string BranchDescription =
+        "Run isolated in a new worktree checked out on this existing branch, e.g. claustrum/<job> to continue a reviewed " +
+        "builder's work. The result's worktree and branch name it, and commit is the branch tip the run left.";
+
     [McpServerTool(Name = "delegate")]
     [Description(
         "Delegate a task to a Claustrum role, blocking until it finishes, and return the parsed RunResult " +
@@ -47,11 +52,12 @@ public sealed class ClaustrumTools
         string? resumeSession = null,
         string[]? files = null,
         [Description("Cast name to source model/tier defaults from (default: .claustrum/casts/default.json if present).")] string? cast = null,
+        [Description(BranchDescription)] string? branch = null,
         bool includeRaw = false,
         CancellationToken cancellationToken = default) =>
         McpExceptionBoundary.GuardAsync(async () =>
         {
-            DelegateRequest request = BuildRequest(role, brief, cwd, backend, model, effort, tier, permission, deny, budgetUsd, timeoutSeconds, resumeSession, files, cast);
+            DelegateRequest request = BuildRequest(role, brief, cwd, backend, model, effort, tier, permission, deny, budgetUsd, timeoutSeconds, resumeSession, files, cast, branch);
             RunResult result = await DelegateEngine.RunAsync(request, cancellationToken);
             RunResult output = includeRaw ? result : result with { Raw = null };
 
@@ -69,10 +75,11 @@ public sealed class ClaustrumTools
         string role, string brief, string? cwd = null, string? backend = null, string? model = null, string? effort = null,
         string? tier = null, string? permission = null, string[]? deny = null, decimal? budgetUsd = null,
         [Description("Timeout in seconds (default: unset, so the config layers' defaults.timeout_seconds decides, falling back to 1800).")] int? timeoutSeconds = null,
-        string? resumeSession = null, string[]? files = null, string? cast = null) =>
+        string? resumeSession = null, string[]? files = null, string? cast = null,
+        [Description(BranchDescription)] string? branch = null) =>
         McpExceptionBoundary.Guard(() =>
         {
-            DelegateRequest request = BuildRequest(role, brief, cwd, backend, model, effort, tier, permission, deny, budgetUsd, timeoutSeconds, resumeSession, files, cast);
+            DelegateRequest request = BuildRequest(role, brief, cwd, backend, model, effort, tier, permission, deny, budgetUsd, timeoutSeconds, resumeSession, files, cast, branch);
             // Deliberately CancellationToken.None: the job must outlive this tool call's own
             // request, which is what "returns immediately" means — a client cancelling *this* call
             // cannot reach back into an already-started background job.
@@ -160,7 +167,8 @@ public sealed class ClaustrumTools
 
     private static DelegateRequest BuildRequest(
         string role, string brief, string? cwd, string? backend, string? model, string? effort, string? tier,
-        string? permission, string[]? deny, decimal? budgetUsd, int? timeoutSeconds, string? resumeSession, string[]? files, string? cast)
+        string? permission, string[]? deny, decimal? budgetUsd, int? timeoutSeconds, string? resumeSession, string[]? files, string? cast,
+        string? branch)
     {
         string resolvedCwd = cwd is { Length: > 0 } ? Path.GetFullPath(cwd) : Environment.CurrentDirectory;
         ConfigOverrides overrides = new(Backend: backend, Model: model, Effort: effort, Permission: permission, Deny: deny, BudgetUsd: budgetUsd, TimeoutSeconds: timeoutSeconds);
@@ -179,7 +187,8 @@ public sealed class ClaustrumTools
             DiffCapBytes: McpDiffCapBytes,
             CastBudget: castBudget,
             MaxParallel: maxParallel,
-            CastName: resolvedCastName);
+            CastName: resolvedCastName,
+            Branch: branch is { Length: > 0 } ? branch : null);
     }
 
     [McpServerTool(Name = "list_roles")]

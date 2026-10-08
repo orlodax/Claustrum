@@ -3380,3 +3380,584 @@ hunks took main's text. Everything else was a doc fix. The ones that are design,
 
 Left open as their own issues: the api backend's unreadable house rules (#55), and
 `backends.<name>.injection`, which nothing reads (#56).
+
+## M4 wave 1: a delegate's work lands on its branch, and only there (2026-10-08, issues #60 #61 #62 #63 #58 #68 #57)
+
+The test drive ("The first real tasks") left every isolated builder's branch empty, the receipt on
+disk without its branch, and the operator's checkout switched by a delegate. This is the runner's
+half of the fix; the role text (#64) and the test hygiene (#66, #47) are other slices of the wave.
+
+### The receipt on disk names the branch (#60)
+
+`DelegateEngine.RunIsolatedAsync` added `worktree`/`branch` with a `with { … }` on the result
+`Runner` returned — after `FinishAsync` had already written `result.json`. The live MCP `job_result`
+had both; `jobs show` and the file did not (builder jobs `20261008-140548-3eb10efc` and
+`20261008-141126-3e4c44be`). Fixed at the root: `RunOptions.Worktree` (a `JobWorktreeInfo`) goes
+into `Runner`, and `FinishAsync`, the one funnel every result leaves through, stamps both before it
+writes. `RefuseAsync` passes null, because a refusal never has a worktree. Every result of an
+isolated run carries them, a `backend_missing` after the worktree was cut included. The engine's
+`with` is gone, so there is one writer of the two fields.
+
+### The runner commits, not the role (#61)
+
+#61 offered two fixes: role text saying "commit, never push" when isolated, or the runner
+committing after the snapshot. **The runner commits.** The roles stay harness-neutral and no model
+can forget; git is already the runner's source of truth for `changed_files`; and the branch then
+holds the work, so the architect's rebase has something to rebase and `jobs clean` has nothing left
+to destroy (since review F3 it no longer forces at all). A role may still commit by itself (the
+trailer below says so), and the receipt records that too.
+
+How: after the after-snapshot (taken only once `JobWorktree.VerifyAsync` has passed, since review
+R5) and `ReportExtractor.Extract`, `JobWorktree.CommitRunAsync` checks the directory is still the
+job's worktree (review F6, below), then runs `git status --porcelain --untracked-files=all` (the flag
+since review R2); if anything is listed, `git add -A` then `git commit -q -m`. The
+subject is `claustrum <role> <job id>`; a report with a non-empty `summary` string adds a blank line
+and that summary as the body. The repo's own identity and hooks apply: no `--no-verify`, no
+`-c user.*`, no `--no-gpg-sign`. It runs **for every status once the backend process ran** —
+failed, timeout and cancelled too. Partial work on the job's own branch is worth more than partial
+work left in a worktree directory, and `status` still says what happened.
+
+- **The before-sha/after-sha rule.** `commit` is the branch's tip after the commit step when it
+  differs from `JobWorktreeInfo.BaseCommit`, the commit the worktree was created on, else null (as
+  first shipped: the worktree's `HEAD` before and after; the tip is read from `refs/heads/<branch>`
+  in the main checkout since review F6). So a role that committed by itself and left nothing gets
+  its own commit recorded, a run that changed nothing gets null, and a refused commit with no
+  commit of the role's gets null plus a warning. ⚠ A refused commit *after* the role had committed some work
+  itself reports the role's commit **and** the warning. The brief said "leave `commit` null" for a
+  failed commit; that was read as "never invent one", and the tip the role made is real.
+- **A commit git refuses costs a warning, never the run**: `work left uncommitted on <branch>:
+  <first line git printed>` — "Author identity unknown", a hook's first line. `CommitAllAsync`
+  returns git's reason instead of throwing, and a git that cannot be spawned or passes its bound
+  (timeout/IO/`InvalidOperationException`/`Win32Exception`) is caught too — around the whole
+  `CommitRunAsync` in `Runner.CommitWorkAsync` as first shipped, per stage inside `CommitRunAsync`
+  since review R4 (below). Without that, a git that could not even be spawned would hit the
+  catch-all after the process ran and turn a parsed report into a `Failed` `FailureResult`.
+- **The commit gets five minutes, not git's 30 s.** `git commit` runs the repo's hooks, and a .NET
+  pre-commit (format, build) can pass 30 s; the old bound would kill it mid-way and leave the work
+  uncommitted for a reason nobody chose. Since review R4 `git add -A` gets the same five minutes:
+  clean filters (git-lfs) run inside it. `GitProcess.RunAsync` gained a timeout overload for these
+  two calls; since review T1 `worktree add`, whose checkout runs smudge filters and the post-checkout
+  hook, and the undo of a failed one use it too. ⚠ A `commit.gpgsign` repo whose pinentry wants a
+  GUI waits up to that bound and then warns. Not overridden on purpose: the signing policy is the
+  repo's. ⚠ The commit ignores the run's cancellation token, like the after-snapshot does, so a
+  Ctrl+C'd run still waits for its hooks.
+- **`changed_files`/`diff` were the pre-commit snapshot as first shipped**, captured before the
+  commit against the `HEAD` the worktree had then. A role that commits **by itself** moves `HEAD`,
+  and `git status`/`git diff HEAD` then no longer show what it committed: those files were missing
+  from `changed_files` while `commit` named the tip, and the blind reviewer's `## Diff` came out
+  empty. Review F4 changed it: "An isolated run's receipt is the branch's delta from its starting
+  commit", below.
+- ⚠ `git add -A` commits whatever `git status` lists — the same set `changed_files` lists. A file the
+  repo does not ignore (a stray `.env`, build output) lands on the branch; the repo's `.gitignore` is
+  the filter, as it already was for the receipt.
+
+### Delegates may not touch the main checkout (#62)
+
+The reflog of the operator's checkout gained `checkout: moving from drive/issue-17 to
+claustrum/20261008-140548-3eb10efc` while the only process running was the remediation builder,
+whose cwd was its own worktree. That worktree sits under `<repo>/.claustrum/worktrees/`, so the
+operator's checkout is three `cd ..` away and nothing on disk stops it. Of #62's three options, two
+layers shipped, both for isolated runs only:
+
+1. **The trailer** (`Runner.AppendIsolationTrailer`). It is appended to the user prompt after the
+   blind gate and before the report trailer, which keeps the last position (the one
+   `AppendReportTrailer`'s tester report found most honoured). It names the worktree, its branch
+   and the main checkout; forbids cd-ing there, `git checkout`/`switch`/`reset`/`stash` there and
+   removing the worktree; and says leftovers are committed for the role, which may commit itself
+   and never push. It is harness-neutral, so cursor and api get the same words. It goes after the blind gate
+   because it is runner text, not the caller's brief (and it has no `##` heading anyway).
+2. **The deny** (`JobWorktree.IsolationDeny` = `git checkout`, `git switch`). `DelegateEngine.
+   IsolatedRole` unions it into the `ResolvedRole` the isolated path hands `Runner`. It never enters
+   the role library's lists, so an in-place run is unchanged. claude gets `Bash(git checkout)` +
+   `Bash(git checkout *)` in `--disallowedTools`, opencode a bash deny pattern, copilot
+   `--deny-tool "shell(git checkout)"`, and cursor a prompt rule, advisory like every cursor deny.
+   ⚠ Only at the levels that apply a deny list at all: `full` skips every check on all three, and
+   `edit` (and `readonly` outside claude) withholds the shell outright (MANUAL §13's table).
+
+**What the deny does not cover.** It is a guard on how a command is written (MANUAL §13). A prefix
+rule does not match `git -C /path/to/checkout checkout main`, `git -c k=v checkout`, an alias,
+`sh -c`, or a script; the trailer is the only layer there. `git reset` and `git stash` are named in
+the trailer only: a deny would take them away inside the worktree too, where they are legitimate.
+`git checkout -- <file>` inside the worktree is collateral, so the trailer points at `git restore`.
+⚠ A run that switches its *own* worktree to another branch anyway (via `git -C`) gets no runner
+commit: review F6's check finds `HEAD` on the other branch, skips the commit and warns, and its
+receipt has no `commit`. Review R5 had emptied its changes too; since review T3 they are the snapshot
+read inside that worktree. (As first shipped, the commit landed on that other branch under the
+receipt's original `branch`.)
+The third option, a worktree outside the repository tree, was not taken. It moves what `jobs
+clean`, `init`'s gitignore and the operator already look at, and a `cd` to an absolute path defeats
+it just the same.
+
+### `--branch`: an isolated run on an existing branch (#63)
+
+`DelegateRequest.Branch`, from `run --branch <name>` or MCP `branch` on `delegate`/`delegate_async`
+(empty is "not given"). A request with a branch is always isolated; it is gated only when its cast
+gives a numeric `max_parallel`, like any other. The worktree is `git worktree add <path> <name>`,
+no `-b`. The receipt's `branch` is the given name and `worktree` the new path, and the runner's
+commit lands on that branch, so a remediation builder continues where the reviewed diff lives.
+
+- **Existence is `git show-ref --verify refs/heads/<name>`, checked before the gate.** ⚠ Measured on
+  git 2.56: `git rev-parse --verify refs/heads/main~1` **succeeds**, because rev-parse resolves
+  revision syntax under the prefix. `git worktree add <path> main~1` then checks out a detached
+  `HEAD`, and the run would commit onto no branch. `show-ref --verify` takes exact ref names only
+  (`main~1` → exit 1). The *short* name is what reaches `worktree add`: `refs/heads/<name>` there is
+  a detached checkout too. An unknown name never reaches git's DWIM either, which would quietly cut
+  a local branch from a same-named remote-tracking one. Before the gate, so a typo is answered at
+  once and not after a wait for a slot: `status: failed` through `Runner.RefuseAsync`, error
+  `--branch <name>: no local branch of that name in <cwd>`, no worktree, no slot.
+- **One branch, one worktree.** git refuses `worktree add` on a branch checked out elsewhere
+  (`fatal: 'x' is already used by worktree at '…'`, exit 128, nothing created — measured).
+  `JobWorktree.CheckOutBranchAsync` (its private `FreeBranchAsync`) finds the holder in `git
+  worktree list --porcelain` (line mode, because `-z` needs git 2.36) and decides:
+  - the holder is `<cwd>/.claustrum/worktrees/<id>` and job `<id>` has its `result.json` under
+    this `CLAUSTRUM_HOME` (`JobDirectory.HasResult`, review R3 below; review F11 had shipped `jobs
+    clean`'s wider `IsFinished` here) — that worktree is removed, then the add runs. This is the
+    brief's "retry once": freed first, then added. A sibling grabbing the branch in between was an
+    exception as first shipped and a receipt since F11; since R1 it cannot happen, because every
+    `--branch` run holds its branch's lock from before the free until its result is written;
+  - anything else is refused with the holder named: the main checkout (the architect's work branch
+    is checked out there), an unfinished job (its directory, without `result.json`), a job this
+    `CLAUSTRUM_HOME` has no directory for (R3), a worktree made by hand. **Foreign worktrees are
+    never removed**: Claustrum did not make them and cannot know what is in them.
+  - ⚠ That removal is **not** `--force` (and since review F3 neither is `jobs clean`'s). A
+    finished job whose commit failed still holds its work there uncommitted. `git worktree
+    remove` refuses a dirty worktree but not one holding only ignored files (both measured), and
+    the refusal says to commit or discard first. Since review R2 Claustrum's own `git status
+    --untracked-files=all` runs before it: under `status.showUntrackedFiles=no`, git's check lets a
+    worktree whose only changes are new files go.
+  - ⚠ "Is this our worktree" goes through git. git lists a worktree by its realpath — measured: one
+    added through a symlinked cwd is listed under the link's target — so `<cwd>/.claustrum/
+    worktrees/<id>` is compared through `git -C <it> rev-parse --show-toplevel`, never as typed. A
+    symlinked cwd would otherwise make our own finished worktree look foreign. The same reasoning
+    covers Windows 8.3 `%TEMP%` paths; that half is unmeasured.
+  - This refusal comes after admission, so it closes the reservation at $0 through Runner's funnel:
+    `RefuseAsync` gained an optional reservation, which it also releases (review F10). Otherwise the
+    next admission would read the entry as abandoned.
+- **Cleanup never deletes a branch it did not create.** `JobWorktreeInfo.OwnsBranch` is false for a
+  `--branch` run, and `TryRemoveAbandonedAsync` runs `branch -D` only for a `-b` worktree — and,
+  since review F9, only while that branch is still where it started.
+- `jobs clean` names the branch it kept from the receipt's `branch`, falling back to
+  `claustrum/<id>` for a receipt written before #60.
+
+### `max_parallel` is a cap at every value (#58)
+
+The gate used to run only on the isolated path (`> 1`). At 1, two `claustrum run builder`
+processes edited one tree at once, while the architect's text promised "extra jobs wait for a
+slot". `DelegateEngine.RunAsync` now routes: a branch or a cap above 1 → isolated, gated when
+numeric; a numeric cap of 1 or more otherwise → in place, gated; null → in place, ungated, as
+before. The in-place gated path **does not pre-admit**. Pre-admission exists only because isolation
+cuts a branch before `Runner` runs; here `Runner` admits itself under the held slot, which keeps "a
+reservation never waits behind the gate". It mints a job directory only for the gate-timeout
+refusal, so CLI `run` still mints after the blind gate. The slot pool is the same `<cast>__<role>`
+the isolated path uses. A cap below 1 (only a hand-edited cast) is no cap, as before. The
+questionnaire's prompt now says "1 keeps every run in the repo itself, one at a time", and its
+answer `1` is stored as `1` (review F1, below).
+
+### The claude brief goes on stdin (#68)
+
+Measured once before relying on it — 2026-10-08, `claude` 2.1.293 (Claude Code), Linux, from a
+scratch directory, environment reduced with `env -i` to names Claustrum's allow-list forwards
+(`PATH HOME LANG SHELL TERM XDG_* NODE_*`):
+`printf 'reply OK' | claude -p --model haiku --output-format json --max-budget-usd 0.05
+--no-session-persistence` → exit 0, `is_error: false`, `subtype: "success"`, `result: "OK"`,
+`num_turns: 1`, `total_cost_usd: 0.00693753` (`haiku` resolved to `claude-haiku-5-5`; 34,133
+cache-creation and 10,873 cache-read input tokens), 976 ms. `--no-session-persistence` was added to
+the planned command because Claustrum always passes it on a run that does not resume. Only the
+positional moved; the flags are what they were. Not measured: the full shipped argv with stdin.
+
+`--resume` with the prompt on stdin, measured the same day, same `claude` and environment, from a
+scratch directory: first without `--no-session-persistence`, so a session existed — `printf 'reply
+OK' | claude -p --model haiku --output-format json --max-budget-usd 0.05` → exit 0, `is_error:
+false`, `result: "OK"`, `total_cost_usd: 0.00756673`, `session_id` `a23cfd98-…`; then `printf 'reply
+OK again' | claude -p --model haiku --output-format json --max-budget-usd 0.05 --resume a23cfd98-…`
+→ exit 0, `is_error: false`, `subtype: "success"`, `result: "OK"`, the same `session_id`,
+`total_cost_usd: 0.01464706`, 903 ms. The session transcript held both user turns, `reply OK` and
+`reply OK again`, so the resumed run read its prompt from stdin. A resumed run stays on stdin too;
+no argv fallback. $0.0222 in all; the transcript and its project directory were deleted after.
+
+`ClaudeBackend.Build` drops the positional brief and sets `ProcessSpec.StdinText`; `ProcessRunner`
+writes and closes stdin inside the run's timeout, the path cursor already used.
+`--append-system-prompt-file` stays. A brief now shows in no process listing (the `pgrep -f`
+pattern a tester's brief quoted matched its own job, PID 450228), and it no longer counts against
+Windows' 32,767-character command line. ⚠ The argv tests that kept the variadic `--disallowedTools`
+from swallowing the brief now guard nothing, because no positional follows. opencode (`run …
+"<prompt>"`) and copilot (`-p "<prompt>"`) still put the brief on argv. Out of scope here; copilot's
+is the follow-up docs/PLAN.md "M4 waves" files.
+
+### `CLAUDE_CONFIG_DIR` by exact name (#57)
+
+`CLAUDE_CONFIG_DIR` joins `EnvAllowList.exactNames` by exact name, not as a `CLAUDE_` prefix.
+Counted in a Claude Code session's environment on 2026-10-08: 28 names start with `CLAUDE_`, 23 of
+them `CLAUDE_CODE_*` — the session id, `CLAUDE_CODE_CHILD_SESSION`, `CLAUDE_CODE_ENTRYPOINT`, and a
+`CLAUDE_CODE_MESSAGING_TOKEN`. A prefix would hand a delegated claude a parent session's identity
+and a credential. `backends doctor` prints `config dir: <path> (CLAUDE_CONFIG_DIR)` or `config dir:
+default (~/.claude; CLAUDE_CONFIG_DIR not set)` under claude, without `--probe`: reading a variable
+is free, and the value is a path, not a secret.
+
+### An isolated run's receipt is the branch's delta from its starting commit (review F4, 2026-10-08)
+
+As first shipped, a role that committed by itself got `changed_files: []` and `diff: null`: the
+snapshot compares against the worktree's `HEAD`, which the role had moved. Now, whenever the branch
+tip differs from `JobWorktreeInfo.BaseCommit` after the runner's commit step,
+`WorktreeSnapshot.BranchDeltaAsync` replaces the snapshot:
+
+- `changed_files` = `git diff --name-status --no-renames -z <base> --` — the working tree against the
+  starting commit, so `<base>..HEAD` and any tracked change still uncommitted — plus the snapshot's
+  new files that `git ls-files --others --exclude-standard` still lists as untracked: `git diff
+  <commit>` sees the index only, and a file the runner's commit could not take stays untracked. The
+  review named the union of the snapshot and `<base>..HEAD`; this is that union as git computes it,
+  without the union's contradictions (a file the role committed as added and then deleted would be
+  listed both ways; git lists nothing, and `diff` shows nothing for it either). `--no-renames` has
+  git split a rename into the A + D pair the snapshot produces.
+- `diff` = `git diff <base> --` plus the snapshot's `--no-index` text for those untracked files,
+  under the same byte cap and `diff_truncated` rule.
+- In the common case — the runner commits what the role left — delta and snapshot list the same
+  files. When the branch did not move (nothing to commit, or a refused commit and no commit of the
+  role's), the snapshot is already relative to `<base>` and is kept exactly. Non-isolated runs never
+  get here. A delta git cannot produce keeps the snapshot and warns `receipt delta unavailable,
+  snapshot kept: …` (as first shipped: `changed_files/diff may miss what was committed on <branch>:
+  …`; review R4, below).
+- `BaseCommit` is fixed when the worktree is made, not read by `Runner` (whose `headBefore` read is
+  gone): `AddAsync` resolves `HEAD` first and hands that sha to `worktree add -b`, so it is exactly
+  where the branch starts; `CheckOutBranchAsync` reads `refs/heads/<name>` just before its add, once
+  nothing holds the branch. The same field decides F9's cleanup.
+
+### The runner commits only in the job's worktree (review F6, 2026-10-08)
+
+git finds a repository by walking up from its cwd. A `.claustrum/worktrees/<job>` whose worktree was
+removed while the job ran — `jobs clean` under a different `CLAUSTRUM_HOME` takes a missing job
+directory for a finished job — and that the role's next write recreated is a plain directory inside
+the main checkout, and `git add -A` there committed the operator's dirty files onto the operator's
+branch (reproduced in review). `JobWorktree.VerifyAsync` now gates the commit, the F4 delta, F9's
+cleanup and, since review R5, the after-snapshot (since review T3 only when the path is no worktree
+of the job's): `git rev-parse --show-prefix` must be empty (the path is the top of a working tree)
+and `git symbolic-ref -q HEAD` must be `refs/heads/<branch>`.
+Measured on git 2.56: empty at a worktree root; `.claustrum/worktrees/j1/` in the recreated
+directory, whose `HEAD` was the main checkout's `refs/heads/main`.
+
+- ⚠ Not a path compare against `git rev-parse --show-toplevel`, which the review suggested: git prints
+  realpaths, and a symlinked cwd (measured for `worktree list`, under #63) or a Windows 8.3 `%TEMP%`
+  — the CI runner's — would never equal the path as typed, so every commit would be skipped. git
+  computes the prefix from one cwd, which needs no normalising.
+- A mismatch skips the commit and the delta and warns `work left uncommitted: <path> is not the job
+  worktree on <branch> (<what git found>)` — since review T3, `… <path> is on <a detached HEAD |
+  refs/heads/X>, not <branch>` when the path is still the top of a working tree. As first shipped
+  `commit` was still read, from `refs/heads/<branch>` in the main checkout, so commits the role made
+  before the removal were recorded; since review R5 it is null and the changes are empty too ("An
+  unverified worktree reports nothing", below) — since T3 only where the path is no worktree of the
+  job's.
+
+### `jobs clean` never forces, and integration frees the branch first (review F3, F5, 2026-10-08)
+
+- `JobWorktree.RemoveAsync` is a plain `git worktree remove`, the same private `TryRemoveAsync` that
+  frees a `--branch`. A finished worktree is clean now that the runner commits, and goes; one git
+  refuses — or, since review R2, one Claustrum's own `git status --untracked-files=all` lists
+  anything in — is printed `could not remove <job>: <path> left in place: <reason>`, and the sweep
+  exits 1. docs/PLAN.md "M4 waves" promised "`jobs clean` destroys nothing", and with `--force` the
+  next sweep destroyed exactly the work #61's warning pointed at. ⚠ Measured on git 2.56: a worktree
+  whose role ran `git submodule update --init` is refused as well (`fatal: working trees containing
+  submodules cannot be moved or removed`), clean or not; it is removed by hand. Ignored files
+  (`bin/`, `obj/`) do not block a plain remove.
+- `--force` is left in two places: `TryRemoveAbandonedAsync`, only when nothing of the run's can be
+  in the worktree (F9, below), and, since review T1, `--force --force` in the undo of a `worktree add`
+  that failed — before the role ever ran.
+- The architect's text stops saying "nothing to commit on its behalf" unconditionally: a receipt
+  warning `work left uncommitted on <branch>` means committing inside that worktree before
+  integrating. `roles/architect/ROLE.md` and `CoordinationBrief.RenderSystemAppendix` carry it in the
+  same words — two copies, the trap "`budget_exceeded` is four messages" names.
+- Integration: a builder's branch stays checked out in its worktree until `jobs clean`, and `git
+  rebase <work> claustrum/<job>` from the main checkout exits 128 with `fatal: 'claustrum/<job>' is
+  already used by worktree at '…'` (measured, git 2.56), while `git -C <worktree> rebase <work>`
+  exits 0. Both texts, MANUAL §9 and TEST-DRIVE step 13 say: `claustrum jobs clean` first (finished
+  worktrees go, branches stay), or rebase inside the worktree.
+- Human-mode `run` prints `branch:`, `worktree:` and `commit:` when set, and every warning on stderr
+  as `warning: …`: a refused commit used to be visible only under `--json`.
+
+### Refusals and cleanups keep the branch's work (review F7, F9, F10, F11, 2026-10-08)
+
+- **F7: a blind-gate rejection mints nothing, on every path.** `--branch` and the gated paths minted
+  the job directory — and for `--branch` freed the old worktree and cut a new one — before
+  `Runner.EnsureBlindGate` ran. `Runner.Validate` (the timeout, the brief with its attachments, the
+  blind gate: the private `ValidatedBrief` that `RunCoreAsync` itself starts with) now runs in
+  `DelegateEngine.RunAsync` before either path. Also when the caller handed in a job
+  (`delegate_async`) — a small widening of the review's ask: nothing is minted there anyway, but the
+  worktree churn is saved. `RunCoreAsync` keeps its own checks as the last line.
+- **F9: an abandoned run's cleanup keeps a moved branch.** When `FinishAsync` throws after the run
+  (an unwritable `result.json`), the engine's catch force-removed the worktree and `branch -D`'d an
+  owned branch — with the commit the runner had just made. `TryRemoveAbandonedAsync` now forces, and
+  deletes an owned branch, only when the worktree is untouched: `VerifyAsync` passes, the branch is
+  still at `BaseCommit`, `git status --untracked-files=all` is empty (the flag since review R2).
+  Otherwise the branch stays and the remove is plain; a refusal is returned and the worktree stays.
+  ⚠ The empty-status condition goes past the review's "branch moved → keep it": an unmoved branch
+  with a dirty worktree (a refused commit, then an unwritable `result.json`) has the run's work in
+  the worktree only.
+- **F10: a refusal releases its reservation.** `Runner.RefuseAsync` owns the reservation it is handed
+  (`await using`): `CompleteAsync` releases the `.live` handle only after a ledger write that
+  succeeded, `ChargeAsync` swallows a failed one, and in the long-lived MCP server nothing else
+  disposed it.
+- **F11: every `--branch` refusal is a receipt.** `JobWorktree.CheckOutBranchAsync` frees and adds in
+  one call and throws `BranchRefusedException` for every refusal, git's own included (a branch
+  mid-rebase in another worktree; a sibling run that took it a moment earlier, until review R1's
+  branch lock); the engine turns it into `status: failed` through `RefuseAsync`. `worktree add` runs
+  with `-q`: without it git's first stderr line is `Preparing worktree (checking out 'x')`, not the
+  reason (measured). ⚠ A failed `worktree add` can still leave a whole worktree — a post-checkout
+  hook exiting 3 does (measured: exit 3, worktree registered and checked out) — so what the add made
+  is undone before the refusal: through `TryRemoveAbandonedAsync` as F11 shipped, through its own
+  `-f -f` undo since review T1 (below). `AddAsync` (the `-b` path) shares that undo and still
+  throws. As F11 shipped, "finished" was one predicate for `jobs clean` and `--branch`,
+  `JobDirectory.IsFinished`, under which a job directory gone while the jobs root exists freed the
+  branch too; review R3 split the two, below. "has not finished (no result.json)" is still said
+  only of a directory without one.
+
+### The questionnaire's `max_parallel: 1` is a cap (review F1, 2026-10-08)
+
+`CastBuilder` stored the answer `1` as null, "so `cast show` does not imply a setting the user never
+made" — but since #58 only a numeric value is gated, so every cast made by `cast create`/`cast
+new`/MCP `cast_create` with the default answer had no cap and no gate. `1` is kept as `1`; null still
+means "no cap", as for a hand-written cast without the key. ⚠ Casts created with the answer `1`
+before 2026-10-08 carry null on disk and stay ungated until `"max_parallel": 1` is added back to
+their builder entry (or the cast is created again). As F1 shipped, the coordinate appendix still
+printed `max_parallel 1` for a null entry, read as the right fan-out instruction for the architect
+even though nothing gates it; review R6 (below) made it say the entry is not set.
+
+### One `--branch` run per branch at a time (review R1, 2026-10-08)
+
+Two concurrent `--branch` runs on one branch both got a worktree on it. git takes no lock between
+its "already checked out?" check and the add: measured by the reviewer on git 2.56, a plain `git
+worktree add <p> feat` run twice in parallel succeeded 35 times in 40, and Claustrum's free-then-add
+sequence 14 in 30. Run A's runner then commits first; in B's worktree the index still matches the
+old tree while `HEAD` is A's commit, so B's `add -A` + `commit` **reverts A's work**, and B's
+receipt (the delta from the shared base) hides it. Nothing serialised this when the cast's
+`max_parallel` is null or 2 and up — and wave 2's drive is `max_parallel: 2` with a remediation round.
+
+- **The fix is a lock per branch for the whole run.** `DelegateEngine.RunIsolatedAsync` takes an
+  exclusive `RoleConcurrencyGate` (cap 1) keyed `JobWorktree.LockKeyFor(branch)` before
+  `CheckOutBranchAsync` frees and adds, and releases it through `await using` once the run's result
+  is written — the abandoned-worktree cleanup included. The key is `branch@<readable>@<hash>`:
+  the name's first 64 characters with anything but ASCII letters, digits, `-` and `.` turned into
+  `_`, then the first 8 hex digits of the SHA-256 of the exact name. `@` never survives
+  `RoleConcurrencyGate.KeyFor`, so no `<cast>__<role>` pool can share the file; the hash keeps `a/b`
+  and `a_b` apart and bounds the file name of a long branch.
+- **Order: the cast slot (if any), then the branch lock, then admission.** One fixed order means no
+  run holds what another waits for, and a reservation still never waits behind either. ⚠ A run
+  waiting for its branch holds its cast slot meanwhile: under `max_parallel: 2` a queued remediation
+  run occupies one of the two. Taking the branch lock first would not, and is just as deadlock-free;
+  the order is the one the review asked for.
+- **The wait is the run's `--timeout`**, as for a slot. Past it the run comes back `status: failed`,
+  error `--branch <name>: another run on this branch outlasted the wait — all 1 'branch@…' slots
+  under '…' stayed unavailable …`, with nothing to undo. A run gated twice waits for each separately,
+  so it can wait up to twice its `--timeout` before it starts.
+- ⚠ The lock lives under `<cwd>/.claustrum/locks/`, as the slot pools do: two runs on one branch
+  started with different `--cwd`s of the same repository (a subdirectory, another worktree) do not
+  see each other's lock. The coordinate appendix gives every delegation one `--cwd`.
+- `IsSameWorktreeAsync` (F11's "is this our worktree") started git in a directory it had just seen
+  exist; a `jobs clean` removing it in between made `Process.Start` throw `Win32Exception` out of
+  `RunIsolatedAsync`. It is caught there and read as "not ours": refused, with the holder named.
+
+### New files count whatever `status.showUntrackedFiles` says (review R2, 2026-10-08)
+
+`CommitAllAsync` and `IsUntouchedAsync` ran a plain `git status --porcelain`, which honours
+`status.showUntrackedFiles=no` from the repo or the global config. A role that only created files
+was then never committed and got no warning, while its receipt listed them as `A` (the snapshot
+passes `--untracked-files=all`) beside `commit: null`; the next plain `git worktree remove` deleted
+them. Measured 2026-10-08, git 2.56, under `no`: plain `--porcelain` prints nothing for a new file,
+`--untracked-files=all` prints `?? new.txt`, `git add -A` stages it anyway, and `git worktree
+remove` removes the worktree, new file and all, with exit 0.
+
+- Every status in `JobWorktree` passes `--untracked-files=all` (its `statusArgs`).
+- Every **plain** remove — `jobs clean`'s `RemoveAsync`, `--branch` freeing a finished worktree, F9's
+  kept-branch cleanup — runs that status first (`UncommittedAsync`) and refuses `uncommitted
+  changes: <first porcelain line> (and N more)` when it lists anything, so git's own check, which
+  `worktree remove` runs under the user's config, is no longer the one relied on. Only at the top of
+  a working tree (`rev-parse --show-prefix` empty): a stale directory that is no worktree resolves to
+  the main checkout, whose changes are not its own, and `worktree remove` refuses that path by itself
+  (`not a working tree`). Ignored files still do not block.
+- Considered, not taken: `git -c status.showUntrackedFiles=all worktree remove`, which reaches git's
+  internal status through the config environment — measured the same day, it refuses `contains
+  modified or untracked files` under a `no` repo config. It would still leave the decision, and its
+  reason line, to git.
+
+### `--branch` frees only a worktree whose job it can see finished (review R3, 2026-10-08)
+
+F11 freed a holder by `jobs clean`'s rule, `JobDirectory.IsFinished`, under which a job directory
+missing while the jobs root exists counts as finished. On the `--branch` path that guard is dead:
+the run's own job directory exists before `CheckOutBranchAsync`, so the root always does. Any
+`.claustrum/worktrees/<id>` whose job lives under another `CLAUSTRUM_HOME` — the MCP server's
+environment against the shell's, a custom home in a coordinate session — or whose directory
+`jobs.keep_last` pruned counted as finished. A **running** job's clean worktree could be removed from
+under it and its branch taken over, and its later writes then landed in a plain directory inside the
+main checkout (F6's case).
+
+- `FreeBranchAsync` now frees only when `<jobs root>/<id>/result.json` exists
+  (`JobDirectory.HasResult`). A missing job directory is a refusal: ``--branch <name>: checked out
+  in <path>, the worktree of job <id>, which is unknown under this CLAUSTRUM_HOME (<jobs root>) — if
+  it is finished, run `claustrum jobs clean --cwd "<cwd>"` there first``. It replaces "which <root>
+  has no record of (another CLAUSTRUM_HOME?)" and the missing-jobs-root case, which this path cannot
+  reach.
+- `jobs clean` keeps `IsFinished` unchanged: it is the human's explicit sweep, and without its
+  missing-directory clause a pruned job's worktree would never go. Its hazard under a foreign home
+  stays where F6 already catches the commit.
+- ⚠ A worktree whose job `keep_last` pruned under this very home now needs one `jobs clean` before
+  `--branch` can take its branch; the refusal says to run it.
+
+### A commit that was made is never reported as left uncommitted (review R4, 2026-10-08)
+
+`Runner.CommitWorkAsync`'s catch wrapped the whole of `CommitRunAsync`, so a failure *after* a
+successful commit — `BranchTipAsync` or `BranchDeltaAsync` past git's 30 s bound on a large diff —
+came out as `commit: null` and `work left uncommitted on <branch>`, and the architect was told to
+commit work the branch already had.
+
+- Each stage answers for itself inside `CommitRunAsync`. A failed status/add/commit is `work left
+  uncommitted on <branch>: …`, as before. After it, a tip read that fails keeps the snapshot and
+  `commit: null` and warns `receipt delta unavailable, snapshot kept: <branch>'s tip could not be
+  read: …`; a delta that fails or throws keeps `commit` and the snapshot and warns `receipt delta
+  unavailable, snapshot kept: …`. F4's `changed_files/diff may miss what was committed …` became the
+  second of these. `Runner.CommitWorkAsync` has no catch left, and `VerifyAsync` returns a git
+  failure as its mismatch reason instead of throwing.
+- `git add -A` gets the commit's five minutes: clean filters (git-lfs) run inside it.
+- PLAUSIBLE, unmeasured: an `add` or `commit` killed at its bound can leave `index.lock` in the
+  worktree's git directory, and the architect's own commit there then fails on it until it is deleted.
+- Residual, not handled: a commit killed during a slow post-commit hook has already moved the branch,
+  so the receipt carries `commit` and the "left uncommitted" warning together, over a clean worktree.
+
+### An unverified worktree reports nothing (review R5, 2026-10-08)
+
+In F6's mismatch case the after-snapshot ran before `VerifyAsync`, so in a worktree turned back
+into a plain directory `git status`/`git diff HEAD` resolved to the main checkout, and the receipt's
+`changed_files`/`diff` carried the operator's uncommitted edits.
+
+- `Runner` verifies first and, on a mismatch, takes no after-snapshot: the receipt is
+  `JobWorktree.Unverified` — `changed_files: []`, `diff: null`, `commit: null` — with F6's warning.
+  Since review T3 only when the path is no worktree of the job's (below).
+  `commit` is no longer read from the branch, because once the worktree is gone the branch may be
+  another run's (R3's takeover) and its tip says nothing about this one. `CommitRunAsync` verifies
+  once more just before committing, with the same receipt on a mismatch.
+- A worktree removed and *not* recreated ("the directory is gone") used to throw from the
+  after-snapshot and end as `status: failed` with the report lost. It now keeps the run's status and
+  report, and carries the same warning.
+
+### The coordinate appendix says when a builder has no cap (review R6, 2026-10-08)
+
+`CoordinationBrief.RoleLine` printed `max_parallel 1` for a builder entry with no value, right next
+to "`max_parallel` is a cap at every value, 1 included". A null entry is not gated at all (#58):
+every hand-written cast without the key, and every questionnaire cast made before 2026-10-08 (F1).
+It now prints `max_parallel not set (no cap, no isolation — add "max_parallel": 1 to the cast to
+serialise builders)`; a number prints as before. ⚠ A hand-edited value below 1 is no cap either and
+still prints as its number.
+
+### A `worktree add` that fails or is killed leaves nothing behind (review T1, 2026-10-08)
+
+`JobWorktree.TryAddAsync` undid a `git worktree add` only when git exited non-zero. A checkout past
+git's 30 s bound (a git-lfs smudge, a virus scanner on a large repository) or a cancelled run had
+git's process tree killed and the exception passed straight through: `RunIsolatedAsync` had no
+`worktree` yet, so its catch cleaned nothing, and `--json` printed no receipt. Reproduced on git
+2.56 with a smudge filter `sleep 3; cat` and the add SIGKILLed after 2 s: the worktree stays
+registered on its branch, `locked initializing`; plain `remove` and `remove --force` both refuse
+(`fatal: cannot remove a locked working tree, lock reason: initializing` / `use 'remove -f -f' to
+override or unlock first`); `branch -D` refuses (`used by worktree at …`); a later add of the branch
+gets `already used by worktree`. `jobs clean` skips it, since that job never wrote a `result.json`,
+so every later `--branch <b>` was refused "has not finished" for good. A kill during a slow
+post-checkout hook (also measured) leaves the worktree registered and checked out, but unlocked:
+git drops the lock before it runs the hook.
+
+- **The add runs under the commit's five minutes** (`repoCodeTimeout`, renamed from
+  `commitTimeout`): a checkout is the repository's own code too — smudge filters, the hook.
+- **Every failure of the add is undone** — non-zero exit, timeout, cancellation — by `UndoAddAsync`:
+  `git worktree remove --force --force <path>`, then — only if that remove failed — `git worktree
+  prune`, then F9's branch rule (`TryDeleteOwnedBranchAsync`, now shared with
+  `TryRemoveAbandonedAsync`): `branch -D` only for a `-b` branch still at `BaseCommit`. Measured on
+  git 2.56: `-f -f` removes the `locked initializing` worktree (exit 0; the directory and
+  `.git/worktrees/<id>` gone), after which `branch -D` succeeds, and a locked entry whose directory
+  is gone (exit 0), as it does an unlocked one; what it fails on (exit 128, `validation failed …
+  '.git' does not exist`) is a directory whose `.git` file is gone, and that entry stays registered
+  `prunable` until a prune. So the prune runs only after a failed remove (narrowed in review,
+  2026-10-08: it is repository-wide, and ran after every failed add). The role never ran, so forcing
+  loses nobody's work; a post-checkout hook's leftovers, which F11's plain remove refused, go too.
+  The undo's remove gets the same five minutes, since deleting a large tree is as slow as writing
+  it. Measured as well: a `-b` add refused because its path already exists has **already created the
+  branch** (exit 128, `refs/heads/<b>` at the base); the undo deletes it, F11's kept it. Unreachable
+  while paths are per job id.
+- **What comes back.** On the `--branch` path a timeout is a `BranchRefusedException`, so a
+  `status: failed` receipt: `--branch <b>: git worktree add did not finish within 5 minutes; nothing
+  left behind`, or `…; left behind: <path> (<git's reason>)` and/or `branch <b> (<reason>)`. A
+  non-zero exit keeps git's reason, with `; left behind: …` only when something is (as first
+  shipped: ` (and undoing it failed: …)`). The `-b` path's `AddAsync` still throws (`git worktree
+  add <path> -b <b> failed: …`), exit 2 and no receipt as before, now with nothing left behind. A
+  cancel runs the undo, then rethrows the `OperationCanceledException` unchanged, so `run` still
+  exits 130 — unless the undo left something: then a new `OperationCanceledException` (inner: the
+  original, same token) carries `git worktree add was cancelled; left behind: …`, and
+  `RunCommand.Cancelled` (shared with `coordinate`) prints it as `warning: …` on stderr, still
+  exiting 130. It prints any cancel whose message is not one of the framework's two defaults, so a
+  plain Ctrl-C stays silent. Not on the MCP door: `McpExceptionBoundary` does not translate a
+  cancel, so the message goes wherever the SDK puts a cancelled call (not measured).
+- **A timeout before the add is a receipt too.** `CheckOutBranchAsync` turns a `TimeoutException`
+  from the free (the finished holder's `worktree remove`), the prune or the tip read into
+  `--branch <b>: <git's timeout message>`. A widening of the review's ask, which named only the add:
+  the same path lost its receipt the same way.
+- **prune before the holder is looked up.** A free killed mid-`worktree remove` can leave the branch
+  held by an entry whose directory, or its `.git` file, is gone: `FindHolderAsync` named it,
+  `IsSameWorktreeAsync` found no worktree there, and the run was refused `already checked out in
+  <holder>` with advice to switch that checkout off it. `FreeBranchAsync` now runs `git worktree
+  prune` first. Measured on git 2.56, prune (no `--expire`: everything stale goes at once) dropped
+  exactly the entries whose `.git` file was missing — a directory gone entirely, a directory whose
+  `.git` file alone was deleted (its other files stay, unregistered), and a worktree outside the
+  repository whose directory was gone — and left an intact worktree and a locked one whose directory
+  was gone. A concurrent run's add in progress is safe: git locks an incomplete worktree
+  `initializing` so that prune skips it.
+  - ⚠ prune is repository-wide. An unlocked worktree of the operator's whose directory is missing —
+    on an unmounted drive, say — is unregistered by any `--branch` run or an add whose undo's remove
+    failed, not three months later by `git gc`. `git worktree lock` keeps it, as git's documentation
+    advises for removable media. Not narrowed to Claustrum's own entries: telling one from a stale
+    foreign entry would need the realpath of a directory that no longer exists.
+  - ⚠ A remove killed while the `.git` file still exists stays registered with part of its files
+    gone. prune leaves it, and the free refuses it as `uncommitted changes: D …`; `git worktree
+    remove --force <path>` clears it by hand.
+  - ⚠ A directory prune unregistered keeps whatever files are left in it, and `jobs clean` then
+    reports it (`not a working tree`) on every sweep until it is deleted by hand.
+
+### The job's own worktree off its branch keeps its snapshot (review T3, 2026-10-08)
+
+R5 skipped the after-snapshot on any `VerifyAsync` mismatch. When `--show-prefix` is empty — the
+path *is* a worktree's top — and only `HEAD` differs, the snapshot reads that worktree and nothing
+else, and the receipt lost it for no reason: a role stopped mid-rebase (a detached `HEAD`) or one
+that switched its worktree's branch came back with `changed_files: []`.
+
+- `VerifyAsync` returns a `WorktreeMismatch(Reason, OwnWorktree)` instead of a string. `OwnWorktree`
+  is true for an empty prefix with `symbolic-ref -q HEAD` exiting 1 (`a detached HEAD`; measured
+  mid-rebase and after `checkout --detach`, git 2.56) or naming another ref (`refs/heads/X`). A gone
+  directory, a non-empty prefix and any other git failure — `symbolic-ref` exiting 128 included,
+  which used to read as "detached" — are `OwnWorktree: false`.
+- `Runner` snapshots when the worktree verified or is its own. `JobWorktree.Unverified(worktree,
+  mismatch, snapshot)` then gives its own worktree the snapshot, `commit: null`, no runner commit,
+  no F4 delta, and the warning `work left uncommitted: <path> is on <a detached HEAD | refs/heads/X>,
+  not <branch>`; anything else gets R5's empty receipt and F6's warning, unchanged.
+- ⚠ `commit` stays null even when the role moved its branch before leaving it (committed, then
+  started a rebase). The review asked for no commit and no delta, and a `commit` beside a snapshot
+  that does not contain it is F4's contradiction again; the warning sends the reader into the
+  worktree, where `git log <branch>` shows it.
+- ⚠ That snapshot is relative to the moved `HEAD`, not to `BaseCommit`: mid-rebase it lists the
+  files in conflict, not what the rebase had already replayed.
+
+### The remediation hint is for isolated builders (review T4, 2026-10-08)
+
+The coordinate appendix and `roles/architect/ROLE.md` told the architect to send any reviewed branch
+back with `--branch claustrum/<that job id>`. An in-place builder (`max_parallel` 1 or not set) has
+no branch of its own — its work is already in the architect's working tree — so both now say the
+hint is for an **isolated** builder's branch, one that ran under `max_parallel` above 1 or with
+`--branch`. Both also say `--branch <the branch on that builder's receipt>` instead of `claustrum/
+<that job id>`: a builder that itself ran with `--branch` reports the branch it was given, and
+`claustrum/<its own job id>` does not exist, so a second remediation round would have been refused
+`no local branch of that name`. MANUAL §9 and §11 follow. Two copies again — the trap
+"`budget_exceeded` is four messages" names.
+
+### Known and left as is (2026-10-08)
+
+- Windows, unverified: a VBCSCompiler/MSBuild node left running in a finished worktree holds files
+  there, and `git worktree remove` then deletes the admin entry yet exits non-zero — so
+  `FreeBranchAsync`'s "commit or discard its changes" is the wrong advice for that case, and a later
+  `jobs clean` says "not a working tree". The mitigation is the delegate's own `dotnet build-server
+  shutdown` before it finishes (the owner's rule 5).
+- At `max_parallel: 1` a nested delegation (builder → architect → builder) waits for the slot its
+  grandparent holds, up to `--timeout`, then fails — before #58 a cap of 1 meant no gate — and a
+  nested `--branch` run on its parent's branch waits the same way for the branch lock: bounded, not a
+  deadlock, because every path takes the slot, then the branch lock, then the ledger, in that order.

@@ -28,7 +28,10 @@ public static class JobsCommands
         logs.SetAction(parseResult => Logs(parseResult.GetRequiredValue(logsId), parseResult.GetValue(stderrOption)));
 
         Option<string?> cleanCwd = new("--cwd") { Description = "Working directory (default: current directory)." };
-        Command clean = new("clean", "Remove finished max_parallel jobs' worktrees (docs/PLAN.md §D4); their branches are kept.") { cleanCwd };
+        Command clean = new(
+            "clean",
+            "Remove finished isolated jobs' worktrees (docs/PLAN.md §D4); their branches, which carry the work, are kept. "
+                + "A worktree with uncommitted changes is reported and left in place.") { cleanCwd };
         clean.SetAction(async parseResult => await CleanAsync(parseResult.GetValue(cleanCwd)));
 
         Argument<string> budgetTree = new("tree") { Description = "Job tree id — the CLAUSTRUM_PARENT_JOB its members ran with." };
@@ -121,9 +124,10 @@ public static class JobsCommands
         return ExitCodes.Ok;
     }
 
-    // A worktree's directory name IS the job id that created it (JobWorktree.PathFor); IsCleanable
-    // below decides which ones are done with. The branch is never touched here (JobWorktree.RemoveAsync
-    // only removes the working directory), so the architect can still rebase from it afterwards.
+    // A worktree's directory name IS the job id that created it (JobWorktree.PathFor);
+    // JobDirectory.IsFinished decides which ones are done with. The branch is never touched here, and
+    // it carries the job's work as a commit since #61, so the architect can still rebase from it. A
+    // worktree that still holds uncommitted work is reported and left, never forced (F3).
     private static async Task<int> CleanAsync(string? cwdOption)
     {
         string cwd = Path.GetFullPath(cwdOption ?? Environment.CurrentDirectory);
@@ -140,7 +144,7 @@ public static class JobsCommands
         foreach (string worktreeDirectory in Directory.EnumerateDirectories(worktreesRoot))
         {
             string jobId = Path.GetFileName(worktreeDirectory);
-            if (!IsCleanable(jobsRoot, jobId))
+            if (!JobDirectory.IsFinished(jobsRoot, jobId))
                 continue;
 
             // Per entry, not per sweep: one directory git no longer recognises as a worktree (removed
@@ -150,7 +154,7 @@ public static class JobsCommands
             try
             {
                 await JobWorktree.RemoveAsync(cwd, jobId, CancellationToken.None);
-                Console.WriteLine($"removed {jobId} (branch {JobWorktree.BranchFor(jobId)} kept)");
+                Console.WriteLine($"removed {jobId} (branch {RecordedBranch(jobsRoot, jobId) ?? JobWorktree.BranchFor(jobId)} kept)");
                 removed++;
             }
             catch (Exception ex) when (ex is InvalidOperationException or IOException or TimeoutException)
@@ -170,18 +174,28 @@ public static class JobsCommands
         return failures.Count == 0 ? ExitCodes.Ok : ExitCodes.BackendFailure;
     }
 
-    // "Finished" is result.json existing, the same signal Summarize/Show already trust — a job still
-    // mid-run has none yet and its worktree is in use. A job directory that is gone entirely is the
-    // other cleanable case: the run was hard-killed before writing one, or jobs.keep_last pruned the
-    // directory out from under a worktree nobody ever cleaned. Without it such a worktree is
-    // unreachable forever, since the signal it is waiting for can never appear.
-    //
-    // That second rule only applies when the job root itself exists: `jobs clean` run with a
-    // different CLAUSTRUM_HOME than the run used (or on a fresh machine) would otherwise find every
-    // job directory "missing" and force-remove a live worktree along with its uncommitted work.
-    private static bool IsCleanable(string jobsRoot, string jobId) =>
-        File.Exists(Path.Combine(jobsRoot, jobId, "result.json"))
-        || (Directory.Exists(jobsRoot) && !Directory.Exists(Path.Combine(jobsRoot, jobId)));
+    // A `--branch` job's worktree is on the branch it was given, not claustrum/<its id> (#63); its
+    // receipt says which. Null for a job with no readable result.json, or one written before #60.
+    private static string? RecordedBranch(string jobsRoot, string jobId)
+    {
+        string resultPath = Path.Combine(jobsRoot, jobId, "result.json");
+        if (!File.Exists(resultPath))
+            return null;
+
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(File.ReadAllText(resultPath));
+            return document.RootElement.ValueKind == JsonValueKind.Object
+                && document.RootElement.TryGetProperty("branch", out JsonElement branch)
+                && branch.ValueKind == JsonValueKind.String
+                    ? branch.GetString()
+                    : null;
+        }
+        catch (Exception ex) when (ex is JsonException or IOException)
+        {
+            return null;
+        }
+    }
 
     // Exporting a tree id makes docs/PLAN.md §D4's ledger permanent: spend accumulates across
     // processes with nothing to inspect it and no way to start over (review finding F4). This is both.

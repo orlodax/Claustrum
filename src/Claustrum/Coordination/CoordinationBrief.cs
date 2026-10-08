@@ -82,7 +82,10 @@ public static class CoordinationBrief
             "- Write each brief to .claustrum/briefs/<n>-<role>.md first, then pass that path to --brief-file.",
             "",
             $"Work branch: claustrum/{DelegateRequest.JobIdToken} — create it from the current HEAD before delegating anything.",
-            "- A builder running in parallel returns `worktree` and `branch` (claustrum/<its own job id>). Integrate each one with `git rebase` onto the work branch, then fast-forward the work branch to it.",
+            "- A builder running in parallel returns `worktree` and `branch` (claustrum/<its own job id>), and that branch carries its work as a commit (`commit` on the receipt) — unless its `warnings[]` says the work was left uncommitted, in one of three shapes. `work left uncommitted on <branch>`: git refused that commit, and the work is still in the builder's `worktree`; commit it inside that worktree yourself before integrating. `work left uncommitted: <path> is on <a detached HEAD | refs/heads/…>, not <branch>`: the builder stopped mid-rebase or switched branch, and a commit there would land off its branch — first finish or abort the rebase (`git -C <path> rebase --continue`/`--abort`) or `git -C <path> switch <branch>`, then commit inside it. `work left uncommitted: <path> is not the job worktree on <branch> (…)`: the worktree was gone or foreign, so nothing reached the branch and what the builder wrote is in `<path>`, outside every branch — move it by hand or rerun the builder.",
+            $"- Integrate each builder branch by rebasing it onto the work branch, then fast-forward the work branch to it. The branch stays checked out in the builder's worktree until `claustrum jobs clean`, and git will not rebase a branch checked out elsewhere: run `claustrum jobs clean --cwd \"{cwd}\"` first (finished worktrees go, branches stay), or rebase inside that worktree (`git -C <worktree> rebase <work branch>`).",
+            "- To send an isolated builder's reviewed branch back for remediation (one that ran under `max_parallel` above 1 or with `--branch`; an in-place builder has no branch of its own — its work is already in your working tree), run the builder with `--branch <the branch on that builder's receipt>`: it continues on the same branch, in a fresh worktree, and its fix lands there as another commit.",
+            "- `max_parallel` is a cap at every value, 1 included: a builder past it waits for a slot. Isolation starts at 2.",
             "- Never a merge commit, never `git push`.",
         ]);
 
@@ -106,10 +109,13 @@ public static class CoordinationBrief
             return $"- {role}: not needed for this cast — do not delegate to it";
 
         // max_parallel is builder-only by construction (CastBuilder.FromAnswers), and the architect
-        // needs the number: it decides how many briefs it may fan out at once.
-        string parallel = role == "builder"
-            ? $", max_parallel {(entry.MaxParallel ?? 1).ToString(CultureInfo.InvariantCulture)}"
-            : "";
+        // needs the number: it decides how many briefs it may fan out at once. R6: a null one is no
+        // cap and no gate at all (#58) — printed as 1 it contradicted the "a cap at every value" line.
+        string parallel = role != "builder"
+            ? ""
+            : entry.MaxParallel is { } cap
+                ? $", max_parallel {cap.ToString(CultureInfo.InvariantCulture)}"
+                : """, max_parallel not set (no cap, no isolation — add "max_parallel": 1 to the cast to serialise builders)""";
 
         return $"- {role}: {Describe(entry.Model, entry.Tier)}{parallel}";
     }

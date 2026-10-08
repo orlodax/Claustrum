@@ -85,7 +85,7 @@ public static class CastQuestionnaire
         AddQuestion(new CastQuestion(
             Key: MaxParallelKey,
             Prompt: "builder: how many builders may run at once? More than 1 gives each job its own "
-                + "git worktree and branch (docs/PLAN.md §D4). '1' keeps every run in the repo itself.",
+                + "git worktree and branch (docs/PLAN.md §D4). '1' keeps every run in the repo itself, one at a time.",
             Options: ["1", "2", "3"],
             AllowNotNeeded: false,
             AllowFreeForm: true));

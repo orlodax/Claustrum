@@ -33,6 +33,54 @@ public sealed class RunResultJsonContractTests
         Assert.Contains("\"report_status\":", json);
     }
 
+    // #60/#61: an isolated run's receipt names its worktree, branch and the branch tip it left. All three
+    // are additive optional fields (schema_version stays "1"), written as explicit nulls when unset so
+    // a reader never has to tell "absent" from "null".
+    [Fact]
+    public void WorktreeBranchAndCommitSerializeAsSnakeCaseNullWhenUnset()
+    {
+        string json = JsonSerializer.Serialize(MakeResult(), ClaustrumJsonContext.Default.RunResult);
+
+        Assert.Contains("\"worktree\":null", json);
+        Assert.Contains("\"branch\":null", json);
+        Assert.Contains("\"commit\":null", json);
+    }
+
+    [Fact]
+    public void WorktreeBranchAndCommitRoundTripWhenSet()
+    {
+        RunResult original = MakeResult() with { Worktree = "/repo/.claustrum/worktrees/j1", Branch = "claustrum/j1", Commit = "0123456789abcdef0123456789abcdef01234567" };
+
+        string json = JsonSerializer.Serialize(original, ClaustrumJsonContext.Default.RunResult);
+        RunResult? roundTripped = JsonSerializer.Deserialize(json, ClaustrumJsonContext.Default.RunResult);
+
+        Assert.Contains("\"worktree\":\"/repo/.claustrum/worktrees/j1\"", json);
+        Assert.Contains("\"branch\":\"claustrum/j1\"", json);
+        Assert.Contains("\"commit\":\"0123456789abcdef0123456789abcdef01234567\"", json);
+        Assert.NotNull(roundTripped);
+        Assert.Equal(original.Worktree, roundTripped.Worktree);
+        Assert.Equal(original.Branch, roundTripped.Branch);
+        Assert.Equal(original.Commit, roundTripped.Commit);
+    }
+
+    // A result.json written before #60/#61 has none of the three keys; it must still load, as nulls.
+    [Fact]
+    public void AResultWithoutTheIsolationFieldsStillDeserializes()
+    {
+        string json = JsonSerializer.Serialize(MakeResult(), ClaustrumJsonContext.Default.RunResult)
+            .Replace(",\"worktree\":null", "", StringComparison.Ordinal)
+            .Replace(",\"branch\":null", "", StringComparison.Ordinal)
+            .Replace(",\"commit\":null", "", StringComparison.Ordinal);
+
+        RunResult? loaded = JsonSerializer.Deserialize(json, ClaustrumJsonContext.Default.RunResult);
+
+        Assert.DoesNotContain("\"commit\"", json, StringComparison.Ordinal);
+        Assert.NotNull(loaded);
+        Assert.Null(loaded.Worktree);
+        Assert.Null(loaded.Branch);
+        Assert.Null(loaded.Commit);
+    }
+
     [Fact]
     public void RunStatusEnumIsSnakeCaseNotPascalCase()
     {

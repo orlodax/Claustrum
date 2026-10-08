@@ -92,6 +92,19 @@ public static class JobDirectory
     // directories without creating a new one.
     public static string ResolveRoot(IPlatform platform) => Path.Combine(ResolveHome(platform), "jobs");
 
+    // The job's receipt exists: the signal `jobs list`/`show` trust, and since R3 the only one on which
+    // `run --branch` frees the job's worktree.
+    public static bool HasResult(string jobsRoot, string jobId) => File.Exists(Path.Combine(jobsRoot, jobId, "result.json"));
+
+    // `jobs clean`'s "done with", the human's explicit sweep. A job directory gone entirely counts too:
+    // hard-killed before writing one, or pruned by jobs.keep_last — otherwise its worktree waits for a
+    // signal that can never appear. ⚠ Only while the jobs root itself exists: pointed at a different
+    // CLAUSTRUM_HOME (or a fresh machine) every job looks "missing", and live worktrees would be taken
+    // for finished ones. Even so a job of another home looks gone here, so `run --branch` keeps to
+    // HasResult (R3).
+    public static bool IsFinished(string jobsRoot, string jobId) =>
+        HasResult(jobsRoot, jobId) || (Directory.Exists(jobsRoot) && !Directory.Exists(Path.Combine(jobsRoot, jobId)));
+
     // `$CLAUSTRUM_HOME` or `~/.claustrum`: the one root every on-disk store hangs off — `jobs/` above
     // and BudgetLedger's `budget/` — so a test (or a parallel worktree) that relocates the home
     // isolates all of them together instead of one and not the other.

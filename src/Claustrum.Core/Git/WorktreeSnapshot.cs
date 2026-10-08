@@ -48,11 +48,39 @@ public static class WorktreeSnapshot
 
         ChangedFile[] changedFiles = [.. changedEntries.SelectMany(ToChangedFiles)];
         string fullDiff = await BuildDiffAsync(cwd, changedEntries, cancellationToken);
+        return Capped(changedFiles, fullDiff, diffByteCapBytes);
+    }
 
-        byte[] bytes = Encoding.UTF8.GetBytes(fullDiff);
-        bool truncated = bytes.Length > diffByteCapBytes;
-        string diff = truncated ? TruncateUtf8(bytes, diffByteCapBytes) : fullDiff;
-        return new SnapshotDiff(changedFiles, diff, truncated);
+    /// <summary>
+    /// F4: an isolated run's changes once its branch moved past <paramref name="baseCommit"/>, where
+    /// the run started — the working tree against that commit, so what the runner or the role committed
+    /// shows beside what is still uncommitted; untracked new files come from <paramref name="snapshot"/>,
+    /// as in <see cref="DiffAsync"/>. Run only in a verified job worktree. Null when git cannot say.
+    /// NOTES.md "An isolated run's receipt is the branch's delta from its starting commit".
+    /// </summary>
+    public static async Task<SnapshotDiff?> BranchDeltaAsync(string worktree, string baseCommit, SnapshotDiff snapshot, int diffByteCapBytes, CancellationToken cancellationToken = default)
+    {
+        // --no-renames: git itself reports a rename as the A + D pair the snapshot splits R into.
+        (int namesExit, string names, _) = await GitProcess.RunAsync(worktree, ["diff", "--name-status", "--no-renames", "-z", baseCommit, "--"], cancellationToken);
+        (int diffExit, string trackedDiff, _) = await GitProcess.RunAsync(worktree, ["diff", baseCommit, "--"], cancellationToken);
+        (int untrackedExit, string untrackedNow, _) = await GitProcess.RunAsync(worktree, ["ls-files", "--others", "--exclude-standard", "-z"], cancellationToken);
+        if (namesExit != 0 || diffExit != 0 || untrackedExit != 0)
+            return null;
+
+        // `git diff <commit>` sees the index only: a new file the runner's commit could not take is still
+        // untracked, and the snapshot is what knows the run made it.
+        HashSet<string> untrackedPaths = [.. untrackedNow.Split('\0', StringSplitOptions.RemoveEmptyEntries)];
+        string[] untracked = [.. snapshot.ChangedFiles
+            .Where(file => file.Kind == ChangeKind.Added && untrackedPaths.Contains(file.Path))
+            .Select(file => file.Path)];
+
+        ChangedFile[] changedFiles = [.. ParseNameStatusZ(names), .. untracked.Select(path => new ChangedFile(path, ChangeKind.Added))];
+        if (changedFiles.Length == 0)
+            return new SnapshotDiff([], null, false);
+
+        StringBuilder diffBuilder = new(trackedDiff);
+        await AppendUntrackedDiffsAsync(worktree, untracked, diffBuilder, cancellationToken);
+        return Capped(changedFiles, diffBuilder.ToString(), diffByteCapBytes);
     }
 
     private static async Task<string> BuildDiffAsync(string cwd, List<GitStatusEntry> changedEntries, CancellationToken cancellationToken)
@@ -67,16 +95,45 @@ public static class WorktreeSnapshot
             diffBuilder.Append(trackedDiff);
         }
 
-        // Untracked files have no HEAD blob, so `git diff HEAD` silently ignores them; git treats
-        // "/dev/null" as a diff pseudo-path on every OS, including Windows.
+        await AppendUntrackedDiffsAsync(cwd, untrackedPaths, diffBuilder, cancellationToken);
+        return diffBuilder.ToString();
+    }
+
+    // Untracked files have no HEAD blob, so `git diff HEAD` silently ignores them; git treats
+    // "/dev/null" as a diff pseudo-path on every OS, including Windows.
+    private static async Task AppendUntrackedDiffsAsync(string cwd, IEnumerable<string> untrackedPaths, StringBuilder diffBuilder, CancellationToken cancellationToken)
+    {
         foreach (string path in untrackedPaths)
         {
             (int exitCode, string stdout, _) = await GitProcess.RunAsync(cwd, ["diff", "--no-index", "--", "/dev/null", path], cancellationToken);
             if (exitCode is 0 or 1)
                 diffBuilder.Append(stdout);
         }
+    }
 
-        return diffBuilder.ToString();
+    private static SnapshotDiff Capped(ChangedFile[] changedFiles, string fullDiff, int diffByteCapBytes)
+    {
+        byte[] bytes = Encoding.UTF8.GetBytes(fullDiff);
+        bool truncated = bytes.Length > diffByteCapBytes;
+        string diff = truncated ? TruncateUtf8(bytes, diffByteCapBytes) : fullDiff;
+        return new SnapshotDiff(changedFiles, diff, truncated);
+    }
+
+    // `git diff --name-status --no-renames -z`: a status letter, then its path, NUL-separated. T (a type
+    // change) and anything rarer count as modified.
+    private static IEnumerable<ChangedFile> ParseNameStatusZ(string raw)
+    {
+        string[] tokens = raw.Split('\0', StringSplitOptions.RemoveEmptyEntries);
+        for (int i = 0; i + 1 < tokens.Length; i += 2)
+        {
+            ChangeKind kind = tokens[i][0] switch
+            {
+                'A' => ChangeKind.Added,
+                'D' => ChangeKind.Deleted,
+                _ => ChangeKind.Modified,
+            };
+            yield return new ChangedFile(tokens[i + 1], kind);
+        }
     }
 
     private static GitStatusEntry[] ParseStatusZ(string raw)

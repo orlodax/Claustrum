@@ -1,28 +1,34 @@
-using System.Diagnostics;
 using System.Runtime.Versioning;
 using System.Text;
 using Claustrum.Core.Git;
 using Claustrum.Core.Model;
-// Alias to a DIFFERENT name, not `using Process = System.Diagnostics.Process;`: an alias directive
-// is still just a using directive, so aliasing to the exact colliding simple name "Process" would
-// lose to the enclosing-namespace member `Claustrum.Core.Process` the same way a plain using would
-// (the same trap ConfigTests.cs documents for `Config`/`CoreConfig`). ProcessStartInfo has no
-// colliding namespace member, so it needs no alias.
-using SystemProcess = System.Diagnostics.Process;
+using Claustrum.Core.Tests.Testing;
 
 namespace Claustrum.Core.Tests.Git;
 
 // Exercises WorktreeSnapshot against a real temporary git repo (docs brief item 3's third bullet).
 // Each test plays "before snapshot -> mutate worktree -> after snapshot -> diff" to mirror how
 // Runner actually calls it around a backend spawn.
-public sealed class WorktreeSnapshotTests
+public sealed class WorktreeSnapshotTests : IDisposable
 {
+    // #47: this class left a `claustrum-git-*` and a `claustrum-nogit-*` directory behind per test. Each
+    // root deletes what it made when the class is disposed; the two prefixes are kept so a stray one still
+    // names the test that leaked it.
+    private readonly ScratchRoot scratch = new("claustrum-git-");
+    private readonly ScratchRoot nogit = new("claustrum-nogit-");
+
+    public void Dispose()
+    {
+        scratch.Dispose();
+        nogit.Dispose();
+    }
+
     [Fact]
     public async Task NewUntrackedFileIsAddedWithNoIndexDiffAsync()
     {
         CancellationToken ct = TestContext.Current.CancellationToken;
-        string dir = CreateRepo();
-        Commit(dir, "seed.txt", "seed\n");
+        string dir = scratch.CreateRepo();
+        GitRepo.Commit(dir, "seed.txt", "seed\n");
 
         WorktreeState before = await WorktreeSnapshot.CaptureAsync(dir, ct);
         File.WriteAllText(Path.Combine(dir, "hello.txt"), "hi\n");
@@ -41,8 +47,8 @@ public sealed class WorktreeSnapshotTests
     public async Task AlreadyDirtyFileEditedAgainIsStillReportedAsync()
     {
         CancellationToken ct = TestContext.Current.CancellationToken;
-        string dir = CreateRepo();
-        Commit(dir, "file.txt", "v1\n");
+        string dir = scratch.CreateRepo();
+        GitRepo.Commit(dir, "file.txt", "v1\n");
         File.WriteAllText(Path.Combine(dir, "file.txt"), "v2\n"); // dirty before the "run" starts
 
         WorktreeState before = await WorktreeSnapshot.CaptureAsync(dir, ct);
@@ -60,8 +66,8 @@ public sealed class WorktreeSnapshotTests
     public async Task UntrackedFileEditedAgainKeepsAddedKindAsync()
     {
         CancellationToken ct = TestContext.Current.CancellationToken;
-        string dir = CreateRepo();
-        Commit(dir, "seed.txt", "seed\n");
+        string dir = scratch.CreateRepo();
+        GitRepo.Commit(dir, "seed.txt", "seed\n");
         File.WriteAllText(Path.Combine(dir, "new.txt"), "v1\n"); // untracked before the "run"
 
         WorktreeState before = await WorktreeSnapshot.CaptureAsync(dir, ct);
@@ -79,12 +85,12 @@ public sealed class WorktreeSnapshotTests
     public async Task RenameReportsNewPathAddedAndOldPathDeletedAsync()
     {
         CancellationToken ct = TestContext.Current.CancellationToken;
-        string dir = CreateRepo();
-        Commit(dir, "old.txt", "identical content so similarity is 100%\n");
+        string dir = scratch.CreateRepo();
+        GitRepo.Commit(dir, "old.txt", "identical content so similarity is 100%\n");
 
         WorktreeState before = await WorktreeSnapshot.CaptureAsync(dir, ct);
         File.Move(Path.Combine(dir, "old.txt"), Path.Combine(dir, "new.txt"));
-        RunGit(dir, "add", "-A"); // stage it so `git status` has a clear rename to detect
+        GitRepo.Run(dir, "add", "-A"); // stage it so `git status` has a clear rename to detect
         WorktreeState after = await WorktreeSnapshot.CaptureAsync(dir, ct);
 
         SnapshotDiff diff = await WorktreeSnapshot.DiffAsync(dir, before, after, 1_000_000, ct);
@@ -103,8 +109,8 @@ public sealed class WorktreeSnapshotTests
     public async Task LockedFileIsUnhashableInsteadOfFatalAsync()
     {
         CancellationToken ct = TestContext.Current.CancellationToken;
-        string dir = CreateRepo();
-        Commit(dir, "file.txt", "v1\n");
+        string dir = scratch.CreateRepo();
+        GitRepo.Commit(dir, "file.txt", "v1\n");
         string path = Path.Combine(dir, "file.txt");
         File.WriteAllText(path, "v2\n"); // dirty before the "run" starts
 
@@ -149,8 +155,8 @@ public sealed class WorktreeSnapshotTests
     public async Task PreexistingDirtyFileLeftUntouchedIsExcludedAsync()
     {
         CancellationToken ct = TestContext.Current.CancellationToken;
-        string dir = CreateRepo();
-        Commit(dir, "file.txt", "v1\n");
+        string dir = scratch.CreateRepo();
+        GitRepo.Commit(dir, "file.txt", "v1\n");
         File.WriteAllText(Path.Combine(dir, "file.txt"), "v2\n"); // dirty before the "run" starts
 
         WorktreeState before = await WorktreeSnapshot.CaptureAsync(dir, ct);
@@ -167,7 +173,7 @@ public sealed class WorktreeSnapshotTests
     public async Task NonGitDirectoryFallsBackToFileScanWithNullDiffAsync()
     {
         CancellationToken ct = TestContext.Current.CancellationToken;
-        string dir = Directory.CreateTempSubdirectory("claustrum-nogit-").FullName;
+        string dir = nogit.CreateDirectory();
 
         WorktreeState before = await WorktreeSnapshot.CaptureAsync(dir, ct);
         Assert.IsType<WorktreeState.FileScan>(before);
@@ -199,7 +205,7 @@ public sealed class WorktreeSnapshotTests
         }
 
         CancellationToken ct = TestContext.Current.CancellationToken;
-        string dir = Directory.CreateTempSubdirectory("claustrum-nogit-scanguard-").FullName;
+        string dir = nogit.CreateDirectory();
         string locked = Path.Combine(dir, "locked");
         Directory.CreateDirectory(locked);
         File.WriteAllText(Path.Combine(locked, "unreachable.txt"), "never seen\n");
@@ -228,9 +234,8 @@ public sealed class WorktreeSnapshotTests
         finally
         {
             // The owner can always chmod their own directory back regardless of its current mode —
-            // needed so the temp tree can be deleted at all.
+            // needed so the scratch root can delete the tree at all.
             File.SetUnixFileMode(locked, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-            Directory.Delete(dir, recursive: true);
         }
     }
 
@@ -238,8 +243,8 @@ public sealed class WorktreeSnapshotTests
     public async Task TruncationBacksUpOverAMultibyteUtf8BoundaryAsync()
     {
         CancellationToken ct = TestContext.Current.CancellationToken;
-        string dir = CreateRepo();
-        Commit(dir, "seed.txt", "seed\n");
+        string dir = scratch.CreateRepo();
+        GitRepo.Commit(dir, "seed.txt", "seed\n");
         string content = new string('€', 50) + "\n"; // U+20AC, 3 bytes in UTF-8
 
         WorktreeState before = await WorktreeSnapshot.CaptureAsync(dir, ct);
@@ -259,6 +264,155 @@ public sealed class WorktreeSnapshotTests
         Assert.True(Encoding.UTF8.GetByteCount(truncatedDiff) <= cap);
     }
 
+    // F4: an isolated run's receipt is the branch's delta from the commit it started on, because a role
+    // that commits by itself moves HEAD and `git status` / `git diff HEAD` then show nothing of its work.
+    [Fact]
+    public async Task BranchDeltaListsWhatWasCommittedSinceTheStartingCommitAsync()
+    {
+        CancellationToken ct = TestContext.Current.CancellationToken;
+        string dir = scratch.CreateRepo();
+        string start = GitRepo.Commit(dir, "seed.txt", "seed\n");
+        GitRepo.Commit(dir, "committed.txt", "by the role\n");
+
+        SnapshotDiff? delta = await WorktreeSnapshot.BranchDeltaAsync(dir, start, new SnapshotDiff([], null, false), 1_000_000, ct);
+
+        Assert.NotNull(delta);
+        ChangedFile file = Assert.Single(delta.ChangedFiles);
+        Assert.Equal("committed.txt", file.Path);
+        Assert.Equal(ChangeKind.Added, file.Kind);
+        Assert.Contains("+by the role", delta.Diff, StringComparison.Ordinal);
+        Assert.False(delta.Truncated);
+    }
+
+    // --no-renames: git itself splits a rename into the A + D pair the status snapshot produces.
+    [Fact]
+    public async Task BranchDeltaReportsARenameAsAnAddedAndADeletedPathAsync()
+    {
+        CancellationToken ct = TestContext.Current.CancellationToken;
+        string dir = scratch.CreateRepo();
+        string start = GitRepo.Commit(dir, "old.txt", "identical content so similarity is 100%\n");
+        GitRepo.Run(dir, "mv", "old.txt", "new.txt");
+        GitRepo.Run(dir, "commit", "-q", "-m", "rename");
+
+        SnapshotDiff? delta = await WorktreeSnapshot.BranchDeltaAsync(dir, start, new SnapshotDiff([], null, false), 1_000_000, ct);
+
+        Assert.NotNull(delta);
+        Assert.Equal(2, delta.ChangedFiles.Length);
+        Assert.Contains(delta.ChangedFiles, f => f.Path == "new.txt" && f.Kind == ChangeKind.Added);
+        Assert.Contains(delta.ChangedFiles, f => f.Path == "old.txt" && f.Kind == ChangeKind.Deleted);
+    }
+
+    // `git diff <commit>` sees the index only. A new file the runner's commit could not take stays
+    // untracked, and the snapshot is what knows the run made it: it gets the `--no-index` text.
+    [Fact]
+    public async Task BranchDeltaAddsAStillUntrackedSnapshotFileWithItsNoIndexTextAsync()
+    {
+        CancellationToken ct = TestContext.Current.CancellationToken;
+        string dir = scratch.CreateRepo();
+        string start = GitRepo.Commit(dir, "seed.txt", "seed\n");
+        GitRepo.Commit(dir, "committed.txt", "by the role\n");
+        WorktreeState before = await WorktreeSnapshot.CaptureAsync(dir, ct);
+        File.WriteAllText(Path.Combine(dir, "left.txt"), "hello left\n");
+        WorktreeState after = await WorktreeSnapshot.CaptureAsync(dir, ct);
+        SnapshotDiff snapshot = await WorktreeSnapshot.DiffAsync(dir, before, after, 1_000_000, ct);
+
+        SnapshotDiff? delta = await WorktreeSnapshot.BranchDeltaAsync(dir, start, snapshot, 1_000_000, ct);
+
+        Assert.NotNull(delta);
+        Assert.Contains(delta.ChangedFiles, f => f.Path == "committed.txt" && f.Kind == ChangeKind.Added);
+        Assert.Contains(delta.ChangedFiles, f => f.Path == "left.txt" && f.Kind == ChangeKind.Added);
+        Assert.Contains("+hello left", delta.Diff, StringComparison.Ordinal);
+        Assert.Contains("+by the role", delta.Diff, StringComparison.Ordinal);
+    }
+
+    // The snapshot's Added file that a commit has since taken is listed once, from the commit, not twice.
+    [Fact]
+    public async Task BranchDeltaListsAFileOnceWhenTheSnapshotSawItUntrackedAndACommitTookItAsync()
+    {
+        CancellationToken ct = TestContext.Current.CancellationToken;
+        string dir = scratch.CreateRepo();
+        string start = GitRepo.Commit(dir, "seed.txt", "seed\n");
+        WorktreeState before = await WorktreeSnapshot.CaptureAsync(dir, ct);
+        File.WriteAllText(Path.Combine(dir, "new.txt"), "new\n");
+        WorktreeState after = await WorktreeSnapshot.CaptureAsync(dir, ct);
+        SnapshotDiff snapshot = await WorktreeSnapshot.DiffAsync(dir, before, after, 1_000_000, ct);
+        GitRepo.Run(dir, "add", "-A");
+        GitRepo.Run(dir, "commit", "-q", "-m", "runner commit");
+
+        SnapshotDiff? delta = await WorktreeSnapshot.BranchDeltaAsync(dir, start, snapshot, 1_000_000, ct);
+
+        Assert.NotNull(delta);
+        Assert.Single(delta.ChangedFiles);
+        Assert.Equal(1, CountOf(delta.Diff, "+++ b/new.txt"));
+    }
+
+    // Uncommitted tracked edits are measured against the same starting commit as the committed ones.
+    [Fact]
+    public async Task BranchDeltaIncludesATrackedEditThatIsStillUncommittedAsync()
+    {
+        CancellationToken ct = TestContext.Current.CancellationToken;
+        string dir = scratch.CreateRepo();
+        string start = GitRepo.Commit(dir, "seed.txt", "seed\n");
+        GitRepo.Commit(dir, "committed.txt", "by the role\n");
+        File.WriteAllText(Path.Combine(dir, "seed.txt"), "seed, edited\n");
+
+        SnapshotDiff? delta = await WorktreeSnapshot.BranchDeltaAsync(dir, start, new SnapshotDiff([], null, false), 1_000_000, ct);
+
+        Assert.NotNull(delta);
+        Assert.Contains(delta.ChangedFiles, f => f.Path == "seed.txt" && f.Kind == ChangeKind.Modified);
+        Assert.Contains(delta.ChangedFiles, f => f.Path == "committed.txt" && f.Kind == ChangeKind.Added);
+    }
+
+    // Added, committed, then deleted again: git lists nothing for it, and neither do we.
+    [Fact]
+    public async Task BranchDeltaOfAFileAddedAndRemovedAgainIsEmptyAsync()
+    {
+        CancellationToken ct = TestContext.Current.CancellationToken;
+        string dir = scratch.CreateRepo();
+        string start = GitRepo.Commit(dir, "seed.txt", "seed\n");
+        GitRepo.Commit(dir, "scratch.txt", "temporary\n");
+        GitRepo.Run(dir, "rm", "-q", "scratch.txt");
+        GitRepo.Run(dir, "commit", "-q", "-m", "remove it again");
+
+        SnapshotDiff? delta = await WorktreeSnapshot.BranchDeltaAsync(dir, start, new SnapshotDiff([], null, false), 1_000_000, ct);
+
+        Assert.NotNull(delta);
+        Assert.Empty(delta.ChangedFiles);
+        Assert.Null(delta.Diff);
+    }
+
+    [Fact]
+    public async Task BranchDeltaAppliesTheByteCapAndMarksTheDiffTruncatedAsync()
+    {
+        CancellationToken ct = TestContext.Current.CancellationToken;
+        string dir = scratch.CreateRepo();
+        string start = GitRepo.Commit(dir, "seed.txt", "seed\n");
+        GitRepo.Commit(dir, "big.txt", string.Concat(Enumerable.Repeat("a line that will not fit in the cap\n", 50)));
+
+        SnapshotDiff? delta = await WorktreeSnapshot.BranchDeltaAsync(dir, start, new SnapshotDiff([], null, false), 200, ct);
+
+        Assert.NotNull(delta);
+        Assert.True(delta.Truncated);
+        Assert.NotNull(delta.Diff);
+        Assert.True(Encoding.UTF8.GetByteCount(delta.Diff) <= 200);
+        Assert.Single(delta.ChangedFiles);
+    }
+
+    // Null is "git cannot say": the caller keeps its snapshot and warns (receipt delta unavailable).
+    [Fact]
+    public async Task BranchDeltaAgainstACommitGitDoesNotKnowIsNullAsync()
+    {
+        CancellationToken ct = TestContext.Current.CancellationToken;
+        string dir = scratch.CreateRepo();
+        GitRepo.Commit(dir, "seed.txt", "seed\n");
+
+        SnapshotDiff? delta = await WorktreeSnapshot.BranchDeltaAsync(dir, new string('0', 40), new SnapshotDiff([], null, false), 1_000_000, ct);
+
+        Assert.Null(delta);
+    }
+
+    private static int CountOf(string? text, string needle) => text is null ? 0 : text.Split(needle).Length - 1;
+
     private static int FirstMultiByteSequenceStart(byte[] bytes)
     {
         for (int i = 0; i < bytes.Length; i++)
@@ -266,42 +420,5 @@ public sealed class WorktreeSnapshotTests
                 return i;
 
         throw new InvalidOperationException("fixture diff has no multi-byte UTF-8 sequence");
-    }
-
-    private static string CreateRepo()
-    {
-        string dir = Directory.CreateTempSubdirectory("claustrum-git-").FullName;
-        RunGit(dir, "init", "-q");
-        RunGit(dir, "config", "user.email", "test@example.com");
-        RunGit(dir, "config", "user.name", "claustrum-tests");
-        RunGit(dir, "config", "core.autocrlf", "false");
-        return dir;
-    }
-
-    private static void Commit(string dir, string fileName, string content)
-    {
-        File.WriteAllText(Path.Combine(dir, fileName), content);
-        RunGit(dir, "add", "-A");
-        RunGit(dir, "commit", "-q", "-m", $"add {fileName}");
-    }
-
-    private static void RunGit(string cwd, params string[] args)
-    {
-        ProcessStartInfo startInfo = new("git")
-        {
-            WorkingDirectory = cwd,
-            UseShellExecute = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            CreateNoWindow = true,
-        };
-        foreach (string arg in args)
-            startInfo.ArgumentList.Add(arg);
-
-        using SystemProcess process = SystemProcess.Start(startInfo) ?? throw new InvalidOperationException("git failed to start");
-        string stderr = process.StandardError.ReadToEnd();
-        process.WaitForExit();
-        if (process.ExitCode != 0)
-            throw new InvalidOperationException($"git {string.Join(' ', args)} failed ({process.ExitCode}): {stderr}");
     }
 }
