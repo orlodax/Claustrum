@@ -8,6 +8,8 @@ on:
 jobs:
   test:
     strategy:
+      # One OS failing must not cancel the other: PR #75's Windows leg was cancelled and reported nothing.
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
