@@ -42,6 +42,34 @@ public sealed class RunCapEndToEndTests : IDisposable
         Assert.Equal(TestGit.Head(repo.Repo), TestGit.RevParse(repo.Repo, "main"));
     }
 
+    // #74 H7: a cap above 1 used to cut a worktree from no HEAD and die after the mint. Without a repository it runs in place,
+    // queued at one, and the receipt — on stdout, on disk, and as a `warning:` on stderr — says no worktree was made. The
+    // backend is one that does not exist: a plain directory's claustrum.json is not read, so nothing real may be spawned.
+    [Fact]
+    public async Task ACapAboveOneInADirectoryWithNoRepositoryRunsInPlaceAtACapOfOneAndSaysSoEverywhereAsync()
+    {
+        using ClaustrumCli plain = new();
+        Directory.CreateDirectory(plain.CastsDirectory);
+        File.WriteAllText(Path.Combine(plain.CastsDirectory, "default.json"), /*lang=json,strict*/
+            """{"name":"default","library":"1.0.0","architect":{"mode":"host"},"roles":{"builder":{"backend":"claude","max_parallel":2}},"budget_usd":null}""");
+
+        CliResult human = await plain.RunAsync(["run", "builder", "--brief", "do the task", "--backend", "nonexistent"], "", IsolatedRepo.ChildPath());
+        CliResult json = await plain.RunAsync(["run", "builder", "--brief", "do the task", "--json", "--backend", "nonexistent"], "", IsolatedRepo.ChildPath());
+
+        string warning = $"no git repository at {plain.Cwd}: ran in place, no worktree, no commit";
+        Assert.Equal(ExitCodes.BackendMissing, human.ExitCode);
+        Assert.Contains($"warning: {warning}", human.Stderr, StringComparison.Ordinal);
+        Assert.Equal(ExitCodes.BackendMissing, json.ExitCode);
+        using JsonDocument document = JsonDocument.Parse(json.Stdout);
+        Assert.Equal(warning, document.RootElement.GetProperty("warnings")[0].GetString());
+        Assert.Equal(JsonValueKind.Null, document.RootElement.GetProperty("worktree").ValueKind);
+        using JsonDocument onDisk = JsonDocument.Parse(File.ReadAllText(Path.Combine(plain.JobsDirectory, Str(document.RootElement, "job_id"), "result.json")));
+        Assert.Equal(warning, onDisk.RootElement.GetProperty("warnings")[0].GetString());
+        string locks = Path.Combine(plain.Cwd, ".claustrum", "locks");
+        Assert.Equal([$"{RoleConcurrencyGate.KeyFor("default", "builder")}.0.lock"], [.. Directory.GetFiles(locks).Select(Path.GetFileName).OfType<string>()]);
+        Assert.False(Directory.Exists(Path.Combine(plain.Cwd, ".claustrum", "worktrees")));
+    }
+
     // The other side of the same change: a cast entry with no max_parallel is no cap and no gate, as before.
     [Fact]
     public async Task WithNoMaxParallelConcurrentRunsStillOverlapAsync()

@@ -46,7 +46,7 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
         // F10: CompleteAsync releases the `.live` handle only after a ledger write that succeeded, and
         // ChargeAsync swallows a failed one — in the long-lived MCP server the handle stayed open.
         await using BudgetReservation? held = reservation;
-        return await FinishAsync(job, held, NoProcessResult(job, role, status, error), ran: false, worktree: null);
+        return await FinishAsync(job, held, NoProcessResult(job, role, status, error), ran: false, options: null);
     }
 
     /// <summary>
@@ -88,7 +88,7 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
             }
             catch (Exception ex) when (ex is TimeoutException or IOException or UnauthorizedAccessException)
             {
-                return await FinishAsync(job, reservation: null, FailureResult(job, role, outcome: null, ex), ran: false, worktree);
+                return await FinishAsync(job, reservation: null, FailureResult(job, role, outcome: null, ex), ran: false, options);
             }
         }
 
@@ -98,7 +98,7 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
         await using BudgetReservation? reservation = admission?.Reservation;
 
         if (admission is { Admitted: false })
-            return await FinishAsync(job, reservation: null, NoProcessResult(job, role, RunStatus.BudgetExceeded, admission.Reason), ran: false, worktree);
+            return await FinishAsync(job, reservation: null, NoProcessResult(job, role, RunStatus.BudgetExceeded, admission.Reason), ran: false, options);
 
         // Clamping here is what makes the tree cap hard per child: request.json below and the backend's
         // own --max-budget-usd carry the slice the ledger granted, not what was asked.
@@ -109,7 +109,7 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
         File.WriteAllText(job.RequestJson, JsonSerializer.Serialize(request, ClaustrumJsonContext.Default.RunRequest));
 
         if (!backends.TryGet(role.Backend, out IBackend? backend))
-            return await FinishAsync(job, reservation, MissingBackendResult(job, role, $"backend '{role.Backend}' is not registered"), ran: false, worktree);
+            return await FinishAsync(job, reservation, MissingBackendResult(job, role, $"backend '{role.Backend}' is not registered"), ran: false, options);
 
         // NOTES.md "Runner's before-snapshot is now inside a guarded section too": a bad `cwd` or any
         // other pre-spawn failure here used to escape RunCoreAsync entirely. `spec` does not exist
@@ -125,11 +125,11 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
         catch (OperationCanceledException ex) when (cancellationToken.IsCancellationRequested)
         {
             // A cancel during the before-snapshot is still a cancel, not a failure (PR #75's Windows CI).
-            return await FinishAsync(job, reservation, NoProcessResult(job, role, RunStatus.Cancelled, ex.Message), ran: false, worktree);
+            return await FinishAsync(job, reservation, NoProcessResult(job, role, RunStatus.Cancelled, ex.Message), ran: false, options);
         }
         catch (Exception ex)
         {
-            return await FinishAsync(job, reservation, FailureResult(job, role, outcome: null, ex), ran: false, worktree);
+            return await FinishAsync(job, reservation, FailureResult(job, role, outcome: null, ex), ran: false, options);
         }
 
         ProcessOutcome outcome;
@@ -143,7 +143,7 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
             // the unregistered-name branch above — same BackendMissing status either way, so a
             // caller need not distinguish "no such backend" from "backend not on PATH".
             DeleteTempFiles(spec.TempFiles);
-            return await FinishAsync(job, reservation, MissingBackendResult(job, role, ex.Message), ran: false, worktree);
+            return await FinishAsync(job, reservation, MissingBackendResult(job, role, ex.Message), ran: false, options);
         }
 
         try
@@ -167,7 +167,7 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
             RunStatus status = DetermineStatus(outcome, parsed);
             BranchReceipt branch = worktree is null
                 ? new BranchReceipt(Commit: null, diff, Warnings: [])
-                : await CommitWorkAsync(worktree, mismatch, role.Name, job.Id, extracted.Report, diff, options.DiffByteCapBytes);
+                : await CommitWorkAsync(worktree, mismatch, role.Name, job, extracted.Report, diff, options.DiffByteCapBytes);
 
             RunResult result = new(
                 SchemaVersion: "1",
@@ -193,13 +193,13 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
                 Warnings: [.. extracted.Warnings, .. branch.Warnings],
                 Commit: branch.Commit);
 
-            return await FinishAsync(job, reservation, result, ran: true, worktree);
+            return await FinishAsync(job, reservation, result, ran: true, options);
         }
         catch (Exception ex)
         {
             // `ran: true` — this catch only fires after ProcessOutcome came back, so the backend did
             // burn whatever it burned even though nothing downstream could read a cost out of it.
-            return await FinishAsync(job, reservation, FailureResult(job, role, outcome, ex), ran: true, worktree);
+            return await FinishAsync(job, reservation, FailureResult(job, role, outcome, ex), ran: true, options);
         }
         finally
         {
@@ -361,13 +361,14 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
     // worktree that is not the job's, or is off its branch (`mismatch`: F6, T3), costs a warning, never
     // the run. No catch here since R4: CommitRunAsync guards each stage itself, so a failure after the
     // commit keeps it — NOTES.md "M4 wave 1: a delegate's work lands on its branch, and only there".
+    // git's `add` stderr goes to the job's stderr.log when a path was left out of the commit (#74 round 4).
     private static async Task<BranchReceipt> CommitWorkAsync(
-        JobWorktreeInfo worktree, WorktreeMismatch? mismatch, string role, string jobId, ClaustrumReport? report, SnapshotDiff snapshot, int diffByteCapBytes)
+        JobWorktreeInfo worktree, WorktreeMismatch? mismatch, string role, JobPaths job, ClaustrumReport? report, SnapshotDiff snapshot, int diffByteCapBytes)
     {
         if (mismatch is not null)
             return JobWorktree.Unverified(worktree, mismatch, snapshot);
 
-        return await JobWorktree.CommitRunAsync(worktree, CommitMessage(role, jobId, report), snapshot, diffByteCapBytes, CancellationToken.None);
+        return await JobWorktree.CommitRunAsync(worktree, CommitMessage(role, job.Id, report), snapshot, diffByteCapBytes, job.StderrLog, CancellationToken.None);
     }
 
     // The report's `summary` as the body is the line an architect reads in `git log` before rebasing.
@@ -396,12 +397,15 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
     // two from drifting apart as paths are added, the way §D4's accounting would silently leak if one
     // `return` forgot to record. `ran` is the backend process having actually run — ChargeAsync needs
     // it to tell "cost 0 because nothing happened" from "no cost reported by a backend that did run".
-    private static async Task<RunResult> FinishAsync(JobPaths job, BudgetReservation? reservation, RunResult result, bool ran, JobWorktreeInfo? worktree)
+    private static async Task<RunResult> FinishAsync(JobPaths job, BudgetReservation? reservation, RunResult result, bool ran, RunOptions? options)
     {
         // #60: stamped here, before result.json is written — the isolated caller used to add both to
-        // the returned result after this had persisted it, so the receipt on disk named no branch.
-        if (worktree is not null)
+        // the returned result after this had persisted it, so the receipt on disk named no branch. The
+        // caller's pre-run warnings (#74 H7) go on here for the same reason.
+        if (options?.Worktree is { } worktree)
             result = result with { Worktree = worktree.Path, Branch = worktree.Branch };
+        if (options?.PreRunWarnings is { Length: > 0 } decided)
+            result = result with { Warnings = [.. decided, .. result.Warnings] };
 
         if (reservation is { } claim)
             result = await ChargeAsync(claim, result, ran);

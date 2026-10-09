@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json;
 
 namespace Claustrum.Tests.Testing;
@@ -12,14 +13,25 @@ namespace Claustrum.Tests.Testing;
 /// </summary>
 public sealed class IsolatedRepo : IDisposable
 {
-    private readonly ClaustrumCli cli = new();
+    /// <summary>
+    /// What `claustrum init` writes for Claustrum's machinery and what `coordinate` requires a committed rule for (#74):
+    /// not the whole of `.claustrum/`, which would also ignore the cast and make `coordinate` refuse it as `(ignored)`.
+    /// </summary>
+    public const string MachineryIgnoreRules = ".claustrum/worktrees/\n.claustrum/briefs/\n.claustrum/locks/\n";
+
+    private readonly ClaustrumCli cli;
     private readonly string fakeDirectory;
 
-    public IsolatedRepo()
+    /// <param name="gitignore">The committed `.gitignore`: the whole of `.claustrum/` unless a `coordinate` test needs its cast tracked.</param>
+    /// <param name="directoryPrefix">What the repository directory is named after — a space or non-ASCII characters on purpose, for the paths that get quoted.</param>
+    public IsolatedRepo(string gitignore = ".claustrum/\n", string directoryPrefix = "claustrum-cli-")
     {
+        cli = new ClaustrumCli(directoryPrefix);
         fakeDirectory = Directory.CreateDirectory(Path.Combine(cli.Home, "fake")).FullName;
         TestGit.Init(Repo);
-        File.WriteAllText(Path.Combine(Repo, ".gitignore"), ".claustrum/\n");
+        // A developer's global excludes file must not decide what these repositories ignore.
+        TestGit.Run(Repo, "config", "core.excludesFile", EmptyExcludes());
+        File.WriteAllText(Path.Combine(Repo, ".gitignore"), gitignore);
         File.WriteAllText(Path.Combine(Repo, "seed.txt"), "seed\n");
         File.WriteAllText(Path.Combine(Repo, "claustrum.json"), FakeClaude.ConfigJson(ScriptPath));
         TestGit.CommitAll(Repo, "seed");
@@ -44,6 +56,78 @@ public sealed class IsolatedRepo : IDisposable
 
     public string WorktreePath(string jobId) => Path.Combine(Repo, ".claustrum", "worktrees", jobId);
 
+    /// <summary>The repository, set up for `coordinate`: the machinery rules ignored, the cast and config committed.</summary>
+    public static IsolatedRepo ForCoordinate(int? builderMaxParallel = null, decimal? budgetUsd = null, string directoryPrefix = "claustrum-cli-")
+    {
+        IsolatedRepo repo = new(MachineryIgnoreRules, directoryPrefix);
+        repo.WriteCoordinateCast(builderMaxParallel, budgetUsd);
+        repo.CommitAll("cast");
+        return repo;
+    }
+
+    /// <summary>`git` in the repository; throws with git's words on a non-zero exit.</summary>
+    public string Git(params string[] args) => TestGit.Run(Repo, args);
+
+    public string CommitAll(string message) => TestGit.CommitAll(Repo, message);
+
+    /// <summary>
+    /// `.claustrum/casts/default.json` with a spawned architect on the fake claude, a builder with this `max_parallel`
+    /// and this tree budget — never written to a ledger a test does not read (a budget alone makes no cost).
+    /// </summary>
+    public void WriteCoordinateCast(int? maxParallel = null, decimal? budgetUsd = null)
+    {
+        Directory.CreateDirectory(cli.CastsDirectory);
+        string parallel = maxParallel is { } cap ? $",\"max_parallel\":{cap}" : "";
+        string budget = budgetUsd is { } usd ? usd.ToString(System.Globalization.CultureInfo.InvariantCulture) : "null";
+        File.WriteAllText(Path.Combine(cli.CastsDirectory, "default.json"),
+            "{\"name\":\"default\",\"library\":\"1.0.0\",\"architect\":{\"mode\":\"spawned\",\"model\":\"claude:opus\"},"
+            + "\"roles\":{\"builder\":{\"backend\":\"claude\"" + parallel + "}},\"budget_usd\":" + budget + "}");
+    }
+
+    /// <summary>`claustrum coordinate --brief x --json` plus <paramref name="extraArgs"/>, with stdout parsed when it is one document.</summary>
+    public async Task<(CliResult Process, JsonElement? Result)> CoordinateAsync(params string[] extraArgs)
+    {
+        CliResult process = await RunAsync(["coordinate", "--brief", "do the task", "--json", .. extraArgs]);
+        if (process.Stdout.Trim().Length == 0)
+            return (process, null);
+
+        using JsonDocument document = JsonDocument.Parse(process.Stdout);
+        return (process, document.RootElement.Clone());
+    }
+
+    /// <summary>The job directories under this home: what a refused `coordinate` must leave empty.</summary>
+    public string[] JobDirectories() =>
+        Directory.Exists(JobsRoot) ? [.. Directory.GetDirectories(JobsRoot).Select(Path.GetFileName).OfType<string>()] : [];
+
+    /// <summary>A `claustrum mcp` server over real stdio in this repository, with the same environment the CLI runs get.</summary>
+    internal McpStdioClient StartMcp()
+    {
+        string binary = Path.Combine(AppContext.BaseDirectory, OperatingSystem.IsWindows() ? "claustrum.exe" : "claustrum");
+        Assert.True(File.Exists(binary), $"built claustrum binary not found at '{binary}'");
+
+        ProcessStartInfo startInfo = new()
+        {
+            FileName = binary,
+            WorkingDirectory = Repo,
+            UseShellExecute = false,
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true,
+        };
+        startInfo.ArgumentList.Add("mcp");
+        startInfo.ArgumentList.Add("--cwd");
+        startInfo.ArgumentList.Add(Repo);
+        startInfo.Environment["CLAUSTRUM_HOME"] = Home;
+        startInfo.Environment["HOME"] = Home;
+        startInfo.Environment["APPDATA"] = Home;
+        startInfo.Environment["CLAUSTRUM_SKIP_PROBE"] = "1";
+        startInfo.Environment.Remove("CLAUSTRUM_PARENT_JOB"); // #66
+        startInfo.Environment["PATH"] = ChildPath();
+
+        return new McpStdioClient(Process.Start(startInfo) ?? throw new InvalidOperationException("claustrum mcp failed to start"));
+    }
+
     /// <summary>
     /// The tail `.claustrum/worktrees/&lt;id&gt;` of a worktree path. The child may be handed the repository
     /// through a Windows 8.3 %TEMP% and print it in another spelling, so a receipt's `worktree` is compared by
@@ -67,10 +151,22 @@ public sealed class IsolatedRepo : IDisposable
 
     public Task<CliResult> RunAsync(params string[] args) => cli.RunAsync(args, "", ChildPath());
 
+    /// <summary>A run whose child sees these variables too (a null value removes one), and optionally another PATH.</summary>
+    public Task<CliResult> RunWithEnvAsync(string[] args, IReadOnlyDictionary<string, string?> env, string? path = null) =>
+        cli.RunAsync(args, "", path ?? ChildPath(), env);
+
     /// <summary>`claustrum run builder --brief x --json` plus <paramref name="extraArgs"/>, with stdout parsed.</summary>
     public async Task<(CliResult Process, JsonElement Result)> RunBuilderAsync(params string[] extraArgs)
     {
         CliResult process = await RunAsync(["run", "builder", "--brief", "do the task", "--json", .. extraArgs]);
+        using JsonDocument document = JsonDocument.Parse(process.Stdout);
+        return (process, document.RootElement.Clone());
+    }
+
+    /// <summary>`run builder --brief x --json` plus <paramref name="extraArgs"/> in a child with these variables set.</summary>
+    public async Task<(CliResult Process, JsonElement Result)> RunBuilderWithEnvAsync(IReadOnlyDictionary<string, string?> env, string? path = null, params string[] extraArgs)
+    {
+        CliResult process = await RunWithEnvAsync(["run", "builder", "--brief", "do the task", "--json", .. extraArgs], env, path);
         using JsonDocument document = JsonDocument.Parse(process.Stdout);
         return (process, document.RootElement.Clone());
     }
@@ -81,7 +177,14 @@ public sealed class IsolatedRepo : IDisposable
         return document.RootElement.Clone();
     }
 
-    private static string ChildPath()
+    private string EmptyExcludes()
+    {
+        string path = Path.Combine(fakeDirectory, "no-excludes");
+        File.WriteAllText(path, "");
+        return path;
+    }
+
+    public static string ChildPath()
     {
         string git = GitDirectory();
         return OperatingSystem.IsWindows()

@@ -65,6 +65,29 @@ internal sealed class McpStdioClient : IAsyncDisposable
         return null;
     }
 
+    /// <summary>The `initialize` handshake and the `initialized` notification every session starts with.</summary>
+    public async Task InitializeAsync(CancellationToken cancellationToken)
+    {
+        JsonNode? handshake = await RequestAsync("initialize", new JsonObject
+        {
+            ["protocolVersion"] = "2025-06-18",
+            ["capabilities"] = new JsonObject(),
+            ["clientInfo"] = new JsonObject { ["name"] = "claustrum-tests", ["version"] = "1" },
+        }, cancellationToken);
+
+        Assert.NotNull(handshake);
+        Notify("notifications/initialized");
+    }
+
+    /// <summary>One `tools/call`: whether the server flagged it an error, and the text of its first content block.</summary>
+    public async Task<(bool IsError, string Text)> CallToolAsync(string tool, JsonObject arguments, CancellationToken cancellationToken)
+    {
+        JsonNode? response = await RequestAsync("tools/call", new JsonObject { ["name"] = tool, ["arguments"] = arguments }, cancellationToken);
+        Assert.True(response is not null, $"no answer to tools/call {tool} within the timeout:\n{ServerLog}");
+        JsonNode? result = response["result"] ?? throw new InvalidOperationException($"tools/call {tool} answered {response.ToJsonString()}\n{ServerLog}");
+        return (result["isError"]?.GetValue<bool>() ?? false, result["content"]?[0]?["text"]?.GetValue<string>() ?? "");
+    }
+
     public async ValueTask DisposeAsync()
     {
         if (!process.HasExited)

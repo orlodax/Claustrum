@@ -1,4 +1,5 @@
 using Claustrum.Casts;
+using Claustrum.Cli;
 using Claustrum.Coordination;
 using Claustrum.Core.Config;
 using Claustrum.Core.Jobs;
@@ -140,6 +141,145 @@ public sealed class CoordinatePlanTests(AppServicesHomeFixture fixture) : IDispo
         }
     }
 
+    // ---- #74: the architect's own worktree ----------------------------------------------------------------------
+
+    private static CoordinateRequest RequestAt(string cwd, string brief = "do it", int[]? issues = null) => new(
+        Cwd: cwd,
+        CastName: "default",
+        Issues: issues ?? [],
+        Brief: issues is { Length: > 0 } ? null : brief,
+        TierFlag: null,
+        Overrides: new ConfigOverrides(),
+        Stream: false,
+        DiffCapBytes: 64 * 1024);
+
+    private static async Task<CoordinatePlan> PlanInAsync(IsolatedRepo repo, string brief = "do it") =>
+        await CoordinateEngine.PlanAsync(RequestAt(repo.Repo, brief), new NeverCalledIssueSource(), TestContext.Current.CancellationToken);
+
+    [Fact]
+    public async Task OutsideAGitRepositoryThePlanIsNotIsolatedAndTheRequestAsksForNoWorktreeAsync()
+    {
+        CoordinatePlan plan = await PlanAsync(SpawnedCast());
+
+        Assert.False(plan.Isolated);
+        Assert.Empty(plan.Warnings);
+        DelegateRequest request = plan.ToDelegateRequest();
+        Assert.False(request.Isolate);
+        Assert.Contains($"No git repository at {cwd}:", request.SystemAppendix, StringComparison.Ordinal);
+        Assert.Contains($"- Working directory: {cwd}\n", plan.UserPrompt + "\n", StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task InACommittedRepositoryThePlanIsIsolatedAndEverythingItProducesAgreesAsync()
+    {
+        using IsolatedRepo repo = IsolatedRepo.ForCoordinate();
+
+        CoordinatePlan plan = await PlanInAsync(repo);
+
+        string token = Path.Combine(repo.Repo, ".claustrum", "worktrees", DelegateRequest.JobIdToken);
+        Assert.True(plan.Isolated);
+        Assert.Empty(plan.Warnings);
+        DelegateRequest request = plan.ToDelegateRequest();
+        Assert.True(request.Isolate);
+        Assert.Null(request.MaxParallel);
+        Assert.Equal(repo.Repo, request.Cwd);
+        Assert.Contains($"Work branch: claustrum/{DelegateRequest.JobIdToken} — you are already on it, in your own worktree {token}", request.SystemAppendix, StringComparison.Ordinal);
+        Assert.Contains($"- Working directory: {token}", request.Brief, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task APlanCarriesTheWarningsOfAHarnessConfigWithALocalEditAsync()
+    {
+        using IsolatedRepo repo = IsolatedRepo.ForCoordinate();
+        File.WriteAllText(Path.Combine(repo.Repo, "opencode.json"), "{}\n");
+        repo.CommitAll("harness config");
+        File.AppendAllText(Path.Combine(repo.Repo, "opencode.json"), "\n");
+
+        CoordinatePlan plan = await PlanInAsync(repo);
+
+        Assert.True(plan.Isolated);
+        Assert.Equal(["opencode.json (uncommitted changes): the architect's worktree gets HEAD's copy — your local edit stays out of it"], plan.Warnings);
+    }
+
+    // Binding the job id into the user prompt must touch that one line and no other: the task above it is the caller's
+    // text or an issue's, and a brief about this very code quotes `{{job_id}}` itself (NOTES.md "What the architect is told").
+    [Fact]
+    public async Task BindUserPromptReplacesOnlyTheWorkingDirectoryLineAndLeavesATaskQuotingTheTokenVerbatimAsync()
+    {
+        using IsolatedRepo repo = IsolatedRepo.ForCoordinate();
+        const string task = "document how `{{job_id}}` is filled in\n\nand `Delegate with: --cwd .../worktrees/{{job_id}}` too";
+        CoordinatePlan plan = await PlanInAsync(repo, task);
+        PreparedDelegation prepared = plan.Prepare();
+
+        PreparedDelegation bound = plan.BindUserPrompt(prepared, "20261009-120000-abcdef12");
+
+        string[] before = prepared.Request.Brief.Split('\n');
+        string[] after = bound.Request.Brief.Split('\n');
+        Assert.Equal(before.Length, after.Length);
+        int[] changed = [.. Enumerable.Range(0, before.Length).Where(index => before[index] != after[index])];
+        int line = Assert.Single(changed);
+        Assert.Equal($"- Working directory: {Path.Combine(repo.Repo, ".claustrum", "worktrees", DelegateRequest.JobIdToken)}", before[line]);
+        Assert.Equal($"- Working directory: {Path.Combine(repo.Repo, ".claustrum", "worktrees", "20261009-120000-abcdef12")}", after[line]);
+        Assert.Contains("document how `{{job_id}}` is filled in", bound.Request.Brief, StringComparison.Ordinal);
+        Assert.Contains("--cwd .../worktrees/{{job_id}}` too", bound.Request.Brief, StringComparison.Ordinal);
+        // Everything else about the delegation is the same object: only the brief was rebuilt.
+        Assert.Same(prepared.Role, bound.Role);
+        Assert.Equal(prepared.Request.Env, bound.Request.Env);
+        Assert.Equal(prepared.Request.SystemAppendix, bound.Request.SystemAppendix);
+    }
+
+    [Fact]
+    public async Task PreparedDelegationForJobFillsTheTokenInTheSystemPromptButNeverInTheBriefAsync()
+    {
+        using IsolatedRepo repo = IsolatedRepo.ForCoordinate();
+        CoordinatePlan plan = await PlanInAsync(repo, "quote {{job_id}}");
+
+        PreparedDelegation filled = plan.Prepare().ForJob("20261009-120000-abcdef12");
+
+        Assert.Contains("Job tree: 20261009-120000-abcdef12", filled.Role.SystemPrompt, StringComparison.Ordinal);
+        Assert.DoesNotContain(DelegateRequest.JobIdToken, filled.Role.SystemPrompt, StringComparison.Ordinal);
+        Assert.Contains("quote {{job_id}}", filled.Request.Brief, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task BindUserPromptOfAPlanThatIsNotIsolatedReturnsTheSameInstanceAsync()
+    {
+        CoordinatePlan plan = await PlanAsync(SpawnedCast());
+        PreparedDelegation prepared = plan.Prepare();
+
+        PreparedDelegation bound = plan.BindUserPrompt(prepared, "20261009-120000-abcdef12");
+
+        Assert.Same(prepared, bound);
+    }
+
+    // The refusal comes before `gh`: an architect that cannot run in a worktree must not cost a network round trip.
+    [Fact]
+    public async Task AnUncommittedClaustrumJsonIsRefusedBeforeTheIssueSourceIsAskedAsync()
+    {
+        using IsolatedRepo repo = IsolatedRepo.ForCoordinate();
+        File.AppendAllText(Path.Combine(repo.Repo, "claustrum.json"), "\n");
+        RecordingIssueSource issues = new();
+
+        CliUsageException ex = await Assert.ThrowsAsync<CliUsageException>(
+            () => CoordinateEngine.PlanAsync(RequestAt(repo.Repo, issues: [12, 13]), issues, TestContext.Current.CancellationToken));
+
+        Assert.Contains("commit (or un-ignore) claustrum.json (uncommitted changes) first", ex.Message, StringComparison.Ordinal);
+        Assert.Empty(issues.Numbers);
+    }
+
+    [Fact]
+    public async Task AReadyRepositoryAsksTheIssueSourceInTheOrderGivenAsync()
+    {
+        using IsolatedRepo repo = IsolatedRepo.ForCoordinate();
+        RecordingIssueSource issues = new();
+
+        CoordinatePlan plan = await CoordinateEngine.PlanAsync(RequestAt(repo.Repo, issues: [12, 3]), issues, TestContext.Current.CancellationToken);
+
+        Assert.Equal([12, 3], issues.Numbers);
+        Assert.True(plan.Isolated);
+        Assert.Contains("Issues: #12, #3.", plan.UserPrompt, StringComparison.Ordinal);
+    }
+
     // Plan() never sets Issues, so a source that would throw if ever called proves ToDelegateRequest
     // itself touches nothing gh-shaped — the same guarantee CoordinateEngineTests' FakeIssueSource
     // gives its own callers, just phrased as "must never be called" instead of "records its calls".
@@ -147,6 +287,17 @@ public sealed class CoordinatePlanTests(AppServicesHomeFixture fixture) : IDispo
     {
         public Task<GhIssue> ViewAsync(string cwd, int number, CancellationToken cancellationToken) =>
             throw new InvalidOperationException("PlanAsync must not consult the issue source when Issues is empty");
+    }
+
+    private sealed class RecordingIssueSource : IIssueSource
+    {
+        public List<int> Numbers { get; } = [];
+
+        public Task<GhIssue> ViewAsync(string cwd, int number, CancellationToken cancellationToken)
+        {
+            Numbers.Add(number);
+            return Task.FromResult(new GhIssue(number, $"issue {number}", "body", [], $"https://example.invalid/{number}"));
+        }
     }
 
     // Delegates everything to RealPlatform except CLAUSTRUM_HOME, which HomeRedirectPlatform hides

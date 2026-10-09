@@ -3410,7 +3410,9 @@ trailer below says so), and the receipt records that too.
 How: after the after-snapshot (taken only once `JobWorktree.VerifyAsync` has passed, since review
 R5) and `ReportExtractor.Extract`, `JobWorktree.CommitRunAsync` checks the directory is still the
 job's worktree (review F6, below), then runs `git status --porcelain --untracked-files=all` (the flag
-since review R2); if anything is listed, `git add -A` then `git commit -q -m`. The
+since review R2); if anything is listed, `git add -A` then `git commit -q -m` — both, since #74,
+without `.claustrum/{worktrees,briefs,locks}` and never committing a new gitlink ("coordinate runs
+the architect in its own worktree", 1c). The
 subject is `claustrum <role> <job id>`; a report with a non-empty `summary` string adds a blank line
 and that summary as the body. The repo's own identity and hooks apply: no `--no-verify`, no
 `-c user.*`, no `--no-gpg-sign`. It runs **for every status once the backend process ran** —
@@ -3449,7 +3451,9 @@ work left in a worktree directory, and `status` still says what happened.
   commit", below.
 - ⚠ `git add -A` commits whatever `git status` lists — the same set `changed_files` lists. A file the
   repo does not ignore (a stray `.env`, build output) lands on the branch; the repo's `.gitignore` is
-  the filter, as it already was for the receipt.
+  the filter, as it already was for the receipt. (Since #74 Claustrum's own `.claustrum/{worktrees,
+  briefs,locks}` are excluded from the commit but not from `changed_files`, which can then list a
+  machinery path the commit does not hold.)
 
 ### Delegates may not touch the main checkout (#62)
 
@@ -3961,3 +3965,716 @@ hint is for an **isolated** builder's branch, one that ran under `max_parallel` 
   grandparent holds, up to `--timeout`, then fails — before #58 a cap of 1 meant no gate — and a
   nested `--branch` run on its parent's branch waits the same way for the branch lock: bounded, not a
   deadlock, because every path takes the slot, then the branch lock, then the ledger, in that order.
+
+## coordinate runs the architect in its own worktree (2026-10-09, issue #74)
+
+Until now the spawned architect worked in the operator's checkout by design: the `## Coordination`
+appendix told it to create `claustrum/<job id>` from `HEAD`, so the operator's checkout ended on that
+branch and its uncommitted edits rode along (TEST-DRIVE step 17 said so). Wave 1 had isolated the
+delegates (#62) and left the architect there.
+
+**Decision: in a git repository the architect is an isolated run.** `DelegateRequest.Isolate`
+(default false) sends `DelegateEngine.RunAsync` down the existing isolated path whatever
+`MaxParallel` says, and `coordinate` sets it whenever `GitRootLocator` finds a repository for its
+cwd. Nothing on that path needed a second copy: `JobWorktree.AddAsync` cuts `claustrum/<job id>` from
+`HEAD` into `<cwd>/.claustrum/worktrees/<job id>`; `Runner` appends the isolation trailer, takes the
+`IsolationDeny`, stamps `worktree`/`branch` and commits the leftovers (`commit` on the receipt). The
+two gates on that path are no-ops for the architect: `MaxParallel` stays null, so it takes no slot,
+and it is admitted only when `coordinate` itself runs inside a tree (`Options.Tree`, as before — the
+admission merely happens before the worktree instead of inside `Runner`). A cwd in no repository has
+no `HEAD` to branch from and keeps the in-place run — with a text that says there is no git (review
+round 2, G4, below); several end-to-end tests run `coordinate` in a plain temp directory.
+
+The decision is made once, in `CoordinateEngine.PlanAsync`, and kept on `CoordinatePlan.Isolated`, so
+the request, the appendix and the user prompt cannot disagree. Measured 2026-10-09 with the built
+binary against a fake `claude` (`backends.claude.path`, nothing paid): `result.json` has `worktree`
+`<cwd>/.claustrum/worktrees/<id>`, `branch` `claustrum/<id>` and a `commit` holding the file the fake
+wrote in its cwd; `request.json`'s `cwd` is the worktree; the operator's checkout kept its branch, its
+`HEAD` and its one-line reflog, and its uncommitted edit to a tracked file is not on the branch.
+
+### What the architect is told
+
+`CoordinationBrief.RenderSystemAppendix(…, isolated)`: the `Delegate with:` line and the `jobs clean
+--cwd` recipe name the architect's worktree (`JobWorktree.PathFor(cwd, {{job_id}})`), not the
+operator's cwd, so an isolated builder's worktree nests under the architect's and is cut from the
+work branch's tip. The `Work branch:` block says it is already on the branch in that worktree, that
+the main checkout is the operator's, and that the runner commits whatever it leaves — so it commits
+its integration itself and leaves the tree clean. Not isolated — which since #74 means no git
+repository at all — the whole git block is one line instead (G4, below).
+
+- ⚠ **Integration has one order now, everywhere.** The old text offered "`jobs clean` first, then
+  rebase" — from an isolated architect's own worktree that is `git rebase <work> <builder branch>`,
+  which leaves the worktree on the builder's branch, and `git checkout`/`git switch` are denied for an
+  isolated run (#62): the architect has no sanctioned way back, and the runner's final commit is then
+  skipped (`… is on refs/heads/claustrum/<builder>, not …`, T3). So the bullet says: rebase inside the
+  builder's worktree (`git -C <worktree> rebase <work branch>`, measured to work on a nested
+  worktree), fast-forward from your own working tree (`git merge --ff-only`, which no deny list
+  covers), never rebase in your own, and `jobs clean --cwd …` only once integrated. A first cut gave
+  only the isolated appendix that order; review F5 found `roles/architect/ROLE.md` — the same
+  architect's system body — still offering the other, so ROLE.md, the isolated appendix and §9 of the
+  manual all say it now, phrase for phrase where `CoordinationTextAgreementTests` pins them. It works
+  for a host architect in a plain checkout too; the appendix adds the deny clause. (The in-place
+  appendix carried it too until G4 replaced its git lines: in place now means no git at all.)
+- The user prompt's `Working directory:` line names the worktree, token and all. `PreparedDelegation.
+  ForJob` fills the token in the system prompt and the env only, and it stays that way:
+  `CoordinatePlan.BindUserPrompt` replaces that one line once the job exists. The task above it is
+  the caller's text or a GitHub issue's, and may quote `{{job_id}}` itself — a brief-wide fill in
+  `ForJob` would also rewrite every isolated or `delegate_async` builder brief that quotes the token,
+  which is exactly what a brief about this code does.
+- `coordinate`'s human output prints `branch:`, `worktree:` and `commit:` after `logs:`, and every
+  warning on stderr as `warning: …`, like `run` (F3): a refused commit of the architect's leftovers was
+  otherwise visible only under `--json`.
+
+### The traps, and what each became
+
+**1. A worktree sees only committed files.** The children read their cast, `claustrum.json` and
+`.claustrum/roles/` from the architect's worktree, so an uncommitted one is `cast 'x' not found` or
+silently the old file. Copying them in was the alternative; it would have had to keep them out of the
+runner's `git add -A` and out of every receipt, for files that belong in the repository anyway. So
+`ArchitectWorktree.RequireReadyAsync`, from `PlanAsync` after the cast loads and before `gh`, refuses
+— `CliUsageException`, exit 2, no job directory, over both doors — with `coordinate runs the architect
+in a worktree, which sees only committed files — commit (or un-ignore) <path> (<state>) first`. The
+check is `git --literal-pathspecs status --porcelain -z --ignored --untracked-files=all --
+.claustrum/casts/<name>.json claustrum.json .claustrum/roles` from the git root, plus the rule files
+of 1b and the harness configs of 1d. Under `.claustrum/roles/` only the role files count (G1, below);
+a rule file and a harness config each get their own advice, and a harness config HEAD has only warns.
+Measured on git 2.56 with the plain `--porcelain --ignored -- <path>` form:
+
+| state | output |
+|---|---|
+| committed and clean, or absent and untracked | nothing, exit 0 |
+| modified | ` M claustrum.json` |
+| staged, never committed | `A  .claustrum/casts/new.json` |
+| deleted, uncommitted | ` D claustrum.json` |
+| untracked | `?? .claustrum/casts/new.json`; a wholly untracked directory collapses to `?? .claustrum/roles/` |
+| ignored | `!! .claustrum/casts/ign.json` |
+
+⚠ Under `status.showUntrackedFiles=no` that plain form prints **nothing** for the untracked file *and*
+for the ignored one (measured the same day) — review R2's trap again — so `--untracked-files` is
+passed: `normal` at first, `all` since G1, because `normal` collapses a new role to `?? .claustrum/roles/
+<role>/`, which the role-file filter cannot judge, while `all` lists each file — inside an ignored
+directory too (`!! .claustrum/roles/<role>/role.json`, measured). `-z` because porcelain quotes a path with a space (`"sp ace.json"`) and octal-escapes
+non-ASCII; `--literal-pathspecs` because a cast name is the caller's text.
+
+Two refusals came with it. **The cwd must be the git root**: the worktree is the whole repository,
+and children given its root as `--cwd` look for `.claustrum/casts/` there — from a subdirectory with
+its own cast every delegation would fail `cast not found`, and `init`'s `.claustrum/worktrees/` rule
+is anchored at the root anyway. Mapping the subdirectory into the worktree was possible but would
+have changed every isolated builder's cwd too; refused instead, naming the root. **A git that fails**
+(a `.git` that is not a repository, git missing, past its bound) is refused the same way: the
+worktree add would fail after the mint and leave a job nothing closes.
+
+**1b, found while building: the runner's final commit takes in what is not ignored** (until 1c). In the
+architect's worktree Claustrum itself creates `.claustrum/worktrees/<child>` (nested job worktrees),
+`.claustrum/locks/` (slot files) and, by the appendix's instruction, `.claustrum/briefs/`. Measured on
+git 2.56: with no ignore rule, `git add -A` there prints `warning: adding embedded git repository:
+.claustrum/worktrees/B` and the commit holds `160000 commit <sha> .claustrum/worktrees/B` beside the
+lock file. So the same check refuses `.claustrum/worktrees/`, `.claustrum/briefs/` or
+`.claustrum/locks/` unless a rule the worktree will see ignores it: `git check-ignore -v --no-index
+--` on the shapes Claustrum writes (1c), and the file each rule comes from joins the committed-files
+check when it is in the tree (an uncommitted `.gitignore` is refused as `.gitignore (uncommitted
+changes — the worktree gets HEAD's ignore rules; commit it first)`, G1).
+`.git/info/exclude` and `core.excludesFile` are shared by every worktree — measured: `check-ignore -v`
+names the former `.git/info/exclude` from the main checkout and by absolute path from a linked
+worktree, the latter by absolute path. A `!` pattern is a match that un-ignores. Claustrum's own
+`.gitignore` had `worktrees/` and `locks/` but not `briefs/`, so `coordinate` refused in this
+repository; `briefs/` was added beside them (review, 2026-10-09) — `init` writes all three, and
+docs/PLAN.md §D5 calls briefs git-ignored.
+
+**1c, review F1: the probe asked about the wrong shape, and the commit trusted the probe.** The
+first cut asked `check-ignore` about a file named `probe` under each directory. A whitelist
+`.gitignore` — `*`, `!*/`, `!*.json`, `!*.md`, `!*.txt`, `!.gitignore` — ignores that file through
+`*`, so `coordinate` ran; but `!*/` un-ignores every directory and `!*.md` every brief, and the
+runner's commit took in the nested builder worktree as a `160000` gitlink plus
+`.claustrum/briefs/1-builder.md`. `jobs clean --cwd <archWt>` then left ` D .claustrum/worktrees/<id>`
+behind, the architect's worktree was refused for good, and every later worktree cut from that branch
+carried an empty `.claustrum/worktrees/<id>` that tripped `NestedWorktrees` (until H1, round 3). Two layers now — the
+runner's commit and the probe — and the precondition kept:
+
+- **The runner's commit never takes Claustrum's machinery, ignored or not.** `JobWorktree`'s status
+  (the commit's first look, `IsUntouchedAsync`, the remove check) and `add -A` all take
+  `-- . ':(exclude).claustrum/worktrees' ':(exclude).claustrum/briefs' ':(exclude).claustrum/locks'`.
+  Measured on git 2.56 with nothing ignored, a nested worktree, a brief and a lock present: status
+  (with and without `-z`) lists only the real file, `add` stages only it — no "embedded repository"
+  warning — and under `status.showUntrackedFiles=no` the excluded `--untracked-files=all` form still
+  lists new files. With those directories *ignored* and on disk, `add` still stages the rest but exits 1
+  — the round-3 finding under H2, below. ⚠ `GIT_LITERAL_PATHSPECS=1` in the caller's environment turns `:(exclude)…` into a
+  literal path: status then lists everything and `add` dies `pathspec ':(exclude).claustrum/worktrees'
+  did not match any files` (exit 128). `git --no-literal-pathspecs` overrides the variable (measured),
+  so every one of those calls starts with it — undocumented in `man git`, but in `git.c`'s option
+  handling already in v2.5.0, the first git with `worktree`.
+- **A gitlink is not committed unless `.gitmodules` lists it.** After the add, `git diff --cached --raw
+  -z --no-renames --ignore-submodules=none` — each entry `:000000 160000 0000000 <sha> A` then the path;
+  `--name-only` does not show the mode. Measured: a `git init`ed `vendor/x` with one commit stages as
+  exactly that. The first cut unstaged *everything* (`git reset -q`) on one such entry and warned `work
+  left uncommitted …`, so a stray clone cost the role's whole commit; since review round 2 (G2, G3,
+  below) only the stray gitlinks are unstaged and the rest is committed, and a gitlink the staged
+  `.gitmodules` lists — a `git submodule add` the role left staged — is committed as the submodule it is.
+- **The probe asks about real shapes**: `.claustrum/worktrees/probe-<8 hex>/`, a real empty directory
+  created for the question and removed after it (with `.claustrum/worktrees` itself when the probe
+  made it) — git calls a path a directory only when one is on disk: measured, the same path with its
+  trailing `/` but not on disk matched `*`, on disk it matched `!*/` —
+  `.claustrum/briefs/1-builder.md` and `.claustrum/locks/default__builder.1.lock`. Under the
+  whitelist the first two come back un-ignored (`!*/`, `!*.md`) and the lock ignored (`*`), which is
+  the truth. The probe directory has no leading dot on purpose: a `.*` rule would ignore `.probe-x`
+  and not a real job id. A `jobs clean` that runs in the same millisecond deletes it as a stray probe
+  (G5); the probe checks it is still on disk after git answered and refuses ("… was removed while git
+  was asked about it — run coordinate again") rather than trust an answer about a path git saw as no
+  directory.
+- **The precondition stays, with the backstop in place.** git's own plain `worktree remove` refuses
+  a worktree holding an untracked brief or lock — `fatal: '…' contains modified or untracked files,
+  use --force to delete it`, exit 128, measured — so unignored machinery would still leave the
+  architect's worktree to `jobs clean` forever, and the architect's own `git add -A` has no
+  exclusions. The refusal's tail says that now instead of "that commit takes in …". ⚠ The flip side:
+  the remove check now skips the machinery too, so under `status.showUntrackedFiles=no` git's remove
+  deletes an unignored brief or lock silently (measured) — Claustrum's own scratch, accepted.
+
+**1d, review F2/F3/F4: what the status check could not see.**
+
+- **A hidden edit.** `git update-index --skip-worktree claustrum.json` (or `--assume-unchanged`) plus a
+  local edit prints nothing in `status` (measured, both bits), so the architect's `Prepare` read the
+  operator's edited file while its children read HEAD's. `git --literal-pathspecs ls-files -v -z --
+  <same paths>` tags skip-worktree `S`, assume-unchanged in lower case (`h`), both bits `s`, an
+  unmerged path `M` (measured, git 2.56); `S`/`s` is reported as `(skip-worktree)`, any other
+  lower case as `(assume-unchanged)` — refused in the same `commit (or un-ignore) …` message, except on
+  a harness config, where it only warns (G1).
+- **A cast typed in another case.** On a case-insensitive filesystem `--cast Spawned` loads
+  `spawned.json`, while the pathspec matches case-sensitively, so an untracked cast passed. The check
+  asks git about the name on disk: when the typed path opens but no directory entry has that exact
+  name, the entry that matches `OrdinalIgnoreCase` is used — on a case-sensitive filesystem the typed
+  name either is an entry or does not open, so nothing changes there. `claustrum.json` goes through
+  the same lookup, for the same reason. Unmeasured here: this machine has no case-insensitive
+  filesystem.
+- **Harness config `init` wrote and nobody committed.** An untracked `.mcp.json`, `opencode.json` or
+  `opencode.jsonc` refuses (`commit or git-ignore … — an ignored local copy is fine`, G1); an *ignored*
+  one does not — it is the operator's local copy on purpose, and the warning below is all it gets. A
+  *tracked* one with a local edit refused too until G1; it only warns now.
+- ⚠ **Nothing uncommitted reaches the worktree, and a gate may need it.** Gitignored test
+  prerequisites (`.env`, `*.local.json`, `node_modules/`), submodules (a fresh worktree's are not
+  initialised) and uncommitted harness settings (`.claude/settings*.json`, an ignored `.mcp.json`, a
+  committed one's local edit) are all missing for every child of a spawned architect, so a tester can
+  fail for an environmental reason with no warning before — only the harness configs' local edits are
+  warned about (G1). Refusing all of that would refuse most real repositories; MANUAL §11 says it
+  instead, and a brief can say how to set it up.
+
+**2. `jobs clean` enumerates `<cwd>/.claustrum/worktrees` only.** The nested ones are swept by
+`claustrum jobs clean --cwd <architect's worktree>`, which needed nothing new: measured, `git -C
+<archWt> worktree add -q <archWt>/.claustrum/worktrees/B -b claustrum/B <tip>` from inside a linked
+worktree works (git 2.56), B's base is the work branch's tip, and `git -C <archWt> worktree remove
+<B>` removes it. ⚠ **The other order destroyed work.** `git worktree remove <archWt>` with B inside
+it — ignored, so the architect's status is clean — exits 0 and deletes B's directory, an uncommitted
+file in B included, leaving B registered `prunable` and its branch still "checked out" there
+(measured). Every plain remove in `JobWorktree` (`jobs clean`, `--branch` freeing a finished
+worktree, F9's kept-branch cleanup) now refuses a worktree whose `.claustrum/worktrees/` holds a
+directory with a `.git` of its own (any directory until H1, round 3): ``it holds job worktrees of its own under <path> — run `claustrum jobs clean --cwd "<it>"`
+first``; `IsUntouchedAsync` says no for it too, so the forced cleanup cannot take it either. Measured
+with the built binary: `jobs clean` from the operator's checkout removed a plain finished worktree and
+left the architect's (exit 1, that message); `--cwd <archWt>` refused the child while it held an
+untracked file, removed it once clean; then `jobs clean` removed the architect's. The operator's own
+integration has the same constraint (review F6): from the operator's checkout `git merge --ff-only
+claustrum/<id>` fast-forwards while the architect's worktree still holds the branch (measured), but
+rebasing that branch is refused until both sweeps have run — TEST-DRIVE step 17 gives both paths.
+
+**3. The `.claustrum/locks/` gate directory moves with the cwd.** Every delegation the architect
+makes carries the same `--cwd`, its worktree, so its children share one gate directory there —
+measured, a `max_parallel: 2` builder started that way made `<archWt>/.claustrum/locks/`, and
+1b and 1c keep it out of the commit. A run started from the operator's checkout meanwhile does not see
+those locks, as review R1 already records for any two `--cwd`s.
+
+### Review round 2 (2026-10-09): G1–G5
+
+Each measured with the built binary against a fake `claude` in a scratch repository (git 2.56,
+`CLAUSTRUM_HOME` and `GIT_CONFIG_GLOBAL` pointed into the scratch directory).
+
+**G1, the precondition refused ready repositories with the wrong advice.**
+
+- *Junk under `.claustrum/roles/`.* An ignored `.DS_Store`, `.ROLE.md.swp` or `ROLE.md~` (a global
+  excludes file) refused as `commit (or un-ignore) .claustrum/roles/.DS_Store (ignored)`. `RoleLibrary`
+  reads `<role>/role.json`, `<role>/ROLE.md` and `ReadPart`'s `<role>/parts/<part>.<harness|default>.md`;
+  any other file in `parts/` only flips `LoadedRole.IsLocalOverride`, which `sync` and `roles show`
+  print and no run reads. So `ArchitectWorktree.IsRead` keeps, under `.claustrum/roles/`, only paths
+  shaped `<role>/(role.json|ROLE.md|parts/*.md)` — the brief asked for `parts/*`; `*.md` is what
+  `ReadPart` opens, and a Finder `.DS_Store` lands in `parts/` as readily as anywhere. Measured: four
+  junk files and an untracked `notes.txt` ran; an untracked `tester/ROLE.md`, `tester/role.json` and
+  `builder/parts/review.default.md` were all named. ⚠ Case-insensitive on every OS: on Linux that
+  refuses an untracked `role.md` nothing reads, the cheaper mistake than passing the `role.md` a
+  case-insensitive filesystem opens for `ROLE.md`.
+- *The rule file.* Still refused for any uncommitted change — the worktree gets HEAD's rules, and
+  evaluating HEAD's rules from here is not cheap — but the message says why: `.gitignore (uncommitted
+  changes — the worktree gets HEAD's ignore rules; commit it first)`.
+- *Harness configs.* An untracked one said "commit (or un-ignore)", while ignoring it is the way out
+  the check accepts: now `commit or git-ignore .mcp.json (untracked) — an ignored local copy is fine`.
+  A tracked one with a local edit — or with `skip-worktree`/`assume-unchanged`, the usual way to keep a
+  token out of a commit — no longer refuses: the children get HEAD's copy, which is what a committed
+  config is for. `RequireReadyAsync` returns a warning instead, `CoordinatePlan.Warnings` carries it,
+  `coordinate` prints `warning: .mcp.json (<state>): the architect's worktree gets HEAD's copy — your
+  local edit stays out of it` on stderr after `Prepare` and before the mint (under `--json` stdout stays
+  one document), and the MCP tool returns it in `warnings` — `CoordinateStartResult`
+  (`{job_id, log_path, warnings}`), a type of its own so `delegate_async`'s shape does not change. Not
+  on the `RunResult`: that is the architect's receipt, written after the run. Whether HEAD has the
+  path is read off the status code (`Difference.InHead`): `??`, `!!`, an index `A`/`R`/`C` or `add -N`'s
+  ` A` mean it has none, and those still refuse. Measured on both doors: modified, `skip-worktree` and
+  `assume-unchanged` each warned and ran; untracked refused (from MCP, as the tool's error).
+
+**G2, `diff.ignoreSubmodules=all` hid the gitlink.** Measured: with it set, `git diff --cached --raw`
+after `add -A` of a file and a `git init`ed `vendor/x` printed only the file; with
+`--ignore-submodules=none`, both. The same setting hides a submodule's moved pointer from `git status
+--porcelain` (nothing; ` M "my sub/lib"` with `none`, and with no setting at all — where `none` and the
+default print the same), so `JobWorktree.statusArgs` passes `--ignore-submodules=none` too: the
+commit's first look, `IsUntouchedAsync` and the remove check see what the default config
+sees, whatever the repository says — since H4 the commit's look only decides whether to run `add` at
+all; the index after it decides whether to commit, and the status after it (round 4, with the same
+flag) what is warned about as left out. `git commit` commits a staged gitlink under that setting
+(measured), so nothing else needed it.
+
+**G3, one stray clone cost the role its whole commit.** `JobWorktree.StagedStrayGitlinksAsync` reads
+every staged entry; a new `160000` (old mode not `160000`: an add, or a type change) whose path the
+staged `.gitmodules` does not list is a stray. `git --literal-pathspecs reset -q -- <strays>` unstages
+those alone, the rest is committed, and each — back in the worktree as `?? <path>/`, which is where
+round 4 reads it from — costs `embedded repository at <path> left out of the commit on <branch> — move
+it out or add it as a submodule`. `work left uncommitted on <branch>: …` is a refusal of git's and
+nothing else: of the commit (its index kept), of every path (`git add staged nothing: …`, round 4), or
+a failure before the commit, with the index cleared (H5). When the strays were all that was staged no commit is attempted — git refuses it, `nothing
+added to commit`, exit 1 (measured); H4 made that the rule for any empty index. `.gitmodules` comes from the index:
+`git config --blob :.gitmodules -z --get-regexp '^submodule\..*\.path$'` — `-z` ends each
+`key\nvalue`, as a submodule's name and path may hold spaces; no file or no key exits 1, read as none;
+it reads the linked worktree's own index (measured). End to end, `run builder` at `max_parallel 2`
+under `diff.ignoreSubmodules=all`, the fake writing `real.txt` and a `git init`ed `vendor/x`: `commit`
+holds `real.txt` and not `vendor/x`, one warning, `?? vendor/x/` left in the worktree; `vendor/x`
+alone: no commit, that warning only; plus a `git submodule add`ed `deps/lib`: `.gitmodules` and
+`160000 deps/lib` committed, `vendor/x` left out. `jobs clean` refuses a worktree still holding a
+left-out repository as uncommitted (`?? vendor/x/`), like any leftover. The appendix's three `work
+left uncommitted` shapes are unchanged: the new warning is not one of them — the branch has the rest of
+the work. Since round 5 the architect texts route it with the other `left out of the commit` warnings (J5).
+
+**G4, the in-place appendix told a cwd with no git to use git.** Since #74 `coordinate` isolates
+whenever its cwd is in a repository, so in place means no repository; yet the text said to create
+`claustrum/{{job_id}}` from HEAD, to rebase builder branches and to run `jobs clean`. In place,
+everything after the briefs line is now `No git repository at <cwd>: there is no work branch and no
+worktree isolation — builders run in place, one at a time, and their changes land directly in <cwd>;
+nothing to rebase or clean.` Gone with it, as all git: the three receipt shapes, the integration
+recipe, `--branch` remediation, the `max_parallel` bullet ("Isolation starts at 2") and "Never a merge
+commit, never `git push`". The isolated text is unchanged. A cast whose builder has `max_parallel` 2 or
+more sent every builder down the isolated path in such a cwd, where `JobWorktree.AddAsync` threw `no
+commit to branch from` after the mint — fixed in round 3 (H7): it runs in place, queued at one, with a
+warning, so "one at a time" is enforced for a numeric cap and still only instructs with none. The
+user prompt's last line still names "your work branch" among the appendix's contents.
+
+**G5, a hard kill mid-probe broke `jobs clean` for good.** Killed between creating
+`.claustrum/worktrees/probe-<8 hex>` and its `finally`, `coordinate` left an empty directory no job
+owns: `IsFinished` calls it finished (no job directory) and git's remove `not a working tree`, exit 1
+on every later sweep. `JobsCommands.CleanAsync` asks `ArchitectWorktree.TryRemoveStrayProbeAsync`
+first: named `probe-`, empty, and no `worktree …` line of `git worktree list --porcelain` ending in
+`/.claustrum/worktrees/<name>` (by tail and case-insensitively — git lists realpaths, and a false match
+only keeps the directory) ⇒ deleted, non-recursively, `removed stray probe directory <name>`.
+Measured: an empty one removed, exit 0 when it was all there was; a non-empty one left and reported
+`not a working tree`, exit 1, as before; a registered worktree named `probe-…` emptied by hand (git
+lists it `prunable`) left alone.
+
+### Review round 3 (2026-10-09): H1–H7
+
+Each measured on git 2.56 in a scratch repository and, end to end, with the built binary against a
+fake `claude` (`CLAUSTRUM_HOME` and `GIT_CONFIG_GLOBAL` in the scratch directory).
+
+**H1, an empty directory counted as a nested worktree.** A repository whose HEAD carries `160000 …
+.claustrum/worktrees/OLD` — someone ran `add -A` while a job worktree existed and no rule ignored it —
+checks out an empty `.claustrum/worktrees/OLD/` in every new worktree, so `NestedWorktrees` refused
+each of them for good: `jobs clean`, `--branch` freeing the branch, and `IsUntouchedAsync`, so the
+abandoned cleanup never forced. A subdirectory counts now only when it holds a `.git` of its own (file
+or directory). The other candidate was `git worktree list --porcelain`, matched by full path:
+
+| shape | a `.git` in it | listed by `worktree list` |
+|---|---|---|
+| the gitlink's empty directory | no | no — but a top-level worktree of the same name is, so a match by tail would refuse |
+| a real nested worktree | yes, `gitdir: <repo>/.git/worktrees/<id>` | yes, by realpath |
+| a nested worktree whose `.git` file was deleted | no | yes, `prunable gitdir file points to non-existent location` |
+| a nested worktree whose `.git/worktrees/<id>` was deleted | yes | no — and git refuses to work in it |
+
+The `.git` check won: no git process in a check that was synchronous, no realpath normalisation (git
+lists realpaths, measured 2026-10-08 through a symlinked cwd), and it keeps the last row, whose files a
+plain remove of the parent would delete with nothing registered to say so. It gives up the third row:
+a worktree whose pointer is gone, which git itself calls prunable. End to end: a builder's worktree cut
+from such a HEAD holds the empty `OLD/`, commits its file, and `jobs clean` removes it, exit 0.
+
+**H2, a repository with no commit held back the whole commit.** A `git init`ed `vendor/x` with nothing
+committed makes `git add -A` fail — `error: 'vendor/x/' does not have a commit checked out`, `fatal:
+adding files failed`, exit 128 — with nothing staged, and the warning's remedy failed the same way.
+`add -A --ignore-errors` stages the rest and exits 1, with `error: '<path>/' does not have a commit
+checked out` and `error: unable to index file '<path>/'` per skipped repository (measured; a path with
+a space, a `'` or non-ASCII is printed raw, unquoted). Round 3 read exit 1 as a success when every
+`error:` line named a directory with a `.git` of its own, and as a failed add on any other `error:`
+line. Round 4 (below) retired that reading: exit 1 also covers a sparse-checkout skip, with no `error:`
+line at all, and git translates the words. `add`'s exit code and stderr decide nothing now — the
+repository is still `?? vendor/x/` in the status after the add, and its `.git` makes it G3's `embedded
+repository at <path> left out of the commit on <branch> — …`.
+
+- ⚠ git translates those lines (`… non ha un commit di cui è stato eseguito il checkout` under `it_IT`,
+  measured; the `error:` and `fatal:` prefixes stay). Round 3 ran that `add` under `LANGUAGE=en`, through
+  an environment overload on `CommandProcess` and `GitProcess`; round 4 removed all three, as no
+  decision reads git's words any more.
+- **Found while measuring: F1's `:(exclude)`s make `add` exit 1 in the standard
+  setup.** With `.claustrum/{worktrees,briefs,locks}/` ignored — what `init` writes, what `coordinate`
+  requires — and any of them on disk, `git add -A -- . ':(exclude).claustrum/worktrees' …` stages the
+  rest and exits 1 with `The following paths are ignored by one of your .gitignore files:`, the excluded
+  paths and two `hint:` lines, and no `error:` line (measured with and without `--ignore-errors`, with a
+  nested worktree, a lock and a brief present, and with a tracked gitlink under the ignored directory).
+  git counts an exclude item that names an ignored path as one the caller asked for. Until round 3
+  every non-zero add was a failure, so an architect's leftovers went uncommitted whenever its briefs,
+  locks or nested builders existed — `work left uncommitted on claustrum/<id>: The following paths are
+  ignored …` — and so did the H1 builder above. 1c's measurement had nothing ignored. A builder leaving
+  an ignored brief, an ignored lock and `left.txt` commits `left.txt`, with no warning (re-measured with
+  round 4's binary).
+- End to end with round 4's binary: `real.txt` plus a commit-less `vendor/x` commits `real.txt` with the
+  one warning; `vendor/x` alone, no commit and the warning; plus a clone with a commit at `vendor/y`,
+  both warnings and `real.txt` committed, under `LC_ALL=it_IT.UTF-8` too. An unreadable file, a failed
+  add in round 3, is round 4's third shape now: left out with its own warning, the rest committed.
+
+**H4, "anything to commit?" came from the status.** With `--ignore-submodules=none` (G2) the status
+shows ` M sub` for a dirty initialised submodule, and for a pointer moved under `.gitmodules`'
+`submodule.<name>.ignore = all`; `add -A` stages neither, and `commit` exits 1, `no changes added to
+commit`, so the run warned `work left uncommitted on <branch>: On branch …`, a remedy that cannot
+succeed (all measured). The status now only decides whether `add` runs at all. After it, the staged
+entries `StagedStrayGitlinksAsync` already lists, minus the strays, decide: none, then no commit and
+`commit: null`. Not `git diff --cached --quiet`, which the brief named: under
+`diff.ignoreSubmodules=all` it exits 0 over a staged pointer move (1 with `--ignore-submodules=none`,
+measured), and the `--raw` listing is already in hand with that flag. The same `ignore = all` in
+`.git/config` instead of `.gitmodules` does not stop `add` (measured: staged and committed). What the
+submodule held back went unsaid in round 3; round 4 warns `changes inside submodule <path> left out of
+the commit on <branch> — …` for it. End to end: a builder that initialises a submodule and dirties a file
+in it gets `commit: null` and that warning (with a `real.txt` beside it, `real.txt` is committed), and
+`jobs clean` leaves its worktree (`uncommitted changes:  M sub`), as for any leftover.
+
+**H5, a failure after `add` left the index as `add` had made it.** A failed `reset -- <strays>`, or a
+`diff --cached`, `config --blob` or `reset` that threw (a timeout), returned `work left uncommitted …`
+with a stray gitlink still staged, and the warning's remedy — commit it inside that worktree — would
+have committed it. Every failure from `add` up to the commit now ends in `git reset -q`
+(`ClearIndexAsync`: the `unreadable` branch's reset, made general and checked) — an `add` that cannot
+start or passes its bound, and since round 4 a status after the add that fails, but never `add`'s own
+exit code, which round 4 ignores — and the warning ends
+`(index cleared: nothing is staged)` or `(and the index could not be cleared: …)` — a stale
+`index.lock` fails both, exit 128 (measured). A refused `git commit` keeps its index: it holds exactly
+what was to be committed, which is what the remedy needs. Measured with a `git` shim on `PATH` that
+refuses `--literal-pathspecs reset`: `work left uncommitted on <branch>: an embedded repository at
+vendor/y could not be unstaged: fatal: … (index cleared: nothing is staged)`, and nothing staged.
+
+**H6**: the architect's owner block, under #80 below.
+
+**H7, an isolated builder in a cwd with no repository died after its mint.** `DelegateEngine.RunAsync`
+asks `GitRootLocator` before the isolated path: no repository and no `--branch` ⇒ in place. A numeric
+`max_parallel` still goes through the slot gate, at a cap of 1 whatever the cast says: N runs in one
+tree would read each other's edits into their snapshot receipts — why `max_parallel: 1` queues (#58) —
+and the appendix already says "one at a time". The receipt carries `no git repository at <cwd>: ran in
+place, no worktree, no commit` first in `warnings`, through `RunOptions.PreRunWarnings`, which
+`Runner.FinishAsync` puts on every result before result.json is written (`FinishAsync` takes the
+options now instead of the worktree). Appending after the run returned was the smaller change and would
+have left the receipt on disk without it — #60's lesson. `--branch` stays on the isolated path and is
+refused there as before (`--branch foo: no local branch of that name in <cwd> …`). Measured end to end
+with `max_parallel: 2` in a plain directory: success, `worktree`/`branch`/`commit` null, the warning in
+the returned and the on-disk receipt and on `run`'s stderr, `.claustrum/locks/default__builder.0.lock`
+made; `max_parallel: 1` unchanged; `--branch` refused.
+
+- ⚠ **A plain directory's `claustrum.json` is not read**: `Config.Load` looks for it at the git root
+  only. The first H7 measurement pointed `backends.claude.path` at a fake there, and the real `claude` on
+  PATH ran three times instead (about $1, no file changed). Outside a repository a fake backend comes
+  from the user config (`~/.config/claustrum/config.json`) or a `claude` earlier on PATH.
+- A cwd inside a repository with no commit still takes the isolated path and fails after the mint, `no
+  commit to branch from`.
+
+**Recorded, not changed.** The uncommitted-`.gitignore` refusal (G1) stays even for an edit that has
+nothing to do with Claustrum's rules: the worktree gets HEAD's rules, and telling whether HEAD's rules
+alone still ignore the machinery means evaluating them without the working-tree file — not cheap, and a
+wrong "yes" leaves the architect's worktree to `jobs clean` for good.
+
+### Review round 4 (2026-10-09): the commit reads git's index, not its words
+
+Measured on git 2.56 in scratch repositories and, end to end, with the built binary against a fake
+`claude` — its `claustrum.json` at a git root (a plain directory's is not read, H7), `HOME`,
+`CLAUSTRUM_HOME` and `GIT_CONFIG_GLOBAL` in the scratch directory, `PATH=/usr/bin:/bin`, which holds no
+agent CLI — each case a `run builder --branch feat`.
+
+**The defect.** `StageAsync` read `git add -A --ignore-errors` exit 1 as a success unless stderr had an
+`error: ` line. git exits 1 with no such line when it skips a path outside a sparse-checkout cone, which
+`git worktree add` copies into the job's worktree: a builder writing `a/new.txt` and `b/new.txt` in a
+repository sparse on `a` got `status: success`, `commit` set, no warning and both paths in
+`changed_files`, and the commit held `a/new.txt` alone (the reviewer's case, reproduced here). The rest
+of the design rested on `LANGUAGE=en` making git's stderr English, never measured on Git for Windows.
+
+**Nothing decides on `add`'s exit code or words now.** `CommitAllAsync`:
+
+1. the status before the add (`statusArgs`) only says whether there is anything to do;
+2. `add -A --ignore-errors` with F1's excludes runs, its exit code ignored, its stderr kept;
+3. the stray gitlinks are unstaged as in G3, and any failure from here to the commit clears the index (H5);
+4. **staged** is the `--raw` listing G3 already reads, minus the strays: empty ⇒ no commit (H4);
+5. **left out** is whatever a second status (`remainderArgs`: `--porcelain=v2 -z`, the same flags and
+   excludes) still shows on the worktree side after all that — `Y` not `.`, or untracked;
+6. each path left out costs one warning, by shape, decided from git's flags and the filesystem:
+
+| shape | decided by | warning |
+|---|---|---|
+| a submodule | v2's `S…` field | `changes inside submodule <p> left out of the commit on <branch> — commit them in the submodule, then stage its pointer` |
+| a directory with its own `.git` — a clone, a commit-less `git init`, a stray G3 unstaged | `<p>/.git` exists | `embedded repository at <p> left out of the commit on <branch> — move it out or add it as a submodule` |
+| anything else — sparse-checkout, an unreadable file, a failing clean filter | neither | `<p> left out of the commit on <branch>: git did not stage it (sparse-checkout, permissions or a filter — see the job's stderr.log)` |
+
+The last shape's cause is only in git's words, so `add`'s stderr is appended whole to the job's
+`stderr.log`, under a `claustrum: git add -A in <worktree>, for the commit on <branch>:` line: `Runner`
+hands `JobPaths.StderrLog` to `CommitRunAsync`, whose process runner has closed it by then. A caller with
+no job directory (the 5-argument `CommitRunAsync`) or a log that cannot be written gets ` — git said:
+<line>` in place of the pointer; an `add` that printed nothing, neither. When nothing at all was staged
+and a path of that last shape was left out, `work left uncommitted on <branch>: git add staged nothing:
+<line>` is added: a fatal `add` — a stale `index.lock`, measured — leaves every path in the last shape,
+whose parenthesis then names the wrong causes, and this line names the right one. `<line>` is for display
+only: git's first `fatal: `/`error: ` line, else its first — the prefixes stay untranslated (measured
+under `it_IT`), and the "ignored paths" banner comes first whenever a machinery directory exists.
+`GitProcess` and `CommandProcess` lost the environment overloads round 3 added for `LANGUAGE=en`: nothing
+else used them.
+
+**A departure from the brief: "left out" is the status after the add, not "expected − staged".** The
+brief defined it as every path the status listed before the add, minus every path staged after it.
+Measured, that set is wrong both ways once the role has staged something itself:
+
+| the role did | status before | staged after | expected − staged | status after |
+|---|---|---|---|---|
+| `git add f`, then edited `f` again and made it unreadable | `MM f` | `f`, its earlier version | nothing: the commit holds the stale `f`, silently | `MM f`: left out, warned |
+| `git add g`, then put `g` back as HEAD has it | `MM g` | nothing | `g`, a false "git did not stage it" | clean |
+| `git add n.txt`, then `rm n.txt` | `AD n.txt` | nothing | `n.txt`, false | clean |
+
+The first is the defect's own class, a commit silently short of the work. The price is one more
+`git status`, and a failure of it clears the index like any failure before the commit (H5).
+
+| end to end | commit holds | warnings |
+|---|---|---|
+| sparse on `a`: `a/new.txt`, `b/new.txt` | `a/new.txt` | `b/new.txt left out …`; the log has git's sparse advice |
+| sparse: `b/new.txt` alone | no commit | that, and `work left uncommitted on feat: git add staged nothing: The following paths and/or pathspecs matched paths that exist` |
+| `real.txt`, a commit-less `vendor/x` | `real.txt` | `embedded repository at vendor/x …` |
+| the commit-less `vendor/x` alone | no commit | the same one |
+| `real.txt`, `vendor/x`, a clone with a commit at `vendor/y`, under `LC_ALL=it_IT.UTF-8` | `real.txt` | both `embedded repository` warnings |
+| the clone alone | no commit | `embedded repository at vendor/y …` |
+| a `git submodule add`ed `deps/lib`, `real.txt`, the clone | `.gitmodules`, `deps/lib`, `real.txt` | `embedded repository at vendor/y …` only |
+| an initialised submodule with a dirty file, alone | no commit | `changes inside submodule sub …` |
+| the same, and `real.txt` | `real.txt` | `changes inside submodule sub …` |
+| `real.txt`, an unreadable `secret.txt` | `real.txt` | `secret.txt left out …`; the log has `error: open("secret.txt"): Permission denied` |
+| the unreadable file alone, under `it_IT` | no commit | that, and `… git add staged nothing: error: open("secret.txt"): Permesso negato` |
+| the same beside an ignored brief | no commit | the same two: git's `error:` line, not the banner the log starts with |
+| an ignored brief and lock on disk, `left.txt` | `left.txt` | none |
+| `status.showUntrackedFiles=no`, `new.txt` | `new.txt` | none |
+| a stale `index.lock`, `real.txt` | no commit | `real.txt left out …`, and `… git add staged nothing: fatal: Unable to create '…/index.lock': File exists.` |
+| the departure table's first row | `f` as staged | `f left out …`, and `receipt delta unavailable …`: the delta cannot read `f` either |
+| its second and third rows, and `real.txt` | `real.txt` | none |
+| nothing changed; the role committed `c.txt` itself | none; the role's commit | none |
+| a `pre-commit` hook exits 1 | no commit | `work left uncommitted on feat: hook says no`, and `A  real.txt` still staged |
+
+**A conflict in progress is never concluded by the runner (finding 5).** Measured in a linked worktree:
+a conflicted `git merge`, `cherry-pick` or `revert` keeps HEAD on the branch, and so does a stopped
+`git am` (`rebase-apply/applying`); a stopped rebase detaches it (T3 already covers that). The runner's
+`add -A` and `commit` there concluded it — under `MERGE_HEAD`, a merge commit, conflict markers
+staged. So once HEAD is the branch, `VerifyAsync` asked `rev-parse -q --verify` for `MERGE_HEAD`,
+`CHERRY_PICK_HEAD` and `REVERT_HEAD` (exit 1 is "no such ref"; anything else is git failing, a
+non-own mismatch as elsewhere there), then looks for `rebase-merge`/`rebase-apply` under `rev-parse
+--git-path`. Any of them was an own-worktree mismatch with `WorktreeMismatch.Operation` set — "a
+merge", "a cherry-pick", "a revert", "a rebase", or "a git am", one more than the brief listed, since
+its way out differs — and `Reason` `a merge is in progress`: snapshot kept, no commit, no delta, and
+`work left uncommitted: <path> has a merge in progress, not a clean <branch>`. Measured end to end for
+merge, cherry-pick, revert and am; after the merge run the worktree still has `UU f` and its
+`MERGE_HEAD`. **Round 5 changed the signal (J1, J2, below):** the cherry-pick and revert heads are no
+longer triggers — a clean `revert -n` leaves `REVERT_HEAD` and commits as an ordinary commit — and
+unmerged index entries are, whatever left them; `MERGE_HEAD` and the rebase directories stay.
+
+- ⚠ `commit` is null on that receipt even when the role committed on its branch before it stopped (a
+  commit, then a conflicted revert — since round 5 the unresolved-conflicts receipt), as on T3's
+  off-branch receipt; the brief asked for no commit.
+- The appendix and `roles/architect/ROLE.md` first routed only "one of three shapes" of `work left
+  uncommitted`, leaving this fourth one to MANUAL §15 alone; round 4 made both route "one of four
+  shapes", the new one in the same words. Since round 5 both route "what did not land, in one of
+  these shapes": the fourth names `has a <merge | rebase | git am> in progress` and `has unresolved
+  conflicts`, and the `left out of the commit` warnings are routed too (J5).
+- Round 4 did not catch a conflicted `git stash pop` (or `apply --3way`), which leaves `UU` entries and
+  no head of its own: the runner committed the markers. Round 5 refuses it (J1).
+
+**`--branch` over a finished worktree with a populated submodule.** git refuses to remove any worktree
+with a submodule checked out — `fatal: working trees containing submodules cannot be moved or removed`,
+exit 128, before its own clean check (measured) — and `FreeBranchAsync` said "… left in place (fatal:
+…) — commit or discard its changes" of a worktree with nothing to commit. It now says `--branch <b>: its
+previous worktree <path> holds a populated submodule, which git will not remove — remove it by hand
+(`git worktree remove --force "<path>"`, which also deletes any commit made inside the submodule and
+pushed nowhere) and retry` (the path quoted since round 5). Round 4 matched git's English sentence whole
+at the end of the refusal, so a translated git (`fatal: gli alberi di lavoro contenenti sottomoduli …`,
+measured) got the generic text; round 5 reads the shape before the remove, in any language, and keeps
+the English match as a fallback (J4) — whole, never a fragment, which could hand `--force` to a
+refusal that merely quotes a path. The clause after the command departs from the brief's text:
+measured, a submodule initialised in a linked worktree keeps its git directory in
+`.git/worktrees/<id>/modules/<name>`, and `remove --force` deleted a commit made in it — the only copy
+— while the branch's pointer still named it.
+
+**#80's owner block** names Claustrum's own NOTES.md by repository now (under #80, below); round 5
+dropped its devkit pointer (J6).
+
+**Recorded, not changed.** One warning per path, uncapped: a role that writes hundreds of files outside
+the sparse cone gets hundreds. A path the role stages itself with `git add -f` inside Claustrum's
+machinery is still committed — F1's excludes keep `add` and the status off it, not the index.
+
+### Review round 5 (2026-10-09): conflicts read off the index, a stash header, submodules in any language
+
+Measured on git 2.56 in scratch repositories and, end to end, with the built binary against a fake
+`claude` — its `claustrum.json` at the git root, `HOME`, `CLAUSTRUM_HOME` and `GIT_CONFIG_GLOBAL` in the
+scratch directory, `PATH=/usr/bin:/bin` — each case a `run builder --branch feat`.
+
+**J1, a conflict with no head of its own was committed; J2, a clean `revert -n` was refused.** Round 4
+keyed "in progress" on three heads and the rebase directories. What each operation leaves (measured):
+
+| the role ran | unmerged | head or directory |
+|---|---|---|
+| a conflicted `merge` | `UU f` (`UD f` modify/delete, `AA n` add/add) | `MERGE_HEAD` |
+| a conflicted `merge --squash`, `stash pop` (the stash is kept), `stash apply` or `apply --3way` | `UU f` | none |
+| a conflicted `cherry-pick` / `revert` | `UU f` | `CHERRY_PICK_HEAD` / `REVERT_HEAD` |
+| a clean `merge --no-commit` | none | `MERGE_HEAD` |
+| a clean `revert -n` | none | `REVERT_HEAD` |
+| a clean `cherry-pick -n` | none | none |
+| a `cherry-pick` stopped on a conflict, then `git add` of the fix | none | `CHERRY_PICK_HEAD` (a sequence: `sequencer/` too) |
+
+`git commit -m` over the last three exits 0, makes an ordinary single-parent commit and clears the head,
+under the files and the reftable backends alike. A stopped multi-pick sequence keeps `sequencer/` after
+that commit when picks remain (`git status`: "Cherry-pick currently in progress"; the rest unpicked) and
+drops it when the stopped pick was the last — recorded, not a trigger: the commit holds what the role
+left, and the picks it never made are work it never did.
+
+So `OperationInProgressAsync` keeps `MERGE_HEAD` — the runner never makes a merge commit, conflicted or
+not: `a merge is in progress` — and the `rebase-merge`/`rebase-apply` directories (a rebase or `git am`
+rewrites the branch), drops `CHERRY_PICK_HEAD` and `REVERT_HEAD`, and then counts unmerged paths: `git
+ls-files -u -z`, one to three `<mode> <sha> <stage>\t<path>` entries per path. Any ⇒ an own-worktree
+mismatch, `Reason` `unresolved conflicts (<n> paths)` (`1 path`), `WorktreeMismatch.UnresolvedConflicts`
+n: snapshot kept, no commit, no delta, and `work left uncommitted: <path> has unresolved conflicts on
+<branch> — resolve or abort the operation inside the worktree, then commit there yourself`. The count
+reaches `Reason` only; the warning is the brief's text.
+
+- **A departure from the brief: `ls-files -u` inside `VerifyAsync`, not the status before the add in
+  `CommitAllAsync`.** The same signal — status's v2 `u` and v1 `UU/AA/DD/AU/UA/DU/UD` entries are those
+  index stages, and the path counts agreed in every row above — read where every other "safe to
+  commit?" answer is, so the runner's own verify (before the after-snapshot), `CommitRunAsync`'s and
+  `IsUntouchedAsync`'s agree and the one `Unverified` path writes the receipt. `ls-files` reads the
+  index alone: no `status.*` setting, `diff.ignoreSubmodules` or pathspec decides what it lists, and no
+  working tree is scanned. The price is one git process per verify. It also counts a conflict under
+  Claustrum's machinery, which `add` excludes — git's commit would refuse that index anyway
+  (`Committing is not possible because you have unmerged files`).
+- ⚠ `commit` stays null when the role committed before the conflict (the `stash pop` case below: its own
+  commit is on `feat`), as on every own-worktree receipt.
+
+| end to end | commit | warnings | the worktree after |
+|---|---|---|---|
+| conflicted `merge --squash`, `real.txt` | none | `… has unresolved conflicts on feat — …`; `changed_files` `f`, `real.txt` | `UU f`, `?? real.txt` |
+| a role commit, then a conflicted `stash pop` / `stash apply` | none | the same | `UU f` |
+| conflicted `apply --3way`, `cherry-pick`, `revert` | none | the same | `UU f`; a cherry-pick's or revert's head kept |
+| clean `revert -n`, `real.txt` | `f`, `g`, `real.txt`, one parent | none | clean, `REVERT_HEAD` gone |
+| clean `cherry-pick -n`, `real.txt`; a picked conflict fixed and added | one parent | none | clean, no head |
+| conflicted `merge` | none | `… has a merge in progress, not a clean feat` | `UU f`, `MERGE_HEAD` |
+| clean `merge --no-commit` | none | the same | `MERGE_HEAD` |
+| `git am -3` stopped on a conflict | none | `… has a git am in progress, not a clean feat` | — |
+
+**J3, `status.showStash` put a fake path on the receipt.** With it set and any stash, `status
+--porcelain=v2 -z` starts with a `# stash 1` field (measured); `StatusEntry.Parse` failed closed on it —
+`# stash 1 left out of the commit …`, and `unexplained` (the review's case). v1 `--porcelain` prints no such line, and
+`status.branch=true` adds no `# branch.*` header to either (git defers it for porcelain, measured).
+`remainderArgs` passes `--no-show-stash` (measured: the field goes), and `Parse` skips any field
+starting with `#` — no entry's path field starts one: `?` and `1`/`2`/`u` lead, and a `2` entry's
+original path is skipped by index. End to end: a role that stashes under `status.showStash=true` and
+writes `real.txt` gets `real.txt` committed and no warning.
+
+**J4, the populated-submodule text needed git in English.** `FreeBranchAsync` now asks before the
+remove, the way git's own `validate_no_submodules` (git 2.56, `builtin/worktree.c`) does: `rev-parse
+--git-path modules` an existing directory — per worktree, measured `.git/worktrees/<id>/modules`, not
+the main checkout's `.git/modules` — or a `160000` entry of `ls-files -s -z` whose directory holds a
+`.git`. The English match stays behind it as a fallback, and the suggested command quotes the path.
+
+- ⚠ **Not "refuse directly", as the brief said:** git refuses a submodule before its own clean check,
+  so a dirty worktree with one would have got the `--force` remedy and lost its work. `NestedWorktrees`
+  and `UncommittedAsync` answer first; a dirty one gets the generic `… left in place (<what>) — commit
+  or discard its changes, then retry`, as `TryRemoveAsync` gave it before. The common case — no
+  submodule — still runs the status once, inside `TryRemoveAsync`.
+- git's test is a `.git` that resolves to a repository; this one is a `.git` that exists, so a broken
+  `.git` file in a gitlink's directory gets the `--force` text where git would remove plainly. An empty
+  `modules` directory counts, as git's own source admits it does.
+- Measured under `LC_ALL=it_IT.UTF-8` (git: `fatal: gli alberi di lavoro contenenti sottomoduli non
+  possono essere spostati o rimossi`): a finished worktree that initialised `sub` and committed
+  `real.txt` ⇒ the second `--branch feat` gets the dedicated message, the path quoted; one with a dirty
+  file inside `sub` ⇒ `… left in place (uncommitted changes:  M sub) — commit or discard …`; a main
+  checkout with `.git/modules` and a job worktree whose gitlink is uninitialised ⇒ freed, the second
+  run a success.
+
+**J5, the `left out of the commit` warnings were not routed.** An architect reading "the branch carries
+its work as a commit" would integrate a branch missing a path. Both texts now open "unless its `warnings[]`
+says what did not land, in one of these shapes" and end the list with: a `… left out of the commit on
+<branch>` warning means the branch lacks that path while the builder's worktree still holds it — if it
+belongs in the change, stage and commit it there yourself before integrating (an embedded repository:
+move it out or add it as a submodule first). "before integrating" is mine, as in the first shape. The
+fourth shape names `has a <merge | rebase | git am> in progress` and `has unresolved conflicts`, with a
+remedy for each: abort a merge, finish or abort a rebase or `git am`, resolve the conflicts or abort
+what made them (`cherry-pick --abort`, `revert --abort`, `reset --merge`). The shared span is
+character-identical after whitespace is flattened (checked); MANUAL §9 and §15 say the same, §15 with a
+row of its own for the conflicts warning.
+
+**J6**: the architect's owner block, under #80 below.
+
+**J7, a commit past its bound dropped the left-out warnings.** `(failure, leftOut) = await
+CommitAllAsync(…)` never assigned when `git commit` threw, so a hook past five minutes reported only the
+commit. `CommitAllAsync` now catches the commit's own throw and returns it beside `leftOut`; the outer
+catch is reached only by the first status, before anything is left out. Measured with a `git` shim
+first on `PATH` that sleeps 310 s before any `commit` (a hook's stand-in; the bound is the fixed five
+minutes, so the run takes 301 s), the role writing `real.txt` and a commit-less `vendor/x`: `commit`
+null, `embedded repository at vendor/x left out of the commit on feat — …`, then `work left uncommitted
+on feat: git commit -q -m claustrum builder <id> timed out after 300s`; `real.txt` still staged. The
+shim died before git ran, so no `index.lock` was left; whether a git killed inside a real hook leaves
+one is unmeasured.
+
+### Known and left as is (2026-10-09)
+
+- A demo-author delegated with the architect's worktree as `--cwd` does **not** write its deck there:
+  `roles/demo-author/ROLE.md` sends it to the main checkout, "the first `worktree` line of `git
+  worktree list --porcelain`" — the operator's checkout, under an isolated architect. So the deck lands
+  as gitignored files in the operator's `docs/demos/<feature>/` (the `info/exclude` line with it), and
+  `jobs clean` does not delete it. That breaks "your checkout is never touched" by exactly one
+  gitignored directory, and it is accepted: the deck is made to leave the building, and a worktree is
+  the one place it must not live. (A first draft of this bullet said the deck went into the worktree
+  and died with it; review F6 found the role's own rule.)
+- A worktree add that fails after the mint (a hook, a full disk) still throws out of the run and
+  leaves a pending job directory, as it does for an isolated builder; the committed-files check makes
+  the usual causes (no commit at all, a broken repository) a pre-mint refusal instead.
+- G6 (measured): a `coordinate` that never spawns — `backend 'claude' was not found on PATH`, exit 3 —
+  leaves `.claustrum/worktrees/<id>` and `claustrum/<id>` at HEAD, as an isolated builder does:
+  `Runner` writes its `backend_missing` result.json, so `RunIsolatedAsync`'s catch, the one caller of
+  `TryRemoveAbandonedAsync`, is never reached; `jobs clean` removes the worktree, and the branch stays.
+- H1's empty gitlink directory one level up — in the operator's checkout once a branch carrying it is
+  fast-forwarded — is a directory `jobs clean` enumerates: no job directory makes it "finished", and
+  git's remove answers `not a working tree`, exit 1, on every sweep (measured), G5's shape under a name
+  that is not `probe-`. Deleting it would touch a tracked path of the operator's checkout; left as is.
+- `roles/_shared/claustrum-skill.md` does not mention the committed-cast precondition; a host that
+  coordinates right after `cast create` meets the exit-2 message, which names the file to commit.
+- Windows, unmeasured: a nested builder's files sit two `.claustrum\worktrees\<24-character id>`
+  levels deep instead of one, about 46 characters more than before; a repository whose paths already
+  come near `MAX_PATH` needs `core.longpaths` for the nested checkout.
+
+## Architect role: review per cluster, ported from devkit PR #12 (2026-10-09, issue #80)
+
+The owner's rule of 2026-10-09: blind review runs once per **cluster** of related changes — any
+size, split along natural seams only when one reviewer cannot hold it — never once per builder or
+per fix; remediation is re-reviewed only where it touched, as one pass; one tester gate per cluster.
+Taken from devkit PR #12 (`docs/cluster-review`, open, not draft) as worded today, from its
+`claude/agents/{architect,builder,tester}.md` hunks; if the PR's wording moves before it merges,
+re-port.
+
+- **What moved.** architect: steps 4-6 ("Collect the whole cluster", "Blind review, per set of
+  related changes" with the dated owner block, "Then verification, once per cluster … **one**
+  tester"), the first bullet of "The caller may fix the shape of that loop", and the code-reviewer
+  sizing line in the delegation contract. builder: the "You do not summon" bullet, step 3, and
+  "the assembled cluster" in both `parts/delegation.*.md`, where Claustrum keeps that sentence.
+  tester: the "arrive last" bullet.
+- **Claustrum's voice.** "spawn" became "delegate to"; devkit's "base `code-reviewer`" and "heavier
+  tiers" became "base-tier code-reviewer" and "`xhigh` or `max`". The owner block's pointer said
+  "Long form and receipt: devkit `docs/pipeline.md`, stage 2"; it says "Receipt: Claustrum's own
+  `NOTES.md` (orlodax/Claustrum #80)." now. devkit is private and ROLE.md ships to every user, so the
+  receipt has to live where they can read it: here, in this public repository (#74 H6) — named as
+  Claustrum's (round 4), since "this repo" in a user's architect prompt is the user's own. Round 4 kept
+  "Long form in the team's devkit (`docs/pipeline.md`, stage 2)" before it; round 5 (J6) dropped that
+  too — a pointer every user but the team's members follows to a page they cannot open. It is #30 and
+  #32 each running a full review → fix → re-review → tester loop (2026-10-08); devkit's
+  `docs/pipeline.md` stage 2 still holds the long form, for the team.
+- **Not touched.** The tier stubs carry none of this text, so only the base goldens move; the
+  `role.json` descriptions still say "batch", as devkit's frontmatter does.

@@ -11,11 +11,12 @@ public sealed record CliResult(int ExitCode, string Stdout, string Stderr);
 /// `claustrum.json` can never change what a test resolves. A run that outlives its timeout is killed
 /// rather than left behind.
 /// </summary>
-public sealed class ClaustrumCli : IDisposable
+public sealed class ClaustrumCli(string cwdPrefix = "claustrum-cli-") : IDisposable
 {
     private static readonly TimeSpan timeout = TimeSpan.FromSeconds(60);
 
-    public string Cwd { get; } = Directory.CreateTempSubdirectory("claustrum-cli-").FullName;
+    /// <summary>A temp directory named after the constructor's prefix, which may hold a space or non-ASCII characters on purpose.</summary>
+    public string Cwd { get; } = Directory.CreateTempSubdirectory(cwdPrefix).FullName;
 
     public string Home { get; } = Directory.CreateTempSubdirectory("claustrum-cli-home-").FullName;
 

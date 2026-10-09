@@ -98,6 +98,11 @@ public static class CoordinateCommand
             // mint and leave exactly such a directory behind.
             PreparedDelegation prepared = plan.Prepare();
 
+            // Before the run, not with its receipt (#74 G1): a local edit the architect's worktree will not see
+            // matters while the run can still be stopped. stderr, so `--json`'s stdout stays one document.
+            foreach (string warning in plan.Warnings)
+                Console.Error.WriteLine($"warning: {warning}");
+
             // The job exists before the run does: its id is the budget tree every child the architect
             // spawns will join (docs/PLAN.md §D3), and the appendix prints it (DelegateRequest.JobIdToken).
             JobPaths job = JobDirectory.Create(AppServices.Platform);
@@ -156,6 +161,15 @@ public static class CoordinateCommand
         Console.WriteLine($"tree:   claustrum jobs budget {job.Id}");
         Console.WriteLine($"logs:   claustrum jobs logs {job.Id}");
 
+        // #74: in a repository the architect worked in its own worktree, so its work is on its branch,
+        // not in the directory the reader is looking at — `run`'s three lines (F3).
+        if (result.Branch is { } branch)
+            Console.WriteLine($"branch: {branch}");
+        if (result.Worktree is { } worktree)
+            Console.WriteLine($"worktree: {worktree}");
+        if (result.Commit is { } commit)
+            Console.WriteLine($"commit: {commit}");
+
         // Two amounts, still both: this one is what the backend reported for this run (`-` when it
         // reported nothing), the tree line below is the ledger total the architect's own entry is now
         // part of (issue #21). They differ exactly when a cost-less backend had the cap charged
@@ -168,6 +182,10 @@ public static class CoordinateCommand
             Console.WriteLine();
             Console.WriteLine(result.FinalMessage);
         }
+
+        // A refused commit of the architect's leftovers is a warning on the receipt, as for `run`.
+        foreach (string warning in result.Warnings)
+            Console.Error.WriteLine($"warning: {warning}");
 
         if (result.Error is { Length: > 0 } error)
             Console.Error.WriteLine($"error: {error}");

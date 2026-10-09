@@ -85,7 +85,9 @@ public static class DelegateEngine
 
     /// <summary>
     /// The half that needs a job: the concurrency gate a cast role with a numeric max_parallel pays for
-    /// (#58: at every value, 1 included), worktree isolation from 2 or with --branch (#63), then Runner.
+    /// (#58: at every value, 1 included), worktree isolation with --branch (#63), from 2 or when the
+    /// request asks for it (#74) — those two in place with a warning outside a git repository (H7) —
+    /// then Runner.
     /// A <paramref name="job"/> of null lets Runner mint one after its own blind gate (the CLI `run`
     /// ordering); anything a caller minted itself is handed straight on, and its id fills
     /// <see cref="DelegateRequest.JobIdToken"/> here, at the last moment.
@@ -93,7 +95,7 @@ public static class DelegateEngine
     public static async Task<RunResult> RunAsync(PreparedDelegation prepared, JobPaths? job, CancellationToken cancellationToken)
     {
         DelegateRequest request = prepared.Request;
-        if (request.Branch is null && request.MaxParallel is null or < 1)
+        if (!request.Isolate && request.Branch is null && request.MaxParallel is null or < 1)
             return await RunInPlaceAsync(prepared, job, cancellationToken);
 
         // F7: both paths below mint a job, cut a worktree or wait for a slot before Runner's own checks
@@ -101,25 +103,39 @@ public static class DelegateEngine
         // job directory" holds on every path. Runner checks again; that is its last line.
         Runner.Validate(BuildRunRequest(prepared, request.Cwd), prepared.Role, AppServices.Platform);
 
-        if (request.Branch is not null || request.MaxParallel is not 1)
-            return await RunIsolatedAsync(prepared, job ?? JobDirectory.Create(AppServices.Platform), cancellationToken);
+        // #74 H7: with no repository there is no HEAD to cut a worktree from, and AddAsync failed after the
+        // mint. `--branch` names a branch, so it stays on the isolated path and is refused there as before.
+        bool isolated = request.Isolate || request.Branch is not null || request.MaxParallel is not 1;
+        PreparedDelegation run = prepared;
+        if (isolated && request.Branch is null && GitRootLocator.Find(request.Cwd, AppServices.Platform) is null)
+        {
+            string inPlace = $"no git repository at {request.Cwd}: ran in place, no worktree, no commit";
+            run = prepared with { Options = prepared.Options with { PreRunWarnings = [.. prepared.Options.PreRunWarnings ?? [], inPlace] } };
+            isolated = false;
+        }
+
+        if (isolated)
+            return await RunIsolatedAsync(run, job ?? JobDirectory.Create(AppServices.Platform), cancellationToken);
+        if (request.MaxParallel is null or < 1)
+            return await RunInPlaceAsync(run, job, cancellationToken);
 
         // #58: max_parallel 1 — the one cap that does not isolate — is a cap too, so two runs of one cast
-        // role queue instead of editing one tree at once. No pre-admission here: Runner admits itself
-        // under the slot held below — only isolation, which cuts a branch before Runner runs, has to
-        // admit first. A job is minted for the refusal only, so Runner still mints the CLI's.
+        // role queue instead of editing one tree at once; H7's fallback queues the same way whatever the
+        // cap, as N in-place runs would read each other's edits into their receipts. No pre-admission here:
+        // Runner admits itself under the slot held below — only isolation, which cuts a branch before
+        // Runner runs, has to admit first. A job is minted for the refusal only, so Runner still mints the CLI's.
         RoleConcurrencyGate slot;
         try
         {
-            slot = await AcquireSlotAsync(request, cap: 1, prepared.TimeoutSeconds, cancellationToken);
+            slot = await AcquireSlotAsync(request, cap: 1, run.TimeoutSeconds, cancellationToken);
         }
         catch (TimeoutException ex)
         {
-            return await Runner.RefuseAsync(job ?? JobDirectory.Create(AppServices.Platform), prepared.Role, RunStatus.Failed, ex.Message);
+            return await Runner.RefuseAsync(job ?? JobDirectory.Create(AppServices.Platform), run.Role, RunStatus.Failed, ex.Message);
         }
 
         await using RoleConcurrencyGate gate = slot;
-        return await RunInPlaceAsync(prepared, job, cancellationToken);
+        return await RunInPlaceAsync(run, job, cancellationToken);
     }
 
     // #62's deny half: an isolated run may not move any checkout's HEAD, natively enforced where the
@@ -137,11 +153,12 @@ public static class DelegateEngine
             : await AppServices.Runner.RunAsync(runRequest, bound.Role, bound.Options, job, cancellationToken);
     }
 
-    // max_parallel > 1 (docs/PLAN.md §D4) or --branch (#63): the job runs in its own git worktree
-    // instead of directly in request.Cwd, behind the cast's cross-process cap when it has a numeric
-    // max_parallel, however many separate `claustrum run` processes a spawned architect fans out —
-    // and with --branch behind that branch's lock too (R1). Prepare's config/tier/harness resolution
-    // still read request.Cwd — only the backend's own working directory moves.
+    // max_parallel > 1 (docs/PLAN.md §D4), --branch (#63) or Isolate (#74): the job runs in its own git
+    // worktree instead of directly in request.Cwd, behind the cast's cross-process cap when it has a
+    // numeric max_parallel, however many separate `claustrum run` processes a spawned architect fans
+    // out — and with --branch behind that branch's lock too (R1). `coordinate`'s architect takes no
+    // slot, and is admitted only when `coordinate` itself runs inside a tree. Prepare's config/tier/
+    // harness resolution still read request.Cwd — only the backend's own working directory moves.
     private static async Task<RunResult> RunIsolatedAsync(PreparedDelegation prepared, JobPaths job, CancellationToken cancellationToken)
     {
         PreparedDelegation bound = prepared.ForJob(job.Id);

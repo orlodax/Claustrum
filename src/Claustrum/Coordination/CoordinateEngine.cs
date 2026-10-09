@@ -1,6 +1,7 @@
 using Claustrum.Casts;
 using Claustrum.Cli;
 using Claustrum.Core.Config;
+using Claustrum.Core.Git;
 using Claustrum.Core.Jobs;
 using Claustrum.Core.Model;
 using Claustrum.Delegation;
@@ -17,9 +18,10 @@ public static class CoordinateEngine
 {
     /// <summary>
     /// Everything that can be decided — and refused — with no job on disk: the task source, the cast
-    /// (loaded once, then resolved once for the architect), the `gh` import and the architect's user
-    /// prompt. Both front doors call it before any job directory is minted, so a usage error, a
-    /// missing cast and a failed `gh` all leave the job store untouched;
+    /// (loaded once, then resolved once for the architect), whether the architect gets its own worktree
+    /// and what that worktree needs committed (#74), the `gh` import and the architect's user prompt.
+    /// Both front doors call it before any job directory is minted, so a usage error, a missing or
+    /// uncommitted cast and a failed `gh` all leave the job store untouched;
     /// <see cref="CoordinatePlan.Prepare"/> is the second half, and still mints nothing.
     /// </summary>
     public static async Task<CoordinatePlan> PlanAsync(CoordinateRequest request, IIssueSource issues, CancellationToken cancellationToken)
@@ -41,6 +43,13 @@ public static class CoordinateEngine
             : CastStore.TryLoadDefault(request.Cwd)
                 ?? throw new CastException("coordinate needs a cast: pass --cast <name> or create .claustrum/casts/default.json");
 
+        // #74: in a repository the architect gets a worktree of its own, never the operator's checkout —
+        // and that worktree holds HEAD's files only, which is checked here, before gh and before a mint.
+        // Outside one there is nothing to cut a branch from, and it runs in place as before.
+        string? gitRoot = GitRootLocator.Find(request.Cwd, AppServices.Platform);
+        bool isolated = gitRoot is not null;
+        string[] warnings = gitRoot is null ? [] : await ArchitectWorktree.RequireReadyAsync(request.Cwd, gitRoot, castName, cancellationToken);
+
         string task = brief ?? IssueImporter.RenderTask(await LoadIssuesAsync(request, issues, cancellationToken));
 
         // The architect's tier/model/budget precedence, resolved here and kept on the plan: doing it
@@ -49,8 +58,8 @@ public static class CoordinateEngine
         (string tier, ConfigOverrides overrides, CastBudget? castBudget, _, _) =
             CastApplication.Resolve(request.Cwd, Cast.ArchitectRole, request.CastName, request.TierFlag, request.Overrides);
 
-        return new CoordinatePlan(
-            request, cast, castName, CoordinationBrief.RenderUserPrompt(task, request.Issues, request.Cwd), tier, overrides, castBudget);
+        string userPrompt = CoordinationBrief.RenderUserPrompt(task, request.Issues, CoordinationBrief.ArchitectCwd(request.Cwd, isolated));
+        return new CoordinatePlan(request, cast, castName, userPrompt, tier, overrides, castBudget, isolated, warnings);
     }
 
     /// <summary>
@@ -61,7 +70,7 @@ public static class CoordinateEngine
     public static async Task<RunResult> RunAsync(CoordinatePlan plan, PreparedDelegation prepared, JobPaths job, CancellationToken cancellationToken)
     {
         DateTimeOffset startedAt = DateTimeOffset.UtcNow;
-        RunResult result = await DelegateEngine.RunAsync(prepared, job, cancellationToken);
+        RunResult result = await DelegateEngine.RunAsync(plan.BindUserPrompt(prepared, job.Id), job, cancellationToken);
 
         // Only a capped cast has a ledger at all (DelegateEngine builds no JobTreeBudget without a
         // cap, so its children write no entry either). The architect is deliberately not a *member*

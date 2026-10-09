@@ -45,6 +45,23 @@ public sealed class McpToolSurfaceTests
         Assert.Contains(state, jobStatus.GetCustomAttribute<DescriptionAttribute>()!.Description, StringComparison.Ordinal);
     }
 
+    // #74: what a host reads before it calls `coordinate` — the new answer shape and what the call now refuses — is only in the
+    // description, so a reworded or dropped sentence is invisible to every other test.
+    [Fact]
+    public void CoordinateDescriptionSaysItsAnswerCarriesWarningsAndThatTheArchitectRunsInItsOwnWorktree()
+    {
+        string description = Tools().Single(tool => tool.Name == "coordinate").Method.GetCustomAttribute<DescriptionAttribute>()!.Description;
+
+        Assert.Contains("returns {job_id, log_path, warnings} immediately", description, StringComparison.Ordinal);
+        Assert.Contains("the architect works in its own worktree on branch claustrum/<job_id>, never in cwd's checkout", description, StringComparison.Ordinal);
+        Assert.Contains("cwd must be the repository root", description, StringComparison.Ordinal);
+        Assert.Contains("the cast, claustrum.json and .claustrum/roles committed", description, StringComparison.Ordinal);
+        Assert.Contains("a .mcp.json/opencode.json committed or git-ignored", description, StringComparison.Ordinal);
+        Assert.Contains("`claustrum init`'s .claustrum/ ignore rules in a committed .gitignore", description, StringComparison.Ordinal);
+        Assert.Contains("this call refuses otherwise, naming what to fix", description, StringComparison.Ordinal);
+        Assert.Contains("warnings names what the worktree gets as HEAD has it instead", description, StringComparison.Ordinal);
+    }
+
     // #63: `branch` on delegate and delegate_async, the same words as `run --branch`, plus what comes back.
     [Theory]
     [InlineData("delegate")]

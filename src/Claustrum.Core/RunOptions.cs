@@ -21,4 +21,8 @@ public sealed record RunOptions(
     BudgetAdmission? Admission = null,
     // Isolated runs only: the run's cwd is this worktree, and Runner stamps it on the receipt (#60),
     // tells the role where it is (#62) and commits its leftovers on its branch (#61).
-    JobWorktreeInfo? Worktree = null);
+    JobWorktreeInfo? Worktree = null,
+    // What the caller decided before the run and the receipt must say, first in `warnings` — on disk too,
+    // which a caller appending to the returned result would miss (#60's lesson): DelegateEngine's in-place
+    // fallback with no git repository (#74 H7).
+    string[]? PreRunWarnings = null);

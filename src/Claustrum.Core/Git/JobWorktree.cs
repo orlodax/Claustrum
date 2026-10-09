@@ -22,9 +22,27 @@ public static class JobWorktree
     // mid-way, leaving work uncommitted or a half-made worktree for a reason nobody chose.
     private static readonly TimeSpan repoCodeTimeout = TimeSpan.FromMinutes(5);
 
+    // #74 F1: Claustrum's own machinery is never a run's work, ignored or not — under a whitelist
+    // `.gitignore` (`*`, `!*/`) `add -A` committed a nested job worktree as a `160000` gitlink. Measured
+    // 2026-10-09, git 2.56: `:(exclude)` drops those paths from status and add alike, and
+    // `--no-literal-pathspecs` keeps a caller's GIT_LITERAL_PATHSPECS=1 from making them literal paths.
+    private static readonly string[] allButMachinery =
+        ["--", ".", ":(exclude).claustrum/worktrees", ":(exclude).claustrum/briefs", ":(exclude).claustrum/locks"];
+
     // R2: every status here lists new files whatever `status.showUntrackedFiles` says (repo or global):
     // under `no`, a plain `--porcelain` hid a role's new files from the commit and from the remove check.
-    private static readonly string[] statusArgs = ["status", "--porcelain", "--untracked-files=all"];
+    // #74 G2: and every submodule change whatever `diff.ignoreSubmodules` says — status honours `all` (measured).
+    private static readonly string[] statusArgs =
+        ["--no-literal-pathspecs", "status", "--porcelain", "--untracked-files=all", "--ignore-submodules=none", .. allButMachinery];
+
+    // #74 round 4: what `add` left behind is read back from git, never off its words — v2 for the submodule
+    // flag, -z for raw paths (NOTES.md #74 "Review round 4"). Round 5: `status.showStash` adds `# stash N` to v2.
+    private static readonly string[] remainderArgs =
+        ["--no-literal-pathspecs", "status", "--porcelain=v2", "-z", "--no-show-stash", "--untracked-files=all", "--ignore-submodules=none", .. allButMachinery];
+
+    // git checks this before its own clean check (git 2.56), and says it in the user's language: a fallback since
+    // round 5, behind HoldsPopulatedSubmoduleAsync.
+    private const string SubmoduleRefusal = "working trees containing submodules cannot be moved or removed";
 
     public static string PathFor(string cwd, string jobId) => Path.Combine(cwd, ".claustrum", "worktrees", jobId);
 
@@ -111,8 +129,9 @@ public static class JobWorktree
     /// `jobs clean`'s removal of a finished job's worktree. Never `--force` (F3): since #61 a finished
     /// worktree is clean, and one that is not — a commit git refused, a hard-killed run, a submodule the
     /// role populated, a new file `status.showUntrackedFiles=no` hides (R2) — is work nobody has looked
-    /// at, so it throws naming the path and stays. The branch is untouched either way, so the architect
-    /// can still rebase from it.
+    /// at, so it throws naming the path and stays; so does one still holding job worktrees of its own
+    /// (#74, a `coordinate` architect's). The branch is untouched either way, so the architect can still
+    /// rebase from it.
     /// </summary>
     public static async Task RemoveAsync(string cwd, string jobId, CancellationToken cancellationToken)
     {
@@ -162,23 +181,29 @@ public static class JobWorktree
     /// changes are then the branch's delta from <see cref="JobWorktreeInfo.BaseCommit"/> (F4), else
     /// <paramref name="snapshot"/>. A git that says no costs a warning, never a throw from here, and
     /// each stage answers for itself (R4): a failure after the commit never reads as "left uncommitted".
+    /// Whatever the worktree still holds after the add costs a warning per path, by shape (#74 round 4);
+    /// git's `add` stderr goes to <paramref name="addLogPath"/>, and a failure up to the commit clears the index (H5).
     /// </summary>
-    public static async Task<BranchReceipt> CommitRunAsync(JobWorktreeInfo worktree, string message, SnapshotDiff snapshot, int diffByteCapBytes, CancellationToken cancellationToken)
+    public static async Task<BranchReceipt> CommitRunAsync(
+        JobWorktreeInfo worktree, string message, SnapshotDiff snapshot, int diffByteCapBytes, string? addLogPath, CancellationToken cancellationToken)
     {
         if (await VerifyAsync(worktree, cancellationToken) is { } mismatch)
             return Unverified(worktree, mismatch, snapshot);
 
         string? failure;
+        string[] leftOut = [];
         try
         {
-            failure = await CommitAllAsync(worktree.Path, message, cancellationToken);
+            (failure, leftOut) = await CommitAllAsync(worktree, message, addLogPath, cancellationToken);
         }
         catch (Exception ex) when (IsGitFailure(ex))
         {
+            // Only the status before the add gets here, with nothing left out yet: the commit's own throw is caught inside (J7).
             failure = ex.Message;
         }
 
-        string[] warnings = failure is null ? [] : [$"work left uncommitted on {worktree.Branch}: {failure}"];
+        // G3: what was left out no longer holds the rest back, so "left uncommitted" means git said no.
+        string[] warnings = [.. leftOut, .. failure is null ? Array.Empty<string>() : [$"work left uncommitted on {worktree.Branch}: {failure}"]];
         string? commit;
         try
         {
@@ -204,15 +229,27 @@ public static class JobWorktree
         }
     }
 
+    // A caller with no job directory to log to: git's own `add` line then rides on the left-out warning itself.
+    public static async Task<BranchReceipt> CommitRunAsync(JobWorktreeInfo worktree, string message, SnapshotDiff snapshot, int diffByteCapBytes, CancellationToken cancellationToken) =>
+        await CommitRunAsync(worktree, message, snapshot, diffByteCapBytes, addLogPath: null, cancellationToken);
+
     /// <summary>
     /// The receipt of a run whose worktree <see cref="VerifyAsync"/> rejected: nothing committed, no
     /// delta, no `commit`. R5: a path that is no longer the job's worktree reports no changes either —
     /// git would have read them from the main checkout — and a branch whose worktree went away mid-run
     /// may since be another run's (R3), so its tip says nothing about this one. T3: the job's own
-    /// worktree, only off its branch, keeps <paramref name="snapshot"/>, which was read inside it.
+    /// worktree — off its branch, mid-operation, or holding unresolved conflicts — keeps <paramref name="snapshot"/>, read inside it.
     /// </summary>
     public static BranchReceipt Unverified(JobWorktreeInfo worktree, WorktreeMismatch mismatch, SnapshotDiff snapshot)
     {
+        if (mismatch is { OwnWorktree: true, Operation: { } operation })
+            return new BranchReceipt(Commit: null, snapshot, [$"work left uncommitted: {worktree.Path} has {operation} in progress, not a clean {worktree.Branch}"]);
+        if (mismatch is { OwnWorktree: true, UnresolvedConflicts: > 0 })
+        {
+            string conflicts = $"work left uncommitted: {worktree.Path} has unresolved conflicts on {worktree.Branch} — resolve or abort the operation inside the worktree, then commit there yourself";
+            return new BranchReceipt(Commit: null, snapshot, [conflicts]);
+        }
+
         if (mismatch.OwnWorktree)
             return new BranchReceipt(Commit: null, snapshot, [$"work left uncommitted: {worktree.Path} is on {mismatch.Reason}, not {worktree.Branch}"]);
 
@@ -226,7 +263,8 @@ public static class JobWorktree
     /// answer here, not a throw (R5). A directory recreated after its worktree was removed resolves to
     /// the main checkout, where `git add -A` would commit the operator's files. T3: the top of a working
     /// tree on a detached HEAD (a role stopped mid-rebase) or another branch is the job's own worktree,
-    /// <see cref="WorktreeMismatch.OwnWorktree"/>: safe to read, never to commit.
+    /// <see cref="WorktreeMismatch.OwnWorktree"/>: safe to read, never to commit — and so is one on its
+    /// branch with a merge, rebase or `git am` in progress, or with unmerged paths (#74 rounds 4 and 5).
     /// </summary>
     public static async Task<WorktreeMismatch?> VerifyAsync(JobWorktreeInfo worktree, CancellationToken cancellationToken)
     {
@@ -248,14 +286,64 @@ public static class JobWorktree
                 return new WorktreeMismatch("a detached HEAD", OwnWorktree: true);
             if (headExit != 0)
                 return new WorktreeMismatch(Reason("symbolic-ref", headExit, headError, ""), OwnWorktree: false);
+            if (head.Trim() != $"refs/heads/{worktree.Branch}")
+                return new WorktreeMismatch(head.Trim(), OwnWorktree: true);
 
-            return head.Trim() == $"refs/heads/{worktree.Branch}" ? null : new WorktreeMismatch(head.Trim(), OwnWorktree: true);
+            return await OperationInProgressAsync(worktree.Path, cancellationToken);
         }
         catch (Exception ex) when (IsGitFailure(ex))
         {
             // Removed between the check above and git's start (Win32Exception), or a git past its bound.
             return new WorktreeMismatch(ex.Message, OwnWorktree: false);
         }
+    }
+
+    // What the runner's `add -A` and `commit` would conclude, on a HEAD still on the branch (a rebase detaches it).
+    // A merge, conflicted or not — the runner never makes a merge commit — a rebase or `git am`, then any unmerged
+    // path, whatever left it; a clean `revert -n`/`cherry-pick -n` is an ordinary commit (NOTES.md #74 "Review round 5").
+    private static async Task<WorktreeMismatch?> OperationInProgressAsync(string path, CancellationToken cancellationToken)
+    {
+        // `-q --verify` exits 1 for "no such ref" and only then, and reads the linked worktree's own MERGE_HEAD.
+        (int mergeExit, _, string mergeError) = await GitProcess.RunAsync(path, ["rev-parse", "-q", "--verify", "MERGE_HEAD"], cancellationToken);
+        if (mergeExit == 0)
+            return InProgress("a merge");
+        if (mergeExit != 1)
+            return new WorktreeMismatch(Reason("rev-parse", mergeExit, mergeError, ""), OwnWorktree: false);
+
+        // Per worktree: relative in the main checkout (`.git/rebase-merge`), absolute in a linked one.
+        (int pathsExit, string paths, string pathsError) =
+            await GitProcess.RunAsync(path, ["rev-parse", "--git-path", "rebase-merge", "--git-path", "rebase-apply"], cancellationToken);
+        if (pathsExit != 0)
+            return new WorktreeMismatch(Reason("rev-parse", pathsExit, pathsError, ""), OwnWorktree: false);
+
+        string[] rebaseDirectories = [.. paths.Split('\n', StringSplitOptions.RemoveEmptyEntries).Select(line => Path.Combine(path, line.TrimEnd('\r')))];
+        if (rebaseDirectories is [_, string apply] && File.Exists(Path.Combine(apply, "applying")))
+            return InProgress("a git am");
+        if (rebaseDirectories.Any(Directory.Exists))
+            return InProgress("a rebase");
+
+        return await UnresolvedConflictsAsync(path, cancellationToken);
+    }
+
+    private static WorktreeMismatch InProgress(string operation) => new($"{operation} is in progress", OwnWorktree: true, operation);
+
+    // #74 round 5: a conflicted `merge --squash`, `stash pop`/`apply`, `apply --3way`, cherry-pick or revert leaves no head
+    // in common, only unmerged index entries, which `add -A` would resolve — markers and all. `ls-files -u` reads those
+    // stages themselves (status's `u`/`UU` agree, measured), which no `status.*` or submodule setting hides.
+    // Each `-z` entry is `<mode> <sha> <stage>\t<path>`, one to three per path.
+    private static async Task<WorktreeMismatch?> UnresolvedConflictsAsync(string path, CancellationToken cancellationToken)
+    {
+        (int exitCode, string output, string stderr) = await GitProcess.RunAsync(path, ["ls-files", "-u", "-z"], cancellationToken);
+        if (exitCode != 0)
+            return new WorktreeMismatch(Reason("ls-files", exitCode, stderr, ""), OwnWorktree: false);
+
+        int paths = output.Split('\0', StringSplitOptions.RemoveEmptyEntries)
+            .Select(entry => entry[(entry.IndexOf('\t') + 1)..])
+            .Distinct(StringComparer.Ordinal)
+            .Count();
+        return paths == 0
+            ? null
+            : new WorktreeMismatch($"unresolved conflicts ({paths} {(paths == 1 ? "path" : "paths")})", OwnWorktree: true, UnresolvedConflicts: paths);
     }
 
     // Read from the main checkout: refs are shared by every worktree, and the job's own may be gone.
@@ -270,28 +358,187 @@ public static class JobWorktree
 
     private static string DeltaUnavailable(string reason) => $"receipt delta unavailable, snapshot kept: {reason}";
 
-    // A git that cannot start or passes its bound throws, and CommitRunAsync reads that as "nothing
-    // committed" — NOTES.md "A commit that was made is never reported as left uncommitted" has the limits.
-    private static async Task<string?> CommitAllAsync(string path, string message, CancellationToken cancellationToken)
+    // A git that cannot start or passes its bound reads as "nothing committed" — thrown by the first status, the
+    // commit's returned beside LeftOut (J7) — NOTES.md "A commit that was made is never reported as left uncommitted"
+    // has the limits. LeftOut: a warning per path the add left in the worktree (#74 round 4), which the rest does not wait for.
+    private static async Task<(string? Failure, string[] LeftOut)> CommitAllAsync(
+        JobWorktreeInfo worktree, string message, string? addLogPath, CancellationToken cancellationToken)
     {
-        (int statusExit, string porcelain, string statusError) = await GitProcess.RunAsync(path, statusArgs, cancellationToken);
+        (int statusExit, string porcelain, string statusError) = await GitProcess.RunAsync(worktree.Path, statusArgs, cancellationToken);
         if (statusExit != 0)
-            return Reason("status", statusExit, statusError, "");
+            return (Reason("status", statusExit, statusError, ""), []);
         if (porcelain.Trim().Length == 0)
-            return null;
+            return (null, []);
 
-        (int addExit, string addOutput, string addError) = await GitProcess.RunAsync(path, ["add", "-A"], repoCodeTimeout, cancellationToken);
-        if (addExit != 0)
-            return Reason("add", addExit, addError, addOutput);
+        (string? failure, Staging staging) = await StageAsync(worktree.Path, cancellationToken);
+        if (failure is not null)
+            return (await ClearIndexAsync(worktree.Path, failure), []);
 
-        (int commitExit, string commitOutput, string commitError) =
-            await GitProcess.RunAsync(path, ["commit", "-q", "-m", message], repoCodeTimeout, cancellationToken);
-        return commitExit == 0 ? null : Reason("commit", commitExit, commitError, commitOutput);
+        (string[] leftOut, bool unexplained) = LeftOutWarnings(worktree, staging, addLogPath);
+
+        // H4: the index decides, not the status — a dirty submodule stages nothing, and git refuses the empty
+        // commit ("no changes added to commit", exit 1, measured). Nothing staged for a reason no path's shape
+        // explains — a fatal `add`, a stale index.lock — carries git's own line too.
+        if (!staging.AnyStaged)
+            return (unexplained && staging.AddError.Trim().Length > 0 ? $"git add staged nothing: {GitDiagnostic(staging.AddError)}" : null, leftOut);
+
+        try
+        {
+            (int commitExit, string commitOutput, string commitError) =
+                await GitProcess.RunAsync(worktree.Path, ["commit", "-q", "-m", message], repoCodeTimeout, cancellationToken);
+            return (commitExit == 0 ? null : Reason("commit", commitExit, commitError, commitOutput), leftOut);
+        }
+        catch (Exception ex) when (IsGitFailure(ex))
+        {
+            // #74 round 5 J7: a hook past the bound fails the commit, not what the add already left out.
+            return (ex.Message, leftOut);
+        }
+    }
+
+    // `add -A`, then the stray gitlinks back out of it, then what the worktree still holds. Failure: what is staged
+    // cannot be trusted (H5). AnyStaged is the index after both — `--raw` with `--ignore-submodules=none`, where a
+    // plain `diff --cached --quiet` misses a moved pointer under `diff.ignoreSubmodules=all` (measured).
+    private static async Task<(string? Failure, Staging Staging)> StageAsync(string path, CancellationToken cancellationToken)
+    {
+        try
+        {
+            // Exit code and words ignored (#74 round 4): exit 1 is a skipped path, a sparse one or an ignored exclude
+            // alike (H2), the words are translated, and the index and the status below say what happened.
+            (_, _, string addError) = await GitProcess.RunAsync(
+                path, ["--no-literal-pathspecs", "add", "-A", "--ignore-errors", .. allButMachinery], repoCodeTimeout, cancellationToken);
+
+            (string? unreadable, int staged, string[] strays) = await StagedStrayGitlinksAsync(path, cancellationToken);
+            if (unreadable is not null)
+                return (unreadable, Staging.None);
+
+            if (strays.Length > 0)
+            {
+                // Literal: a path git printed is a name, never a glob.
+                (int resetExit, string resetOutput, string resetError) =
+                    await GitProcess.RunAsync(path, ["--literal-pathspecs", "reset", "-q", "--", .. strays], cancellationToken);
+                if (resetExit != 0)
+                    return ($"an embedded repository at {strays[0]} could not be unstaged: {Reason("reset", resetExit, resetError, resetOutput)}", Staging.None);
+            }
+
+            (int remainderExit, string remainder, string remainderError) = await GitProcess.RunAsync(path, remainderArgs, cancellationToken);
+            if (remainderExit != 0)
+                return (Reason("status", remainderExit, remainderError, ""), Staging.None);
+
+            return (null, new Staging(staged > strays.Length, addError, StatusEntry.Parse(remainder)));
+        }
+        catch (Exception ex) when (IsGitFailure(ex))
+        {
+            return (ex.Message, Staging.None);
+        }
+    }
+
+    // #74 round 4: a warning per path still unstaged after the add, by shape — git's submodule flag, then a `.git` of
+    // its own (a clone, a commit-less `git init`, a hand-made worktree), then anything else: sparse-checkout, an
+    // unreadable file, a failing filter, whose cause only git's words give. Unexplained: a path of that last kind.
+    private static (string[] Warnings, bool Unexplained) LeftOutWarnings(JobWorktreeInfo worktree, Staging staging, string? addLogPath)
+    {
+        StatusEntry[] unstaged = [.. staging.Remainder.Where(entry => entry.Unstaged)];
+        string[] submodules = [.. unstaged.Where(entry => entry.Submodule).Select(entry => entry.Path)];
+        string[] repositories =
+            [.. unstaged.Where(entry => !entry.Submodule && Path.Exists(Path.Combine(worktree.Path, entry.Path, ".git"))).Select(entry => entry.Path)];
+        string[] others = [.. unstaged.Select(entry => entry.Path).Except([.. submodules, .. repositories], StringComparer.Ordinal)];
+        string detail = others.Length == 0 ? "" : AddErrorDetail(worktree, staging.AddError, addLogPath);
+        string[] warnings =
+        [
+            .. repositories.Select(path => $"embedded repository at {path} left out of the commit on {worktree.Branch} — move it out or add it as a submodule"),
+            .. submodules.Select(path => $"changes inside submodule {path} left out of the commit on {worktree.Branch} — commit them in the submodule, then stage its pointer"),
+            .. others.Select(path => $"{path} left out of the commit on {worktree.Branch}: git did not stage it (sparse-checkout, permissions or a filter{detail})"),
+        ];
+        return (warnings, others.Length > 0);
+    }
+
+    // git's `add` stderr, whole, to the job's stderr.log, which the warning then points at; with no log, or one
+    // that cannot be written, its line rides on the warning instead. Nothing said, nothing added.
+    private static string AddErrorDetail(JobWorktreeInfo worktree, string addError, string? addLogPath)
+    {
+        if (addError.Trim().Length == 0)
+            return "";
+
+        if (addLogPath is not null)
+        {
+            try
+            {
+                File.AppendAllText(addLogPath, $"claustrum: git add -A in {worktree.Path}, for the commit on {worktree.Branch}:{Environment.NewLine}{addError.TrimEnd()}{Environment.NewLine}");
+                return " — see the job's stderr.log";
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // The line below still says something.
+            }
+        }
+
+        return $" — git said: {GitDiagnostic(addError)}";
+    }
+
+    // Display only, never a decision: git's own `fatal:`/`error:` line (prefixes untranslated, measured under it_IT)
+    // over an advice banner — "The following paths are ignored …" comes first whenever a machinery directory exists.
+    private static string GitDiagnostic(string stderr)
+    {
+        string[] lines = stderr.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        return lines.FirstOrDefault(line => line.StartsWith("fatal: ", StringComparison.Ordinal) || line.StartsWith("error: ", StringComparison.Ordinal))
+            ?? lines.FirstOrDefault()
+            ?? "";
+    }
+
+    // H5: past `add`, a failure leaves an index nobody checked — a stray gitlink in it — and the warning's
+    // remedy, "commit it inside that worktree yourself", would commit it. So it is reset whole (the work stays
+    // in the worktree), never cancelled: this is the cleanup, like UndoAddAsync's.
+    private static async Task<string> ClearIndexAsync(string path, string failure)
+    {
+        try
+        {
+            (int exitCode, string stdout, string stderr) = await GitProcess.RunAsync(path, ["reset", "-q"], CancellationToken.None);
+            return exitCode == 0
+                ? $"{failure} (index cleared: nothing is staged)"
+                : $"{failure} (and the index could not be cleared: {Reason("reset", exitCode, stderr, stdout)})";
+        }
+        catch (Exception ex) when (IsGitFailure(ex))
+        {
+            return $"{failure} (and the index could not be cleared: {ex.Message})";
+        }
+    }
+
+    // #74 F1's second net: a directory with its own `.git` outside the machinery — a clone, a hand-made worktree —
+    // stages as a new `160000` gitlink, a sha nobody can check out unless the staged `.gitmodules` lists its path
+    // (G3: then it is a deliberate submodule). `--ignore-submodules=none` (G2): under `diff.ignoreSubmodules=all`
+    // this diff prints no gitlink at all (measured 2026-10-09, git 2.56). Each `--raw -z` entry is
+    // `:<old mode> <new mode> <old sha> <new sha> <status>`, then the path. Staged counts every entry.
+    private static async Task<(string? Failure, int Staged, string[] Strays)> StagedStrayGitlinksAsync(string path, CancellationToken cancellationToken)
+    {
+        (int exitCode, string raw, string stderr) =
+            await GitProcess.RunAsync(path, ["diff", "--cached", "--raw", "-z", "--no-renames", "--ignore-submodules=none"], cancellationToken);
+        if (exitCode != 0)
+            return (Reason("diff --cached", exitCode, stderr, ""), 0, []);
+
+        string[] fields = raw.Split('\0');
+        (string Modes, string Path)[] entries = [.. Enumerable.Range(0, fields.Length / 2).Select(index => (fields[2 * index], fields[2 * index + 1]))];
+        string[] added = [.. entries.Where(entry => entry.Modes.Split(' ') is [not ":160000", "160000", ..]).Select(entry => entry.Path)];
+        if (added.Length == 0)
+            return (null, entries.Length, []);
+
+        string[] submodules = await StagedSubmodulePathsAsync(path, cancellationToken);
+        return (null, entries.Length, [.. added.Where(gitlink => !submodules.Contains(gitlink, StringComparer.Ordinal))]);
+    }
+
+    // `--blob :.gitmodules` reads the index, where `add -A` has just put the worktree's copy. `-z` ends each
+    // `<key>\n<value>`: a submodule's name and path may hold spaces. No file or no key exits 1, so none.
+    private static async Task<string[]> StagedSubmodulePathsAsync(string path, CancellationToken cancellationToken)
+    {
+        (int exitCode, string output, _) = await GitProcess.RunAsync(
+            path, ["config", "--blob", ":.gitmodules", "-z", "--get-regexp", @"^submodule\..*\.path$"], cancellationToken);
+        return exitCode != 0 ? [] : [.. output.Split('\0', StringSplitOptions.RemoveEmptyEntries).Select(entry => entry[(entry.IndexOf('\n') + 1)..])];
     }
 
     // F9: provably nothing of the run's in it — so `--force` and deleting the branch lose nothing.
     private static async Task<bool> IsUntouchedAsync(JobWorktreeInfo worktree, CancellationToken cancellationToken)
     {
+        if (NestedWorktrees(worktree.Path) is not null)
+            return false;
         if (await VerifyAsync(worktree, cancellationToken) is not null || await BranchTipAsync(worktree, cancellationToken) != worktree.BaseCommit)
             return false;
 
@@ -380,12 +627,25 @@ public static class JobWorktree
     // (R2): git's own check honours `status.showUntrackedFiles=no` and then deletes new files silently.
     private static async Task<string?> TryRemoveAsync(string cwd, string path, bool force, CancellationToken cancellationToken)
     {
-        if (!force && await UncommittedAsync(path, cancellationToken) is { } uncommitted)
-            return uncommitted;
+        if (!force && (NestedWorktrees(path) ?? await UncommittedAsync(path, cancellationToken)) is { } refusal)
+            return refusal;
 
         string[] args = force ? ["worktree", "remove", "--force", path] : ["worktree", "remove", path];
         (int exitCode, string stdout, string stderr) = await GitProcess.RunAsync(cwd, args, cancellationToken);
         return exitCode == 0 ? null : Reason("worktree remove", exitCode, stderr, stdout);
+    }
+
+    // #74: a `coordinate` architect's worktree holds its children's in its own .claustrum/worktrees,
+    // which its status ignores and a plain `worktree remove` deletes anyway — a child's uncommitted file
+    // included, exit 0, the child left registered `prunable` (measured 2026-10-09, git 2.56).
+    // H1: only a directory with a `.git` of its own counts — the empty one a `160000` entry in HEAD checks
+    // out in every worktree holds nothing (NOTES.md #74 "Review round 3").
+    private static string? NestedWorktrees(string path)
+    {
+        string nested = Path.Combine(path, ".claustrum", "worktrees");
+        return Directory.Exists(nested) && Directory.EnumerateDirectories(nested).Any(child => Path.Exists(Path.Combine(child, ".git")))
+            ? $"it holds job worktrees of its own under {nested} — run `claustrum jobs clean --cwd \"{path}\"` first"
+            : null;
     }
 
     // Asked only at the top of a working tree: anywhere else git reads the main checkout, whose changes
@@ -450,12 +710,62 @@ public static class JobWorktree
         if (!JobDirectory.HasResult(jobsRoot, holderJobId))
             return $"--branch {branch}: checked out in {holder}, the worktree of job {holderJobId}, which has not finished (no result.json)";
 
+        // #74 round 5 J4: git refuses a populated submodule before its own clean check, and in the user's language, so
+        // the shape is read first, git's way. The `--force` remedy is for a clean worktree only: a dirty one gets the
+        // generic text, as TryRemoveAsync's own check would give it.
+        if (await HoldsPopulatedSubmoduleAsync(ours, cancellationToken))
+        {
+            return (NestedWorktrees(ours) ?? await UncommittedAsync(ours, cancellationToken)) is { } dirty
+                ? LeftInPlace(branch, holder, holderJobId, dirty)
+                : PopulatedSubmodule(branch, ours);
+        }
+
         // Not --force: a finished job whose commit failed (#61's warning) still has its work there
         // uncommitted, and taking its branch back must not destroy it.
-        return await TryRemoveAsync(cwd, ours, force: false, cancellationToken) is { } refusal
-            ? $"--branch {branch}: checked out in {holder}, the worktree of finished job {holderJobId}, which was left in place "
-                + $"({refusal}) — commit or discard its changes, then retry"
-            : null;
+        if (await TryRemoveAsync(cwd, ours, force: false, cancellationToken) is not { } refusal)
+            return null;
+
+        // Round 4's English match, kept behind the probe as a fallback: whole at the end, never a fragment — this remedy is
+        // `--force`, and a refusal that merely quotes a path holding those words must not get it. TryRemoveAsync's status
+        // check passed, so nothing is uncommitted.
+        return refusal.EndsWith(SubmoduleRefusal, StringComparison.Ordinal)
+            ? PopulatedSubmodule(branch, ours)
+            : LeftInPlace(branch, holder, holderJobId, refusal);
+    }
+
+    private static string LeftInPlace(string branch, string holder, string holderJobId, string refusal)
+    {
+        return $"--branch {branch}: checked out in {holder}, the worktree of finished job {holderJobId}, which was left in place "
+            + $"({refusal}) — commit or discard its changes, then retry";
+    }
+
+    private static string PopulatedSubmodule(string branch, string ours)
+    {
+        return $"--branch {branch}: its previous worktree {ours} holds a populated submodule, which git will not remove — remove it by hand "
+            + $"(`git worktree remove --force \"{ours}\"`, which also deletes any commit made inside the submodule and pushed nowhere) and retry";
+    }
+
+    // J4: git's own test (`validate_no_submodules`, git 2.56) — the worktree's own `modules` directory, where a submodule
+    // initialised in it keeps its git directory, or a gitlink in its index whose directory holds a `.git`.
+    private static async Task<bool> HoldsPopulatedSubmoduleAsync(string worktreePath, CancellationToken cancellationToken)
+    {
+        try
+        {
+            (int modulesExit, string modules, _) = await GitProcess.RunAsync(worktreePath, ["rev-parse", "--git-path", "modules"], cancellationToken);
+            if (modulesExit == 0 && Directory.Exists(Path.Combine(worktreePath, modules.TrimEnd('\r', '\n'))))
+                return true;
+
+            // `-s -z`: `<mode> <sha> <stage>\t<path>` per entry, the path raw.
+            (int filesExit, string files, _) = await GitProcess.RunAsync(worktreePath, ["ls-files", "-s", "-z"], cancellationToken);
+            return filesExit == 0 && files.Split('\0', StringSplitOptions.RemoveEmptyEntries)
+                .Where(entry => entry.StartsWith("160000 ", StringComparison.Ordinal))
+                .Any(entry => Path.Exists(Path.Combine(worktreePath, entry[(entry.IndexOf('\t') + 1)..], ".git")));
+        }
+        catch (Win32Exception)
+        {
+            // Gone between the holder check and git's start: TryRemoveAsync answers for it.
+            return false;
+        }
     }
 
     // `git worktree list --porcelain`: a `worktree <path>` line opens each entry, and the entry that has
@@ -507,6 +817,48 @@ public static class JobWorktree
 
     private static string? FirstLine(string text) =>
         text.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).FirstOrDefault();
+
+    // StageAsync's answer: whether the index holds anything to commit, `add`'s stderr for the log, and the status
+    // after it all — whatever is still unstaged there is what the commit leaves out.
+    private sealed record Staging(bool AnyStaged, string AddError, StatusEntry[] Remainder)
+    {
+        public static readonly Staging None = new(AnyStaged: false, AddError: "", Remainder: []);
+    }
+
+    // One `status --porcelain=v2 -z` entry: `1 XY sub mH mI mW hH hI path`, `2` the same with a score before the
+    // path and the old path in the next field, `u XY sub m1 m2 m3 mW h1 h2 h3 path`, `? path`. Unstaged: a worktree
+    // side (Y not `.`, or untracked); Submodule: the `S…` field. A `# …` header (round 5, J3) is no path; any other
+    // shape this does not know fails closed: unstaged.
+    private sealed record StatusEntry(string Path, bool Unstaged, bool Submodule)
+    {
+        public static StatusEntry[] Parse(string output)
+        {
+            List<StatusEntry> entries = [];
+            string[] fields = output.Split('\0', StringSplitOptions.RemoveEmptyEntries);
+            for (int index = 0; index < fields.Length; index++)
+            {
+                string field = fields[index];
+                if (field[0] == '#')
+                    continue;
+
+                int pathAt = field[0] switch { '1' => 8, '2' => 9, 'u' => 10, '?' => 1, _ => -1 };
+                string[] parts = pathAt < 0 ? [] : field.Split(' ', pathAt + 1);
+                if (pathAt < 0 || parts.Length <= pathAt)
+                {
+                    entries.Add(new StatusEntry(field, Unstaged: true, Submodule: false));
+                    continue;
+                }
+
+                // `?` lists an embedded repository as `dir/`; the warnings name it as the gitlink would be.
+                bool untracked = pathAt == 1;
+                entries.Add(new StatusEntry(parts[pathAt].TrimEnd('/'), Unstaged: untracked || parts[1] is not [_, '.'], Submodule: !untracked && parts[2].StartsWith('S')));
+                if (field[0] == '2')
+                    index++;
+            }
+
+            return [.. entries];
+        }
+    }
 }
 
 // MainCheckout is the request cwd the worktree was cut from — the checkout a delegate is told never to
