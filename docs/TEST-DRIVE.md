@@ -326,8 +326,9 @@ git switch drive/issue-17 && git merge --ff-only claustrum/<builder job id>
 `jobs clean` goes first: until it runs, the builder's branch is checked out in its worktree, and
 `git rebase` from your checkout stops at `fatal: 'claustrum/<id>' is already used by worktree at
 '…'`. (Rebasing inside the worktree, `git -C .claustrum/worktrees/<id> rebase drive/issue-17`, is
-the other way.) If the builder's receipt warned `work left uncommitted on …`, `jobs clean` leaves
-that worktree in place and says so: commit the work there first.
+the other way.) If the builder's receipt warned `work left uncommitted on …` or `… left out of the
+commit on …`, `jobs clean` leaves that worktree in place and says so: commit the work there first
+(MANUAL §15 routes each warning).
 
 Leg 1 is done when the drive branch carries a reviewed, tested fix and you have three receipts with
 costs. Record them (step 18) before going on.
@@ -383,7 +384,9 @@ role plus the parallel cap and the budget (eight on 2026-10-08, with `demo-autho
 with `AskUserQuestion`, and write a cast with `cast create`. Answer them to create a second cast named,
 say, `spawned` with `architect: spawned on frontier-reasoning` — that is the cast leg 3 uses.
 (Or write it by hand: it is the step 7 file with `"architect": {"mode": "spawned", "model":
-"frontier-reasoning", "tier": null}`.)
+"frontier-reasoning", "tier": null}`.) Commit it on the drive branch
+(`git add .claustrum/casts/spawned.json && git commit -m "Spawned cast"`): leg 3's architect works
+in a worktree, which holds committed files only, and `coordinate` refuses an uncommitted cast.
 
 ---
 
@@ -392,7 +395,12 @@ say, `spawned` with `architect: spawned on frontier-reasoning` — that is the c
 ### 17. `coordinate` on one issue
 
 `gh` must be authenticated (`gh auth status`) and the repo must have a GitHub remote: the issue
-body becomes the brief's `## Task` through `gh issue view`. Then:
+body becomes the brief's `## Task` through `gh issue view`. Everything the architect and its
+children read must be committed on the drive branch — step 6's `claustrum.json` edits, the casts of
+steps 7 and 16, any `.claustrum/roles/` override — because they will read it from a worktree cut
+from `HEAD`: `git status --short --ignored claustrum.json .claustrum/casts .claustrum/roles` must
+print nothing, and `git status --short .mcp.json opencode.json` (step 5's `init` output) nothing
+either. Then, from the repo root:
 
 ```bash
 claustrum coordinate --cast spawned --issues <n> --json --timeout 5400 \
@@ -402,10 +410,12 @@ claustrum coordinate --cast spawned --issues <n> --json --timeout 5400 \
 - `--timeout 5400`: the default is 1800 s, and a real pipeline (opus architect, sonnet builder,
   opus review, sonnet tester, each a separate `claude -p`) will not fit in thirty minutes. The
   timeout is the architect's own; each child gets the default unless the architect passes one.
-- The architect runs headless on `claude:opus` with a `## Coordination` section appended to its
-  system prompt: the cast, the delegate command (`claustrum run <role> --cast "spawned"
-  --brief-file <path> --json --cwd …`), the budget rules, and the order to create work branch
-  `claustrum/<job id>` from `HEAD` before delegating. Its native `Agent` tool is disallowed.
+- The architect runs headless on `claude:opus` in its own worktree, `.claustrum/worktrees/<job id>`,
+  on work branch `claustrum/<job id>` cut from `HEAD`, with a `## Coordination` section appended to
+  its system prompt: the cast, the delegate command (`claustrum run <role> --cast "spawned"
+  --brief-file <path> --json --cwd "<its worktree>"`), the budget rules, and that the work branch is
+  already checked out there and your checkout is not its to touch. Its native `Agent` tool is
+  disallowed, and so are `git checkout`/`git switch`.
 - Every child it starts inherits `CLAUSTRUM_PARENT_JOB=<job id>`, so the ledger accounts them
   against the cast's `$15`. ⚠ The architect's **own** run is capped at the same `$15` but is not a
   member of the tree, so the worst case is 2× the cast budget. Budget for $30.
@@ -431,11 +441,32 @@ git diff drive/issue-17...claustrum/<job id> --stat
 Expect: linear history, a commit citing `Closes #<n>`, no merge commits, nothing pushed. Each
 builder child's receipt carries a `commit` on its own branch, and a remediation builder after review
 names the first builder's branch as its `branch` (`--branch claustrum/<first job>`) — a fresh branch
-of its own there is a role-text finding. The architect works **in your checkout** (only its builders
-get worktrees; #74 proposes moving the architect into a worktree too), so your working directory is
-on `claustrum/<job id>` when it returns: `git switch` back before touching anything. Run the gate
-yourself (`dotnet test`) before trusting the tester's report, then rebase and fast-forward the drive
-branch to it and open the PR by hand.
+of its own there is a role-text finding. The architect works in `.claustrum/worktrees/<job id>` on
+`claustrum/<job id>`, and **your checkout is untouched**: still on `drive/issue-17`, the same `HEAD`,
+no new `checkout:` line in `git reflog`. Its builders' worktrees nest inside the architect's
+(`.claustrum/worktrees/<job id>/.claustrum/worktrees/<builder id>`). Run the gate yourself (`dotnet
+test`, inside `.claustrum/worktrees/<job id>` or on a checkout of the branch) before trusting the
+tester's report.
+
+Then bring the work onto the drive branch. If `drive/issue-17` has not moved since `coordinate`
+started, fast-forward it from your checkout — that works while the architect's worktree still holds
+`claustrum/<job id>`. If it has moved, clean up first: git will not rebase a branch checked out in
+another worktree, and the architect's is.
+
+```bash
+git merge --ff-only claustrum/<job id>                      # drive/issue-17 has not moved
+```
+
+Clean up innermost first — `jobs clean` refuses the architect's worktree while it still holds its
+builders':
+
+```bash
+claustrum jobs clean --cwd .claustrum/worktrees/<job id>    # the builders' worktrees, nested
+claustrum jobs clean                                        # then the architect's own
+```
+
+With the branch free, a drive branch that moved takes `git rebase drive/issue-17 claustrum/<job id>`,
+`git switch drive/issue-17` and the same `git merge --ff-only`. Open the PR by hand.
 
 The things most likely to go wrong, with the fix already known:
 
@@ -447,6 +478,7 @@ The things most likely to go wrong, with the fix already known:
 | `status: timeout` on the coordinate run | `--timeout` too small for the pipeline | rerun with more; the children that finished are still in `jobs list` and on their branches |
 | `report_status: missing` on a child | the model dropped the report fence | keep the job id; the log has the final message |
 | exit 2 before any job: `gh issue view … failed` | no remote, not logged in, wrong number | fix the environment, nothing was spent |
+| exit 2 before any job: `coordinate runs the architect in a worktree, which sees only committed files — commit (or un-ignore) <path> (<state>) first` | the cast (step 16's `spawned.json`), `claustrum.json` or a role file under `.claustrum/roles/` is not committed as it stands, so the architect's worktree would not see it | commit what it names on the drive branch and rerun; nothing was spent. A `(skip-worktree)` or `(assume-unchanged)` state is a local edit `git update-index` hides: clear the bit, then commit. `.gitignore (… — the worktree gets HEAD's ignore rules; commit it first)` means that file has any uncommitted edit; `commit or git-ignore .mcp.json (untracked)`, an `init` output nobody committed. A `git-ignore .claustrum/worktrees/, …` variant means `init`'s `.gitignore` lines are not committed |
 
 ---
 
@@ -465,5 +497,5 @@ tasks: the test drive, 2026-09-25 to 2026-10-08"):
 Every defect becomes a GitHub issue **on the board in the same step**, with Status and dates (the
 owner's rule 3). Things this drive was not able to prove and that stay open: opencode and `api`
 (no key on this machine), ui-reviewer (needs the Browser MCP under claude), `coordinate` from the
-MCP door (the `coordinate` tool returns `{job_id, log_path}` and is polled with `job_status`), and
+MCP door (the `coordinate` tool returns `{job_id, log_path, warnings}` and is polled with `job_status`), and
 the Windows leg of all of the above.

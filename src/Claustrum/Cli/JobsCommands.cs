@@ -1,6 +1,7 @@
 using System.CommandLine;
 using System.Text;
 using System.Text.Json;
+using Claustrum.Coordination;
 using Claustrum.Core.Git;
 using Claustrum.Core.Jobs;
 
@@ -31,7 +32,8 @@ public static class JobsCommands
         Command clean = new(
             "clean",
             "Remove finished isolated jobs' worktrees (docs/PLAN.md §D4); their branches, which carry the work, are kept. "
-                + "A worktree with uncommitted changes is reported and left in place.") { cleanCwd };
+                + "A worktree with uncommitted changes is reported and left in place, and so is one holding job worktrees of its own "
+                + "(a coordinate architect's: clean it with --cwd <that worktree> first).") { cleanCwd };
         clean.SetAction(async parseResult => await CleanAsync(parseResult.GetValue(cleanCwd)));
 
         Argument<string> budgetTree = new("tree") { Description = "Job tree id — the CLAUSTRUM_PARENT_JOB its members ran with." };
@@ -127,7 +129,8 @@ public static class JobsCommands
     // A worktree's directory name IS the job id that created it (JobWorktree.PathFor);
     // JobDirectory.IsFinished decides which ones are done with. The branch is never touched here, and
     // it carries the job's work as a commit since #61, so the architect can still rebase from it. A
-    // worktree that still holds uncommitted work is reported and left, never forced (F3).
+    // worktree that still holds uncommitted work is reported and left, never forced (F3) — and so is a
+    // coordinate architect's that still holds its children's (#74): `--cwd <it>` sweeps those first.
     private static async Task<int> CleanAsync(string? cwdOption)
     {
         string cwd = Path.GetFullPath(cwdOption ?? Environment.CurrentDirectory);
@@ -144,6 +147,16 @@ public static class JobsCommands
         foreach (string worktreeDirectory in Directory.EnumerateDirectories(worktreesRoot))
         {
             string jobId = Path.GetFileName(worktreeDirectory);
+
+            // #74 G5: a `coordinate` hard-killed mid-probe leaves an empty `probe-<hex>` no job owns, which
+            // git's remove calls "not a working tree" — exit 1 on every sweep until someone deletes it by hand.
+            if (await ArchitectWorktree.TryRemoveStrayProbeAsync(cwd, worktreeDirectory, CancellationToken.None))
+            {
+                Console.WriteLine($"removed stray probe directory {jobId}");
+                removed++;
+                continue;
+            }
+
             if (!JobDirectory.IsFinished(jobsRoot, jobId))
                 continue;
 

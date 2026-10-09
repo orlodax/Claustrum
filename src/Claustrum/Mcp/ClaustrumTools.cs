@@ -92,11 +92,15 @@ public sealed class ClaustrumTools
     [Description(
         "Spawn the cast's architect headlessly (docs/PLAN.md §D3) over GitHub issues or a brief: it reads the " +
         "cast, writes the briefs and delegates builders/reviewers/tester itself. Async by nature — returns " +
-        "{job_id, log_path} immediately, progress via job_status (state, elapsed seconds and the architect's " +
+        "{job_id, log_path, warnings} immediately, progress via job_status (state, elapsed seconds and the architect's " +
         "last output line), the architect's RunResult via job_result once state is 'done'. The returned job_id " +
         "is also the budget tree id: every child the architect spawns is accounted against this cast's " +
         "budget_usd and inspectable with `claustrum jobs budget <job_id>`. Pass exactly one of issues or brief. " +
-        "Needs `gh` on PATH for issues (see the doctor tool).")]
+        "Needs `gh` on PATH for issues (see the doctor tool). In a git repository the architect works in its own " +
+        "worktree on branch claustrum/<job_id>, never in cwd's checkout: cwd must be the repository root, the cast, " +
+        "claustrum.json and .claustrum/roles committed, a .mcp.json/opencode.json committed or git-ignored, and `claustrum init`'s " +
+        ".claustrum/ ignore rules in a committed .gitignore — this call refuses otherwise, naming what to fix. warnings names " +
+        "what the worktree gets as HEAD has it instead (a committed .mcp.json/opencode.json with a local edit).")]
     public static Task<string> CoordinateAsync(
         [Description("GitHub issue numbers to import as the task, e.g. [12, 13].")] int[]? issues = null,
         [Description("Task text, instead of issues.")] string? brief = null,
@@ -139,7 +143,7 @@ public sealed class ClaustrumTools
             (string jobId, string logPath) = AppServices.JobManager.Start(
                 (job, token) => CoordinateEngine.RunAsync(plan, prepared, job, token), CancellationToken.None);
 
-            return JsonSerializer.Serialize(new DelegateAsyncResult(jobId, logPath), McpJsonContext.Default.DelegateAsyncResult);
+            return JsonSerializer.Serialize(new CoordinateStartResult(jobId, logPath, plan.Warnings), McpJsonContext.Default.CoordinateStartResult);
         });
 
     [McpServerTool(Name = "job_status")]

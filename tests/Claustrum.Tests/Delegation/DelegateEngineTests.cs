@@ -286,29 +286,60 @@ public sealed class DelegateEngineTests(AppServicesHomeFixture fixture) : IDispo
         Assert.Equal(0m, row.Entry.Cost);
     }
 
+    // #74 H7: a numeric cap in a directory with no repository used to cut a worktree from no HEAD and die after the mint. It
+    // runs in place now, queued at one, and the tree's ledger is charged exactly as for any run Runner admits itself.
+    [Fact]
+    public async Task APlainDirectoryRunningInPlaceUnderACapStillClosesItsLedgerEntryAtCostZeroAsync()
+    {
+        string treeId = $"tree-{Guid.NewGuid():N}";
+        fixture.Platform.Environment["CLAUSTRUM_PARENT_JOB"] = treeId;
+        string plain = Directory.CreateTempSubdirectory("claustrum-delegate-engine-plain-").FullName;
+        try
+        {
+            SaveCast(plain, budgetUsd: 5.00m, maxParallel: 2);
+
+            RunResult result = await DelegateEngine.RunAsync(CastRequest(plain, new ConfigOverrides(Backend: "nonexistent")), TestContext.Current.CancellationToken);
+
+            Assert.Equal(RunStatus.BackendMissing, result.Status);
+            Assert.Null(result.Worktree);
+            Assert.Equal($"no git repository at {plain}: ran in place, no worktree, no commit", result.Warnings[0]);
+            BudgetLedgerState state = await BudgetLedger.ReadAsync(fixture.Platform, treeId);
+            BudgetLedgerRow row = Assert.Single(state.Rows, r => r.Entry.JobId == result.JobId);
+            Assert.Equal(BudgetEntryState.Done, row.State);
+            Assert.Equal(0m, row.Entry.Cost);
+        }
+        finally
+        {
+            TempTree.Delete(plain);
+        }
+    }
+
     // NOTES.md "The gaps this shape still accepts, deliberately": a throw between admission and
-    // Runner (here, `git worktree add` on a cwd that is no repo) must surface, not be swallowed, and
-    // the reservation it leaves behind must count as abandoned ($0) for the very next admission rather
-    // than freezing that slice of the tree forever.
+    // Runner (here, `git worktree add` in a repository with no commit to branch from — a cwd with no
+    // repository at all runs in place since #74 H7) must surface, not be swallowed, and the reservation
+    // it leaves behind must count as abandoned ($0) for the very next admission rather than freezing
+    // that slice of the tree forever.
     [Fact]
     public async Task ThrowAfterAdmissionBeforeRunnerLeavesTheFullRemainderForTheNextAdmissionAsync()
     {
         string treeId = $"tree-{Guid.NewGuid():N}";
         fixture.Platform.Environment["CLAUSTRUM_PARENT_JOB"] = treeId;
-        string nonGitCwd = Directory.CreateTempSubdirectory("claustrum-delegate-engine-nongit-").FullName;
+        string commitLessCwd = Directory.CreateTempSubdirectory("claustrum-delegate-engine-nocommit-").FullName;
         try
         {
-            SaveCast(nonGitCwd, budgetUsd: 5.00m, maxParallel: 2);
+            RunGit(commitLessCwd, "init", "-q");
+            SaveCast(commitLessCwd, budgetUsd: 5.00m, maxParallel: 2);
 
-            await Assert.ThrowsAnyAsync<Exception>(() =>
-                DelegateEngine.RunAsync(CastRequest(nonGitCwd, new ConfigOverrides(Backend: "nonexistent")), TestContext.Current.CancellationToken));
+            InvalidOperationException thrown = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                DelegateEngine.RunAsync(CastRequest(commitLessCwd, new ConfigOverrides(Backend: "nonexistent")), TestContext.Current.CancellationToken));
 
+            Assert.Contains("no commit to branch from", thrown.Message, StringComparison.Ordinal);
             decimal remaining = await BudgetLedger.PeekRemainingAsync(fixture.Platform, new JobTreeBudget(treeId, 5.00m));
             Assert.Equal(5.00m, remaining);
         }
         finally
         {
-            Directory.Delete(nonGitCwd, recursive: true);
+            TempTree.Delete(commitLessCwd);
         }
     }
 

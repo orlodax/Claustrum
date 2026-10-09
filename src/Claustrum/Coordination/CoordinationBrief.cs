@@ -1,5 +1,6 @@
 using System.Globalization;
 using Claustrum.Casts;
+using Claustrum.Core.Git;
 using Claustrum.Core.Jobs;
 using Claustrum.Delegation;
 
@@ -10,8 +11,8 @@ namespace Claustrum.Coordination;
 // (§D3's "with the cast injected into its system body"). Pure and dependency-free on purpose — the
 // appendix is the contract a spawned architect actually obeys, so it must be assertable against a
 // hand-built Cast without gh, a backend, or a job on disk. The job id is not a dependency either:
-// it does not exist when this renders (issue #23), so the three lines that name it emit
-// DelegateRequest.JobIdToken and the engine substitutes the real id once the directory is minted.
+// it does not exist when this renders (issue #23), so every line that names it — or, isolated (#74),
+// the architect's worktree path — emits DelegateRequest.JobIdToken, filled in once the job is minted.
 public static class CoordinationBrief
 {
     // CastResolution.ApplyRole's fallback, repeated here because the appendix states what each role
@@ -23,7 +24,16 @@ public static class CoordinationBrief
     // browser-facing feature: it records the commit the tester's gate passed on.
     private static readonly string[] pipelineOrder = ["builder", "code-reviewer", "ui-reviewer", "tester", "demo-author"];
 
-    public static string RenderUserPrompt(string task, IReadOnlyList<int> issues, string cwd)
+    /// <summary>
+    /// Where the architect works: <paramref name="cwd"/> itself, or — isolated (#74) — its own worktree
+    /// under it, whose path carries <see cref="DelegateRequest.JobIdToken"/> until the job exists.
+    /// </summary>
+    public static string ArchitectCwd(string cwd, bool isolated) =>
+        isolated ? JobWorktree.PathFor(cwd, DelegateRequest.JobIdToken) : cwd;
+
+    public static string WorkingDirectoryLine(string workingDirectory) => $"- Working directory: {workingDirectory}";
+
+    public static string RenderUserPrompt(string task, IReadOnlyList<int> issues, string workingDirectory)
     {
         List<string> lines = ["## Task", task.Trim(), "", "## Context"];
 
@@ -35,7 +45,7 @@ public static class CoordinationBrief
             lines.Add($"- Issues: {numbers}. The commit or PR that resolves one cites `Closes #<n>` (owner's rule).");
         }
 
-        lines.Add($"- Working directory: {cwd}");
+        lines.Add(WorkingDirectoryLine(workingDirectory));
 
         // Last, because the appendix itself is in the *system* prompt: the end of the user prompt is
         // the position a model honours most (Runner.AppendReportTrailer restates its own rule there
@@ -45,8 +55,12 @@ public static class CoordinationBrief
         return string.Join('\n', lines);
     }
 
-    public static string RenderSystemAppendix(Cast cast, string castName, string cwd, string? modelOverride = null)
+    // `isolated` (#74): the architect runs in its own worktree under `cwd`, so every path it hands a
+    // child is that worktree's, and the work branch already exists; not isolated, there is no git at all
+    // (NOTES.md "coordinate runs the architect in its own worktree").
+    public static string RenderSystemAppendix(Cast cast, string castName, string cwd, string? modelOverride = null, bool isolated = false)
     {
+        string workingDirectory = ArchitectCwd(cwd, isolated);
         List<string> lines =
         [
             "## Coordination",
@@ -74,19 +88,14 @@ public static class CoordinationBrief
             "",
             // Both values quoted: a cwd or a cast name with a space in it otherwise splits into two
             // arguments, and double quotes read the same in bash and in PowerShell.
-            $"Delegate with: claustrum run <role> --cast \"{castName}\" --brief-file <path> --json --cwd \"{cwd}\"",
+            $"Delegate with: claustrum run <role> --cast \"{castName}\" --brief-file <path> --json --cwd \"{workingDirectory}\"",
             "- The cast above picks each role's model, tier and parallelism. Add --tier xhigh or --tier max on a single call when that piece of work warrants it.",
             "- Every claustrum process started from this shell already carries CLAUSTRUM_PARENT_JOB, so the runner accounts every child against this tree and caps it.",
             "- Read `error` whenever a result's `status` is not `success`: it carries the reason (a refused budget, a blind-gate rejection, a missing backend), and `status` alone does not say which.",
             """- A child that comes back with `status: budget_exceeded` has not necessarily spent anything — its `error` says what to do. "… while N running job(s) hold …": wait for one of your running children to finish, then start it again. "$R remaining; --budget X exceeds it": start it again with `--budget` at most R, or wait for a sibling to finish and free more. "rounds to $0.00 — pass --budget (at most $Y)": start it again with that explicit `--budget`. "$0.00 remaining" with nothing of yours running: the tree is spent — stop and report what is done. When you start two children at once (reviewer ‖ ui-reviewer, several builders), give each an explicit `--budget <usd>` that together fit the remaining budget; a child started without one reserves the whole remainder until it finishes, so its sibling is refused.""",
             "- Write each brief to .claustrum/briefs/<n>-<role>.md first, then pass that path to --brief-file.",
             "",
-            $"Work branch: claustrum/{DelegateRequest.JobIdToken} — create it from the current HEAD before delegating anything.",
-            "- A builder running in parallel returns `worktree` and `branch` (claustrum/<its own job id>), and that branch carries its work as a commit (`commit` on the receipt) — unless its `warnings[]` says the work was left uncommitted, in one of three shapes. `work left uncommitted on <branch>`: git refused that commit, and the work is still in the builder's `worktree`; commit it inside that worktree yourself before integrating. `work left uncommitted: <path> is on <a detached HEAD | refs/heads/…>, not <branch>`: the builder stopped mid-rebase or switched branch, and a commit there would land off its branch — first finish or abort the rebase (`git -C <path> rebase --continue`/`--abort`) or `git -C <path> switch <branch>`, then commit inside it. `work left uncommitted: <path> is not the job worktree on <branch> (…)`: the worktree was gone or foreign, so nothing reached the branch and what the builder wrote is in `<path>`, outside every branch — move it by hand or rerun the builder.",
-            $"- Integrate each builder branch by rebasing it onto the work branch, then fast-forward the work branch to it. The branch stays checked out in the builder's worktree until `claustrum jobs clean`, and git will not rebase a branch checked out elsewhere: run `claustrum jobs clean --cwd \"{cwd}\"` first (finished worktrees go, branches stay), or rebase inside that worktree (`git -C <worktree> rebase <work branch>`).",
-            "- To send an isolated builder's reviewed branch back for remediation (one that ran under `max_parallel` above 1 or with `--branch`; an in-place builder has no branch of its own — its work is already in your working tree), run the builder with `--branch <the branch on that builder's receipt>`: it continues on the same branch, in a fresh worktree, and its fix lands there as another commit.",
-            "- `max_parallel` is a cap at every value, 1 included: a builder past it waits for a slot. Isolation starts at 2.",
-            "- Never a merge commit, never `git push`.",
+            .. isolated ? WorkBranchLines(cwd, workingDirectory) : [NoGitLine(cwd)],
         ]);
 
         return string.Join('\n', lines);
@@ -94,6 +103,37 @@ public static class CoordinationBrief
 
     private static bool IsExtraRole(string role) =>
         role != Cast.ArchitectRole && !pipelineOrder.Contains(role, StringComparer.Ordinal);
+
+    // #74 G4: `coordinate` isolates whenever its cwd is in a git repository, so in place means no git at all —
+    // no branch to cut, rebase onto or send back, and no worktree to clean: every git line below is moot.
+    private static string NoGitLine(string cwd) =>
+        $"No git repository at {cwd}: there is no work branch and no worktree isolation — builders run in place, one at a time, and their changes land directly in {cwd}; nothing to rebase or clean.";
+
+    private static string[] WorkBranchLines(string cwd, string workingDirectory)
+    {
+        return
+        [
+            $"Work branch: claustrum/{DelegateRequest.JobIdToken} — you are already on it, in your own worktree {workingDirectory}, cut from the operator's HEAD: it holds committed files only.",
+            $"- The main checkout at {cwd} is the operator's: never cd into it, and never change its branch or its files.",
+            $"- Every delegation takes --cwd \"{workingDirectory}\", as `Delegate with:` above does: an isolated builder's worktree then nests under yours, cut from the work branch's tip.",
+            "- Commit your integration yourself and leave your worktree clean: when you finish, the runner commits whatever is still uncommitted in it onto the work branch, stray files included.",
+            "- A builder running in parallel returns `worktree` and `branch` (claustrum/<its own job id>), and that branch carries its work as a commit (`commit` on the receipt) — unless its `warnings[]` says what did not land, in one of these shapes. `work left uncommitted on <branch>`: git refused that commit, and the work is still in the builder's `worktree`; commit it inside that worktree yourself before integrating. `work left uncommitted: <path> is on <a detached HEAD | refs/heads/…>, not <branch>`: the builder stopped mid-rebase or switched branch, and a commit there would land off its branch — first finish or abort the rebase (`git -C <path> rebase --continue`/`--abort`) or `git -C <path> switch <branch>`, then commit inside it. `work left uncommitted: <path> has a <merge | rebase | git am> in progress, not a clean <branch>`, or `work left uncommitted: <path> has unresolved conflicts on <branch> — …`: the builder stopped mid-operation, and a commit there would conclude it — abort a merge (`git -C <path> merge --abort`: integration never makes a merge commit); finish or abort a rebase or `git am` (`--continue`/`--abort`); resolve the conflicts (fix the files, then `git -C <path> add` them) or abort what made them (`cherry-pick --abort`, `revert --abort`, `reset --merge`); then commit inside that worktree yourself. `work left uncommitted: <path> is not the job worktree on <branch> (…)`: the worktree was gone or foreign, so nothing reached the branch and what the builder wrote is in `<path>`, outside every branch — move it by hand or rerun the builder. A `… left out of the commit on <branch>` warning means the branch lacks that path while the builder's worktree still holds it — if it belongs in the change, stage and commit it there yourself before integrating (an embedded repository: move it out or add it as a submodule first).",
+            IntegrationLine(workingDirectory),
+            "- To send an isolated builder's reviewed branch back for remediation (one that ran under `max_parallel` above 1 or with `--branch`; an in-place builder has no branch of its own — its work is already in your working tree), run the builder with `--branch <the branch on that builder's receipt>`: it continues on the same branch, in a fresh worktree, and its fix lands there as another commit.",
+            "- `max_parallel` is a cap at every value, 1 included: a builder past it waits for a slot. Isolation starts at 2.",
+            "- Never a merge commit, never `git push`.",
+        ];
+    }
+
+    // Phrase for phrase roles/architect/ROLE.md's (#74 F5), plus the deny clause the host architect has no
+    // need of: a rebase in the architect's own tree leaves it on the builder's branch, and `git switch` is denied (#62).
+    private static string IntegrationLine(string workingDirectory)
+    {
+        return "- Integrate each builder branch by rebasing it onto the work branch, then fast-forward the work branch to it. The branch stays checked out in the builder's worktree until `claustrum jobs clean`, "
+            + "and git will not rebase a branch checked out elsewhere: rebase it inside the builder's worktree (`git -C <worktree> rebase <work branch>`), then fast-forward the work branch to it from your own working tree (`git merge --ff-only <builder branch>`). "
+            + "Never rebase in your own working tree: that leaves it on the builder's branch, and `git checkout`/`git switch` are denied for this run. "
+            + $"Once the builders are integrated — not before — run `claustrum jobs clean --cwd \"{workingDirectory}\"` (finished worktrees go, branches stay).";
+    }
 
     // The appendix describes the cast, but --model overrides only *this* run, so the override is
     // named next to the cast's model instead of letting the two disagree silently.

@@ -31,7 +31,10 @@ public sealed record DelegateRequest(
     string? SystemAppendix = null,
     // `run --branch` / MCP `branch` (#63): an existing local branch the run continues on, isolated in a
     // new worktree whatever MaxParallel says — how a reviewed builder's branch gets its fix.
-    string? Branch = null)
+    string? Branch = null,
+    // #74: isolated in a new `claustrum/<job id>` worktree cut from HEAD even with no MaxParallel,
+    // which alone still decides a cap — `coordinate`'s architect, which takes no slot.
+    bool Isolate = false)
 {
     /// <summary>
     /// The exact token <see cref="SystemAppendix"/> and <see cref="Env"/> values may carry in place of

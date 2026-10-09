@@ -8,6 +8,13 @@ public sealed record FakeClaudeScript
     /// <summary>Files written into the working directory (the job's worktree, for an isolated run).</summary>
     public (string Path, string Content)[] Writes { get; init; } = [];
 
+    /// <summary>
+    /// Shell lines run in the working directory after <see cref="Writes"/>, in order — how a role leaves a repository
+    /// in an awkward state (a commit-less `git init`, a conflicted merge, a chmod 000 file) for the runner's commit to
+    /// meet (POSIX shells only).
+    /// </summary>
+    public string[] Commands { get; init; } = [];
+
     /// <summary>One more file, `out-&lt;pid&gt;.txt`, so two concurrent runs never write the same path.</summary>
     public bool WriteUniqueFile { get; init; }
 
@@ -48,7 +55,7 @@ public static class FakeClaude
     public static void RequirePosixShell()
     {
         if (OperatingSystem.IsWindows())
-            Assert.Skip("this case records the fake backend's argv or stdin, which only the POSIX script does.");
+            Assert.Skip("this case records the fake backend's argv or stdin, or runs shell commands, which only the POSIX script does.");
     }
 
     public static void Write(string scriptPath, FakeClaudeScript script)
@@ -94,6 +101,9 @@ public static class FakeClaude
             text.Append($"printf '%s\\n' '{content}' > '{path}'\n");
 
         text.Append(script.WriteUniqueFile ? "printf 'unique\\n' > \"out-$$.txt\"\n" : "");
+        foreach (string command in script.Commands)
+            text.Append(command).Append('\n');
+
         text.Append(script.MarkerLog is { } end ? $"echo end >> '{end}'\n" : "");
         // Not `echo`: dash (Ubuntu's /bin/sh) expands the reply's `\n` escapes, the JSON breaks and the report is lost (CI, 2026-10-08).
         text.Append($"printf '%s\\n' '{ReplyJson(script)}'\n");

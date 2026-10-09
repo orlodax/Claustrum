@@ -40,7 +40,7 @@ same operations as tools. `sync` writes the registration for each host (§12).
 | `delegate_async` | `claustrum run` in the background | `{job_id, log_path}` |
 | `job_status` | — | `{state: queued\|running\|done, elapsed_seconds, last_line}` |
 | `job_result` | `claustrum jobs show` | the receipt, once done (throws before) |
-| `coordinate` | `claustrum coordinate` | `{job_id, log_path}` — always async; poll `job_status` |
+| `coordinate` | `claustrum coordinate` | `{job_id, log_path, warnings}` — always async; poll `job_status` |
 | `list_roles`, `list_backends`, `doctor` | `roles list`, `backends list`, `backends doctor` | summaries |
 | `cast_questions`, `cast_create`, `cast_list` | `cast questions`, `cast create`, `cast list` | the questionnaire / the written cast / names |
 
@@ -50,8 +50,9 @@ the workspace); `--cwd` on the server and `cwd` on each call override it.
 ## 3. CLI reference
 
 Exit codes are fixed: `0` ok · `1` backend failure · `2` usage or config error (a bad flag, a
-refused brief, a missing cast, a role sent to a harness it does not list, a `gh` failure) · `3`
-backend not found · `4` timeout · `5` budget · `130` cancelled.
+refused brief, a missing cast, a role sent to a harness it does not list, a `gh` failure, a
+`coordinate` whose cast is not committed) · `3` backend not found · `4` timeout · `5` budget · `130`
+cancelled.
 
 ### `claustrum run <role>`
 
@@ -98,6 +99,22 @@ remote; a failure there is exit 2 and nothing is spent. It never reads a bare st
 is the only way to pipe. Its `--budget` caps the architect's own run; the cast's `budget_usd` caps
 the children.
 
+In a git repository the architect works in its own worktree, which holds committed files only, so
+`coordinate` exits 2 — before any job exists, nothing spent — naming what to fix when: the cwd is
+not the repository root; the cast file, `claustrum.json` or a role file under `.claustrum/roles/`
+(`<role>/role.json`, `<role>/ROLE.md`, `<role>/parts/*.md` — nothing else there is read, so a
+`.DS_Store` or a swap file is not checked) is modified, staged, untracked, ignored, `skip-worktree`
+or `assume-unchanged` (`commit (or un-ignore) <path> (<state>) first`); the `.gitignore` holding
+Claustrum's rules has any uncommitted change (`… the worktree gets HEAD's ignore rules; commit it
+first`); an `.mcp.json`/`opencode.json`/`opencode.jsonc` is untracked (`commit or git-ignore … — an
+ignored local copy is fine`); or `.claustrum/worktrees/`, `.claustrum/briefs/` and
+`.claustrum/locks/` are not ignored by a committed rule (`claustrum init` writes them). A committed
+harness config with a local edit — `skip-worktree`/`assume-unchanged` included, the usual way to keep
+a token local — is not refused: the worktree gets `HEAD`'s copy, and `coordinate` says so on stderr
+as `warning: …` before the run starts. The same refusals come back as the MCP tool's own error, the
+warnings in its `warnings` array. Without `--json`, stdout adds `branch:`, `worktree:` and `commit:`
+after `logs:`, and every warning on the receipt goes to stderr as `warning: …`.
+
 ### `claustrum roles list | show <name>`
 
 The embedded library: description, `blind`, permission, deny list, `mayDelegate`, report schema,
@@ -123,7 +140,12 @@ backend, or it skips with "no model alias … resolves to this backend".
   whatever `status.showUntrackedFiles` says (a commit the runner could not make, a hard-killed run)
   — or one git will not remove plainly (a submodule the role populated) is printed as `could not
   remove <job>: <path> left in place: <reason>` and exits 1. Commit or discard what is in it, then
-  rerun.
+  rerun. Only `<cwd>/.claustrum/worktrees` is swept: a `coordinate` architect's worktree holds its
+  builders' under its own, and is left in place (`it holds job worktrees of its own …`) until
+  `claustrum jobs clean --cwd <that worktree>` has removed them — git would delete them with it,
+  uncommitted work included. An empty `probe-<hex>` directory there, which a `coordinate` killed
+  mid-check leaves behind, is deleted (`removed stray probe directory <name>`); a non-empty one is
+  never touched.
 - `budget <tree>`: the ledger of one tree (§10); `--reset` deletes it, refused while a member runs.
 
 ### `claustrum cast questions [--json] | create --answers <file> [--name n] | new [--name n] | list | show <name> | use <name>`
@@ -380,7 +402,10 @@ itself.
 `changed_files`/`diff` are computed inside the worktree and the receipt carries `worktree`,
 `branch` and `commit`. The checkout runs the repo's smudge filters and post-checkout hook, so it
 gets 5 minutes; one that fails, outlasts them or is cancelled is undone — a `-b` branch it cut
-included — before the run reports or exits, so no half-made worktree stays registered.
+included — before the run reports or exits, so no half-made worktree stays registered. Isolation
+needs a git repository: outside one, a run its `max_parallel` would isolate runs in the working
+directory instead, queued one at a time as at 1, and its receipt warns `no git repository at <cwd>:
+ran in place, no worktree, no commit`; `--branch` there is refused.
 
 **An isolated run stays in its worktree.** Its prompt ends with a trailer naming the worktree, its
 branch and the main checkout it must never touch, and its deny list gains `git checkout` and
@@ -391,28 +416,58 @@ list (not `full`), a prompt rule on cursor. The deny is a guard on how a command
 **The runner commits the work.** When an isolated run ends — whatever its status, as long as the
 backend ran — the runner commits everything left uncommitted in the worktree on its branch:
 subject `claustrum <role> <job_id>`, the report's `summary` as the body, the repo's own git
-identity and hooks. `commit` on the receipt is the branch tip whenever the run moved it, so a role
+identity and hooks. Claustrum's own `.claustrum/worktrees/`, `.claustrum/briefs/` and
+`.claustrum/locks/` are never part of it, ignored or not. What `git add` leaves in the worktree
+is left out of the commit, the rest is committed, and each path left out gets a warning of its own
+— read back from git's index, never from its messages, so a translated git words nothing differently:
+
+- a directory with its own `.git` — a clone, a `git init` with no commit, a hand-made worktree —
+  would be committed as a gitlink nobody can check out: `embedded repository at <path> left out of
+  the commit on <branch> — move it out or add it as a submodule`. A gitlink whose path the staged
+  `.gitmodules` lists is a deliberate submodule and is committed;
+- changes inside an initialised submodule, which only a commit in the submodule can take: `changes
+  inside submodule <path> left out of the commit on <branch> — commit them in the submodule, then
+  stage its pointer`;
+- anything else git would not stage — a path outside a sparse-checkout, an unreadable file, one a
+  clean filter refuses: `<path> left out of the commit on <branch>: git did not stage it
+  (sparse-checkout, permissions or a filter — see the job's stderr.log)`, where git's own words are
+  appended (`claustrum jobs logs <job_id> --stderr`).
+
+All of it holds whatever `diff.ignoreSubmodules` says. When nothing at all could be staged and a
+path of the last kind was left out — a stale `index.lock` stops `git add` outright — the receipt
+also says `work left uncommitted on <branch>: git add staged nothing: <git's line>`.
+`commit` on the receipt is the branch tip whenever the run moved it, so a role
 that committed by itself is recorded too, and `changed_files`/`diff` are then the branch's delta
 from the commit the run started on: what was committed — by the runner or by the role — and
-whatever is still uncommitted. A commit git refuses (no identity, a failing hook) leaves the work in
-the worktree and a `warnings[]` entry `work left uncommitted on <branch>: …`; the run's status is
-untouched. The runner commits only in a directory that is still the job's worktree on its branch:
+whatever is still uncommitted, left-out paths included. A commit git refuses (no identity, a failing
+hook) leaves the work in the worktree, staged, and a `warnings[]` entry `work left uncommitted on
+<branch>: …`; the run's status is untouched. The runner commits only in a directory that is still
+the job's worktree on its branch:
 one whose worktree was removed under it (a `jobs clean` from another `CLAUSTRUM_HOME`) is, to git,
 part of the main checkout, so the runner commits nothing, reports no changes and no `commit`, and
 warns `work left uncommitted: <path> is not the job worktree on <branch> (…)`. A worktree that is
 still the job's but no longer on its branch — the role stopped mid-rebase (a detached `HEAD`) or
 switched it — gets no commit either; its receipt keeps the changes read inside it, `commit` is
 null, and it warns `work left uncommitted: <path> is on <a detached HEAD | refs/heads/…>, not
-<branch>`.
+<branch>`. Nor does one still on its branch with a merge, a rebase or a `git am` in progress — a
+commit would conclude it, and the runner never makes a merge commit, conflicted or not — or with
+unresolved conflicts, whatever left them (a cherry-pick, a revert, `stash pop`, `merge --squash`,
+`apply --3way`), whose markers `git add -A` would commit as the resolution: same receipt, and `work
+left uncommitted: <path> has a <merge | rebase | git am> in progress, not a clean <branch>` or `work
+left uncommitted: <path> has unresolved conflicts on <branch> — resolve or abort the operation
+inside the worktree, then commit there yourself`. A clean `git revert -n` or `cherry-pick -n` is
+neither: the runner commits it as an ordinary single-parent commit.
 
 **Integration** is the architect's and it is by **rebase onto the work branch, then fast-forward**
 — never a merge commit, never `git push` (every role's deny list). A builder's branch stays checked
 out in its worktree until `claustrum jobs clean`, and git will not rebase a branch checked out
-elsewhere (`fatal: '<branch>' is already used by worktree at '…'`): run `claustrum jobs clean`
-first, or rebase inside that worktree (`git -C <worktree> rebase <work branch>`) and fast-forward
-the work branch to it. A builder whose receipt warns `work left uncommitted on <branch>` has its
-work only in its worktree: commit it there first; the two other `work left uncommitted:` warnings
-are routed in §15. To send a reviewed builder back for a fix, run it
+elsewhere (`fatal: '<branch>' is already used by worktree at '…'`): rebase it inside that worktree
+(`git -C <worktree> rebase <work branch>`), then fast-forward the work branch to it from your own
+working tree (`git merge --ff-only <builder branch>`). Never rebase in your own working tree — that
+leaves it on the builder's branch, and an isolated architect may not `git switch` back — and run
+`claustrum jobs clean` only once the builders are integrated. A builder whose receipt warns `work
+left uncommitted on <branch>` has its work only in its worktree: commit it there first; the other `work left uncommitted:` warnings,
+and the `left out of the commit` ones, are routed in §15. To send a reviewed builder back for a fix, run it
 with `--branch <the branch on its receipt>` — `claustrum/<that job id>`, or the name a `--branch`
 builder was given: it continues on the same branch in a fresh worktree, and the fix lands there as
 another commit. A branch can be checked out in one worktree at a time, so the finished job's
@@ -465,31 +520,82 @@ whole life); its own run is capped at the cast's `budget_usd` separately, so the
 ## 11. Coordinate: the spawned architect
 
 `claustrum coordinate --cast <name> (--issues n,m | --brief …)` is not a second pipeline. It builds
-the same request `run` builds, for the `architect` role, and adds exactly three things:
+the same request `run` builds, for the `architect` role, and adds four things — the fourth, in a git
+repository only:
 
 1. **The cast appended to the system body** as a `## Coordination` section: the cast line by
    line ("builder: model …, tier …, max_parallel …", "ui-reviewer: not needed — do not delegate
    to it"), the budget across the tree, the delegate command (`claustrum run <role> --cast "<name>"
    --brief-file <path> --json --cwd "<dir>"`), the four `budget_exceeded` routes, "write each brief
-   to `.claustrum/briefs/<n>-<role>.md`", and the work branch: **`claustrum/<job id>`, created from
-   `HEAD` before delegating anything**, into which each parallel builder's branch (which carries its
-   work as a commit, unless its receipt warns the work was left uncommitted) is rebased — after
-   `claustrum jobs clean`, or inside the builder's worktree — and fast-forwarded; never a merge,
-   never a push. An isolated builder sent back for a fix runs with `--branch <the branch on its
-   receipt>` (an in-place builder has no branch: its work is already in the working tree), and
-   `max_parallel` is a cap at every value.
+   to `.claustrum/briefs/<n>-<role>.md`", and — in a git repository — the work branch
+   **`claustrum/<job id>`** (below), into
+   which each parallel builder's branch (which carries its work as a commit, unless its receipt warns
+   the work was left uncommitted) is rebased — inside the builder's worktree — and fast-forwarded;
+   never a merge, never a push. An isolated builder sent back for a fix runs with `--branch <the
+   branch on its receipt>` (an in-place builder has no branch: its work is already in the working
+   tree), and `max_parallel` is a cap at every value.
 2. **`CLAUSTRUM_PARENT_JOB=<job id>`** in the architect's environment, so every `claustrum` it runs
    joins the tree.
 3. **`gh issue view <n> --json title,body,labels`** folded into the brief's `## Task` (`--issues`),
    with the instruction that the resolving commit cites `Closes #<n>`.
+4. **Its own worktree**, below.
+
+**The architect works in its own worktree.** In a git repository `coordinate` runs it isolated,
+like a parallel builder (§9): `git worktree add .claustrum/worktrees/<job id> -b claustrum/<job id>`
+from `HEAD`, the isolation trailer and the `git checkout`/`git switch` deny, and when it finishes the
+runner commits whatever it left uncommitted onto the work branch (`commit` on the receipt). **Your
+checkout is never touched**: its branch and `HEAD` stay where they were, and uncommitted edits in it
+stay there instead of riding along. The one thing that lands in it is a demo-author's deck, by that
+role's own rule: gitignored, in `docs/demos/<feature>/`, where `jobs clean` cannot delete it. The
+`## Coordination` section says the architect is already on
+the work branch, that the main checkout is yours, and gives every delegation `--cwd "<its
+worktree>"` — so an isolated builder's worktree nests under the architect's
+(`.claustrum/worktrees/<job id>/.claustrum/worktrees/<builder id>`), cut from the work branch's tip,
+and the slot locks live in the architect's worktree too. It integrates by rebasing inside each
+builder's worktree and fast-forwarding its own: a rebase in its own worktree would leave it on the
+builder's branch, with `git switch` denied. Outside a git repository there is no `HEAD` to branch
+from: the architect works in the cwd, and one line of its `## Coordination` replaces every git
+instruction — no work branch and no worktree isolation, builders run in place one at a time, their
+changes land directly in the cwd, and there is nothing to rebase or clean. A builder whose cast says
+`max_parallel` 2 or more runs in place there too, queued, with the `no git repository at …` warning (§9).
+
+A worktree holds committed files only, and the architect's children read their cast, `claustrum.json`
+and the role files of `.claustrum/roles/` from it — so `coordinate` refuses with exit 2, before any
+job exists, a cwd that is not the repository root, any of those files that differs from `HEAD` (a
+local edit hidden by `git update-index --skip-worktree` or `--assume-unchanged` included), a
+`.gitignore` holding Claustrum's rules with any uncommitted change (the worktree gets `HEAD`'s rules,
+whatever the edit is), an untracked `.mcp.json`/`opencode.json`/`opencode.jsonc` (what `claustrum
+init` writes: commit it, or git-ignore it as a local copy), and a `.claustrum/{worktrees,briefs,locks}/`
+that no committed rule ignores (`claustrum jobs clean` could not remove the architect's worktree, and
+the architect's own `git add` would take in its builders' worktrees, briefs and locks). Commit them,
+then rerun. A committed harness config with a local edit only warns: the worktree gets `HEAD`'s copy.
+The runner's own commit leaves `.claustrum/{worktrees,briefs,locks}/` out whatever the rules say, and
+leaves out — with a warning, committing the rest — any other directory that is a git repository of
+its own and is not a submodule the staged `.gitmodules` lists (§9).
+
+**Nothing uncommitted reaches the worktree**, and that includes what a gate may need: gitignored
+test prerequisites (`.env`, `*.local.json`, `node_modules/`, build caches), submodules — the
+worktree's are not initialised — and harness settings that are not committed (`.claude/settings*.json`,
+an ignored `.mcp.json`, the local edit of a committed one). Every child of the architect runs there or
+in a worktree nested in it, so a tester whose gate needs one of them fails for an environmental reason,
+and only the harness configs' local edits are warned about before the run. Commit
+what can be committed, make the gate set up the rest (restore, `submodule update --init`), or say so
+in the brief.
+
+**Cleaning up** is two sweeps, innermost first: `claustrum jobs clean --cwd .claustrum/worktrees/<job
+id>` removes the builders' worktrees nested in the architect's, then `claustrum jobs clean` removes
+the architect's own. In the other order the architect's worktree is left in place and the sweep says
+which `--cwd` to run first. Branches stay, as always.
 
 On `claude` the architect's native `Agent` tool is disallowed, so it cannot fan out outside the
-cast. Everything that can be refused (flags, cast, `gh`, the brief) is refused **before** a job
-directory exists. The result is the architect's receipt: its `report.data.delegations[]` lists
-every child with a job id, `branch` names the work branch, and `claustrum jobs budget <job id>` is
-the tree's ledger. It leaves the work on the branch; pushing and the PR are yours.
+cast. Everything that can be refused (flags, cast, uncommitted files, `gh`, the brief) is refused
+**before** a job directory exists. The result is the architect's receipt: its
+`report.data.delegations[]` lists every child with a job id, `branch` and `worktree` name the work
+branch and where it is checked out, and `claustrum jobs budget <job id>` is the tree's ledger. It
+leaves the work on the branch; pushing and the PR are yours.
 
-From MCP, `coordinate` returns `{job_id, log_path}` immediately; poll `job_status`, then
+From MCP, `coordinate` returns `{job_id, log_path, warnings}` immediately — `warnings` is the CLI's
+pre-run `warning: …` lines, often empty; poll `job_status`, then
 `job_result`.
 
 ## 12. Sync: one role library, every harness
@@ -583,6 +689,12 @@ created. Budget ledgers live beside them under `budget/<tree>/`.
 |---|---|---|
 | exit 2, `blind role: brief carries rationale` | the reviewer's brief has `## Context`/`## Plan`/`## Rationale` or a pasted report | remove it; add requirement or code, never reasoning |
 | exit 2, `cast '<x>' not found` / `coordinate needs a cast` | no `.claustrum/casts/<x>.json` in the cwd | `cast create`/`cast new`, or `--cast` the right name |
+| exit 2, `coordinate runs the architect in a worktree, which sees only committed files — commit (or un-ignore) <path> (<state>) first` | the cast, `claustrum.json` or a role file under `.claustrum/roles/` (`<role>/role.json`, `<role>/ROLE.md`, `<role>/parts/*.md`) differs from `HEAD` — modified, staged, untracked or ignored — or hides a local edit (`skip-worktree`, `assume-unchanged`), and the architect's worktree would not see it | commit it (un-ignore a cast the repo ignores; `git update-index --no-skip-worktree`/`--no-assume-unchanged <path>` first for a hidden edit), then rerun; nothing was spent |
+| exit 2, `… — .gitignore (<state> — the worktree gets HEAD's ignore rules; commit it first)` | the file holding Claustrum's `.claustrum/` ignore rules has an uncommitted change, related to them or not: the worktree gets `HEAD`'s copy, so what was checked is not what it will see | commit it (or revert the edit), then rerun |
+| exit 2, `… — commit or git-ignore .mcp.json (untracked) — an ignored local copy is fine` | a harness config `claustrum init` writes (`.mcp.json`, `opencode.json`, `opencode.jsonc`) is in no commit, so the architect's harness would start without it | commit it, or git-ignore it if it is meant to stay local (the architect then runs without it) |
+| `warning: .mcp.json (<state>): the architect's worktree gets HEAD's copy — your local edit stays out of it` (stderr before the run; MCP `warnings`) | a committed harness config has a local edit — plain, or hidden by `skip-worktree`/`assume-unchanged` — and the architect and its children read the committed one | nothing, if the committed copy works; otherwise commit the edit, or stop the run and move the setting somewhere committed |
+| exit 2, `… git-ignore .claustrum/worktrees/, … in a committed .gitignore first` | no committed rule ignores Claustrum's working directories (as written: a whitelist `.gitignore` with `*` and `!*/` un-ignores a worktree directory), so `jobs clean` could not remove the architect's worktree and its own `git add` would take in its builders' worktrees, briefs and locks | `claustrum init` appends the rules; commit `.gitignore`, then rerun |
+| exit 2, `coordinate runs the architect in a worktree of the whole repository …: run it from <root>` | `coordinate` ran in a subdirectory of the repository | run it from the repository root, with the cast in `.claustrum/casts/` there |
 | exit 2, ``role '<r>' runs on … only (its role.json `harnesses`)`` | the cast, `claustrum.json` or `--backend` sent the role to a harness it is not written for (the demo-author and ui-reviewer are claude-only) | point the role at an alias on one of its harnesses, mark it `not needed` in the cast, or — if the repo ships its parts for that harness — list it under `harnesses` in `.claustrum/roles/<role>/role.json` |
 | exit 3 | the backend's binary is not on `PATH` | install it, or `backends.<name>.path` in config |
 | `Error: Model "opus" … is not available` (copilot, cursor) | the built-in `claude:*` alias reached a non-claude backend | alias the class to `copilot:auto` / `cursor:auto` |
@@ -590,12 +702,19 @@ created. Budget ledgers live beside them under `budget/<tree>/`.
 | `report_status: missing` | the role never wrote its report fence | read `final_message`; the run still counts, the report does not |
 | `status: failed`, "… slots … stayed unavailable" | waited past `--timeout` for a `max_parallel` slot | start fewer at once, or raise `--timeout` |
 | `status: failed`, "`--branch <name>`: …" | the branch does not exist locally, another checkout holds it (the main checkout, a running job, a dirty finished worktree, a job unknown under this `CLAUSTRUM_HOME`), git would not check it out or did not within 5 minutes (a slow smudge filter or post-checkout hook), or another run on the branch outlasted `--timeout` | read `error`: it names the holder, or quotes git; switch that checkout off the branch, let the job finish, commit/discard its changes, or run `claustrum jobs clean` under the home that ran the job; after a slow checkout, `left behind: …` names anything the undo could not remove (a cancelled add prints it on stderr as `warning: git worktree add was cancelled; left behind: …`) — `git worktree remove -f -f <path>` removes a worktree git left locked |
-| `warnings[]`: "work left uncommitted on <branch>: …" | git refused the runner's commit of an isolated run (no identity, a hook) | the work is still in the job's worktree: commit it there; `jobs clean` leaves that worktree in place until you do |
+| `status: failed`, "`--branch <name>`: its previous worktree <path> holds a populated submodule, which git will not remove — …" | the finished job's worktree on that branch is clean but has a submodule checked out, and git refuses to remove any worktree that does | a commit made inside that submodule and pushed nowhere lives only in that worktree's git directory, so push or copy it first; then `git worktree remove --force "<path>"` and rerun |
+| `warnings[]`: "work left uncommitted on <branch>: …" | git refused the runner's commit of an isolated run (no identity, a hook), or — `… git add staged nothing: <git's line>` — `git add` staged nothing at all (a stale `index.lock`, or every path left out) | the work is still in the job's worktree: fix what git names, then commit it there; `jobs clean` leaves that worktree in place until you do |
+| `warnings[]`: "embedded repository at <path> left out of the commit on <branch> — move it out or add it as a submodule" | the role left a directory with its own `.git` (a clone, a `git init` with no commit, a hand-made worktree) that `.gitmodules` does not list; the rest of its work is committed on the branch | the repository is still in the job's worktree: move it out, or `git submodule add` it there and commit; `jobs clean` leaves that worktree in place until you do |
+| `warnings[]`: "changes inside submodule <path> left out of the commit on <branch> — commit them in the submodule, then stage its pointer" | the role changed files inside an initialised submodule and committed nothing there (or moved a pointer its `.gitmodules` hides with `ignore = all`); the rest of its work is committed on the branch | in the job's worktree: commit inside `<path>`, then `git add <path>` and commit; `jobs clean` leaves that worktree in place until you do |
+| `warnings[]`: "<path> left out of the commit on <branch>: git did not stage it (sparse-checkout, permissions or a filter — see the job's stderr.log)" | `git add` would not stage that path — outside the worktree's sparse-checkout cone, unreadable, or refused by a clean filter (git-lfs); the rest of the work is committed on the branch | read git's words: `claustrum jobs logs <job_id> --stderr`; in the job's worktree fix the cause (`git add --sparse <path>`, the file's permissions, the filter), then commit it there; `jobs clean` leaves that worktree in place until you do |
 | `warnings[]`: "work left uncommitted: <path> is not the job worktree on <branch> (…)" | the job's worktree was removed while it ran — typically a `jobs clean` under a different `CLAUSTRUM_HOME` — and the role kept writing into a plain directory | nothing was committed, and the receipt lists no changes and no `commit`; what the role wrote after that is in `<path>`, outside every branch: move it by hand, or rerun the builder |
 | `warnings[]`: "work left uncommitted: <path> is on …, not <branch>" | the role left its own worktree off its branch — stopped mid-rebase (a detached `HEAD`) or switched branch | nothing was committed; `changed_files`/`diff` are what changed in that worktree. Finish or abort the rebase there (`git -C <path> rebase --continue`/`--abort`), or switch back to `<branch>`, then commit inside it |
+| `warnings[]`: "work left uncommitted: <path> has a … in progress, not a clean <branch>" | the role left a merge (conflicted or not), a rebase or a `git am` in progress on its own branch, and the runner's commit would have concluded it — a merge commit, or a commit in the middle of a rewrite | nothing was committed; `changed_files`/`diff` are what changed in that worktree. In `<path>`, abort a merge (`git merge --abort`: integration never makes a merge commit); finish or abort a rebase or `git am` (`--continue`/`--abort`); then commit what is left inside it |
+| `warnings[]`: "work left uncommitted: <path> has unresolved conflicts on <branch> — resolve or abort the operation inside the worktree, then commit there yourself" | the role left conflicted paths on its own branch — a cherry-pick, revert, `stash pop`/`apply`, `merge --squash` or `apply --3way` stopped on a conflict — and `git add -A` would have committed their conflict markers as the resolution | nothing was committed; `changed_files`/`diff` are what changed in that worktree. In `<path>`, `git status` names the paths: fix them and `git add` them, or abort what made them (`git cherry-pick --abort`, `git revert --abort`, `git reset --merge` for the others — a conflicted `stash pop` keeps its stash); then commit inside it |
 | `warnings[]`: "receipt delta unavailable, snapshot kept: …" | after the runner's commit, git could not read the branch's tip or diff it against the run's starting commit (a git past its 30 s bound) | `commit`, when set, is right and nothing is left to commit; `changed_files`/`diff` are the snapshot from before the commit, which can miss what the role committed itself — read the branch (`git log -p <branch>`) |
 | `jobs clean`: "could not remove <job>: <path> left in place: …" | that worktree has uncommitted changes (new files included), or a populated submodule | commit or discard them (`git -C <path> status --untracked-files=all`), then rerun; `git worktree remove --force <path>` only once you know what it drops |
-| `fatal: '<branch>' is already used by worktree at '…'` on `git rebase` | a builder's branch is still checked out in its worktree | `claustrum jobs clean` first, or `git -C <worktree> rebase <work branch>` |
+| `jobs clean`: "… left in place: it holds job worktrees of its own under …" | a `coordinate` architect's worktree still holds its builders' worktrees | `claustrum jobs clean --cwd <that worktree>` first (the message names it), then rerun |
+| `fatal: '<branch>' is already used by worktree at '…'` on `git rebase` | a builder's branch is still checked out in its worktree | `git -C <worktree> rebase <work branch>`, then `git merge --ff-only <branch>` on the work branch (§9) |
 | `status: budget_exceeded` in milliseconds | admission refused it, nothing spent | read `error` — the four routes in §10 |
 | `status: timeout` on `coordinate` | the architect's `--timeout` (default 1800 s) is too small for a whole pipeline | rerun with more; finished children are still in `jobs list` |
 | MCP tools absent in the host | the host could not spawn `claustrum` (not on its `PATH`) | absolute `command` in `.mcp.json`, or install the binary where the GUI looks |

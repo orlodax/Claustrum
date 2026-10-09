@@ -16,5 +16,6 @@ namespace Claustrum.Mcp.Json;
 [JsonSerializable(typeof(int[]))]
 [JsonSerializable(typeof(DoctorReport))]
 [JsonSerializable(typeof(DelegateAsyncResult))]
+[JsonSerializable(typeof(CoordinateStartResult))]
 [JsonSerializable(typeof(JobStatusInfo))]
 public sealed partial class McpJsonContext : JsonSerializerContext;

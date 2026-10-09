@@ -78,7 +78,44 @@ public sealed class BoundedCleanupAndIsolationRoleTests : IDisposable
         Assert.Contains("`changed_files`, and `worktree`/`branch`/`commit` for builders that ran isolated.", body, StringComparison.Ordinal);
         Assert.Contains("**An isolated builder's branch already carries its work** as a commit (`commit` on the receipt)", body, StringComparison.Ordinal);
         Assert.Contains("`--branch <the branch on that builder's receipt>` (`branch` on `delegate`)", body, StringComparison.Ordinal);
-        Assert.Contains("run `claustrum jobs clean` first (finished worktrees go, branches stay), or rebase inside that worktree (`git -C <worktree> rebase <work branch>`)", body, StringComparison.Ordinal);
+        // #74 F5: one integration order — rebase inside the builder's worktree, fast-forward from your own, clean once integrated.
+        Assert.Contains("rebase it inside the builder's worktree (`git -C <worktree> rebase <work branch>`), then fast-forward the work branch to it from your own working tree (`git merge --ff-only <builder branch>`)", body, StringComparison.Ordinal);
+        Assert.Contains("Never rebase in your own working tree: that leaves it on the builder's branch.", body, StringComparison.Ordinal);
+        Assert.Contains("Once the builders are integrated — not before — run `claustrum jobs clean --cwd <your working tree>` (finished worktrees go, branches stay).", body, StringComparison.Ordinal);
+        Assert.DoesNotContain("run `claustrum jobs clean` first", body, StringComparison.Ordinal);
+    }
+
+    // #74 rounds 4-5: what an architect is told the receipt can say besides a refused commit.
+    [Theory]
+    [InlineData("claude")]
+    [InlineData("opencode")]
+    [InlineData("cursor")]
+    [InlineData("copilot")]
+    public void TheArchitectOnEveryHarnessIsToldTheShapesOfWhatDidNotLand(string harness)
+    {
+        string body = Body("architect", harness);
+
+        Assert.Contains("unless its `warnings[]` says what did not land, in one of these shapes.", body, StringComparison.Ordinal);
+        Assert.Contains("`work left uncommitted: <path> has a <merge | rebase | git am> in progress, not a clean <branch>`, or `work left uncommitted: <path> has unresolved conflicts on <branch> — …`", body, StringComparison.Ordinal);
+        Assert.Contains("(`git -C <path> merge --abort`: integration never makes a merge commit)", body, StringComparison.Ordinal);
+        Assert.Contains("A `… left out of the commit on <branch>` warning means the branch lacks that path while the builder's worktree still holds it", body, StringComparison.Ordinal);
+        Assert.Contains("(an embedded repository: move it out or add it as a submodule first)", body, StringComparison.Ordinal);
+        Assert.DoesNotContain("in one of three shapes", body, StringComparison.Ordinal);
+    }
+
+    // #80 J6: the receipt pointer names a public repository; ROLE.md ships to every user and devkit is private.
+    [Theory]
+    [InlineData("claude")]
+    [InlineData("opencode")]
+    [InlineData("cursor")]
+    [InlineData("copilot")]
+    public void TheArchitectRoleNamesNoPrivateDevkitPointer(string harness)
+    {
+        string body = Body("architect", harness);
+
+        Assert.DoesNotContain("Long form in the team's devkit", body, StringComparison.Ordinal);
+        Assert.DoesNotContain("devkit", body, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Receipt: Claustrum's own `NOTES.md` (orlodax/Claustrum #80).", body, StringComparison.Ordinal);
     }
 
     [Theory]

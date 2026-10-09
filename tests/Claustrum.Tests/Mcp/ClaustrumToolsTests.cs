@@ -460,7 +460,10 @@ public sealed class ClaustrumToolsTests(AppServicesHomeFixture fixture) : IDispo
     // issue #23: CoordinatePlan.Prepare (config, role, model) runs before JobDirectory.Create — a
     // syntactically broken claustrum.json is this call's own McpException, with no job directory
     // minted for it. claustrum.json is only read from the git root (Config.Load), so this needs a
-    // real repo, unlike CoordinateWithNeitherIssuesNorBriefThrowsMcpExceptionAndStartsNoJobAsync.
+    // real repo, unlike CoordinateWithNeitherIssuesNorBriefThrowsMcpExceptionAndStartsNoJobAsync. #74: the
+    // cast, the ignore rules and the broken file are committed first — the architect's worktree sees committed
+    // files only, and an uncommitted setup is refused by that precondition (also naming claustrum.json), which
+    // would leave the config refusal this test is about unexercised.
     [Fact]
     public async Task CoordinateWithABrokenConfigThrowsMcpExceptionAndStartsNoJobAsync()
     {
@@ -469,6 +472,9 @@ public sealed class ClaustrumToolsTests(AppServicesHomeFixture fixture) : IDispo
         {
             CastStore.Save(cwd, new Cast("default", "1.0.0", new CastArchitect(CastArchitect.Spawned, Model: "nonexistent:x"), [], null));
             File.WriteAllText(Path.Combine(cwd, "claustrum.json"), "{ not json");
+            File.WriteAllText(Path.Combine(cwd, ".gitignore"), IsolatedRepo.MachineryIgnoreRules);
+            RunGit(cwd, "add", "-A");
+            RunGit(cwd, "commit", "-q", "-m", "setup");
             string jobsRoot = JobDirectory.ResolveRoot(fixture.Platform);
             int before = Directory.Exists(jobsRoot) ? Directory.GetDirectories(jobsRoot).Length : 0;
 
@@ -476,6 +482,7 @@ public sealed class ClaustrumToolsTests(AppServicesHomeFixture fixture) : IDispo
                 () => ClaustrumTools.CoordinateAsync(brief: "hi", cwd: cwd, cancellationToken: CancellationToken.None));
 
             Assert.Contains("claustrum.json", exception.Message, StringComparison.Ordinal);
+            Assert.DoesNotContain("sees only committed files", exception.Message, StringComparison.Ordinal);
             int after = Directory.Exists(jobsRoot) ? Directory.GetDirectories(jobsRoot).Length : 0;
             Assert.Equal(before, after);
         }
@@ -527,6 +534,7 @@ public sealed class ClaustrumToolsTests(AppServicesHomeFixture fixture) : IDispo
             string jobId = started.RootElement.GetProperty("job_id").GetString()!;
             Assert.NotEmpty(jobId);
             Assert.Contains("stdout.log", started.RootElement.GetProperty("log_path").GetString());
+            Assert.Equal(0, started.RootElement.GetProperty("warnings").GetArrayLength());
 
             JobStatusInfo? status = await PollUntilDoneAsync(jobId);
             Assert.Equal("done", status?.State);
@@ -538,6 +546,13 @@ public sealed class ClaustrumToolsTests(AppServicesHomeFixture fixture) : IDispo
             string requestPath = Path.Combine(JobDirectory.ResolveRoot(fixture.Platform), jobId, "request.json");
             using JsonDocument request = JsonDocument.Parse(File.ReadAllText(requestPath));
             Assert.True(request.RootElement.GetProperty("stream").GetBoolean());
+
+            // #74 G4: this cwd is no git repository, so the architect runs in place, with the appendix that says so.
+            Assert.Equal(cwd, request.RootElement.GetProperty("cwd").GetString());
+            string systemMd = File.ReadAllText(Path.Combine(JobDirectory.ResolveRoot(fixture.Platform), jobId, "system.md"));
+            Assert.Contains($"No git repository at {cwd}: there is no work branch and no worktree isolation", systemMd, StringComparison.Ordinal);
+            Assert.Null(result?.Worktree);
+            Assert.Null(result?.Branch);
         }
         finally
         {

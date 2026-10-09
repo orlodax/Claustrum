@@ -70,18 +70,42 @@ public sealed class CoordinateEndToEndTests : IDisposable
     // issue #23: CoordinatePlan.Prepare (config, role, model) runs before JobDirectory.Create on both
     // doors — a syntactically broken claustrum.json is this invocation's own exit-2 error, with
     // nothing minted for it. claustrum.json is only read from the git root (Config.Load), so this
-    // needs a real repo, unlike every other usage-error test in this file.
+    // needs a real repo, unlike every other usage-error test in this file. #74: the cast and the
+    // broken file are committed first — an architect worktree sees committed files only, and an
+    // uncommitted setup would be refused by that precondition (exit 2 as well, naming the same
+    // file), proving nothing about the config.
     [Fact]
     public async Task BrokenClaustrumJsonExitsTwoAndStartsNoJobAsync()
     {
         InitGitRepo();
         WriteDefaultCast();
         File.WriteAllText(Path.Combine(cwd, "claustrum.json"), "{ not json");
+        CommitSetup();
 
         (int exitCode, _, string stderr) = await RunAsync(["coordinate", "--brief", "x"], PathStrippedToGit());
 
         Assert.Equal(ExitCodes.Usage, exitCode);
         Assert.Contains("claustrum.json", stderr, StringComparison.Ordinal);
+        Assert.DoesNotContain("sees only committed files", stderr, StringComparison.Ordinal);
+        Assert.False(Directory.Exists(Path.Combine(home, "jobs")));
+    }
+
+    // The same file, uncommitted: the architect's worktree would not see it, so the precondition answers first
+    // and names the file and its state (NOTES.md "coordinate runs the architect in its own worktree", 1).
+    [Fact]
+    public async Task AnUncommittedClaustrumJsonIsRefusedByThePreconditionNotTheConfigAsync()
+    {
+        InitGitRepo();
+        WriteDefaultCast();
+        File.WriteAllText(Path.Combine(cwd, ".gitignore"), IsolatedRepo.MachineryIgnoreRules);
+        File.WriteAllText(Path.Combine(cwd, "claustrum.json"), "{ not json");
+        RunGit("add", ".gitignore", ".claustrum");
+        RunGit("commit", "-q", "-m", "cast and rules, no config");
+
+        (int exitCode, _, string stderr) = await RunAsync(["coordinate", "--brief", "x"], PathStrippedToGit());
+
+        Assert.Equal(ExitCodes.Usage, exitCode);
+        Assert.Contains("which sees only committed files — commit (or un-ignore) claustrum.json (untracked) first", stderr, StringComparison.Ordinal);
         Assert.False(Directory.Exists(Path.Combine(home, "jobs")));
     }
 
@@ -109,19 +133,24 @@ public sealed class CoordinateEndToEndTests : IDisposable
         Assert.True(houseRules >= 0, stderr);
         Assert.True(coordination < houseRules);
 
-        // The real job id, not DelegateRequest.JobIdToken: the three lines the appendix names it on
-        // (Job tree/Inspect/Work branch — CoordinationBrief.RenderSystemAppendix) all substituted by
-        // PreparedDelegation.ForJob once the directory was minted (issue #23), and no `{{job_id}}`
-        // survives anywhere in the two files this job wrote.
+        // The real job id, not DelegateRequest.JobIdToken: the lines the appendix names it on (Job tree,
+        // Inspect) are substituted by PreparedDelegation.ForJob once the directory was minted (issue #23),
+        // and no `{{job_id}}` survives anywhere in the two files this job wrote. #74 G4: this cwd is no
+        // git repository, so the architect runs in place and the appendix has no work branch to name.
         Assert.Contains($"Job tree: {jobId}", systemMd, StringComparison.Ordinal);
         Assert.Contains($"Inspect: claustrum jobs budget {jobId}", systemMd, StringComparison.Ordinal);
-        Assert.Contains($"Work branch: claustrum/{jobId}", systemMd, StringComparison.Ordinal);
+        Assert.Contains($"No git repository at {cwd}: there is no work branch and no worktree isolation", systemMd, StringComparison.Ordinal);
+        Assert.DoesNotContain("Work branch", systemMd, StringComparison.Ordinal);
         Assert.DoesNotContain("{{job_id}}", systemMd, StringComparison.Ordinal);
+        Assert.True(root.GetProperty("worktree").ValueKind == JsonValueKind.Null, stdout);
+        Assert.True(root.GetProperty("branch").ValueKind == JsonValueKind.Null, stdout);
+        Assert.False(Directory.Exists(Path.Combine(cwd, ".claustrum", "worktrees")));
 
         string requestJsonText = File.ReadAllText(Path.Combine(home, "jobs", jobId, "request.json"));
         JsonElement request = JsonDocument.Parse(requestJsonText).RootElement;
         Assert.Equal(jobId, request.GetProperty("env").GetProperty("CLAUSTRUM_PARENT_JOB").GetString());
         Assert.DoesNotContain("{{job_id}}", requestJsonText, StringComparison.Ordinal);
+        Assert.Equal(cwd, request.GetProperty("cwd").GetString());
     }
 
     [Fact]
@@ -167,9 +196,11 @@ public sealed class CoordinateEndToEndTests : IDisposable
     [Fact]
     public async Task ArchitectsOwnCostIsRecordedInTheTreeLedgerAsync()
     {
+        // #74: in a repository the architect runs isolated, so its setup is committed, with the ignore rules in place.
         InitGitRepo();
         WriteConfigWithFakeClaudeBackend(costUsd: 0.25m);
         WriteDefaultCast(budgetUsd: 10.00m, architectModel: "claude:opus");
+        CommitSetup();
 
         (int exitCode, string stdout, string stderr) = await RunAsync(["coordinate", "--brief", "x"], PathStrippedToGit());
 
@@ -185,6 +216,8 @@ public sealed class CoordinateEndToEndTests : IDisposable
         Assert.Contains("done", stdout, StringComparison.Ordinal);
 
         string jobId = ExtractJobId(stdout, stderr);
+        Assert.Contains($"branch: claustrum/{jobId}", stdout, StringComparison.Ordinal);
+        Assert.Matches($@"(?m)^worktree: .*[/\\]\.claustrum[/\\]worktrees[/\\]{jobId}$", stdout);
         (int budgetExitCode, string budgetStdout, _) = await RunAsync(["jobs", "budget", jobId], PathStrippedToGit());
 
         Assert.Equal(ExitCodes.Ok, budgetExitCode);
@@ -273,9 +306,19 @@ public sealed class CoordinateEndToEndTests : IDisposable
         RunGit("init", "-q");
         RunGit("config", "user.email", "test@example.com");
         RunGit("config", "user.name", "claustrum-tests");
+        RunGit("config", "commit.gpgsign", "false");
         File.WriteAllText(Path.Combine(cwd, "seed.txt"), "seed\n");
         RunGit("add", "-A");
         RunGit("commit", "-q", "-m", "seed");
+    }
+
+    // What an isolated architect needs committed (#74): `claustrum init`'s ignore rules for its machinery, and every
+    // file the test wrote — the cast, claustrum.json, the fake backend script.
+    private void CommitSetup()
+    {
+        File.WriteAllText(Path.Combine(cwd, ".gitignore"), IsolatedRepo.MachineryIgnoreRules);
+        RunGit("add", "-A");
+        RunGit("commit", "-q", "-m", "setup");
     }
 
     private void RunGit(params string[] args)
@@ -328,6 +371,8 @@ public sealed class CoordinateEndToEndTests : IDisposable
         foreach (string arg in args)
             startInfo.ArgumentList.Add(arg);
         startInfo.Environment["CLAUSTRUM_HOME"] = home;
+        startInfo.Environment["HOME"] = home;
+        startInfo.Environment["APPDATA"] = home;
         startInfo.Environment["CLAUSTRUM_SKIP_PROBE"] = "1";
         // #66: `coordinate` mints its own tree id; an inherited one would put this architect in the
         // caller's tree, so a gate run inside a Claustrum job tree went red on the ledger lines.

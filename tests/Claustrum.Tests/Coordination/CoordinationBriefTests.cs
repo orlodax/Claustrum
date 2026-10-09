@@ -173,11 +173,11 @@ public sealed class CoordinationBriefTests
     // #58, #61, #62, #63 as the architect is told them. Every line below is an instruction a spawned
     // architect obeys literally, so a reworded one is a behaviour change: the texts are pinned whole.
     [Fact]
-    public void TheAppendixSaysAnIsolatedBuildersBranchCarriesItsWorkAsACommitWithThreeWarningShapes()
+    public void TheAppendixSaysAnIsolatedBuildersBranchCarriesItsWorkAsACommitAndWhatDidNotLandInFourShapes()
     {
-        string appendix = CoordinationBrief.RenderSystemAppendix(BuildCast(), "default", "/repo");
+        string appendix = CoordinationBrief.RenderSystemAppendix(BuildCast(), "default", "/repo", isolated: true);
 
-        Assert.Contains("and that branch carries its work as a commit (`commit` on the receipt) — unless its `warnings[]` says the work was left uncommitted, in one of three shapes.", appendix, StringComparison.Ordinal);
+        Assert.Contains("and that branch carries its work as a commit (`commit` on the receipt) — unless its `warnings[]` says what did not land, in one of these shapes.", appendix, StringComparison.Ordinal);
         Assert.Contains(
             "`work left uncommitted on <branch>`: git refused that commit, and the work is still in the builder's `worktree`; commit it inside that worktree yourself before integrating.",
             appendix, StringComparison.Ordinal);
@@ -185,22 +185,36 @@ public sealed class CoordinationBriefTests
             "`work left uncommitted: <path> is on <a detached HEAD | refs/heads/…>, not <branch>`: the builder stopped mid-rebase or switched branch, and a commit there would land off its branch — first finish or abort the rebase (`git -C <path> rebase --continue`/`--abort`) or `git -C <path> switch <branch>`, then commit inside it.",
             appendix, StringComparison.Ordinal);
         Assert.Contains(
+            "`work left uncommitted: <path> has a <merge | rebase | git am> in progress, not a clean <branch>`, or `work left uncommitted: <path> has unresolved conflicts on <branch> — …`: the builder stopped mid-operation, and a commit there would conclude it — abort a merge (`git -C <path> merge --abort`: integration never makes a merge commit); finish or abort a rebase or `git am` (`--continue`/`--abort`); resolve the conflicts (fix the files, then `git -C <path> add` them) or abort what made them (`cherry-pick --abort`, `revert --abort`, `reset --merge`); then commit inside that worktree yourself.",
+            appendix, StringComparison.Ordinal);
+        Assert.Contains(
             "`work left uncommitted: <path> is not the job worktree on <branch> (…)`: the worktree was gone or foreign, so nothing reached the branch and what the builder wrote is in `<path>`, outside every branch — move it by hand or rerun the builder.",
             appendix, StringComparison.Ordinal);
+        Assert.Contains(
+            "A `… left out of the commit on <branch>` warning means the branch lacks that path while the builder's worktree still holds it — if it belongs in the change, stage and commit it there yourself before integrating (an embedded repository: move it out or add it as a submodule first).",
+            appendix, StringComparison.Ordinal);
+        Assert.DoesNotContain("in one of three shapes", appendix, StringComparison.Ordinal);
     }
 
-    // review F5: a builder's branch stays checked out in its worktree until `jobs clean`, and git will not
-    // rebase a branch checked out elsewhere (exit 128, measured), so integration frees it first.
+    // #74 F5: a builder's branch stays checked out in its worktree until `jobs clean`, and git will not rebase a
+    // branch checked out elsewhere (exit 128, measured). From an isolated architect's own worktree `git rebase
+    // <work> <builder branch>` also leaves it on the builder's branch, and `git checkout`/`git switch` are denied
+    // (#62), so the one order is: rebase inside the builder's worktree, fast-forward from your own, clean last.
     [Fact]
-    public void TheAppendixSaysToCleanFinishedWorktreesBeforeRebasingOrToRebaseInsideTheWorktree()
+    public void TheAppendixSaysToRebaseInsideTheBuildersWorktreeFastForwardFromYourOwnAndCleanOnlyOnceIntegrated()
     {
-        string appendix = CoordinationBrief.RenderSystemAppendix(BuildCast(), "default", "/repo with space");
+        string appendix = CoordinationBrief.RenderSystemAppendix(BuildCast(), "default", "/repo with space", isolated: true);
+        string worktree = Path.Combine("/repo with space", ".claustrum", "worktrees", DelegateRequest.JobIdToken);
 
         Assert.Contains("Integrate each builder branch by rebasing it onto the work branch, then fast-forward the work branch to it.", appendix, StringComparison.Ordinal);
-        Assert.Contains("git will not rebase a branch checked out elsewhere", appendix, StringComparison.Ordinal);
-        Assert.Contains("run `claustrum jobs clean --cwd \"/repo with space\"` first (finished worktrees go, branches stay)", appendix, StringComparison.Ordinal);
-        Assert.Contains("or rebase inside that worktree (`git -C <worktree> rebase <work branch>`)", appendix, StringComparison.Ordinal);
+        Assert.Contains("git will not rebase a branch checked out elsewhere: rebase it inside the builder's worktree (`git -C <worktree> rebase <work branch>`), then fast-forward the work branch to it from your own working tree (`git merge --ff-only <builder branch>`).", appendix, StringComparison.Ordinal);
+        Assert.Contains("Never rebase in your own working tree: that leaves it on the builder's branch, and `git checkout`/`git switch` are denied for this run.", appendix, StringComparison.Ordinal);
+        Assert.Contains(
+            $"Once the builders are integrated — not before — run `claustrum jobs clean --cwd \"{worktree}\"` (finished worktrees go, branches stay).",
+            appendix, StringComparison.Ordinal);
         Assert.Contains("- Never a merge commit, never `git push`.", appendix, StringComparison.Ordinal);
+        Assert.DoesNotContain("run `claustrum jobs clean --cwd \"/repo with space\"` first", appendix, StringComparison.Ordinal);
+        Assert.DoesNotContain("or rebase inside that worktree", appendix, StringComparison.Ordinal);
     }
 
     // review T4: the remediation hint is for an isolated builder; an in-place one has no branch of its own, and
@@ -209,7 +223,7 @@ public sealed class CoordinationBriefTests
     [Fact]
     public void TheAppendixSendsAnIsolatedBuildersBranchBackWithTheBranchOnItsReceipt()
     {
-        string appendix = CoordinationBrief.RenderSystemAppendix(BuildCast(), "default", "/repo");
+        string appendix = CoordinationBrief.RenderSystemAppendix(BuildCast(), "default", "/repo", isolated: true);
 
         Assert.Contains("To send an isolated builder's reviewed branch back for remediation", appendix, StringComparison.Ordinal);
         Assert.Contains("(one that ran under `max_parallel` above 1 or with `--branch`; an in-place builder has no branch of its own — its work is already in your working tree)", appendix, StringComparison.Ordinal);
@@ -221,7 +235,7 @@ public sealed class CoordinationBriefTests
     [Fact]
     public void TheAppendixSaysMaxParallelIsACapAtEveryValueOneIncluded()
     {
-        string appendix = CoordinationBrief.RenderSystemAppendix(BuildCast(), "default", "/repo");
+        string appendix = CoordinationBrief.RenderSystemAppendix(BuildCast(), "default", "/repo", isolated: true);
 
         Assert.Contains("- `max_parallel` is a cap at every value, 1 included: a builder past it waits for a slot. Isolation starts at 2.", appendix, StringComparison.Ordinal);
     }
@@ -234,11 +248,91 @@ public sealed class CoordinationBriefTests
     {
         Cast cast = BuildCast();
 
-        string appendix = CoordinationBrief.RenderSystemAppendix(cast, "default", "/repo");
+        string appendix = CoordinationBrief.RenderSystemAppendix(cast, "default", "/repo", isolated: true);
 
         Assert.Contains($"Job tree: {DelegateRequest.JobIdToken}", appendix, StringComparison.Ordinal);
         Assert.Contains($"Inspect: claustrum jobs budget {DelegateRequest.JobIdToken}", appendix, StringComparison.Ordinal);
         Assert.Contains($"Work branch: claustrum/{DelegateRequest.JobIdToken}", appendix, StringComparison.Ordinal);
+    }
+
+    // #74: isolated, every path the architect hands a child is its own worktree's — the `Delegate with:` line,
+    // the `Work branch:` block's own location and the final `jobs clean --cwd` — never the operator's cwd.
+    [Fact]
+    public void AnIsolatedAppendixNamesTheArchitectsWorktreeOnTheDelegateLineTheWorkBranchAndTheCleanCommand()
+    {
+        string appendix = CoordinationBrief.RenderSystemAppendix(BuildCast(), "my cast", "/repo with space", isolated: true);
+        string worktree = Path.Combine("/repo with space", ".claustrum", "worktrees", DelegateRequest.JobIdToken);
+
+        Assert.Contains($"Delegate with: claustrum run <role> --cast \"my cast\" --brief-file <path> --json --cwd \"{worktree}\"", appendix, StringComparison.Ordinal);
+        Assert.Contains($"Work branch: claustrum/{DelegateRequest.JobIdToken} — you are already on it, in your own worktree {worktree}, cut from the operator's HEAD: it holds committed files only.", appendix, StringComparison.Ordinal);
+        Assert.Contains("- The main checkout at /repo with space is the operator's: never cd into it, and never change its branch or its files.", appendix, StringComparison.Ordinal);
+        Assert.Contains($"- Every delegation takes --cwd \"{worktree}\", as `Delegate with:` above does: an isolated builder's worktree then nests under yours, cut from the work branch's tip.", appendix, StringComparison.Ordinal);
+        Assert.Contains("- Commit your integration yourself and leave your worktree clean: when you finish, the runner commits whatever is still uncommitted in it onto the work branch, stray files included.", appendix, StringComparison.Ordinal);
+        Assert.DoesNotContain("--cwd \"/repo with space\"", appendix, StringComparison.Ordinal);
+    }
+
+    // #74 G4: in place means no git repository, so no git line may survive — every one would be an instruction
+    // the architect cannot carry out (a work branch to be on, a rebase, a worktree to clean).
+    [Fact]
+    public void AnInPlaceAppendixSaysThereIsNoGitRepositoryInOneLineAndKeepsNoGitInstruction()
+    {
+        string appendix = CoordinationBrief.RenderSystemAppendix(BuildCast(), "default", "/plain dir");
+
+        Assert.Contains(
+            "No git repository at /plain dir: there is no work branch and no worktree isolation — builders run in place, one at a time, and their changes land directly in /plain dir; nothing to rebase or clean.",
+            appendix, StringComparison.Ordinal);
+        Assert.Contains("Delegate with: claustrum run <role> --cast \"default\" --brief-file <path> --json --cwd \"/plain dir\"", appendix, StringComparison.Ordinal);
+        Assert.EndsWith("nothing to rebase or clean.", appendix, StringComparison.Ordinal);
+        string[] gone =
+        [
+            "Work branch", "rebase <work", "git rebase", "jobs clean", "--branch <", "Never a merge commit", "never `git push`",
+            "cap at every value", "at every value", "Isolation starts at 2", "git merge --ff-only", "left uncommitted", "left out of the commit",
+            "your own worktree", "operator's HEAD", "worktrees",
+        ];
+        foreach (string fragment in gone)
+            Assert.DoesNotContain(fragment, appendix, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TheDefaultRenderIsTheInPlaceOneAndIsolatedFalseSaysTheSame()
+    {
+        string byDefault = CoordinationBrief.RenderSystemAppendix(BuildCast(), "default", "/repo");
+        string explicitFalse = CoordinationBrief.RenderSystemAppendix(BuildCast(), "default", "/repo", isolated: false);
+
+        Assert.Equal(explicitFalse, byDefault);
+        Assert.Contains("No git repository at /repo:", byDefault, StringComparison.Ordinal);
+    }
+
+    // The two renders differ only in the git block after the briefs line: everything above it — the cast, the
+    // budget lines, the token lines, the budget_exceeded shapes — is one text.
+    [Fact]
+    public void TheIsolatedAndInPlaceAppendicesShareEverythingAboveTheGitBlock()
+    {
+        string inPlace = CoordinationBrief.RenderSystemAppendix(BuildCast(budgetUsd: 4m), "default", "/repo");
+        string isolated = CoordinationBrief.RenderSystemAppendix(BuildCast(budgetUsd: 4m), "default", "/repo", isolated: true);
+        const string briefs = "- Write each brief to .claustrum/briefs/<n>-<role>.md first, then pass that path to --brief-file.\n";
+        string worktree = Path.Combine("/repo", ".claustrum", "worktrees", DelegateRequest.JobIdToken);
+        string sharedHead = inPlace[..(inPlace.IndexOf(briefs, StringComparison.Ordinal) + briefs.Length)];
+
+        // Only the `Delegate with:` --cwd differs above the git block: the worktree, not the operator's checkout.
+        Assert.StartsWith(sharedHead.Replace("--cwd \"/repo\"", $"--cwd \"{worktree}\"", StringComparison.Ordinal), isolated, StringComparison.Ordinal);
+        Assert.DoesNotContain("Work branch", inPlace, StringComparison.Ordinal);
+        Assert.Contains("Work branch", isolated, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ArchitectCwdIsTheWorktreeOnlyWhenIsolated()
+    {
+        Assert.Equal("/repo", CoordinationBrief.ArchitectCwd("/repo", isolated: false));
+        Assert.Equal(
+            Path.Combine("/repo", ".claustrum", "worktrees", DelegateRequest.JobIdToken),
+            CoordinationBrief.ArchitectCwd("/repo", isolated: true));
+    }
+
+    [Fact]
+    public void WorkingDirectoryLineIsTheOneLineBindUserPromptReplaces()
+    {
+        Assert.Equal("- Working directory: /some/dir", CoordinationBrief.WorkingDirectoryLine("/some/dir"));
     }
 
     // The four distinct shapes a budget_exceeded error can take (DelegateEngine/BudgetLedger), all

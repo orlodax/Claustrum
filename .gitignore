@@ -485,8 +485,9 @@ $RECYCLE.BIN/
 # Agent worktrees
 .claude/worktrees/
 
-# Claustrum per-job worktrees and cross-process concurrency locks (docs/PLAN.md §D5:
+# Claustrum per-job worktrees, drafted briefs and cross-process concurrency locks (docs/PLAN.md §D5:
 # casts/ is committable, worktrees/ is not); branches survive under refs/heads/claustrum/*
 # even after `claustrum jobs clean` removes the working directory.
 .claustrum/worktrees/
+.claustrum/briefs/
 .claustrum/locks/
