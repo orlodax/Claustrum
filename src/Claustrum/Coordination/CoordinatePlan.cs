@@ -67,19 +67,19 @@ public sealed record CoordinatePlan(
 
     /// <summary>
     /// <paramref name="prepared"/> with its user prompt's `Working directory:` line naming the real
-    /// worktree of job <paramref name="jobId"/> (#74). That one line, not the whole brief:
-    /// <see cref="PreparedDelegation.ForJob"/> fills the system prompt and the env, but the task above
-    /// this line is the caller's or an issue's text, and may quote <see cref="DelegateRequest.JobIdToken"/>.
+    /// worktree of job <paramref name="jobId"/> (#74). That one line in the `## Context` block, not the whole
+    /// brief: <see cref="PreparedDelegation.ForJob"/> fills the system prompt and the env, but the task above
+    /// is the caller's or an issue's text, and may quote <see cref="DelegateRequest.JobIdToken"/> or the line itself (#89).
     /// </summary>
     public PreparedDelegation BindUserPrompt(PreparedDelegation prepared, string jobId)
     {
         if (!Isolated)
             return prepared;
 
-        string brief = prepared.Request.Brief.Replace(
-            CoordinationBrief.WorkingDirectoryLine(CoordinationBrief.ArchitectCwd(Request.Cwd, isolated: true)),
-            CoordinationBrief.WorkingDirectoryLine(JobWorktree.PathFor(Request.Cwd, jobId)),
-            StringComparison.Ordinal);
+        string brief = CoordinationBrief.BindWorkingDirectory(
+            prepared.Request.Brief,
+            CoordinationBrief.ArchitectCwd(Request.Cwd, isolated: true),
+            JobWorktree.PathFor(Request.Cwd, jobId));
 
         return prepared with { Request = prepared.Request with { Brief = brief } };
     }

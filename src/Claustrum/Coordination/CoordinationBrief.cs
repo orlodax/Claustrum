@@ -24,6 +24,8 @@ public static class CoordinationBrief
     // browser-facing feature: it records the commit the tester's gate passed on.
     private static readonly string[] pipelineOrder = ["builder", "code-reviewer", "ui-reviewer", "tester", "demo-author"];
 
+    private const string ContextHeading = "## Context";
+
     /// <summary>
     /// Where the architect works: <paramref name="cwd"/> itself, or — isolated (#74) — its own worktree
     /// under it, whose path carries <see cref="DelegateRequest.JobIdToken"/> until the job exists.
@@ -35,7 +37,7 @@ public static class CoordinationBrief
 
     public static string RenderUserPrompt(string task, IReadOnlyList<int> issues, string workingDirectory)
     {
-        List<string> lines = ["## Task", task.Trim(), "", "## Context"];
+        List<string> lines = ["## Task", task.Trim(), "", ContextHeading];
 
         // The architect is not blind (docs/PLAN.md §B3: `## Context` is for non-blind roles), so the
         // issue numbers can be named — and `Closes #<n>` is the owner's rule 3, not a suggestion.
@@ -53,6 +55,22 @@ public static class CoordinationBrief
         lines.Add("- Your system prompt carries a `## Coordination` section — the cast, the delegate command, the budget rules and your work branch. Follow it literally.");
 
         return string.Join('\n', lines);
+    }
+
+    /// <summary>
+    /// <paramref name="userPrompt"/> (a <see cref="RenderUserPrompt"/> output) with its `Working directory:` line
+    /// moved from <paramref name="placeholder"/> to <paramref name="workingDirectory"/> — in the `## Context`
+    /// block this class wrote, never in the task above it, which may quote that very line (#89).
+    /// </summary>
+    public static string BindWorkingDirectory(string userPrompt, string placeholder, string workingDirectory)
+    {
+        // The last heading is ours: the task is rendered before it, and nothing after it repeats it.
+        int context = userPrompt.LastIndexOf($"\n{ContextHeading}\n", StringComparison.Ordinal);
+        if (context < 0)
+            throw new InvalidOperationException($"not a coordinate user prompt: no '{ContextHeading}' block to bind");
+
+        string bound = userPrompt[context..].Replace(WorkingDirectoryLine(placeholder), WorkingDirectoryLine(workingDirectory), StringComparison.Ordinal);
+        return string.Concat(userPrompt.AsSpan(0, context), bound);
     }
 
     // `isolated` (#74): the architect runs in its own worktree under `cwd`, so every path it hands a
@@ -120,7 +138,7 @@ public static class CoordinationBrief
             "- A builder running in parallel returns `worktree` and `branch` (claustrum/<its own job id>), and that branch carries its work as a commit (`commit` on the receipt) — unless its `warnings[]` says what did not land, in one of these shapes. `work left uncommitted on <branch>`: git refused that commit, and the work is still in the builder's `worktree`; commit it inside that worktree yourself before integrating. `work left uncommitted: <path> is on <a detached HEAD | refs/heads/…>, not <branch>`: the builder stopped mid-rebase or switched branch, and a commit there would land off its branch — first finish or abort the rebase (`git -C <path> rebase --continue`/`--abort`) or `git -C <path> switch <branch>`, then commit inside it. `work left uncommitted: <path> has a <merge | rebase | git am> in progress, not a clean <branch>`, or `work left uncommitted: <path> has unresolved conflicts on <branch> — …`: the builder stopped mid-operation, and a commit there would conclude it — abort a merge (`git -C <path> merge --abort`: integration never makes a merge commit); finish or abort a rebase or `git am` (`--continue`/`--abort`); resolve the conflicts (fix the files, then `git -C <path> add` them) or abort what made them (`cherry-pick --abort`, `revert --abort`, `reset --merge`); then commit inside that worktree yourself. `work left uncommitted: <path> is not the job worktree on <branch> (…)`: the worktree was gone or foreign, so nothing reached the branch and what the builder wrote is in `<path>`, outside every branch — move it by hand or rerun the builder. A `… left out of the commit on <branch>` warning means the branch lacks that path while the builder's worktree still holds it — if it belongs in the change, stage and commit it there yourself before integrating (an embedded repository: move it out or add it as a submodule first).",
             IntegrationLine(workingDirectory),
             "- To send an isolated builder's reviewed branch back for remediation (one that ran under `max_parallel` above 1 or with `--branch`; an in-place builder has no branch of its own — its work is already in your working tree), run the builder with `--branch <the branch on that builder's receipt>`: it continues on the same branch, in a fresh worktree, and its fix lands there as another commit.",
-            "- `max_parallel` is a cap at every value, 1 included: a builder past it waits for a slot. Isolation starts at 2.",
+            "- `max_parallel` is a cap at every value, 1 included: a builder past it waits for a slot — to actually run builders at once, start the runs in the background and `wait` (the recipe is in your Delegation contract). Isolation starts at 2.",
             "- Never a merge commit, never `git push`.",
         ];
     }

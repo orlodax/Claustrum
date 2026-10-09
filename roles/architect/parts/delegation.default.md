@@ -15,3 +15,19 @@
 - **Fanning out means starting several runs and then waiting for every one of them** — your shell's
   own backgrounding, or several `delegate_async` jobs polled to done — before you review anything.
   A review over a half-built batch judges a state that will never ship.
+- **Running builders concurrently from a shell.** Two blocking `claustrum run` calls in a row are
+  sequential — on 2026-10-09 a spawned architect with `max_parallel: 2` ran its two builders 64 ms
+  apart, one after the other (#72, drive 2). To run them at once, start each in the background with
+  its receipt redirected to a file, and `wait` for all of them in the same command:
+
+  ```sh
+  claustrum run builder --cast "<cast>" --brief-file .claustrum/briefs/1-builder.md --json \
+    --cwd "<dir>" > .claustrum/briefs/1-builder.result.json &
+  claustrum run builder --cast "<cast>" --brief-file .claustrum/briefs/2-builder.md --json \
+    --cwd "<dir>" > .claustrum/briefs/2-builder.result.json &
+  wait
+  ```
+
+  then read each receipt file as you would a single run's output — or use your harness's own
+  background-command mode when it has one, reading every receipt before you finish. Never start
+  more at once than the cast's `max_parallel`.

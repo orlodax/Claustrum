@@ -237,7 +237,7 @@ public sealed class CoordinationBriefTests
     {
         string appendix = CoordinationBrief.RenderSystemAppendix(BuildCast(), "default", "/repo", isolated: true);
 
-        Assert.Contains("- `max_parallel` is a cap at every value, 1 included: a builder past it waits for a slot. Isolation starts at 2.", appendix, StringComparison.Ordinal);
+        Assert.Contains("- `max_parallel` is a cap at every value, 1 included: a builder past it waits for a slot — to actually run builders at once, start the runs in the background and `wait` (the recipe is in your Delegation contract). Isolation starts at 2.", appendix, StringComparison.Ordinal);
     }
 
     // The job id does not exist yet when this renders (issue #23): the three lines that used to
@@ -385,5 +385,104 @@ public sealed class CoordinationBriefTests
 
         Assert.Contains("## Task\nfix the bug", prompt, StringComparison.Ordinal);
         Assert.Contains("- Working directory: /some/repo", prompt, StringComparison.Ordinal);
+    }
+
+    // #89: the task above `## Context` is the caller's or an issue's text, and a brief about this very code quotes the
+    // exact placeholder line; BindWorkingDirectory binds the line Claustrum wrote, in the block Claustrum wrote.
+    private const string Placeholder = "/repo/.claustrum/worktrees/{{job_id}}";
+
+    private const string Bound = "/repo/.claustrum/worktrees/20261009-120000-abcdef12";
+
+    [Fact]
+    public void BindWorkingDirectoryMovesTheContextLineFromThePlaceholderToTheRealPath()
+    {
+        string prompt = CoordinationBrief.RenderUserPrompt("do the thing", [12, 13], Placeholder);
+
+        string bound = CoordinationBrief.BindWorkingDirectory(prompt, Placeholder, Bound);
+
+        Assert.Equal(prompt.Replace($"- Working directory: {Placeholder}", $"- Working directory: {Bound}", StringComparison.Ordinal), bound);
+        Assert.Contains($"- Working directory: {Bound}", bound, StringComparison.Ordinal);
+        Assert.DoesNotContain("{{job_id}}", bound, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void BindWorkingDirectoryLeavesATaskThatQuotesTheExactPlaceholderLineVerbatim()
+    {
+        string quoted = $"- Working directory: {Placeholder}";
+        string task = $"the architect's brief should end with\n\n{quoted}\n\nand a second mention: `{{{{job_id}}}}`";
+        string prompt = CoordinationBrief.RenderUserPrompt(task, [], Placeholder);
+
+        string bound = CoordinationBrief.BindWorkingDirectory(prompt, Placeholder, Bound);
+
+        int context = bound.LastIndexOf("\n## Context\n", StringComparison.Ordinal);
+        Assert.Equal(task, bound["## Task\n".Length..context].Trim());
+        Assert.Contains($"\n{quoted}\n\nand a second mention: `{{{{job_id}}}}`", bound[..context], StringComparison.Ordinal);
+        Assert.Equal($"- Working directory: {Bound}", bound[context..].Split('\n').Single(line => line.StartsWith("- Working directory:", StringComparison.Ordinal)));
+    }
+
+    [Fact]
+    public void BindWorkingDirectoryBindsOnlyTheRenderersBlockWhenTheTaskHasItsOwnContextHeading()
+    {
+        string quoted = $"- Working directory: {Placeholder}";
+        string task = $"explain what this does:\n\n## Context\n{quoted}\n- Issues: none\n\nthen stop";
+        string prompt = CoordinationBrief.RenderUserPrompt(task, [], Placeholder);
+
+        string bound = CoordinationBrief.BindWorkingDirectory(prompt, Placeholder, Bound);
+
+        Assert.StartsWith($"## Task\n{task}\n\n## Context\n", bound, StringComparison.Ordinal);
+        Assert.Equal(2, bound.Split("\n## Context\n").Length - 1);
+        Assert.Equal(1, bound.Split(quoted).Length - 1);
+        Assert.Equal(1, bound.Split($"- Working directory: {Bound}").Length - 1);
+        Assert.True(bound.IndexOf(quoted, StringComparison.Ordinal) < bound.LastIndexOf("\n## Context\n", StringComparison.Ordinal), "the surviving placeholder line is the task's");
+    }
+
+    [Fact]
+    public void BindWorkingDirectoryOfATaskWhoseLastLineIsAContextHeadingStillFindsTheRenderersOne()
+    {
+        string prompt = CoordinationBrief.RenderUserPrompt("see below\n## Context", [], Placeholder);
+
+        string bound = CoordinationBrief.BindWorkingDirectory(prompt, Placeholder, Bound);
+
+        Assert.StartsWith("## Task\nsee below\n## Context\n\n## Context\n", bound, StringComparison.Ordinal);
+        Assert.Contains($"- Working directory: {Bound}", bound, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void BindWorkingDirectoryOfAPromptWithoutAContextHeadingThrowsInsteadOfBindingNothing()
+    {
+        InvalidOperationException ex = Assert.Throws<InvalidOperationException>(
+            () => CoordinationBrief.BindWorkingDirectory($"## Task\nonly a task\n- Working directory: {Placeholder}", Placeholder, Bound));
+
+        Assert.Contains("## Context", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("## Context\n- Working directory: x")]
+    [InlineData("## Task\nt\n## Contextual\n- Working directory: x")]
+    [InlineData("")]
+    public void BindWorkingDirectoryNeedsTheHeadingOnItsOwnLineAfterANewline(string notAPrompt)
+    {
+        Assert.Throws<InvalidOperationException>(() => CoordinationBrief.BindWorkingDirectory(notAPrompt, "x", "y"));
+    }
+
+    [Fact]
+    public void BindWorkingDirectoryOfAContextBlockWithoutThePlaceholderChangesNothing()
+    {
+        string prompt = CoordinationBrief.RenderUserPrompt("do the thing", [], "/somewhere/else");
+
+        Assert.Equal(prompt, CoordinationBrief.BindWorkingDirectory(prompt, Placeholder, Bound));
+    }
+
+    [Fact]
+    public void RenderUserPromptForANonIsolatedRunIsUnchangedByThisChange()
+    {
+        string prompt = CoordinationBrief.RenderUserPrompt("  do the thing\n", [12], "/repo");
+
+        Assert.Equal(
+            "## Task\ndo the thing\n\n## Context\n"
+            + "- Issues: #12. The commit or PR that resolves one cites `Closes #<n>` (owner's rule).\n"
+            + "- Working directory: /repo\n"
+            + "- Your system prompt carries a `## Coordination` section — the cast, the delegate command, the budget rules and your work branch. Follow it literally.",
+            prompt);
     }
 }

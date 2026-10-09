@@ -245,8 +245,10 @@ to use it. While it is in play it governs every delegation you make:
   extra jobs wait for a slot — but only up to the run's `--timeout` (default 1800 s), after which the
   waiting run comes back `status: failed` with the cap named in `error` (`all N '<cast>__<role>'
   slots … stayed unavailable for Ns`), having done nothing. So do not start more builders at once
-  than `max_parallel`. The cap holds at every value, 1 included: at 1 builders run one after
-  another in your working tree; above 1 each works in its own git worktree on its own branch.
+  than `max_parallel` — and to actually run builders at once, start the runs in the background and
+  `wait` (the recipe is in your Delegation contract). The cap holds at every value, 1 included: at 1
+  builders run one after another in your working tree; above 1 each works in its own git worktree on
+  its own branch.
 - **Brief files use the fixed H2s** `## Task`, `## Scope`, `## Must still work`, `## Diff`,
   `## Access` and — for non-blind roles only — `## Context`. Claustrum *refuses* a blind role's
   brief that carries `## Context`, `## Plan`, `## Rationale` or a pasted `claustrum-report` block:
