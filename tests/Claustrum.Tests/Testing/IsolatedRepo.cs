@@ -99,6 +99,14 @@ public sealed class IsolatedRepo : IDisposable
     public string[] JobDirectories() =>
         Directory.Exists(JobsRoot) ? [.. Directory.GetDirectories(JobsRoot).Select(Path.GetFileName).OfType<string>()] : [];
 
+    /// <summary>The built binary started with these arguments in the repository and left running, for a test that signals it.</summary>
+    public RunningCli StartCli(params string[] args)
+    {
+        string binary = Path.Combine(AppContext.BaseDirectory, OperatingSystem.IsWindows() ? "claustrum.exe" : "claustrum");
+        Assert.True(File.Exists(binary), $"built claustrum binary not found at '{binary}'");
+        return new RunningCli(binary, Repo, Home, ChildPath(), args);
+    }
+
     /// <summary>A `claustrum mcp` server over real stdio in this repository, with the same environment the CLI runs get.</summary>
     internal McpStdioClient StartMcp()
     {
