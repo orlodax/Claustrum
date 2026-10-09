@@ -228,6 +228,57 @@ public sealed class CoordinatePlanTests(AppServicesHomeFixture fixture) : IDispo
         Assert.Equal(prepared.Request.SystemAppendix, bound.Request.SystemAppendix);
     }
 
+    // #89: a task that quotes the very line BindUserPrompt looks for — the one a brief about this code would — must
+    // come through verbatim; only the line of the `## Context` block Claustrum wrote is bound.
+    [Fact]
+    public async Task BindUserPromptLeavesATaskQuotingTheExactWorkingDirectoryLineVerbatimAndBindsTheContextLineAsync()
+    {
+        using IsolatedRepo repo = IsolatedRepo.ForCoordinate();
+        const string jobId = "20261009-120000-abcdef12";
+        string quoted = $"- Working directory: {Path.Combine(repo.Repo, ".claustrum", "worktrees", DelegateRequest.JobIdToken)}";
+        string task = $"the brief ends with\n\n{quoted}\n\nand must keep saying so";
+        CoordinatePlan plan = await PlanInAsync(repo, task);
+        PreparedDelegation prepared = plan.Prepare();
+
+        PreparedDelegation bound = plan.BindUserPrompt(prepared, jobId);
+
+        string brief = bound.Request.Brief;
+        int context = brief.LastIndexOf("\n## Context\n", StringComparison.Ordinal);
+        Assert.StartsWith($"## Task\n{task}\n\n## Context\n", brief, StringComparison.Ordinal);
+        Assert.Contains(quoted, brief[..context], StringComparison.Ordinal);
+        Assert.DoesNotContain(DelegateRequest.JobIdToken, brief[context..], StringComparison.Ordinal);
+        Assert.Contains($"- Working directory: {Path.Combine(repo.Repo, ".claustrum", "worktrees", jobId)}", brief[context..], StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task BindUserPromptKeepsATaskWithItsOwnContextHeadingAndPlaceholderLineAsTheCallerWroteItAsync()
+    {
+        using IsolatedRepo repo = IsolatedRepo.ForCoordinate();
+        string quoted = $"- Working directory: {Path.Combine(repo.Repo, ".claustrum", "worktrees", DelegateRequest.JobIdToken)}";
+        string task = $"paste this into the doc:\n\n## Context\n{quoted}\n\nthen run `{{{{job_id}}}}` through it";
+        CoordinatePlan plan = await PlanInAsync(repo, task);
+        PreparedDelegation prepared = plan.Prepare();
+
+        PreparedDelegation bound = plan.BindUserPrompt(prepared, "20261009-120000-abcdef12");
+
+        string brief = bound.Request.Brief;
+        Assert.StartsWith($"## Task\n{task}\n\n## Context\n", brief, StringComparison.Ordinal);
+        Assert.Equal(1, brief.Split(quoted).Length - 1);
+        Assert.Equal(1, brief.Split($"- Working directory: {Path.Combine(repo.Repo, ".claustrum", "worktrees", "20261009-120000-abcdef12")}").Length - 1);
+        Assert.Contains("then run `{{job_id}}` through it", brief, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task BindUserPromptRefusesABriefWithoutTheContextBlockInsteadOfBindingNothingAsync()
+    {
+        using IsolatedRepo repo = IsolatedRepo.ForCoordinate();
+        CoordinatePlan plan = await PlanInAsync(repo);
+        PreparedDelegation prepared = plan.Prepare();
+        PreparedDelegation headless = prepared with { Request = prepared.Request with { Brief = "no headings at all" } };
+
+        Assert.Throws<InvalidOperationException>(() => plan.BindUserPrompt(headless, "20261009-120000-abcdef12"));
+    }
+
     [Fact]
     public async Task PreparedDelegationForJobFillsTheTokenInTheSystemPromptButNeverInTheBriefAsync()
     {

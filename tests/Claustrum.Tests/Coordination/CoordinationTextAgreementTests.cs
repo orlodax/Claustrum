@@ -57,6 +57,10 @@ public sealed class CoordinationTextAgreementTests : IDisposable
 
         // #58: the cap holds at every value.
         "at every value, 1 included",
+
+        // #90: a builder past the cap waits, so running them at once is a matter of starting them at once — the recipe
+        // lives in the Delegation contract, and both texts point at it with one sentence.
+        "to actually run builders at once, start the runs in the background and `wait` (the recipe is in your Delegation contract)",
     ];
 
     [Theory]
