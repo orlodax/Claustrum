@@ -120,11 +120,13 @@ public sealed class CoordinateIsolatedEndToEndTests : IDisposable
         CliResult process = await repo.RunAsync("coordinate", "--brief", "do the task");
 
         Assert.True(process.ExitCode == ExitCodes.Ok, process.Stderr);
-        string jobId = Regex.Match(process.Stdout, @"^job:\s+(\S+)", RegexOptions.Multiline).Groups[1].Value;
+        // Windows prints CRLF, and a .NET `$` matches only before `\n`.
+        string stdout = process.Stdout.ReplaceLineEndings("\n");
+        string jobId = Regex.Match(stdout, @"^job:\s+(\S+)", RegexOptions.Multiline).Groups[1].Value;
         Assert.NotEmpty(jobId);
-        Assert.Contains($"\nbranch: claustrum/{jobId}\n", process.Stdout, StringComparison.Ordinal);
-        Assert.Matches($@"(?m)^worktree: .*[/\\]\.claustrum[/\\]worktrees[/\\]{jobId}$", process.Stdout);
-        Assert.Contains($"\ncommit: {repo.Git("rev-parse", $"refs/heads/claustrum/{jobId}")}\n", process.Stdout, StringComparison.Ordinal);
+        Assert.Contains($"\nbranch: claustrum/{jobId}\n", stdout, StringComparison.Ordinal);
+        Assert.Matches($@"(?m)^worktree: .*[/\\]\.claustrum[/\\]worktrees[/\\]{jobId}$", stdout);
+        Assert.Contains($"\ncommit: {repo.Git("rev-parse", $"refs/heads/claustrum/{jobId}")}\n", stdout, StringComparison.Ordinal);
         Assert.DoesNotContain("warning:", process.Stderr, StringComparison.Ordinal);
     }
 

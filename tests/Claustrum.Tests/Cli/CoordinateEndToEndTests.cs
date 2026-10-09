@@ -217,7 +217,8 @@ public sealed class CoordinateEndToEndTests : IDisposable
 
         string jobId = ExtractJobId(stdout, stderr);
         Assert.Contains($"branch: claustrum/{jobId}", stdout, StringComparison.Ordinal);
-        Assert.Matches($@"(?m)^worktree: .*[/\\]\.claustrum[/\\]worktrees[/\\]{jobId}$", stdout);
+        // Windows prints CRLF, and a .NET `$` matches only before `\n`.
+        Assert.Matches($@"(?m)^worktree: .*[/\\]\.claustrum[/\\]worktrees[/\\]{jobId}\r?$", stdout);
         (int budgetExitCode, string budgetStdout, _) = await RunAsync(["jobs", "budget", jobId], PathStrippedToGit());
 
         Assert.Equal(ExitCodes.Ok, budgetExitCode);
