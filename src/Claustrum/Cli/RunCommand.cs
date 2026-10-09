@@ -86,16 +86,8 @@ public static class RunCommand
     {
         string cwd = Path.GetFullPath(cwdOption ?? Environment.CurrentDirectory);
 
-        using CancellationTokenSource cts = new();
-
-        // Let Runner finish the process kill and report Cancelled, not an abrupt process exit.
-        void OnCancel(object? sender, ConsoleCancelEventArgs e)
-        {
-            e.Cancel = true;
-            cts.Cancel();
-        }
-
-        Console.CancelKeyPress += OnCancel;
+        // The first Ctrl-C lets Runner kill the backend and write the `cancelled` receipt; a second one exits.
+        using CancelKeyHandler cancel = new();
 
         try
         {
@@ -125,7 +117,7 @@ public static class RunCommand
                 OnStreamLine: streamMode ? Console.Error.WriteLine : null,
                 Branch: branch is { Length: > 0 } ? branch : null);
 
-            RunResult result = await DelegateEngine.RunAsync(request, cts.Token);
+            RunResult result = await DelegateEngine.RunAsync(request, cancel.Token);
             RunResult output = rawMode ? result : result with { Raw = null };
 
             if (jsonMode)
@@ -143,10 +135,6 @@ public static class RunCommand
         catch (OperationCanceledException ex)
         {
             return Cancelled(ex);
-        }
-        finally
-        {
-            Console.CancelKeyPress -= OnCancel;
         }
     }
 

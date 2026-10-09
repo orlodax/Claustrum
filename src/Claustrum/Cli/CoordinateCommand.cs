@@ -62,16 +62,8 @@ public static class CoordinateCommand
     {
         string cwd = Path.GetFullPath(cwdOption ?? Environment.CurrentDirectory);
 
-        using CancellationTokenSource cts = new();
-
-        // Let Runner finish the process kill and report Cancelled, not an abrupt process exit.
-        void OnCancel(object? sender, ConsoleCancelEventArgs e)
-        {
-            e.Cancel = true;
-            cts.Cancel();
-        }
-
-        Console.CancelKeyPress += OnCancel;
+        // The first Ctrl-C lets Runner kill the backend and write the `cancelled` receipt; a second one exits.
+        using CancelKeyHandler cancel = new();
 
         try
         {
@@ -91,7 +83,7 @@ public static class CoordinateCommand
             // Everything that can be refused happens before the job directory exists — bad flags, a
             // missing cast, a `gh` that failed — because JobDirectory.Create also prunes the job
             // store, and a job minted for a run that never starts stays `pending` forever.
-            CoordinatePlan plan = await CoordinateEngine.PlanAsync(request, new GhIssueSource(AppServices.Platform), cts.Token);
+            CoordinatePlan plan = await CoordinateEngine.PlanAsync(request, new GhIssueSource(AppServices.Platform), cancel.Token);
 
             // Config, role render and model alias belong to that same "before" (issue #23): a broken
             // claustrum.json or a tier the architect has no model class for used to throw *after* the
@@ -107,7 +99,7 @@ public static class CoordinateCommand
             // spawns will join (docs/PLAN.md §D3), and the appendix prints it (DelegateRequest.JobIdToken).
             JobPaths job = JobDirectory.Create(AppServices.Platform);
 
-            RunResult result = await CoordinateEngine.RunAsync(plan, prepared, job, cts.Token);
+            RunResult result = await CoordinateEngine.RunAsync(plan, prepared, job, cancel.Token);
             RunResult output = rawMode ? result : result with { Raw = null };
 
             // Only a capped cast has a ledger at all (DelegateEngine builds no JobTreeBudget without
@@ -130,10 +122,6 @@ public static class CoordinateCommand
         catch (OperationCanceledException ex)
         {
             return RunCommand.Cancelled(ex);
-        }
-        finally
-        {
-            Console.CancelKeyPress -= OnCancel;
         }
     }
 
