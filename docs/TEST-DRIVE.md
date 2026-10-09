@@ -394,8 +394,10 @@ in a worktree, which holds committed files only, and `coordinate` refuses an unc
 
 ### 17. `coordinate` on one issue
 
-`gh` must be authenticated (`gh auth status`) and the repo must have a GitHub remote: the issue
-body becomes the brief's `## Task` through `gh issue view`. Everything the architect and its
+`gh` must be authenticated (`gh auth status`) and must know the repository: the issue body becomes
+the brief's `## Task` through `gh issue view`, which reads the checkout's GitHub remote, or
+`GH_REPO=<owner>/<repo>` from the environment when there is none — how the 2026-10-09 drive took
+its issues from a GitHub repository into a toy repo with no remote. Everything the architect and its
 children read must be committed on the drive branch — step 6's `claustrum.json` edits, the casts of
 steps 7 and 16, any `.claustrum/roles/` override — because they will read it from a worktree cut
 from `HEAD`: `git status --short --ignored claustrum.json .claustrum/casts .claustrum/roles` must
@@ -477,7 +479,7 @@ The things most likely to go wrong, with the fix already known:
 | `status: failed`, error "--branch <name>: already checked out in …" or "--branch <name>: checked out in …, the worktree of job …, which has not finished (no result.json)" | your checkout, a worktree of yours, or an unfinished job's worktree holds that branch | switch that checkout off it, or wait for that job to finish |
 | `status: timeout` on the coordinate run | `--timeout` too small for the pipeline | rerun with more; the children that finished are still in `jobs list` and on their branches |
 | `report_status: missing` on a child | the model dropped the report fence | keep the job id; the log has the final message |
-| exit 2 before any job: `gh issue view … failed` | no remote, not logged in, wrong number | fix the environment, nothing was spent |
+| exit 2 before any job: `gh issue view … failed` | no remote and no `GH_REPO`, not logged in, wrong number | fix the environment, nothing was spent |
 | exit 2 before any job: `coordinate runs the architect in a worktree, which sees only committed files — commit (or un-ignore) <path> (<state>) first` | the cast (step 16's `spawned.json`), `claustrum.json` or a role file under `.claustrum/roles/` is not committed as it stands, so the architect's worktree would not see it | commit what it names on the drive branch and rerun; nothing was spent. A `(skip-worktree)` or `(assume-unchanged)` state is a local edit `git update-index` hides: clear the bit, then commit. `.gitignore (… — the worktree gets HEAD's ignore rules; commit it first)` means that file has any uncommitted edit; `commit or git-ignore .mcp.json (untracked)`, an `init` output nobody committed. A `git-ignore .claustrum/worktrees/, …` variant means `init`'s `.gitignore` lines are not committed |
 
 ---
@@ -486,13 +488,18 @@ The things most likely to go wrong, with the fix already known:
 
 The drive is only worth doing if the numbers survive it. In `NOTES.md`, one dated section
 ("First real task, 2026-09-xx"), keep (the first drive's record is NOTES.md "The first real
-tasks: the test drive, 2026-09-25 to 2026-10-08"):
+tasks: the test drive, 2026-09-25 to 2026-10-08"; the second's, leg 3 only, is NOTES.md "The
+second drive: wave 2 of M4, 2026-10-09"):
 
 - per leg and per run: role, backend, model, `duration_seconds`, `cost_usd`, `report_status`,
   and whether `changed_files` matched the report — the same five columns every time;
 - every deviation from this document: a flag that did not exist, a default that was wrong, a role
   that ignored its text;
-- the tree ledger of leg 3 next to the sum of its receipts, and the architect's own cost beside it.
+- the tree ledger of leg 3 next to the sum of its receipts, and the architect's own cost beside it;
+- whether builders under `max_parallel` above 1 actually overlapped — from the ledger's
+  `started_at`/`finished_at` (`<claustrum home>/budget/<tree>/`), never from the architect's report:
+  the 2026-10-09 drive's architect reported "two builders ran in parallel" for two runs 64 ms apart,
+  one after the other (#90).
 
 Every defect becomes a GitHub issue **on the board in the same step**, with Status and dates (the
 owner's rule 3). Things this drive was not able to prove and that stay open: opencode and `api`

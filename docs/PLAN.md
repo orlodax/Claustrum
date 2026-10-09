@@ -309,14 +309,28 @@ a NuGet secret, a Windows machine).
 - builder/tester role text bounds cleanup to paths the run created by name (#64).
 - Tests: no spawned test process inherits `CLAUSTRUM_PARENT_JOB` (#66); worktree tests remove
   their `/tmp/claustrum-*` directories (#47).
-Not in wave 1, filed as a follow-up: running the spawned architect itself in a worktree (today it
-works in the operator's checkout by design, TEST-DRIVE step 17); copilot's prompt on stdin.
+Not in wave 1, filed as a follow-up: copilot's prompt on stdin. Running the spawned architect
+itself in a worktree (in wave 1 it worked in the operator's checkout by design, TEST-DRIVE step 17)
+was done in wave 2b as #74.
 
-**Wave 2 — the acceptance drive** (new issue). The wave-1 binary runs `claustrum coordinate
---cast default --issues <n>` unattended on a toy repo with `max_parallel: 2` and a remediation
-round; done when the children never touch the operator's checkout, every builder branch carries a
-commit, the remediation builder ran with `--branch`, and the work branch is linear with `Closes
-#<n>` — recorded with costs in NOTES.md and TEST-DRIVE step 18, every defect an issue on the board.
+**Wave 2 — the acceptance drive** (#72, done 2026-10-09). The wave-1 binary runs `claustrum
+coordinate --cast default --issues <n>` unattended on a toy repo with `max_parallel: 2` and a
+remediation round; done when the children never touch the operator's checkout, every builder branch
+carries a commit, the remediation builder ran with `--branch`, and the work branch is linear with
+`Closes #<n>` — recorded with costs in NOTES.md and TEST-DRIVE step 18, every defect an issue on the
+board. Two drives on 2026-10-09 for $6.20, job `20261009-104834-7573ece8` on the wave-1 binary and
+job `20261009-155235-290beabc` on the #74 binary (architect in its own worktree): its four criteria
+were met across the two drives, no single drive meets all four (drive 1 on the wave-1 binary
+exercised `--branch` but its reviewer and tester ran in the operator checkout; drive 2 on the #74
+binary left the checkout untouched but remediated from the work-branch tip). Neither drive's
+architect ran two builders at once, so `max_parallel: 2` was exercised only by the test suite (#90).
+NOTES.md "The second drive: wave 2 of M4, 2026-10-09" has the receipts and the verdicts.
+
+**Wave 2b — the fixes the drives asked for** (2026-10-09, on `feature/m4-wave2`): the spawned
+architect in its own worktree (#74), review and gate once per cluster of related changes (#80),
+Ctrl-C that reaches the runner, a second press forcing the exit (#88), `BindUserPrompt` binding
+only its own `## Context` block (#89), and the background-and-`wait` recipe for concurrent builders
+(#90).
 
 **Wave 3 — release `v0.1.0`** (new issue). `release.yml` dry run via `workflow_dispatch`, then the
 tag; `SHA256SUMS.txt` checked; the binary installed per INSTALL.md on Linux and Windows; `dotnet

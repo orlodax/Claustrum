@@ -4020,7 +4020,9 @@ repository at all — the whole git block is one line instead (G4, below).
   `CoordinatePlan.BindUserPrompt` replaces that one line once the job exists. The task above it is
   the caller's text or a GitHub issue's, and may quote `{{job_id}}` itself — a brief-wide fill in
   `ForJob` would also rewrite every isolated or `delegate_async` builder brief that quotes the token,
-  which is exactly what a brief about this code does.
+  which is exactly what a brief about this code does. Since #89 (2026-10-09) that replacement runs
+  only after the last `## Context` heading (`CoordinationBrief.BindWorkingDirectory`): a whole-brief
+  `string.Replace` also rewrote a task that quotes the `Working directory:` line verbatim.
 - `coordinate`'s human output prints `branch:`, `worktree:` and `commit:` after `logs:`, and every
   warning on stderr as `warning: …`, like `run` (F3): a refused commit of the architect's leftovers was
   otherwise visible only under `--json`.
@@ -4678,3 +4680,156 @@ re-port.
   `docs/pipeline.md` stage 2 still holds the long form, for the team.
 - **Not touched.** The tier stubs carry none of this text, so only the base goldens move; the
   `role.json` descriptions still say "batch", as devkit's frontmatter does.
+
+## Ctrl-C reaches the runner: ProcessTerminationTimeout is null (2026-10-09, issue #88)
+
+System.CommandLine 2.0.12 registers its own SIGINT/SIGTERM handler whenever
+`InvocationConfiguration.ProcessTerminationTimeout` is non-null — and its default is 2 s. That
+handler ran ahead of `run`'s and `coordinate`'s `Console.CancelKeyPress` and returned from
+`InvokeAsync` when the 2 s ran out, so Runner never cancelled. Measured 2026-10-09 with the Debug
+binary, a fake `claude` (`printf 'half\n' > partial.txt; sleep 31.7`) and `kill -INT`: before, exit
+130 after 2006 ms, no `result.json` (job left `pending`), the `sleep` still alive and `partial.txt`
+uncommitted in the worktree. With `ProcessTerminationTimeout = null` (`Program.cs`): exit 130 after
+404 ms (`run` isolated), 352 ms (`run` in place) and 401 ms (`coordinate`), `status: cancelled` on
+stdout and on disk, the isolated cases' `commit` holding `partial.txt`, and no `sleep` left.
+
+- **The other verbs lose nothing.** None but `run`/`coordinate` took the token it cancelled; Ctrl-C
+  on them is now the runtime's default (immediate) instead of a 2 s wait for exit 130. `mcp` runs a
+  Generic Host, whose own console lifetime stops it on SIGINT/SIGTERM.
+- **A second Ctrl-C forces the exit** (2026-10-09). With the timeout null nothing else ends a
+  cancel path that hangs — the post-run commit runs the repo's hooks and filters, bounded only by 5
+  minutes. So `CancelKeyHandler`, shared by `run` and `coordinate`, cancels the token on the first
+  press and prints `cancelling… press Ctrl-C again to exit without a receipt` to stderr; on the
+  second it leaves `e.Cancel` false and the runtime ends the process there, with no `result.json`.
+- **SIGTERM is not handled**, before or after: only `CancelKeyPress` (SIGINT) reaches Runner.
+- ⚠ **A test that sends SIGINT must start the binary with SIGINT not ignored.** A non-interactive
+  shell starts `&` jobs with SIGINT set to ignore and .NET keeps an inherited ignore: the first
+  measurement ran the fake to the end, `status: success`. `set -m` in the measuring script fixed it.
+
+## The second drive: wave 2 of M4, 2026-10-09 (docs/TEST-DRIVE.md step 18, issue #72)
+
+Wave 2's acceptance drive (docs/PLAN.md "M4 waves (2026-10-08)") ran `coordinate` unattended twice,
+measured 2026-10-09 on Linux, git 2.56, claude 2.1.295. The toy repo, `~/claustrum-drive-wave2`, is
+a plain-Python word-count CLI (`wc.py`) whose `AGENTS.md` names the gate `python3 -m unittest
+discover -s tests -v`. It has no git remote, so nothing could be pushed and `gh` took its repository
+from `GH_REPO=orlodax/Claustrum`, where the four fixture issues live: #76 `--top N`, #77
+`--ignore-case`, #78 a README with an options table, #79 `--json`, each titled "Wave-2 drive
+fixture" and closed by hand afterwards. Cast `default`: architect `frontier-reasoning`
+(claude:opus), builder `standard-coding` (sonnet, `max_parallel: 2`), code-reviewer
+`frontier-coding` (opus), tester `standard-coding`, ui-reviewer and demo-author `null`,
+`budget_usd: 15`; aliases in `claustrum.json`, and the cast, the config and the `.gitignore` lines
+committed as "Scaffold Claustrum for the wave-2 drive". Every run below ended `success` with a
+parsed report fence, none hit its timeout, and every builder's `changed_files` matched its own
+`files_changed`.
+
+**Drive 1 — the wave-1 binary (`0.1.0-alpha+79b79f6`, `main` after PR #75), `--issues 76,77 --json
+--timeout 5400`, job `20261009-104834-7573ece8`.** `status: success` in 344 s, exit 0. The architect
+judged #76 and #77 too entangled (both edit the same lines of `main`) and gave them to one builder,
+so `max_parallel: 2` was not exercised.
+
+| run | model | cost | time | note |
+|---|---|---|---|---|
+| builder `20261009-104921-4e3d16b8` | sonnet | $0.22 | 21 s | isolated, commit 5746d9b |
+| code-reviewer `20261009-105001-46b393d7` | opus | $0.51 | 58 s | blind, 3 low findings |
+| builder `20261009-105131-333606a6` | sonnet | $0.21 | 23 s | fix, `--branch`, commit 47f269e |
+| code-reviewer `20261009-105205-2abbf3fb` | opus | $0.45 | 45 s | re-review, clean |
+| tester `20261009-105310-67eb9c3a` | sonnet | $0.26 | 34 s | 40 tests green |
+
+The remediation builder ran with `--branch claustrum/20261009-104921-4e3d16b8`: a new worktree, its
+receipt's `branch` the first builder's, its commit on top of 5746d9b. Architect $1.15; the ledger
+(`jobs budget`) reads $2.81 spent, architect included, $0.00 reserved; the receipts sum to $2.80,
+which agrees to within a cent of rounding. Work branch `claustrum/20261009-104834-7573ece8`: one
+commit, efc8766 (the architect squashed both builder commits and the tester's tests), linear,
+`Closes #76` and `Closes #77`, nothing pushed. **The operator checkout:** no child moved its `HEAD`
+or branch — the builders ran in worktrees — but reviewer and tester ran in place in the architect's
+cwd, which by the wave-1 design *was* the operator checkout (the tester's `tests/test_wc.py` was
+written there), and the architect itself ran `checkout: moving from main to claustrum/<id>`, two
+fast-forwards and a reset there: the reflog went from 2 entries to 7. That is what #74 was filed
+for.
+
+**Drive 2 — the #74 binary (`0.1.0-alpha+736ffa5`, `feature/m4-wave2`), `--issues 78,79`, job
+`20261009-155235-290beabc`.** `status: success` in 419 s. The architect ran in
+`.claustrum/worktrees/20261009-155235-290beabc` on `claustrum/20261009-155235-290beabc`; the
+operator checkout stayed on `main` at efc8766 with a byte-identical reflog before and after (9
+entries: drive 1's 7, plus the 2 of the operator's `git switch main && git merge --ff-only`, which
+fast-forwarded `main` to efc8766 between the drives). The two builders' worktrees nested under the
+architect's, but they did **not** run in parallel, whatever the architect's report said: the ledger
+has `20261009-155349-6c900088` finishing at 15:54:15.336 and `20261009-155415-5c3899d0` starting at
+15:54:15.400, 64 ms later — two blocking `claustrum run` calls in a row. With drive 1's single
+builder, `max_parallel: 2` was exercised by neither drive's architect, only by the test suite (#90,
+"Spawned architects serialise their builders unless told how not to").
+
+| run | model | cost | time | note |
+|---|---|---|---|---|
+| builder `20261009-155349-6c900088` | sonnet | $0.23 | 26 s | `--json`, commit b4bce9a |
+| builder `20261009-155415-5c3899d0` | sonnet | $0.20 | 21 s | README, commit aeb48a1 |
+| code-reviewer `20261009-155506-78ace55a` | opus | $0.59 | 64 s | blind, 1 medium, 3 low |
+| builder `20261009-155626-54db7314` | sonnet | $0.21 | 18 s | fix, fresh worktree, dbf8286 |
+| code-reviewer `20261009-155656-48fbbc74` | opus | $0.42 | 25 s | re-review, clean |
+| tester `20261009-155744-75c33abd` | sonnet | $0.42 | 71 s | 80 tests green |
+
+The remediation builder was cut from the work-branch tip after integration, not run with
+`--branch`: the reviewed diff was the work branch itself, checked out in the architect's worktree,
+and `--branch` refuses a branch another worktree holds. Architect $1.32; ledger $3.39 spent, $0.00
+reserved. Work branch: two commits, c6697ad (`Closes #79`) and 7d922ae (`Closes #78`), linear, no
+merge — the architect rebuilt the builders' commits so each cites its issue. It left its worktree
+clean, so the runner's post-run commit was not needed: the receipt's `commit` is 7d922ae, the tip.
+The architect removed the nested builder worktrees itself (`jobs clean --cwd <its worktree>`); its
+own is left for the operator's `jobs clean`. Every builder's `result.json` carries `worktree`,
+`branch` and `commit`, and so does the architect's; reviewers and tester ran in place, in the
+architect's worktree, and carry none.
+
+**#72's done-when, verdict by verdict.** The four criteria were met across the two drives; no
+single drive meets all four — drive 1, on the wave-1 binary, exercised `--branch` but its reviewer
+and tester ran in the operator checkout; drive 2, on the #74 binary, left the checkout untouched but
+remediated from the work-branch tip.
+- *Children never touch the operator checkout* — drive 2 PASS, and the architect did not either.
+  Drive 1 FAIL on the files: no child moved `HEAD` or the branch, but the in-place reviewer and
+  tester ran in the checkout the wave-1 architect had switched to its branch, and the tester wrote
+  `tests/test_wc.py` there — #74's case, fixed for drive 2.
+- *Every builder branch carries a commit, with `commit`/`worktree`/`branch` on disk* — PASS, all
+  five builders.
+- *The remediation builder runs with `--branch` on the first builder's branch* — PASS in drive 1.
+  Not exercised in drive 2: remediation continued on the reviewed state through a fresh worktree
+  cut from the integrated tip, because that state lived on the work branch, which `--branch` cannot
+  take.
+- *The work branch is linear, `Closes #<n>`, nothing pushed* — PASS in both.
+
+**Spend:** $2.81 + $3.39 = $6.20 of agent time for the two drives, plus $1.06 spent by accident
+during the #74 build (a builder measured a non-git case with a fake `backends.claude.path` in a
+plain directory's `claustrum.json`, which `Config.Load` ignores outside a git root, so the real
+`claude` ran three times — the trap is #74's H7) and $0.03 of claude probes on 2026-10-08: $7.29
+against an envelope of about $30.
+
+**Defects filed during wave 2, all on the board, all fixed on this branch:** #88 (Ctrl-C exited
+after 2 s without cancelling the backend, found by the cluster's tester), #89 (`BindUserPrompt`
+replaced every occurrence) and #90 (drive 2's builders ran one after the other under `max_parallel:
+2`, found afterwards in its ledger; the fix is role text). Neither drive failed a run: every one
+ended `success`. Not proved: a spawned architect actually running two builders at once (#90's
+recipe has not been driven), the Windows legs, the opencode/api/copilot/cursor backends,
+ui-reviewer and demo-author, and `coordinate` through the MCP door with a real backend.
+
+**The observation worth keeping:** the architect is the most expensive seat — $1.15 and $1.32, about
+40% of each drive, against at most $0.59 for any child. Remediation is cheap: each re-review cost
+less than its first review ($0.45 vs $0.51, $0.42 vs $0.59; 45 s vs 58 s, 25 s vs 64 s), and the
+fix builder no more than the first; the whole round, fix plus re-review ($0.66, $0.63), still costs
+slightly more than the first review alone.
+
+## Spawned architects serialise their builders unless told how not to (2026-10-09, issue #90)
+
+Drive 2 of the wave-2 drive (job `20261009-155235-290beabc`, cast `builder.max_parallel: 2`): the
+opus architect reported "two builders ran in parallel", but the tree ledger has builder
+`20261009-155349-6c900088` finishing at 15:54:15.336 and builder `20261009-155415-5c3899d0`
+starting at 15:54:15.400 — 64 ms later, strictly sequential. `claustrum run` blocks until its role
+is done, and under `claude -p` the architect's Bash tool runs one command at a time unless told to
+background it; nothing in the role said how. Drive 1's architect used a single builder, so neither
+drive exercised `max_parallel: 2` from a spawned architect — only the test suite has.
+
+- **The fix is role text.** Both `roles/architect/parts/delegation.*.md` gain a "running builders
+  concurrently" recipe: each `claustrum run builder … --json --cwd "<dir>" >
+  .claustrum/briefs/<n>-builder.result.json &`, then `wait`, then read each receipt file (or the
+  harness's own background-command mode), never more at once than `max_parallel`. The appendix's
+  `max_parallel` line and ROLE.md's "Fan builders out" bullet point at it with one shared clause,
+  pinned by `CoordinationTextAgreementTests`.
+- ⚠ **The architect's report is not evidence of concurrency; the ledger is.** Each entry under
+  `<claustrum home>/budget/<tree>/` carries `started_at`/`finished_at`: overlap is what proves it.
