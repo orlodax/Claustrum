@@ -26,7 +26,13 @@ public sealed class CursorSync(RoleLibrary library, RoleRenderer renderer, strin
 
     private readonly SyncWriter writer = new(Harness, library.Version);
 
+    /// <summary>The one place `~/.cursor` is spelled, shared by the fallback below and the CLI's resolver.</summary>
+    public static string DefaultGlobalRoot(string homeDirectory) => Path.Combine(homeDirectory, ".cursor");
+
     /// <summary>
+    /// <paramref name="globalRoot"/> is the global root the caller already resolved (null means the
+    /// default under `homeDirectory`); the CLI always passes `~/.cursor`, see NOTES.md
+    /// "`sync --global` roots follow each harness's config-dir variable".
     /// <paramref name="globalBinaryPath"/> is the absolute <c>claustrum</c> binary to register in
     /// <c>~/.cursor/mcp.json</c> under <paramref name="global"/> — resolved by the caller, as
     /// <see cref="ClaudeDesktopTarget.BinaryPath"/> is. Null skips that one merge: a caller that is
@@ -34,7 +40,8 @@ public sealed class CursorSync(RoleLibrary library, RoleRenderer renderer, strin
     /// </summary>
     public SyncResult Sync(
         string cwd, IReadOnlyList<string>? roles = null, bool global = false, bool force = false,
-        SyncMode mode = SyncMode.Write, string? globalBinaryPath = null)
+        SyncMode mode = SyncMode.Write, string? globalBinaryPath = null,
+        string? globalRoot = null)
     {
         // Same reasoning as Opencode/CopilotSync: ui-reviewer lists only "claude" and has no
         // environment.default.md fallback, so the default "sync everything" case has to filter to
@@ -45,7 +52,7 @@ public sealed class CursorSync(RoleLibrary library, RoleRenderer renderer, strin
 
         // Cursor documents the same three names under `.cursor/` and `~/.cursor/`, mcp.json included
         // — so unlike claude/opencode nothing here is repo-root-only and --global writes all three.
-        string root = global ? Path.Combine(homeDirectory, ".cursor") : Path.Combine(cwd, ".cursor");
+        string root = global ? globalRoot ?? DefaultGlobalRoot(homeDirectory) : Path.Combine(cwd, ".cursor");
         string agentDir = Path.Combine(root, "agents");
         if (mode == SyncMode.Write)
             Directory.CreateDirectory(agentDir);

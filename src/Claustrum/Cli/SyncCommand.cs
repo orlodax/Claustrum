@@ -55,18 +55,32 @@ public static class SyncCommand
         return dryRun ? PrintDryRun(result) : check ? PrintCheck(result) : PrintWrite(result);
     }
 
-    private static SyncResult SyncOne(string harness, string[]? roleFilter, bool global, bool force, SyncMode mode) => harness switch
+    private static SyncResult SyncOne(string harness, string[]? roleFilter, bool global, bool force, SyncMode mode)
     {
-        "claude" => new ClaudeSync(AppServices.RoleLibrary, AppServices.RoleRenderer, AppServices.Platform.HomeDirectory)
-            .Sync(Environment.CurrentDirectory, roleFilter, global, force, mode, global ? DesktopTarget() : null),
-        "opencode" => new OpencodeSync(AppServices.RoleLibrary, AppServices.RoleRenderer, AppServices.Platform.HomeDirectory)
-            .Sync(Environment.CurrentDirectory, roleFilter, global, force, mode),
-        "copilot" => new CopilotSync(AppServices.RoleLibrary, AppServices.RoleRenderer, AppServices.Platform.HomeDirectory)
-            .Sync(Environment.CurrentDirectory, roleFilter, global, force, mode),
-        "cursor" => new CursorSync(AppServices.RoleLibrary, AppServices.RoleRenderer, AppServices.Platform.HomeDirectory)
-            .Sync(Environment.CurrentDirectory, roleFilter, global, force, mode, global ? CursorGlobalBinary() : null),
-        _ => throw new ArgumentOutOfRangeException(nameof(harness), harness, "not in supportedHarnesses"),
-    };
+        string? globalRoot = global ? AnnounceGlobalRoot(harness) : null;
+        string home = AppServices.Platform.HomeDirectory;
+        return harness switch
+        {
+            "claude" => new ClaudeSync(AppServices.RoleLibrary, AppServices.RoleRenderer, home)
+                .Sync(Environment.CurrentDirectory, roleFilter, global, force, mode, global ? DesktopTarget() : null, globalRoot),
+            "opencode" => new OpencodeSync(AppServices.RoleLibrary, AppServices.RoleRenderer, home)
+                .Sync(Environment.CurrentDirectory, roleFilter, global, force, mode, globalRoot),
+            "copilot" => new CopilotSync(AppServices.RoleLibrary, AppServices.RoleRenderer, home)
+                .Sync(Environment.CurrentDirectory, roleFilter, global, force, mode, globalRoot),
+            "cursor" => new CursorSync(AppServices.RoleLibrary, AppServices.RoleRenderer, home)
+                .Sync(Environment.CurrentDirectory, roleFilter, global, force, mode, global ? CursorGlobalBinary() : null, globalRoot),
+            _ => throw new ArgumentOutOfRangeException(nameof(harness), harness, "not in supportedHarnesses"),
+        };
+    }
+
+    // Printed in every mode, before the sync: a root moved by an environment variable is the one
+    // thing a user cannot see from the file list alone (issue #83).
+    private static string AnnounceGlobalRoot(string harness)
+    {
+        (string path, string reason) = SyncGlobalRoot.Resolve(AppServices.Platform, harness);
+        Console.WriteLine($"global root ({harness}): {path} ({reason})");
+        return path;
+    }
 
     // The absolute path comes from the running process, not from PATH: the desktop app spawns the
     // server from a GUI process whose PATH rarely holds the install directory (issue #24).
