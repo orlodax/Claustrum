@@ -54,11 +54,15 @@ refused brief, a missing cast, a role sent to a harness it does not list, a `gh`
 `coordinate` whose cast is not committed) · `3` backend not found · `4` timeout · `5` budget · `130`
 cancelled. The first Ctrl-C (SIGINT), SIGQUIT or SIGTERM cancels with a `cancelled` receipt **once
 the run has started**; a cancel while the run is still queued for a `max_parallel` slot or adding its
-worktree exits 130 with no receipt and leaves the job `pending` (#94). A second signal ends the
+worktree exits 130 with no receipt, and a job that was already minted stays `pending` (#94; an
+in-place `max_parallel` queue has no job yet, so nothing is left behind). A signal that arrives while
+`run`/`coordinate` is still reading its brief from stdin gets the runtime's default exit (130 for
+Ctrl-C, 143 for SIGTERM): there is nothing to cancel yet. A second signal ends the
 process at once with the runtime's own code (130 after a second Ctrl-C, 143 after a second SIGTERM,
 131 after a second SIGQUIT), no receipt, and the backend may keep running (it received no signal of
-its own when the sender was `kill`). On Windows only Ctrl-C cancels; SIGTERM registers but cannot be
-cancelled there.
+its own when the sender was `kill`). On Windows Ctrl-C and Ctrl-Break take the cancel path (both reach
+`Console.CancelKeyPress`; not measured on Windows), SIGTERM registers but cannot be cancelled there,
+and the forced-exit codes above are the Unix ones.
 
 ### `claustrum run <role>`
 
@@ -613,7 +617,8 @@ generated JSON keys are tracked by hash in `.claustrum/sync-manifest.json`. A fi
 marker or a manifest entry is **never overwritten** (`--force` adopts it).
 A symlinked agent file is foreign whatever it points at; `--force` replaces the link with a regular
 file and never writes through it, so the link's target is left byte-identical. `--dry-run` and
-`--check` both print `would replace symlink`. A symlinked *directory* is written into, as the user's
+`--check` print `would replace symlink` with `--force`; without it the link is listed as foreign with
+its target. Hard links are not detected: a hard-linked marked file is written in place. A symlinked *directory* is written into, as the user's
 chosen location (#95).
 
 **A synced Claude agent carries no deny list today.** In agent frontmatter, `disallowedTools` cannot
