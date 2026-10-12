@@ -8,7 +8,7 @@ public sealed class SyncRootTests : IDisposable
 {
     private readonly string root = Directory.CreateTempSubdirectory("claustrum-syncroot-").FullName;
 
-    public void Dispose() => Directory.Delete(root, recursive: true);
+    public void Dispose() => LinkFixtures.DeleteTree(root);
 
     private string Under(params string[] parts) => Path.Combine([root, .. parts]);
 

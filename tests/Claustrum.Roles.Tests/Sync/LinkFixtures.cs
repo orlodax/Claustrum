@@ -58,6 +58,27 @@ internal static class LinkFixtures
             Assert.Skip($"a junction cannot be created here: {failure}");
     }
 
+    // Windows: a recursive Directory.Delete takes a junction for a volume mount point and fails with "The parameter is
+    // incorrect" (PR #96 CI, 2026-10-12), so every directory link goes first on its own, which removes only the link.
+    public static void DeleteTree(string directory)
+    {
+        if (OperatingSystem.IsWindows())
+            RemoveDirectoryLinks(directory);
+
+        Directory.Delete(directory, recursive: true);
+    }
+
+    private static void RemoveDirectoryLinks(string directory)
+    {
+        foreach (string child in Directory.GetDirectories(directory))
+        {
+            if (File.GetAttributes(child).HasFlag(FileAttributes.ReparsePoint))
+                Directory.Delete(child);
+            else
+                RemoveDirectoryLinks(child);
+        }
+    }
+
     public static void FileLink(string linkPath, string target)
     {
         try
