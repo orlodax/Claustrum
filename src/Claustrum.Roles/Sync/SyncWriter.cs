@@ -34,7 +34,20 @@ public sealed class SyncWriter(string harness, string libraryVersion)
         string marker = $"{MarkerPrefix} role={role} harness={harness} library={libraryVersion}{source} sha256={sha256} -->";
         string content = $"{frontmatter.Trim()}\n{marker}\n\n{trimmedBody}\n";
 
-        if (File.Exists(path))
+        // A link is never sync's own file (sync never creates one), so it is foreign whatever it points
+        // at, even a target carrying our marker, and never "up to date". FileInfo.LinkTarget reads the
+        // link itself, so a dangling one is caught where File.Exists says false (issue #84).
+        string? linkTarget = new FileInfo(path).LinkTarget;
+        if (linkTarget is not null)
+        {
+            into.Symlinks[path] = linkTarget;
+            if (!force)
+            {
+                into.Foreign.Add(path);
+                return;
+            }
+        }
+        else if (File.Exists(path))
         {
             string existing = File.ReadAllText(path);
 
@@ -58,7 +71,14 @@ public sealed class SyncWriter(string harness, string libraryVersion)
         // SyncMode.DryRun/Check never touch disk: the content that would have been written is kept
         // for the CLI to diff instead (SyncResult.ProposedContent).
         if (mode == SyncMode.Write)
+        {
+            // Delete removes the link, never its target: WriteAllText alone would rewrite the target,
+            // possibly a tracked file in another checkout.
+            if (linkTarget is not null)
+                File.Delete(path);
+
             File.WriteAllText(path, content);
+        }
         else
             into.ProposedContent[path] = content;
 
