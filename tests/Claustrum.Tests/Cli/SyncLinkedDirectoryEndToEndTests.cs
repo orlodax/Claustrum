@@ -167,6 +167,28 @@ public sealed partial class SyncLinkedDirectoryEndToEndTests : IDisposable
     }
 
     [Fact]
+    public async Task GlobalForceReplacingALeafLinkInsideALinkedAgentsDirectorySaysWhereItLandsAsync()
+    {
+        string root = Directory.CreateDirectory(Scratch("stow-root")).FullName;
+        string store = Directory.CreateDirectory(Scratch("stow-store", "agents")).FullName;
+        string notes = Directory.CreateDirectory(Scratch("notes")).FullName;
+        File.WriteAllText(Path.Combine(notes, "builder.md"), "mine\n");
+        TestLinks.CreateDirectoryLink(Path.Combine(root, "agents"), store);
+        TestLinks.Create(Path.Combine(store, "builder.md"), Path.Combine(notes, "builder.md"));
+
+        CliResult result = await GlobalSyncAsync(root, "--force");
+
+        Assert.Equal(ExitCodes.Ok, result.ExitCode);
+        string line = Assert.Single(Section(result, "replaced symlink (the link target was left untouched):"), entry => entry.Contains(Path.Combine("agents", "builder.md"), StringComparison.Ordinal));
+        Assert.Contains(" → ", line, StringComparison.Ordinal);
+        Assert.EndsWith($" (lands at {Path.Combine(store, "builder.md")})", line, pathComparison);
+        Assert.Null(new FileInfo(Path.Combine(store, "builder.md")).LinkTarget);
+        Assert.Contains("claustrum:generated", File.ReadAllText(Path.Combine(store, "builder.md")), StringComparison.Ordinal);
+        Assert.Equal("mine\n", File.ReadAllText(Path.Combine(notes, "builder.md")));
+        AssertNoCrash(result);
+    }
+
+    [Fact]
     public async Task InitWithALinkedClaudeDirectoryOutsideTheRepoCountsAndListsTheRefusedFilesAndExitsTwoAsync()
     {
         TestLinks.CreateDirectoryLink(Path.Combine(cli.Cwd, ".claude"), outside);

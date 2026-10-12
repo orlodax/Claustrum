@@ -18,7 +18,8 @@ internal static class SyncManifestStore
     public static Dictionary<string, SyncManifestFile> Read(string cwd, SyncAccumulator into)
     {
         string manifestPath = ManifestPath(cwd);
-        // A refused `.claustrum` is not read through either: its target may be unparsable or foreign.
+        // The manifest is not read through a refused `.claustrum`: its target may be unparsable or foreign.
+        // The roles under it still are (RoleLibrary), issue #97.
         if (into.Refused.ContainsKey(manifestPath) || !File.Exists(manifestPath))
             return [];
 

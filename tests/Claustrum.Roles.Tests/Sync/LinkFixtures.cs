@@ -1,3 +1,6 @@
+using System.ComponentModel;
+using System.Diagnostics;
+
 namespace Claustrum.Roles.Tests.Sync;
 
 // Symbolic links for the sync tests (#95). A machine that will not make one (Windows without Developer Mode or
@@ -16,6 +19,43 @@ internal static class LinkFixtures
         {
             Assert.Skip($"symlinks cannot be created here: {ex.Message}");
         }
+    }
+
+    /// <summary>A junction (`mklink /J`): the directory-link kind a Windows dotfiles setup uses; Directory.CreateSymbolicLink does not make one.</summary>
+    public static void Junction(string linkPath, string target)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            Assert.Skip("a junction is a Windows directory-link kind.");
+            return;
+        }
+
+        ProcessStartInfo start = new("cmd.exe")
+        {
+            Arguments = $"/c mklink /J \"{linkPath}\" \"{target}\"",
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true,
+        };
+
+        string? failure = null;
+        try
+        {
+            using Process process = Process.Start(start) ?? throw new InvalidOperationException("cmd.exe did not start");
+            Task<string> stdout = process.StandardOutput.ReadToEndAsync();
+            Task<string> stderr = process.StandardError.ReadToEndAsync();
+            process.WaitForExit();
+            if (process.ExitCode != 0)
+                failure = (stderr.Result + stdout.Result).Trim();
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or Win32Exception)
+        {
+            failure = ex.Message;
+        }
+
+        if (failure is not null)
+            Assert.Skip($"a junction cannot be created here: {failure}");
     }
 
     public static void FileLink(string linkPath, string target)

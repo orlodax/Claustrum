@@ -92,6 +92,110 @@ public sealed class SyncRootTests : IDisposable
         Assert.False(SyncRoot.Global(repo).Escapes(Path.Combine(repo, "x", "file")));
     }
 
+    // Windows reads `d\..` lexically (so the repo), but NTFS may apply it physically; the second walk is what refuses it.
+    [Fact]
+    public void DotDotAfterALinkIsRefusedOnWindowsByThePhysicalWalk()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            Assert.Skip("the second, physical `..` walk runs on Windows only.");
+            return;
+        }
+
+        string repo = RealDirectory("repo");
+        string outsideAgents = RealDirectory("outside", "agents");
+        LinkFixtures.DirectoryLink(Path.Combine(repo, "d"), outsideAgents);
+        LinkFixtures.DirectoryLink(Path.Combine(repo, "x"), Path.Combine("d", ".."));
+        string path = Path.Combine(repo, "x", "file");
+        SyncRoot fence = SyncRoot.Repo(repo);
+
+        Assert.True(fence.IsInside(SyncRoot.Resolve(path)));
+        Assert.True(fence.Escapes(path));
+    }
+
+    [Fact]
+    public void AJunctionIsFollowedLikeADirectoryLinkOnWindows()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            Assert.Skip("a junction is a Windows directory-link kind.");
+            return;
+        }
+
+        string repo = RealDirectory("repo");
+        string outside = RealDirectory("outside");
+        string real = RealDirectory("repo", "real");
+        LinkFixtures.Junction(Path.Combine(repo, "out"), outside);
+        LinkFixtures.Junction(Path.Combine(repo, "in"), real);
+        string outPath = Path.Combine(repo, "out", "file.md");
+
+        Assert.Equal(Path.Combine(outside, "file.md"), SyncRoot.Resolve(outPath), LinkFixtures.PathComparer);
+        Assert.True(SyncRoot.Repo(repo).Escapes(outPath));
+        Assert.False(SyncRoot.Repo(repo).Escapes(Path.Combine(repo, "in", "file.md")));
+        Assert.False(SyncRoot.Global(repo).Escapes(outPath));
+    }
+
+    // .NET strips only `\??\` from an absolute reparse target, so these come back looking relative (#95 review).
+    [Theory]
+    [InlineData(@"GLOBALROOT\Device\HarddiskVolume3\Users\me\.claude")]
+    [InlineData(@"Volume{01234567-89ab-cdef-0123-456789abcdef}\Users\me\.claude")]
+    [InlineData(@"GLOBALROOT\??\C:\Users\me\.claude")]
+    [InlineData(@"C:foo")]
+    [InlineData(@"a?b\c")]
+    public void IsOpaqueWindowsLinkTargetFlagsTheNtNamespaceFormsAndNotOrdinaryTargets(string target)
+    {
+        Assert.True(SyncRoot.IsOpaqueWindowsLinkTarget(target));
+    }
+
+    [Theory]
+    [InlineData(@"..\..\notes")]
+    [InlineData(@"sub\dir")]
+    [InlineData("plain")]
+    public void IsOpaqueWindowsLinkTargetLeavesAnOrdinaryRelativeTargetAlone(string target)
+    {
+        Assert.False(SyncRoot.IsOpaqueWindowsLinkTarget(target));
+    }
+
+    // Fully qualified, so the inside test already refuses them; the predicate must not flag them.
+    [Theory]
+    [InlineData(@"C:\Users\me\.claude")]
+    [InlineData(@"\\?\C:\Users\me\.claude")]
+    [InlineData(@"\\?\UNC\server\share\x")]
+    [InlineData(@"\\?\Volume{01234567-89ab-cdef-0123-456789abcdef}\x")]
+    public void IsOpaqueWindowsLinkTargetLeavesAFullyQualifiedWindowsTargetAlone(string target)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            Assert.Skip("these are fully qualified only where Windows drive letters and the extended-length prefix exist.");
+            return;
+        }
+
+        Assert.False(SyncRoot.IsOpaqueWindowsLinkTarget(target));
+    }
+
+    [Fact]
+    public void AGlobalRootLinkTargetIsRefusedOnWindows()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            Assert.Skip("an NT-namespace link target is a Windows form.");
+            return;
+        }
+
+        string repo = RealDirectory("repo");
+        string outside = RealDirectory("outside");
+        string link = Path.Combine(repo, "out");
+        LinkFixtures.DirectoryLink(link, @"\\?\GLOBALROOT\??\" + outside);
+        string path = Path.Combine(link, "file.md");
+
+        Assert.True(SyncRoot.Repo(repo).Escapes(path));
+        SyncRoot.Resolve(path, out bool unresolved);
+        if (!Path.IsPathFullyQualified(new DirectoryInfo(link).LinkTarget ?? ""))
+            Assert.True(unresolved);
+
+        Assert.False(SyncRoot.Global(repo).Escapes(path));
+    }
+
     [Fact]
     public void DotDotAtTheFilesystemRootDoesNotThrow()
     {

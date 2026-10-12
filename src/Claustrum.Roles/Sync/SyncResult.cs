@@ -10,7 +10,9 @@ namespace Claustrum.Roles.Sync;
 /// <paramref name="Symlinks"/> maps each symlinked path met (foreign, or in <paramref name="Written"/>
 /// because <c>--force</c> replaces the link) to its link target. <paramref name="Refused"/> maps each
 /// target resolving outside the repo root to its real path: untouched, <c>--force</c> does not override
-/// (#95). <paramref name="RealPaths"/> maps every target whose real path differs from the path as typed.
+/// (#95). <paramref name="RealPaths"/> maps every target whose real path differs from the path as typed;
+/// for an agent file that is the landing path (its directory resolved plus its own name), so a replaced
+/// leaf link maps to where the new file goes, not to the link's target.
 /// </summary>
 public sealed record SyncResult(
     IReadOnlyList<string> Written,

@@ -135,8 +135,56 @@ public sealed class SyncLinkedDirectoryTests : IDisposable
         Assert.False(Directory.Exists(Path.Combine(outside, "skills")));
     }
 
+    [Fact]
+    public void AJunctionedHarnessRootOutsideTheRepoIsRefusedAndCreatesNothingThereOnWindows()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            Assert.Skip("a junction is a Windows directory-link kind.");
+            return;
+        }
+
+        string linked = HarnessSyncs.RepoRoot("claude", repo);
+        LinkFixtures.Junction(linked, outside);
+        string[] before = LinkFixtures.Snapshot(outside);
+
+        SyncResult result = Run("claude");
+
+        AssertRefusedInto(result, linked, outside, AgentFilesAndSkill("claude", linked));
+        Assert.Equal(before, LinkFixtures.Snapshot(outside));
+        Assert.Equal("mine\n", File.ReadAllText(Path.Combine(outside, "keep.txt")));
+    }
+
+    // The target is a form .NET reports as relative, which Windows follows to the real directory (#95 review).
+    [Fact]
+    public void AHarnessRootLinkedThroughGlobalRootIsRefusedAndCreatesNothingThereOnWindows()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            Assert.Skip("an NT-namespace link target is a Windows form.");
+            return;
+        }
+
+        string linked = HarnessSyncs.RepoRoot("claude", repo);
+        LinkFixtures.DirectoryLink(linked, @"\\?\GLOBALROOT\??\" + outside);
+        string[] before = LinkFixtures.Snapshot(outside);
+
+        SyncResult result = Run("claude");
+
+        foreach (string path in AgentFilesAndSkill("claude", linked))
+        {
+            Assert.Contains(path, RefusedOf(result).Keys);
+            Assert.DoesNotContain(path, result.Written);
+            Assert.DoesNotContain(path, result.Skipped);
+            Assert.DoesNotContain(path, result.Foreign);
+        }
+
+        Assert.Equal(before, LinkFixtures.Snapshot(outside));
+        Assert.Equal("mine\n", File.ReadAllText(Path.Combine(outside, "keep.txt")));
+    }
+
     [Theory]
-    [MemberData(nameof(Harnesses))]
+    [MemberData(nameof(HarnessesWithAManifest))]
     public void ALinkedHarnessRootKeepsTheManifestFreeOfTheRefusedFiles(string harness)
     {
         LinkFixtures.DirectoryLink(HarnessSyncs.RepoRoot(harness, repo), outside);
@@ -144,8 +192,8 @@ public sealed class SyncLinkedDirectoryTests : IDisposable
         Run(harness);
 
         string manifest = Path.Combine(repo, ".claustrum", "sync-manifest.json");
-        if (File.Exists(manifest))
-            Assert.DoesNotContain("\"builder\"", File.ReadAllText(manifest), StringComparison.Ordinal);
+        Assert.True(File.Exists(manifest));
+        Assert.DoesNotContain("builder", File.ReadAllText(manifest), StringComparison.Ordinal);
     }
 
     [Theory]
@@ -264,6 +312,30 @@ public sealed class SyncLinkedDirectoryTests : IDisposable
             Assert.True(File.Exists(target), $"not written into the stow directory: {target}");
             Assert.Equal(target, RealPathsOf(result)[path], LinkFixtures.PathComparer);
         }
+    }
+
+    // The leaf link's target is where sync does not write: the file lands in the (linked) parent, and RealPaths says so.
+    [Fact]
+    public void AReplacedLeafLinkInsideALinkedDirectoryRecordsWhereTheFileLands()
+    {
+        string dotfiles = Directory.CreateDirectory(Path.Combine(home, "dotfiles", "agents")).FullName;
+        string notes = Directory.CreateDirectory(Path.Combine(home, "notes")).FullName;
+        File.WriteAllText(Path.Combine(notes, "builder.md"), "mine\n");
+        string globalRoot = Directory.CreateDirectory(Path.Combine(home, ".claude")).FullName;
+        LinkFixtures.DirectoryLink(Path.Combine(globalRoot, "agents"), Path.Combine("..", "dotfiles", "agents"));
+        LinkFixtures.FileLink(Path.Combine(dotfiles, "builder.md"), Path.Combine("..", "..", "notes", "builder.md"));
+        string agent = Path.Combine(globalRoot, "agents", "builder.md");
+
+        SyncResult result = HarnessSyncs.Run("claude", library, home, repo, ["builder"], global: true, force: true, globalRoot: globalRoot);
+
+        string landed = Path.Combine(dotfiles, "builder.md");
+        Assert.Contains(agent, result.Written);
+        Assert.NotNull(result.Symlinks);
+        Assert.True(result.Symlinks.ContainsKey(agent));
+        Assert.Equal(landed, RealPathsOf(result)[agent], LinkFixtures.PathComparer);
+        Assert.Null(new FileInfo(landed).LinkTarget);
+        Assert.Contains("claustrum:generated", File.ReadAllText(landed), StringComparison.Ordinal);
+        Assert.Equal("mine\n", File.ReadAllText(Path.Combine(notes, "builder.md")));
     }
 
     // #84 under the fence: the link is the repo's own path, so it is foreign or replaced whatever it points at, never refused.
@@ -405,24 +477,31 @@ public sealed class SyncLinkedDirectoryTests : IDisposable
     [InlineData(SyncMode.Write)]
     [InlineData(SyncMode.DryRun)]
     [InlineData(SyncMode.Check)]
-    public void TheDotDotBypassThroughALinkedDirectoryIsRefusedOnUnix(SyncMode mode)
+    public void TheDotDotBypassThroughALinkedDirectoryIsRefused(SyncMode mode)
     {
-        if (OperatingSystem.IsWindows())
-        {
-            Assert.Skip("`..` after a link is lexical on Windows; the physical bypass is a Unix one.");
-            return;
-        }
-
         string globalAgents = Directory.CreateDirectory(Path.Combine(home, ".claude", "agents")).FullName;
         string work = Directory.CreateDirectory(Path.Combine(home, "work", "repo")).FullName;
-        LinkFixtures.DirectoryLink(Path.Combine(work, "d"), "../../.claude/agents");
-        LinkFixtures.DirectoryLink(Path.Combine(work, ".claude"), "d/..");
+        LinkFixtures.DirectoryLink(Path.Combine(work, "d"), Path.Combine("..", "..", ".claude", "agents"));
+        LinkFixtures.DirectoryLink(Path.Combine(work, ".claude"), Path.Combine("d", ".."));
         string[] before = LinkFixtures.Snapshot(Path.Combine(home, ".claude"));
 
         SyncResult result = Run("claude", mode, cwd: work);
 
         string linked = Path.Combine(work, ".claude");
-        AssertRefusedInto(result, linked, Path.Combine(home, ".claude"), AgentFiles("claude", linked));
+        if (OperatingSystem.IsWindows())
+        {
+            // The printed real path is the lexical reading there, so only the refusal itself is asserted.
+            foreach (string path in AgentFiles("claude", linked))
+            {
+                Assert.Contains(path, RefusedOf(result).Keys);
+                Assert.DoesNotContain(path, result.Written);
+                Assert.DoesNotContain(path, result.Skipped);
+                Assert.DoesNotContain(path, result.Foreign);
+            }
+        }
+        else
+            AssertRefusedInto(result, linked, Path.Combine(home, ".claude"), AgentFiles("claude", linked));
+
         Assert.Empty(Directory.GetFileSystemEntries(globalAgents));
         Assert.Equal(before, LinkFixtures.Snapshot(Path.Combine(home, ".claude")));
         Assert.False(Directory.Exists(Path.Combine(work, "agents")));

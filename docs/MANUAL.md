@@ -627,7 +627,8 @@ is written or created there, and the command exits 2 in write, `--dry-run` and `
 not override. The `.claustrum` manifest and the JSON MCP targets follow the same rule, and a JSON target
 that is a link resolving inside that directory is merged through. Under `--global` a linked root or
 agents/skills directory is your own setup and is written into; the `global root` line and the
-`(resolved → <real path>)` annotations say where the files really went. For agent and skill files (the targets `--force` replaces rather than merges),
+`(resolved → <real path>)` annotations say where the files really went; a replaced link whose directory is
+itself linked adds `(lands at <real path>)`. For agent and skill files (the targets `--force` replaces rather than merges),
 `--dry-run` never shows a linked file's target as removed lines; a linked JSON target is merged through, so it is read and diffed.
 
 **A synced Claude agent carries no deny list today.** In agent frontmatter, `disallowedTools` cannot

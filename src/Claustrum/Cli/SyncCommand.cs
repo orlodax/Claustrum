@@ -156,7 +156,7 @@ public static class SyncCommand
         PrintPaths("written", [.. result.Written.Where(path => !symlinks.ContainsKey(path))], realPaths: realPaths);
         PrintPaths(
             "replaced symlink (the link target was left untouched)",
-            [.. result.Written.Where(symlinks.ContainsKey).Select(path => $"{path} → {symlinks[path]}")]);
+            [.. result.Written.Where(symlinks.ContainsKey).Select(path => $"{path} → {symlinks[path]}{LandsAt(path, realPaths)}")]);
         PrintPaths("skipped (already up to date)", result.Skipped, realPaths: realPaths);
         PrintPaths("foreign (hand-edited; use --force to adopt)", result.Foreign, symlinks, realPaths);
 
@@ -173,7 +173,7 @@ public static class SyncCommand
             string? existing = ExistingContent(path, symlinks.ContainsKey(path));
             string relativePath = Path.GetRelativePath(Environment.CurrentDirectory, path);
             if (symlinks.TryGetValue(path, out string? target))
-                Console.WriteLine($"would replace symlink {relativePath} → {target}");
+                Console.WriteLine($"would replace symlink {relativePath} → {target}{LandsAt(path, realPaths)}");
             else if (realPaths.TryGetValue(path, out string? real))
                 Console.WriteLine($"resolved {relativePath} → {real}");
 
@@ -214,7 +214,7 @@ public static class SyncCommand
         foreach (string path in result.Written)
         {
             if (symlinks.TryGetValue(path, out string? target))
-                Console.WriteLine($"would replace symlink: {path} → {target}");
+                Console.WriteLine($"would replace symlink: {path} → {target}{LandsAt(path, realPaths)}");
             else
                 Console.WriteLine($"{(File.Exists(path) ? "stale" : "missing")}: {path}{Annotation(path, null, realPaths)}");
         }
@@ -248,6 +248,12 @@ public static class SyncCommand
         Console.WriteLine($"{label}:");
         foreach (string path in paths)
             Console.WriteLine($"  {path}{Annotation(path, symlinks, realPaths)}");
+    }
+
+    // Not "resolved →": on a line that already reads `path → target` that would read as the target's resolution.
+    private static string LandsAt(string path, IReadOnlyDictionary<string, string> realPaths)
+    {
+        return realPaths.TryGetValue(path, out string? real) ? $" (lands at {real})" : "";
     }
 
     // A symlink at the path wins over the resolved-path note: the link target is the more specific fact.
