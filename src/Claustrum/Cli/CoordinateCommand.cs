@@ -63,7 +63,7 @@ public static class CoordinateCommand
         string cwd = Path.GetFullPath(cwdOption ?? Environment.CurrentDirectory);
 
         // The first Ctrl-C lets Runner kill the backend and write the `cancelled` receipt; a second one exits.
-        using CancelKeyHandler cancel = new();
+        using CancelSignalHandler cancel = new();
 
         try
         {
