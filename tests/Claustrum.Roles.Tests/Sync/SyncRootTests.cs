@@ -196,20 +196,25 @@ public sealed class SyncRootTests : IDisposable
         Assert.False(SyncRoot.Global(repo).Escapes(path));
     }
 
+    // Off Windows a POSIX link is followed whatever its target string looks like: `a?b:c` trips the name list, yet is an ordinary name here.
     [Fact]
-    public void IsOpaqueWindowsLinkIsFalseOffWindows()
+    public void TheWindowsOpaqueChecksAreNotAppliedOffWindows()
     {
         if (OperatingSystem.IsWindows())
         {
-            Assert.Skip("off-Windows behaviour: the structural check answers false everywhere but Windows.");
+            Assert.Skip("off-Windows behaviour: the walk applies the opaque checks on Windows only.");
             return;
         }
 
-        RealDirectory("holder", "real");
-        string link = Under("holder", "rel");
-        LinkFixtures.DirectoryLink(link, Path.Combine("..", "holder", "real"));
+        string repo = RealDirectory("repo");
+        RealDirectory("repo", "a?b:c", "sub");
+        LinkFixtures.DirectoryLink(Path.Combine(repo, "x"), "a?b:c");
+        string path = Path.Combine(repo, "x", "sub", "file.md");
 
-        Assert.False(SyncRoot.IsOpaqueWindowsLink(link));
+        Assert.True(SyncRoot.IsOpaqueWindowsLinkTarget("a?b:c"));
+        Assert.Equal(Path.Combine(repo, "a?b:c", "sub", "file.md"), SyncRoot.Resolve(path, out bool unresolved));
+        Assert.False(unresolved);
+        Assert.False(SyncRoot.Repo(repo).Escapes(path));
     }
 
     // The structural rule (#95 review): ResolveLinkTarget(false).ToString() that is not fully qualified is an absolute
@@ -237,6 +242,50 @@ public sealed class SyncRootTests : IDisposable
         Assert.True(SyncRoot.IsOpaqueWindowsLink(Path.Combine(repo, "global")));
         Assert.True(SyncRoot.Repo(repo).Escapes(Path.Combine(repo, "nt", "file.md")));
         Assert.True(SyncRoot.Repo(repo).Escapes(Path.Combine(repo, "global", "file.md")));
+    }
+
+    // The name list sees neither `?` nor `:` nor GLOBALROOT/Volume{ in `Global\NoSuchDevice\claustrum`, so only the
+    // structural check can refuse it; deleting `|| IsOpaqueWindowsLink(info)` from the walk fails this test.
+    [Fact]
+    public void TheStructuralCheckRefusesAnNtTargetTheNameListDoesNotSeeOnWindows()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            Assert.Skip("an NT-namespace link target is a Windows form.");
+            return;
+        }
+
+        string repo = RealDirectory("repo");
+        string link = Path.Combine(repo, "opaque");
+        LinkFixtures.DirectoryLink(link, @"\\?\Global\NoSuchDevice\claustrum");
+        string path = Path.Combine(link, "file.md");
+
+        // The link dangles, so Directory.Exists is false and FileInfo reads it, as SyncRoot.InfoOf does.
+        string? target = (Directory.Exists(link) ? new DirectoryInfo(link) : (FileSystemInfo)new FileInfo(link)).LinkTarget;
+
+        Assert.NotNull(target);
+        Assert.False(SyncRoot.IsOpaqueWindowsLinkTarget(target));
+        Assert.True(SyncRoot.IsOpaqueWindowsLink(link));
+        SyncRoot.Resolve(path, out bool unresolved);
+        Assert.True(unresolved);
+        Assert.True(SyncRoot.Repo(repo).Escapes(path));
+        Assert.False(SyncRoot.Global(repo).Escapes(path));
+    }
+
+    // `\\?\` is stored as `\??\` and LinkTarget reads it as "": the structural read throws, and a throw is opaque, not a crash.
+    [Fact]
+    public void AnEmptyNtTargetIsOpaqueNotACrashOnWindows()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            Assert.Skip("an NT-namespace link target is a Windows form.");
+            return;
+        }
+
+        string repo = RealDirectory("repo");
+        LinkFixtures.DirectoryLink(Path.Combine(repo, "empty"), @"\\?\");
+
+        Assert.True(SyncRoot.Repo(repo).Escapes(Path.Combine(repo, "empty", "file.md")));
     }
 
     [Fact]
