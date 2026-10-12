@@ -29,7 +29,16 @@ public sealed class OpencodeSync(RoleLibrary library, RoleRenderer renderer, str
 
     private readonly SyncWriter writer = new(Harness, library.Version);
 
-    public SyncResult Sync(string cwd, IReadOnlyList<string>? roles = null, bool global = false, bool force = false, SyncMode mode = SyncMode.Write)
+    /// <summary>The one place `~/.config/opencode` is spelled, shared by the fallback below and the CLI's resolver.</summary>
+    public static string DefaultGlobalRoot(string homeDirectory) => Path.Combine(homeDirectory, ".config", "opencode");
+
+    /// <summary>
+    /// <paramref name="globalRoot"/> is the global root the caller already resolved from the
+    /// environment (`OPENCODE_CONFIG_DIR`, `XDG_CONFIG_HOME`); null means the default under `homeDirectory`.
+    /// </summary>
+    public SyncResult Sync(
+        string cwd, IReadOnlyList<string>? roles = null, bool global = false, bool force = false,
+        SyncMode mode = SyncMode.Write, string? globalRoot = null)
     {
         // Unlike ClaudeSync (where every current role happens to list "claude" and ship an
         // environment.claude.md), ui-reviewer lists only "claude" and has no environment.default.md
@@ -42,11 +51,11 @@ public sealed class OpencodeSync(RoleLibrary library, RoleRenderer renderer, str
 
         // docs/PLAN.md's own "Where files live" table (opencode's bundled reference doc): project
         // agents/commands live under .opencode/, global ones under ~/.config/opencode/ (NOT
-        // ~/.opencode/). homeDirectory is caller-supplied, not read from the environment here,
-        // for the same reason ClaudeSync's own homeDirectory is (a test can redirect --global away
+        // ~/.opencode/). The root and homeDirectory are caller-supplied, not read from the
+        // environment here, for the same reason ClaudeSync's are (a test can redirect --global away
         // from the real ~/.config).
         string root = global
-            ? Path.Combine(homeDirectory, ".config", "opencode")
+            ? globalRoot ?? DefaultGlobalRoot(homeDirectory)
             : Path.Combine(cwd, ".opencode");
         string agentDir = Path.Combine(root, "agent");
         if (mode == SyncMode.Write)

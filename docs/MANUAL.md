@@ -623,10 +623,13 @@ edit. A local `.claustrum/roles/<role>/role.json` override replaces the whole ar
 
 | Harness | Repo files | Global (`--global`) | In chat |
 |---|---|---|---|
-| `claude` | `.claude/agents/<role>.md` + `-xhigh`/`-max`, `.claude/skills/claustrum/SKILL.md`, `.mcp.json` (`mcpServers.claustrum`), `.vscode/mcp.json` (`servers.claustrum`, stdio) | `~/.claude/agents`, `~/.claude/skills`; on Windows/macOS also `claude_desktop_config.json` with the binary's absolute path | `/claustrum`, `@architect` … |
-| `opencode` | `.opencode/agent/<role>.md`, `.opencode/command/claustrum.md`, `opencode.json` (`mcp.claustrum`) | `~/.config/opencode/` | `/claustrum` |
-| `copilot` | `.github/agents/<role>.agent.md`, `.github/skills/claustrum/SKILL.md` | `~/.copilot/agents` | `copilot --agent architect`; the skill surfaces by relevance |
-| `cursor` | `.cursor/agents/<role>.md` + variants, `.cursor/skills/claustrum/SKILL.md`, `.cursor/mcp.json` | `~/.cursor/{agents,skills,mcp.json}` | `/claustrum`, subagents by name |
+| `claude` | `.claude/agents/<role>.md` + `-xhigh`/`-max`, `.claude/skills/claustrum/SKILL.md`, `.mcp.json` (`mcpServers.claustrum`), `.vscode/mcp.json` (`servers.claustrum`, stdio) | `agents` and `skills` under `$CLAUDE_CONFIG_DIR`, else `~/.claude`; on Windows/macOS also `claude_desktop_config.json` with the binary's absolute path | `/claustrum`, `@architect` … |
+| `opencode` | `.opencode/agent/<role>.md`, `.opencode/command/claustrum.md`, `opencode.json` (`mcp.claustrum`) | `$OPENCODE_CONFIG_DIR`, else `$XDG_CONFIG_HOME/opencode`, else `~/.config/opencode` | `/claustrum` |
+| `copilot` | `.github/agents/<role>.agent.md`, `.github/skills/claustrum/SKILL.md` | `agents` and `skills` under `$COPILOT_HOME`, else `~/.copilot` | `copilot --agent architect`; the skill surfaces by relevance |
+| `cursor` | `.cursor/agents/<role>.md` + variants, `.cursor/skills/claustrum/SKILL.md`, `.cursor/mcp.json` | `~/.cursor/{agents,skills,mcp.json}` always: cursor-agent hard-codes that directory for all three, and `CURSOR_CONFIG_DIR` moves only its `cli-config.json` | `/claustrum`, subagents by name |
+
+`sync --global` prints one line per harness, `global root (<harness>): <path> (<reason>)`, in every
+mode (write, `--dry-run`, `--check`), naming the root it chose and the variable that decided it.
 
 A tier stub (`<role>-xhigh`, `<role>-max`) is the full role rendered at that tier plus a
 `## Non-negotiable` block, so a natively spawned stub receives the role's instructions as its system prompt.

@@ -19,7 +19,16 @@ public sealed class CopilotSync(RoleLibrary library, RoleRenderer renderer, stri
 
     private readonly SyncWriter writer = new(Harness, library.Version);
 
-    public SyncResult Sync(string cwd, IReadOnlyList<string>? roles = null, bool global = false, bool force = false, SyncMode mode = SyncMode.Write)
+    /// <summary>The one place `~/.copilot` is spelled, shared by the fallback below and the CLI's resolver.</summary>
+    public static string DefaultGlobalRoot(string homeDirectory) => Path.Combine(homeDirectory, ".copilot");
+
+    /// <summary>
+    /// <paramref name="globalRoot"/> is the global root the caller already resolved from the
+    /// environment (`COPILOT_HOME`); null means the default under `homeDirectory`.
+    /// </summary>
+    public SyncResult Sync(
+        string cwd, IReadOnlyList<string>? roles = null, bool global = false, bool force = false,
+        SyncMode mode = SyncMode.Write, string? globalRoot = null)
     {
         // Same reasoning as OpencodeSync: ui-reviewer lists only "claude" and has no
         // environment.default.md fallback, so the default "sync everything" case has to filter to
@@ -32,7 +41,7 @@ public sealed class CopilotSync(RoleLibrary library, RoleRenderer renderer, stri
         // `~/.copilot/skills/` as the personal skill location, and copilot 1.0.87 really does load
         // `~/.copilot/agents/*.agent.md` — the exact files written here round-tripped through it
         // (2026-09-22, NOTES.md "The copilot backend, validated against a real install").
-        string githubRoot = global ? Path.Combine(homeDirectory, ".copilot") : Path.Combine(cwd, ".github");
+        string githubRoot = global ? globalRoot ?? DefaultGlobalRoot(homeDirectory) : Path.Combine(cwd, ".github");
         string agentDir = Path.Combine(githubRoot, "agents");
         if (mode == SyncMode.Write)
             Directory.CreateDirectory(agentDir);

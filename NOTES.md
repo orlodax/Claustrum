@@ -4844,3 +4844,31 @@ drive exercised `max_parallel: 2` from a spawned architect — only the test sui
   pinned by `CoordinationTextAgreementTests`.
 - ⚠ **The architect's report is not evidence of concurrency; the ledger is.** Each entry under
   `<claustrum home>/budget/<tree>/` carries `started_at`/`finished_at`: overlap is what proves it.
+
+## `sync --global` roots follow each harness's config-dir variable (2026-10-12, issue #83)
+
+`sync --global` used to build every target from the home directory, so a harness whose config
+directory an environment variable moves read none of what was written. Each root is now resolved by
+`SyncGlobalRoot.Resolve` (`src/Claustrum/Cli/`) from `IPlatform`, passed to the sync as `globalRoot`,
+and printed as `global root (<harness>): <path> (<reason>)` before that harness runs, in write,
+`--dry-run` and `--check` alike. An empty or whitespace variable counts as unset.
+
+Receipts, read from the installed binaries on 2026-10-12:
+
+- **claude:** `CLAUDE_CONFIG_DIR`, else `~/.claude`.
+- **opencode** (`~/.opencode/bin/opencode`): the global config path is `$XDG_CONFIG_HOME/opencode`,
+  falling back to `~/.config/opencode` (an xdg-basedir fallback on `os.homedir()`, so on every OS);
+  `OPENCODE_CONFIG_DIR`, when set, replaces that path entirely (`Global.Path.config`). Precedence:
+  `OPENCODE_CONFIG_DIR`, then `$XDG_CONFIG_HOME/opencode`, then `~/.config/opencode`.
+- **copilot:** `COPILOT_HOME` relocates `~/.copilot` as a whole (`copilot help environment`).
+- **cursor** (cursor-agent 2026.09.18): `CURSOR_CONFIG_DIR`, then `$XDG_CONFIG_HOME/cursor`, then
+  `~/.cursor` govern **only `cli-config.json`**; `~/.cursor/mcp.json` and the user-level agents
+  directory are hard-coded on `os.homedir()`. So cursor's sync root stays `~/.cursor` on purpose, and
+  `CURSOR_CONFIG_DIR` is deliberately not honoured for agents, skills or `mcp.json`. Do not
+  "complete the set" by adding it: the files would land where cursor-agent never looks.
+
+Why the resolver sits in Cli and not in the syncs: the environment is read in Cli through `IPlatform`
+(`ClaudeDesktopConfig` is the precedent), which keeps the Roles syncs free of environment reads and
+lets a test hand a sync a temp directory. The default root is spelled once per harness, in
+`<Harness>Sync.DefaultGlobalRoot`, and both the sync's own fallback and the resolver call it, so the
+two cannot drift.

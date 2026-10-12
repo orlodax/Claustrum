@@ -18,21 +18,26 @@ public sealed class ClaudeSync(RoleLibrary library, RoleRenderer renderer, strin
 
     private readonly SyncWriter writer = new(Harness, library.Version);
 
+    /// <summary>The one place `~/.claude` is spelled, shared by the fallback below and the CLI's resolver.</summary>
+    public static string DefaultGlobalRoot(string homeDirectory) => Path.Combine(homeDirectory, ".claude");
+
     /// <summary>
     /// <paramref name="desktop"/> is §B4's Claude desktop config target; it is merged only under
     /// <paramref name="global"/>, and a caller that has no desktop app to write to (Linux) passes null.
+    /// <paramref name="globalRoot"/> is the global root the caller already resolved from the
+    /// environment (`CLAUDE_CONFIG_DIR`); null means the default under `homeDirectory`.
     /// </summary>
     public SyncResult Sync(
         string cwd, IReadOnlyList<string>? roles = null, bool global = false, bool force = false,
-        SyncMode mode = SyncMode.Write, ClaudeDesktopTarget? desktop = null)
+        SyncMode mode = SyncMode.Write, ClaudeDesktopTarget? desktop = null, string? globalRoot = null)
     {
         IReadOnlyList<string> targetRoles = roles is { Count: > 0 } ? roles : library.ListRoles();
-        // `--global` targets `~/.claude/...` throughout, not just the agents dir (review finding #3:
-        // the skill file used to hardcode `cwd` here regardless of `global`). `homeDirectory` is
-        // caller-supplied (IPlatform.HomeDirectory in production) rather than read here directly, so
-        // a test can redirect `--global` away from the real `~/.claude` (tester report, fault_in: code).
+        // `--global` targets the global root throughout, not just the agents dir (review finding #3:
+        // the skill file used to hardcode `cwd` here regardless of `global`). The root and
+        // `homeDirectory` are caller-supplied, never read from the environment here, so a test can
+        // redirect `--global` away from the real `~/.claude` (tester report, fault_in: code).
         string claudeRoot = global
-            ? Path.Combine(homeDirectory, ".claude")
+            ? globalRoot ?? DefaultGlobalRoot(homeDirectory)
             : Path.Combine(cwd, ".claude");
         string agentsDir = Path.Combine(claudeRoot, "agents");
         if (mode == SyncMode.Write)
