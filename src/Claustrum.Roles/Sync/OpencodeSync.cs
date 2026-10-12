@@ -113,7 +113,7 @@ public sealed class OpencodeSync(RoleLibrary library, RoleRenderer renderer, str
         RoleTier roleTier = loaded.Definition.Tiers[tier];
         bool sameModel = OpencodeModelFor(roleTier.Model) == OpencodeModelFor(loaded.Definition.Tiers["high"].Model);
         string frontmatter = BuildAgentFrontmatter(SyncWriter.TierDescription(role, tier, sameModel), OpencodeModelFor(roleTier.Model), roleTier.Effort);
-        string body = renderer.RenderTierStub(role, tier, cwd);
+        string body = renderer.RenderTierStub(role, tier, Harness, cwd);
         string path = Path.Combine(agentDir, $"{role}-{tier}.md");
         writer.Write(path, role, frontmatter, body, force, mode, into, localOverride: loaded.IsLocalOverride);
     }

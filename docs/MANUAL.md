@@ -628,6 +628,9 @@ edit. A local `.claustrum/roles/<role>/role.json` override replaces the whole ar
 | `copilot` | `.github/agents/<role>.agent.md`, `.github/skills/claustrum/SKILL.md` | `~/.copilot/agents` | `copilot --agent architect`; the skill surfaces by relevance |
 | `cursor` | `.cursor/agents/<role>.md` + variants, `.cursor/skills/claustrum/SKILL.md`, `.cursor/mcp.json` | `~/.cursor/{agents,skills,mcp.json}` | `/claustrum`, subagents by name |
 
+A tier stub (`<role>-xhigh`, `<role>-max`) is the full role rendered at that tier plus a
+`## Non-negotiable` block, so a natively spawned stub receives the role's instructions as its system prompt.
+
 The repo `.mcp.json` registers `"command": "claustrum"` — the bare name — so the binary must be on
 the `PATH` of whatever spawns the host. On Linux there is no desktop-app config to write; `sync`
 prints one line saying so.
