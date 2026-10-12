@@ -4962,9 +4962,12 @@ locator returns `~`, so `~/.claude` counts as inside the repo and a plain `sync`
 `builder.md` with exit 0, exactly the overwrite #95 exists to stop. The cwd is the only root that cannot
 be widened by a `.git` somewhere above it, so the monorepo convenience is the price.
 
-**A refused `.claustrum` is not read either.** `SyncManifestStore.Read(cwd, into)` returns nothing when
-`into.Refused` holds the manifest path: reading `sync-manifest.json` through an escaping `.claustrum`
-link would otherwise throw `JsonException` out of the sync on an unparsable target instead of refusing.
+**A refused `.claustrum` skips the manifest only.** `SyncManifestStore.Read(cwd, into)` returns nothing
+when `into.Refused` holds the manifest path, so `sync-manifest.json` is neither read nor written through
+an escaping `.claustrum` link (reading it would otherwise throw `JsonException` out of the sync on an
+unparsable target instead of refusing). Nothing else under `.claustrum` is fenced on the read side:
+`RoleLibrary.LoadRole` still reads `.claustrum/roles/` through the refused link, so a role override the
+link points at is rendered — issue #97.
 
 **Why the leaf keeps #84's semantics.** The fence is on the leaf's parent, not on the leaf, because
 sync never writes through a leaf link: #84 replaces it or refuses it, so the bytes land in the parent.
@@ -4977,7 +4980,9 @@ agents/skills directory is the user's own setup (stow, dotfiles), so sync writes
 it did: the `global root (<harness>): <path> → <real path> (<reason>)` line, and `(resolved → <real>)` on
 every annotated path (`SyncResult.RealPaths`). The syncs still receive the root as typed. "Refuse when
 it escapes the resolved global root" was considered and rejected: a linked agents directory always
-escapes the resolved root, which is exactly the stow case.
+escapes the resolved root, which is exactly the stow case. For a replaced leaf link `RealPaths` holds the
+landing path (the parent resolved plus the leaf's name) and the replaced-symlink line shows it as
+`(lands at …)`, because the link's target is exactly where sync does not write (found in review, 2026-10-12).
 
 **JSON targets (#93), option (b).** A JSON target that is a link resolving inside the root, or any link
 under `--global`, is merged through (the merge is additive and the real path is printed); one that
@@ -4995,6 +5000,20 @@ between them would compare unequal. The raw walk changes nothing that is not a l
 reports symlinks and junctions alike (the directory-link kind a Windows dotfiles setup uses). The
 inside test is case-insensitive there. The walk stops at 40 link hops; a loop counts as escaping in repo
 mode, since a path that cannot be proved inside the root is not written.
+
+**NT-namespace link targets (found in review, 2026-10-12).** .NET's `LinkTarget` strips only `\??\` from
+an absolute reparse target, so `\\?\GLOBALROOT\…`, `\\?\Volume{GUID}\…` and `\\?\GLOBALROOT\??\C:\…`
+come back as relative-looking strings that `IsPathFullyQualified` rejects; both walks would splice them
+under the repo and say "inside" while Windows follows them anywhere. `SyncRoot.IsOpaqueWindowsLinkTarget`
+refuses any non-fully-qualified target starting with `GLOBALROOT` or `Volume{` or containing `?` or `:`
+(over-refusal accepted); on Windows the walk reports it unresolved (`Resolve`'s `unresolved`) and
+`Escapes` is true. Considered and deferred past v0.1.0: compare `GetFinalPathNameByHandle` of the
+landing directory's nearest existing ancestor and of the root, normalising both sides to avoid the 8.3
+mismatch above; it needs a new Windows P/Invoke in the AOT binary and a Windows machine to validate.
+Known limit: a reparse buffer whose substitute name has no `\??\` prefix at all (a raw
+`\Device\HarddiskVolumeN\…` planted with `FSCTL_SET_REPARSE_POINT`) is mangled by .NET (`\Dev` sliced
+off) and passes as a plain relative name. `CreateSymbolicLinkW`, hence `git checkout`, always stores
+`\??\`, so it cannot arrive through a clone: that is the accepted residue.
 
 **`..` in a link target (found in review, 2026-10-12).** `Path.GetFullPath` collapses `..` by string, but
 POSIX applies it after the link is followed: with `d -> ../../.claude/agents` and `.claude -> d/..`

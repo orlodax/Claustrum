@@ -26,6 +26,8 @@ public sealed class SyncWriter(string harness, string libraryVersion)
     /// outcome in <paramref name="into"/>. <paramref name="localOverride"/> stamps `source=local`
     /// into the marker: the file was rendered from `.claustrum/roles/`, not the library alone.
     /// A file whose landing directory resolves outside a fenced <paramref name="root"/> is refused (#95).
+    /// The real path recorded in <paramref name="into"/> is where the bytes land: the parent resolved
+    /// plus the leaf's name, so a replaced leaf link reports its landing path, never the link's target.
     /// </summary>
     public void Write(string path, string role, string frontmatter, string body, bool force, SyncMode mode, SyncAccumulator into, SyncRoot root, bool localOverride = false)
     {
@@ -35,13 +37,15 @@ public sealed class SyncWriter(string harness, string libraryVersion)
         string marker = $"{MarkerPrefix} role={role} harness={harness} library={libraryVersion}{source} sha256={sha256} -->";
         string content = $"{frontmatter.Trim()}\n{marker}\n\n{trimmedBody}\n";
 
-        string real = SyncRoot.Resolve(path);
+        // The bytes land in the leaf's parent (a leaf link is replaced, never written through, #84), so
+        // the recorded real path is that directory resolved plus the leaf's own name, not the link's target.
+        string parent = Path.GetDirectoryName(path) ?? path;
+        string real = Path.Combine(SyncRoot.Resolve(parent), Path.GetFileName(path));
         if (!SyncRoot.SamePath(path, real))
             into.RealPaths[path] = real;
 
-        // Sync never writes through a leaf link (#84 replaces it or refuses it), so the bytes land in
-        // the leaf's parent: that directory, not the leaf, is what must stay inside the root (#95).
-        if (root.Escapes(Path.GetDirectoryName(path) ?? path))
+        // That directory, not the leaf, is what must stay inside the root (#95).
+        if (root.Escapes(parent))
         {
             into.Refused[path] = real;
             return;
