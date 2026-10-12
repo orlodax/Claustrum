@@ -22,9 +22,22 @@ internal static class McpConfigSync
 {
     public static void Merge(
         McpConfigTarget target, SyncMode mode, bool force,
-        SyncAccumulator into, IReadOnlyDictionary<string, SyncManifestFile> existingManifest)
+        SyncAccumulator into, IReadOnlyDictionary<string, SyncManifestFile> existingManifest, SyncRoot syncRoot)
     {
         string path = target.Path;
+
+        // The write goes through the leaf (it is a key merge), so the fence is on the full path and
+        // comes before anything is read or created. A link that stays inside the root is merged through.
+        string real = SyncRoot.Resolve(path);
+        if (!SyncRoot.SamePath(path, real))
+            into.RealPaths[path] = real;
+
+        if (syncRoot.Escapes(path))
+        {
+            into.Refused[path] = real;
+            return;
+        }
+
         JsonObject root = File.Exists(path) ? ParseExisting(path) : target.RootOnCreate?.DeepClone().AsObject() ?? [];
 
         JsonObject section = root[target.SectionKey] as JsonObject ?? [];

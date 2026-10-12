@@ -25,14 +25,27 @@ public sealed class SyncWriter(string harness, string libraryVersion)
     /// Writes (or, outside <see cref="SyncMode.Write"/>, proposes) one generated file and records the
     /// outcome in <paramref name="into"/>. <paramref name="localOverride"/> stamps `source=local`
     /// into the marker: the file was rendered from `.claustrum/roles/`, not the library alone.
+    /// A file whose landing directory resolves outside a fenced <paramref name="root"/> is refused (#95).
     /// </summary>
-    public void Write(string path, string role, string frontmatter, string body, bool force, SyncMode mode, SyncAccumulator into, bool localOverride = false)
+    public void Write(string path, string role, string frontmatter, string body, bool force, SyncMode mode, SyncAccumulator into, SyncRoot root, bool localOverride = false)
     {
         string trimmedBody = body.Trim();
         string sha256 = ComputeSha256(trimmedBody);
         string source = localOverride ? " source=local" : "";
         string marker = $"{MarkerPrefix} role={role} harness={harness} library={libraryVersion}{source} sha256={sha256} -->";
         string content = $"{frontmatter.Trim()}\n{marker}\n\n{trimmedBody}\n";
+
+        string real = SyncRoot.Resolve(path);
+        if (!SyncRoot.SamePath(path, real))
+            into.RealPaths[path] = real;
+
+        // Sync never writes through a leaf link (#84 replaces it or refuses it), so the bytes land in
+        // the leaf's parent: that directory, not the leaf, is what must stay inside the root (#95).
+        if (root.Escapes(Path.GetDirectoryName(path) ?? path))
+        {
+            into.Refused[path] = real;
+            return;
+        }
 
         // A link is never sync's own file (sync never creates one), so it is foreign whatever it points
         // at, even a target carrying our marker, and never "up to date". LinkTarget goes first because

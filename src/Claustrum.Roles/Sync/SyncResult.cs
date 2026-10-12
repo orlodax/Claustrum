@@ -8,11 +8,15 @@ namespace Claustrum.Roles.Sync;
 /// <paramref name="ProposedContent"/> is populated only outside <see cref="SyncMode.Write"/>: each
 /// <paramref name="Written"/> path's would-be content, for the CLI to diff against what is on disk.
 /// <paramref name="Symlinks"/> maps each symlinked path met (foreign, or in <paramref name="Written"/>
-/// because <c>--force</c> replaces the link rather than writing through it) to its link target.
+/// because <c>--force</c> replaces the link) to its link target. <paramref name="Refused"/> maps each
+/// target resolving outside the repo root to its real path: untouched, <c>--force</c> does not override
+/// (#95). <paramref name="RealPaths"/> maps every target whose real path differs from the path as typed.
 /// </summary>
 public sealed record SyncResult(
     IReadOnlyList<string> Written,
     IReadOnlyList<string> Skipped,
     IReadOnlyList<string> Foreign,
     IReadOnlyDictionary<string, string>? ProposedContent = null,
-    IReadOnlyDictionary<string, string>? Symlinks = null);
+    IReadOnlyDictionary<string, string>? Symlinks = null,
+    IReadOnlyDictionary<string, string>? Refused = null,
+    IReadOnlyDictionary<string, string>? RealPaths = null);

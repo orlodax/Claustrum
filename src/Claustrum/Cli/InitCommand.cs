@@ -68,13 +68,14 @@ public static class InitCommand
 
         Console.WriteLine($"claustrum.json: {(wroteConfig ? "written" : "already present, left unchanged")}");
         Console.WriteLine($".gitignore: {(updatedGitignore ? "updated" : "already up to date")}");
+        bool refused = false;
         foreach (string harness in harnesses)
-            SyncHarness(harness, cwd);
+            refused |= SyncHarness(harness, cwd);
 
         bool appendedAgentsMd = AppendAgentsMdPointer(cwd);
         Console.WriteLine($"AGENTS.md: {(appendedAgentsMd ? "pointer appended" : "unchanged")}");
 
-        return ExitCodes.Ok;
+        return refused ? ExitCodes.Usage : ExitCodes.Ok;
     }
 
     private static string[] DetectHarnesses(string cwd)
@@ -92,7 +93,8 @@ public static class InitCommand
         return [.. harnesses];
     }
 
-    private static void SyncHarness(string harness, string cwd)
+    // True when sync refused a target for resolving outside the repo (issue #95): init finishes, then exits 2.
+    private static bool SyncHarness(string harness, string cwd)
     {
         SyncResult result = harness switch
         {
@@ -103,7 +105,13 @@ public static class InitCommand
             _ => throw new ArgumentOutOfRangeException(nameof(harness), harness, "not a supported harness"),
         };
 
-        Console.WriteLine($"{harness}: {result.Written.Count} written, {result.Skipped.Count} skipped, {result.Foreign.Count} foreign");
+        IReadOnlyDictionary<string, string> refused = result.Refused ?? new Dictionary<string, string>();
+        string refusedNote = refused.Count > 0 ? $", {refused.Count} refused (outside the repo)" : "";
+        Console.WriteLine($"{harness}: {result.Written.Count} written, {result.Skipped.Count} skipped, {result.Foreign.Count} foreign{refusedNote}");
+        foreach (KeyValuePair<string, string> entry in refused)
+            Console.WriteLine($"  {entry.Key} → {entry.Value}");
+
+        return refused.Count > 0;
     }
 
     private static bool WriteConfigIfAbsent(string cwd)

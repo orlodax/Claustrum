@@ -54,35 +54,38 @@ public sealed class OpencodeSync(RoleLibrary library, RoleRenderer renderer, str
         // ~/.opencode/). The root and homeDirectory are caller-supplied, not read from the
         // environment here, for the same reason ClaudeSync's are (a test can redirect --global away
         // from the real ~/.config).
-        string root = global
+        string harnessRoot = global
             ? globalRoot ?? DefaultGlobalRoot(homeDirectory)
             : Path.Combine(cwd, ".opencode");
-        string agentDir = Path.Combine(root, "agent");
-        if (mode == SyncMode.Write)
+        SyncRoot root = global ? SyncRoot.Global(harnessRoot) : SyncRoot.Repo(cwd);
+        string agentDir = Path.Combine(harnessRoot, "agent");
+        if (mode == SyncMode.Write && !root.Escapes(agentDir))
             Directory.CreateDirectory(agentDir);
 
         SyncAccumulator into = new();
+        if (!global)
+            SyncManifestStore.RefuseIfEscaping(cwd, root, into);
 
         foreach (string role in targetRoles)
         {
             LoadedRole loaded = library.LoadRole(role, cwd);
-            WriteAgent(agentDir, role, loaded, cwd, force, mode, into);
+            WriteAgent(agentDir, role, loaded, cwd, force, mode, into, root);
 
             foreach (string tier in generatedTiers)
                 if (loaded.Definition.Tiers.ContainsKey(tier))
-                    WriteTierStub(agentDir, role, tier, loaded, cwd, force, mode, into);
+                    WriteTierStub(agentDir, role, tier, loaded, cwd, force, mode, into, root);
         }
 
-        WriteCommand(root, force, mode, into);
+        WriteCommand(harnessRoot, force, mode, into, root);
 
         // opencode.json is a repo-root file, not one of §B4's --global targets (agent directories,
         // the desktop app's own config file) — skipped entirely under --global, exactly as
         // ClaudeSync skips `.mcp.json` there, and so is the manifest that proves its provenance.
         if (!global)
-            MergeMcpConfig(cwd, mode, force, into);
+            MergeMcpConfig(cwd, mode, force, into, root);
 
         if (!global && mode == SyncMode.Write)
-            SyncManifestStore.Update(cwd, library.Version, into.ManifestFiles);
+            SyncManifestStore.Update(cwd, library.Version, into);
 
         return into.ToResult(mode);
     }
@@ -91,7 +94,7 @@ public sealed class OpencodeSync(RoleLibrary library, RoleRenderer renderer, str
     // `{"type": "local", "command": ["claustrum", "mcp"]}` — `command` is an ARRAY here, unlike the
     // command+args split `.mcp.json`/`.vscode/mcp.json` use. The optional enabled/environment/
     // timeout/cwd fields are left out so opencode's own defaults apply.
-    private static void MergeMcpConfig(string cwd, SyncMode mode, bool force, SyncAccumulator into)
+    private static void MergeMcpConfig(string cwd, SyncMode mode, bool force, SyncAccumulator into, SyncRoot root)
     {
         // opencode reads either name, and writing back through JsonNode drops comments (the
         // trade-off McpConfigSync documents), so the `.jsonc` is only targeted when it is the file
@@ -104,33 +107,33 @@ public sealed class OpencodeSync(RoleLibrary library, RoleRenderer renderer, str
         // $schema seeds a file created from nothing (it is what opencode's own docs show first) and is
         // never added to — or rewritten in — a config a human already has.
         JsonObject rootOnCreate = new() { ["$schema"] = "https://opencode.ai/config.json" };
-        McpConfigSync.Merge(new McpConfigTarget(Harness, path, "mcp", entry, rootOnCreate), mode, force, into, SyncManifestStore.Read(cwd));
+        McpConfigSync.Merge(new McpConfigTarget(Harness, path, "mcp", entry, rootOnCreate), mode, force, into, SyncManifestStore.Read(cwd, into), root);
     }
 
-    private void WriteAgent(string agentDir, string role, LoadedRole loaded, string cwd, bool force, SyncMode mode, SyncAccumulator into)
+    private void WriteAgent(string agentDir, string role, LoadedRole loaded, string cwd, bool force, SyncMode mode, SyncAccumulator into, SyncRoot root)
     {
         RoleDefinition definition = loaded.Definition;
         RoleTier tier = definition.Tiers["high"];
         string frontmatter = BuildAgentFrontmatter(definition.Description, OpencodeModelFor(tier.Model), tier.Effort);
         string body = renderer.Render(role, "high", Harness, cwd).SystemBody;
         string path = Path.Combine(agentDir, $"{role}.md");
-        writer.Write(path, role, frontmatter, body, force, mode, into, localOverride: loaded.IsLocalOverride);
+        writer.Write(path, role, frontmatter, body, force, mode, into, root, localOverride: loaded.IsLocalOverride);
     }
 
-    private void WriteTierStub(string agentDir, string role, string tier, LoadedRole loaded, string cwd, bool force, SyncMode mode, SyncAccumulator into)
+    private void WriteTierStub(string agentDir, string role, string tier, LoadedRole loaded, string cwd, bool force, SyncMode mode, SyncAccumulator into, SyncRoot root)
     {
         RoleTier roleTier = loaded.Definition.Tiers[tier];
         bool sameModel = OpencodeModelFor(roleTier.Model) == OpencodeModelFor(loaded.Definition.Tiers["high"].Model);
         string frontmatter = BuildAgentFrontmatter(SyncWriter.TierDescription(role, tier, sameModel), OpencodeModelFor(roleTier.Model), roleTier.Effort);
         string body = renderer.RenderTierStub(role, tier, Harness, cwd);
         string path = Path.Combine(agentDir, $"{role}-{tier}.md");
-        writer.Write(path, role, frontmatter, body, force, mode, into, localOverride: loaded.IsLocalOverride);
+        writer.Write(path, role, frontmatter, body, force, mode, into, root, localOverride: loaded.IsLocalOverride);
     }
 
-    private void WriteCommand(string root, bool force, SyncMode mode, SyncAccumulator into)
+    private void WriteCommand(string harnessRoot, bool force, SyncMode mode, SyncAccumulator into, SyncRoot root)
     {
-        string commandDir = Path.Combine(root, "command");
-        if (mode == SyncMode.Write)
+        string commandDir = Path.Combine(harnessRoot, "command");
+        if (mode == SyncMode.Write && !root.Escapes(commandDir))
             Directory.CreateDirectory(commandDir);
 
         string frontmatter = """
@@ -140,7 +143,7 @@ public sealed class OpencodeSync(RoleLibrary library, RoleRenderer renderer, str
             """;
         string body = library.ReadShared("_shared/claustrum-skill.md");
         string path = Path.Combine(commandDir, "claustrum.md");
-        writer.Write(path, "claustrum", frontmatter, body, force, mode, into);
+        writer.Write(path, "claustrum", frontmatter, body, force, mode, into, root);
     }
 
     private static string BuildAgentFrontmatter(string description, string model, string variant)
