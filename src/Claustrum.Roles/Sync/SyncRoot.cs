@@ -59,7 +59,7 @@ public sealed class SyncRoot
     /// <summary>
     /// Windows: true when <paramref name="link"/> stores an absolute reparse target .NET could not turn into a
     /// Win32 path. ResolveLinkTarget(false) joins a relative target onto the link's directory and leaves an
-    /// absolute one only `\??\`-stripped, and ToString() keeps that string (FullName would re-root it): a
+    /// absolute one with its first four characters dropped, and ToString() keeps that string (FullName would re-root it): a
     /// result that is not fully qualified is an NT-namespace target, whatever its first component (#95 review).
     /// Always false off Windows, where the walk never calls it.
     /// </summary>
@@ -73,9 +73,10 @@ public sealed class SyncRoot
             FileSystemInfo? immediate = link.ResolveLinkTarget(returnFinalTarget: false);
             return immediate is null || !IoPath.IsPathFullyQualified(immediate.ToString());
         }
-        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException)
         {
-            // A link that cannot be read is not "not a link": fail closed.
+            // A link whose structural read fails, for any reason the runtime reports, is opaque, never "not a
+            // link" (2026-10-12: an empty `\??\` target throws ArgumentException from GetFullPath in FileInfo's constructor).
             return true;
         }
     }
