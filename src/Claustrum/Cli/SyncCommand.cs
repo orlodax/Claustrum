@@ -179,7 +179,7 @@ public static class SyncCommand
             bool readable = File.Exists(path) && (!isLink || File.ResolveLinkTarget(path, returnFinalTarget: true)?.Exists == true);
             return readable ? File.ReadAllText(path) : null;
         }
-        catch (IOException)
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {
             return null;
         }

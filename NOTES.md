@@ -4895,14 +4895,26 @@ The rule: a link is never sync's own file, because sync never creates one. So `S
 treats it as foreign without `--force` (even if the target carries our marker, and never "up to
 date" even if the content read through it matches), and with `--force` deletes the link and writes a
 regular file in its place. The link target is left byte-identical. `SyncResult.Symlinks` (path →
-target) lets the CLI annotate the output; `--check` and `--dry-run` both print `would replace symlink`.
+target) lets the CLI annotate the output; `--check` and `--dry-run` print `would replace symlink` **with
+`--force`**; without it the link is listed as foreign with its target.
 
-Every write is a temporary file in the same directory (`.<name>.claustrum-tmp`) followed by a rename
-over the path. A rename replaces the directory entry, so a symlink goes without its target being
-touched, a **hard link** (what dotfiles scripts fall back to on Windows without Developer Mode, and
-which `LinkTarget` cannot see) is detached instead of written through, and a failed write can no
-longer leave the user's link gone with an empty unmarked file in its place; the temp file is deleted
-if the write fails.
+A regular file (or nothing) at the path is written in place with `File.WriteAllText`, as before #84:
+that keeps the file's mode and works in a read-only directory, and the marker (or `--force`) already
+proves the file is ours. Only a symlink goes through a temp file and a rename over the link: the temp is
+created with `FileMode.CreateNew` (O_CREAT|O_EXCL, which fails on any existing entry, a planted
+symlink included) under a random name `.<name>.<random>.claustrum-tmp` in the same directory, and is
+deleted if the write or the move fails. The link goes without its target being touched.
+
+Found in review the same day (2026-10-12): the first version renamed over the path for every file, at a
+predictable temp name. A repo committing `.claude/agents/.builder.md.claustrum-tmp -> ~/.bashrc` had
+that file overwritten by `sync`/`init` (reproduced), and rename-over for ordinary marked files broke a
+writable file in a read-only (555) directory and dropped the mode (600 became 644). Hence in-place
+for regular files and an exclusive random temp for links only.
+
+**Known limit: hard links are neither detected nor detached.** `LinkTarget` cannot see them (dotfiles
+scripts fall back to them on Windows without Developer Mode), so a hard-linked marked file is written in
+place like any regular file, through the link. Accepted: the mode and read-only-directory behaviour of
+regular files matters more.
 
 `FileInfo.LinkTarget` is the detector because it reads the link itself; `File.Exists` is true for a
 dangling link on Unix (measured, .NET 10) so it cannot tell one from a file, and reading through one

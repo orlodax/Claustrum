@@ -72,21 +72,15 @@ public sealed class SyncWriter(string harness, string libraryVersion)
         // for the CLI to diff instead (SyncResult.ProposedContent).
         if (mode == SyncMode.Write)
         {
-            // Write-then-rename replaces the directory entry: a symlink goes without its target being
-            // touched, a hard link (what dotfiles scripts fall back to on Windows, invisible to
-            // LinkTarget) is detached instead of written through, and a failed write can no longer
-            // leave the user's link gone with an empty unmarked file in its place.
-            string tmp = Path.Combine(Path.GetDirectoryName(path) ?? "", $".{Path.GetFileName(path)}.claustrum-tmp");
-            try
+            if (linkTarget is null)
             {
-                File.WriteAllText(tmp, content);
-                File.Move(tmp, path, overwrite: true);
+                // In place keeps the file's mode and works in a read-only directory; the marker (or
+                // --force) already proves the file is ours. A hard link is therefore written through:
+                // LinkTarget cannot see one, and that is the accepted limit (NOTES.md, issue #84).
+                File.WriteAllText(path, content);
             }
-            catch
-            {
-                File.Delete(tmp);
-                throw;
-            }
+            else
+                ReplaceLink(path, content);
         }
         else
             into.ProposedContent[path] = content;
@@ -121,6 +115,26 @@ public sealed class SyncWriter(string harness, string libraryVersion)
                 + $"high-stakes, or previously-stuck cases. For everyday work use `{role}`; for a step up use `{role}-xhigh`.",
             _ => throw new RoleRenderException($"no stub description template for tier '{tier}'"),
         };
+    }
+
+    // The temp name is random and opened with CreateNew (O_EXCL), which also refuses a planted
+    // symlink: a committed link at a guessable temp name would be written through (found 2026-10-12).
+    private static void ReplaceLink(string path, string content)
+    {
+        string tmp = Path.Combine(Path.GetDirectoryName(path) ?? "", $".{Path.GetFileName(path)}.{Path.GetRandomFileName()}.claustrum-tmp");
+        try
+        {
+            using (StreamWriter writer = new(new FileStream(tmp, FileMode.CreateNew, FileAccess.Write, FileShare.None)))
+                writer.Write(content);
+
+            File.Move(tmp, path, overwrite: true);
+        }
+        catch
+        {
+            if (File.Exists(tmp))
+                File.Delete(tmp);
+            throw;
+        }
     }
 
     private static string NormalizeLineEndings(string text) => text.Replace("\r\n", "\n");
