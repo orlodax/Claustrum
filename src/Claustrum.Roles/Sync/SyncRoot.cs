@@ -37,15 +37,15 @@ public sealed class SyncRoot
     /// The real path of <paramref name="path"/>: every link on the way, directories and leaf alike, is
     /// followed; trailing components that do not exist yet stay as typed. <paramref name="unresolved"/> is
     /// true when the walk could not be finished: the 40-hop cap was hit, or on Windows a link target is
-    /// opaque (<see cref="IsOpaqueWindowsLinkTarget"/>); the result is then the path as far as it was resolved.
+    /// opaque (<see cref="IsOpaqueWindowsLink(FileSystemInfo)"/>); the result is then the path as far as it was resolved.
     /// `..` follows the OS: physical on Unix, lexical on Windows (NOTES.md, same section).
     /// </summary>
     public static string Resolve(string path, out bool unresolved) => Walk(path, OperatingSystem.IsWindows(), out unresolved);
 
     /// <summary>
-    /// True for a Windows link target that names the NT object namespace rather than a path the walk can
-    /// place: .NET strips only `\??\` from an absolute reparse target, so `\\?\GLOBALROOT\…` and
-    /// `\\?\Volume{…}\…` come back looking relative while Windows follows them anywhere (#95 review).
+    /// The cheap string gate kept beside the structural <see cref="IsOpaqueWindowsLink(FileSystemInfo)"/>: a
+    /// not-fully-qualified target that names the NT object namespace (`GLOBALROOT`, `Volume{`, `?`, `:`).
+    /// It costs nothing and still fires if the runtime's immediate-target string ever changed shape (#95 review).
     /// </summary>
     public static bool IsOpaqueWindowsLinkTarget(string target)
     {
@@ -55,6 +55,33 @@ public sealed class SyncRoot
                 || target.Contains('?')
                 || target.Contains(':'));
     }
+
+    /// <summary>
+    /// Windows: true when <paramref name="link"/> stores an absolute reparse target .NET could not turn into a
+    /// Win32 path. ResolveLinkTarget(false) joins a relative target onto the link's directory and leaves an
+    /// absolute one only `\??\`-stripped, and ToString() keeps that string (FullName would re-root it): a
+    /// result that is not fully qualified is an NT-namespace target, whatever its first component (#95 review).
+    /// Always false off Windows, where the walk never calls it.
+    /// </summary>
+    public static bool IsOpaqueWindowsLink(FileSystemInfo link)
+    {
+        if (!OperatingSystem.IsWindows())
+            return false;
+
+        try
+        {
+            FileSystemInfo? immediate = link.ResolveLinkTarget(returnFinalTarget: false);
+            return immediate is null || !IoPath.IsPathFullyQualified(immediate.ToString());
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            // A link that cannot be read is not "not a link": fail closed.
+            return true;
+        }
+    }
+
+    /// <summary>The same check for a path, building the FileSystemInfo the way the walk does.</summary>
+    public static bool IsOpaqueWindowsLink(string linkPath) => IsOpaqueWindowsLink(InfoOf(linkPath));
 
     /// <summary>
     /// The one walker. <paramref name="lexicalDotDot"/> collapses `.`/`..` by string (Windows rule);
@@ -90,7 +117,7 @@ public sealed class SyncRoot
             }
 
             string next = IoPath.Combine(current, part);
-            string? target = LinkTargetOf(next);
+            string? target = LinkTargetOf(next, out bool opaque);
             if (target is null)
             {
                 current = next;
@@ -98,8 +125,8 @@ public sealed class SyncRoot
                 continue;
             }
 
-            // An NT-namespace target cannot be placed by a string walk, and Windows follows it anywhere: refuse.
-            if (OperatingSystem.IsWindows() && IsOpaqueWindowsLinkTarget(target))
+            // An absolute NT-namespace target cannot be placed by a string walk, and Windows follows it anywhere: refuse.
+            if (opaque)
             {
                 unresolved = true;
                 return IoPath.Combine([target, .. parts[(index + 1)..]]);
@@ -180,17 +207,27 @@ public sealed class SyncRoot
             [IoPath.DirectorySeparatorChar, IoPath.AltDirectorySeparatorChar],
             StringSplitOptions.RemoveEmptyEntries)];
 
-    private static string? LinkTargetOf(string path)
+    private static FileSystemInfo InfoOf(string path) =>
+        OperatingSystem.IsWindows() && Directory.Exists(path) ? new DirectoryInfo(path) : new FileInfo(path);
+
+    private static string? LinkTargetOf(string path, out bool opaque)
     {
+        opaque = false;
+        FileSystemInfo info;
+        string? target;
         try
         {
             // A directory link at the leaf is reported by FileInfo on Unix; Windows opens it differently.
-            FileSystemInfo info = OperatingSystem.IsWindows() && Directory.Exists(path) ? new DirectoryInfo(path) : new FileInfo(path);
-            return info.LinkTarget;
+            info = InfoOf(path);
+            target = info.LinkTarget;
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {
             return null;
         }
+
+        // Outside the try above: a real link whose structural read throws is opaque, never "not a link".
+        opaque = target is not null && OperatingSystem.IsWindows() && (IsOpaqueWindowsLinkTarget(target) || IsOpaqueWindowsLink(info));
+        return target;
     }
 }
