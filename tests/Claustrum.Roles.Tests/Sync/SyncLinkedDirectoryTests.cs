@@ -27,7 +27,7 @@ public sealed class SyncLinkedDirectoryTests : IDisposable
         File.WriteAllText(Path.Combine(outside, "keep.txt"), "mine\n");
     }
 
-    public void Dispose() => Directory.Delete(baseDir, recursive: true);
+    public void Dispose() => LinkFixtures.DeleteTree(baseDir);
 
     public static TheoryData<string> Harnesses => [.. HarnessSyncs.All];
 
