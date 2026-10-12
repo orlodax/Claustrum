@@ -52,7 +52,8 @@ the workspace); `--cwd` on the server and `cwd` on each call override it.
 Exit codes are fixed: `0` ok · `1` backend failure · `2` usage or config error (a bad flag, a
 refused brief, a missing cast, a role sent to a harness it does not list, a `gh` failure, a
 `coordinate` whose cast is not committed) · `3` backend not found · `4` timeout · `5` budget · `130`
-cancelled.
+cancelled — by the first Ctrl-C (SIGINT) or SIGTERM, with a `cancelled` receipt; a second
+signal ends the process at once, with no receipt.
 
 ### `claustrum run <role>`
 

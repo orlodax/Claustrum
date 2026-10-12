@@ -4709,10 +4709,15 @@ stdout and on disk, the isolated cases' `commit` holding `partial.txt`, and no `
   Generic Host, whose own console lifetime stops it on SIGINT/SIGTERM.
 - **A second Ctrl-C forces the exit** (2026-10-09). With the timeout null nothing else ends a
   cancel path that hangs — the post-run commit runs the repo's hooks and filters, bounded only by 5
-  minutes. So `CancelKeyHandler`, shared by `run` and `coordinate`, cancels the token on the first
-  press and prints `cancelling… press Ctrl-C again to exit without a receipt` to stderr; on the
+  minutes. So `CancelSignalHandler` (was `CancelKeyHandler`), shared by `run` and `coordinate`,
+  cancels the token on the first press and prints `cancelling… press Ctrl-C again to exit without a receipt` to stderr; on the
   second it leaves `e.Cancel` false and the runtime ends the process there, with no `result.json`.
-- **SIGTERM is not handled**, before or after: only `CancelKeyPress` (SIGINT) reaches Runner.
+- **SIGTERM takes the first-Ctrl-C path** (2026-10-12, #92): `CancelSignalHandler` also holds a
+  `PosixSignalRegistration` for it, so `kill <pid>` gets the same cancel and `cancelled` receipt. The
+  exit code stays 130: it is a function of the run's status (PLAN §A5), and the sender of SIGTERM
+  already knows which signal it sent. A second signal of either kind forces the exit, no receipt. SIGQUIT
+  stays the runtime's immediate exit (the same escape hatch); SIGHUP is out of #92's scope. On Windows
+  SIGTERM registers but cannot be cancelled, so the process ends once the handler returns.
 - ⚠ **A test that sends SIGINT must start the binary with SIGINT not ignored.** A non-interactive
   shell starts `&` jobs with SIGINT set to ignore and .NET keeps an inherited ignore: the first
   measurement ran the fake to the end, `status: success`. `set -m` in the measuring script fixed it.
