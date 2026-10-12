@@ -4923,10 +4923,108 @@ throws.
 A link to a byte-identical generated file is foreign on every run, so `sync --global --check` exits 2
 until `--force` cuts the link. That is deliberate: a link is never sync's own file.
 
-A symlinked **directory** (stow-style `~/.claude/agents -> dotfiles/...`) is still written into
-(measured 2026-10-12): the link is the user's chosen location. Whether that stays is issue **#95**'s
-decision.
+A symlinked **directory** is decided in "`sync` never writes outside its root through a linked
+directory" below (issue #95); JSON targets merged by `McpConfigSync` are decided there too (issue #93).
 
-Deliberately out of this change: JSON targets merged by `McpConfigSync` (`claude_desktop_config.json`,
-`~/.cursor/mcp.json`, ...). Merging into a linked config may be exactly what a dotfiles user wants,
-so it needs its own decision (issue #93).
+## `sync` never writes outside its root through a linked directory (2026-10-12, issues #95, #93)
+
+#84 looks only at the leaf. The hole it left, reproduced on 2026-10-12: a repo commits
+`.claude -> ../../.claude` (a directory link that lands on the contributor's `~/.claude`) and a local
+override `.claustrum/roles/builder/ROLE.md`. (1) The user has run `claustrum sync --global`, so
+`~/.claude/agents/builder.md` carries our marker. (2) They clone the repo and run a plain
+`claustrum sync`. (3) It exits 0, prints only the repo path, and rewrites the global file with the
+repo's override, no `--force`: the leaf is a regular file with our marker, and nobody looked at the
+directory above it. The same hole sat in `McpConfigSync.Merge`, in `SyncManifestStore.Update` and in
+every `Directory.CreateDirectory` the harness syncs run before writing (it creates directories outside
+the repo even when the files are then refused).
+
+**Repo mode: a fence.** `SyncRoot.Repo(cwd)` holds the real path of the cwd sync writes under;
+`SyncRoot.Resolve` returns the real path of any target with every directory component resolved, not
+only the leaf. A monorepo subdirectory whose `.claude -> ../.claude` links upward is therefore refused,
+with its real path printed: run sync from the directory that owns `.claude`. A target whose
+**landing directory** (the leaf's parent) resolves outside the root is refused: `SyncWriter.Write` puts it
+in `SyncAccumulator.Refused` (path → real path) and returns, recording nothing else (not foreign, not
+written, no manifest entry). `--force` does not override and every `SyncMode` behaves the same. The CLI
+lists them under `refused (resolves outside the repo; sync never writes through a link that leaves it):`
+and exits 2 in write, `--dry-run` and `--check` alike (`init` finishes, then exits 2). `Directory.CreateDirectory`
+is fenced with the same check, and so are the JSON targets and `.claustrum/sync-manifest.json`: in `sync`
+an escaping `.claustrum` is refused in every mode, before the directory or the file exists
+(`SyncManifestStore.RefuseIfEscaping`, called ahead of any write by the claude/opencode/cursor syncs,
+the three that keep a manifest). `claustrum init` is not covered yet: it scaffolds
+`.claustrum/{casts,briefs,worktrees}` before it syncs, and its `AGENTS.md`/`.gitignore`/`claustrum.json`
+writes are not fenced at all (issue #98).
+
+**Why the fence is the cwd and not the git root (found in re-review, 2026-10-12).** A first pass fenced on
+`GitRootLocator.Find(cwd) ?? cwd` so that a monorepo package could link to the repo's shared `.claude`.
+Reproduced defect: `$HOME` is itself a git repository (`git init ~`, the dotfiles style) and a project
+without its own `.git` (a downloaded ZIP, a tarball) sits under it with `.claude -> ../../.claude`; the
+locator returns `~`, so `~/.claude` counts as inside the repo and a plain `sync` overwrites the global
+`builder.md` with exit 0, exactly the overwrite #95 exists to stop. The cwd is the only root that cannot
+be widened by a `.git` somewhere above it, so the monorepo convenience is the price.
+
+**A refused `.claustrum` is not read either.** `SyncManifestStore.Read(cwd, into)` returns nothing when
+`into.Refused` holds the manifest path: reading `sync-manifest.json` through an escaping `.claustrum`
+link would otherwise throw `JsonException` out of the sync on an unparsable target instead of refusing.
+
+**Why the leaf keeps #84's semantics.** The fence is on the leaf's parent, not on the leaf, because
+sync never writes through a leaf link: #84 replaces it or refuses it, so the bytes land in the parent.
+A leaf link to anywhere therefore keeps its foreign / `--force` replace behaviour, and a link whose
+target lies outside the repo is still just a foreign file. `McpConfigSync.Merge` is the opposite case:
+it is a key merge, the bytes go through the leaf, so the fence is on the full path.
+
+**`--global`: never refused.** `SyncRoot.Global(root)` is unfenced. A linked global root or a linked
+agents/skills directory is the user's own setup (stow, dotfiles), so sync writes into it and shows what
+it did: the `global root (<harness>): <path> → <real path> (<reason>)` line, and `(resolved → <real>)` on
+every annotated path (`SyncResult.RealPaths`). The syncs still receive the root as typed. "Refuse when
+it escapes the resolved global root" was considered and rejected: a linked agents directory always
+escapes the resolved root, which is exactly the stow case.
+
+**JSON targets (#93), option (b).** A JSON target that is a link resolving inside the root, or any link
+under `--global`, is merged through (the merge is additive and the real path is printed); one that
+escapes in repo mode is refused like any other target.
+
+**Dry-run reads nothing through a link, for agent and skill files.** `ExistingContent` returns null for a
+leaf link, so the diff is `--- /dev/null`. `--force` replaces those targets rather than merging into them
+and leaves the link's target alone (#84), so its content was never removed, and the old read printed a
+linked secret (`.git-credentials`) as removed lines. JSON targets are different: see the known limit below.
+
+**Windows.** `SyncRoot.Resolve` walks raw `LinkTarget`s and does not call
+`ResolveLinkTarget(returnFinalTarget: true)`: that goes through `GetFinalPathNameByHandle`, which
+rewrites 8.3 short names (`RUNNER~1`) on the resolved side only, so a root and a target with no link
+between them would compare unequal. The raw walk changes nothing that is not a link. `LinkTarget`
+reports symlinks and junctions alike (the directory-link kind a Windows dotfiles setup uses). The
+inside test is case-insensitive there. The walk stops at 40 link hops; a loop counts as escaping in repo
+mode, since a path that cannot be proved inside the root is not written.
+
+**`..` in a link target (found in review, 2026-10-12).** `Path.GetFullPath` collapses `..` by string, but
+POSIX applies it after the link is followed: with `d -> ../../.claude/agents` and `.claude -> d/..`
+the lexical walk said `<repo>` while the kernel wrote to `~/.claude`. On Linux/macOS the walk therefore
+treats `.`/`..` as components: a link target is spliced in raw and `..` pops the already-resolved path.
+On Windows NTFS canonicalises a relative reparse target textually, so the OS-faithful walk stays lexical;
+that is reasoned, not measured here, so `Escapes` also runs the physical walk on Windows and refuses if
+either reading leaves the root (the printed real path is the lexical one).
+
+**Known limit: Windows spelling.** The walk compares path strings and never calls
+`GetFinalPathNameByHandle`, so an absolute link target spelled differently from the cwd (8.3 short name
+vs long, a `subst` drive, a mapped drive vs UNC) makes an in-repo link look as if it escapes and it is
+refused: that fails safe. The same holds on a case-insensitive APFS volume on macOS, where the
+inside test is `Ordinal`.
+
+**Known limit: a linked JSON target is read through the link, `--dry-run` included.** `McpConfigSync.Merge`
+never fills `Symlinks`, and a merged-through file's content really is the "before", so the diff shows it.
+In repo mode that is an in-root `.mcp.json -> some-file-in-the-repo` (the #93 (b) decision; only a link
+that leaves the root is refused). Under `--global` it is a linked `claude_desktop_config.json` or
+`~/.cursor/mcp.json`, a common dotfiles setup: it is diffed and merged through.
+
+**Known limit: Windows over-refusal.** There `RealPath` comes from the lexical walk only, while `Escapes`
+also runs the physical walk against that same root. If the repo's own path goes through a relative link
+whose two readings differ, every target can look outside and the whole repo is refused: exit 2, never a
+write elsewhere.
+
+**Known limit: the role override is still read through a link.** `RoleLibrary.LoadRole` reads
+`.claustrum/roles/<role>/ROLE.md` even when it is a link that leaves the repo, so a committed link to a
+secret is rendered into the agent body and printed by `--dry-run`. That is a read-path problem, separate
+from the write fence (issue #97).
+
+**Known limit: hard links are still invisible**, as in #84: a hard-linked file inside the repo is
+written in place, and a hard link cannot be told apart from a regular file by any API.

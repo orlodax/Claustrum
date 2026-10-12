@@ -42,8 +42,9 @@ public sealed class CopilotSync(RoleLibrary library, RoleRenderer renderer, stri
         // `~/.copilot/agents/*.agent.md` — the exact files written here round-tripped through it
         // (2026-09-22, NOTES.md "The copilot backend, validated against a real install").
         string githubRoot = global ? globalRoot ?? DefaultGlobalRoot(homeDirectory) : Path.Combine(cwd, ".github");
+        SyncRoot root = global ? SyncRoot.Global(githubRoot) : SyncRoot.Repo(cwd);
         string agentDir = Path.Combine(githubRoot, "agents");
-        if (mode == SyncMode.Write)
+        if (mode == SyncMode.Write && !root.Escapes(agentDir))
             Directory.CreateDirectory(agentDir);
 
         SyncAccumulator into = new();
@@ -51,39 +52,39 @@ public sealed class CopilotSync(RoleLibrary library, RoleRenderer renderer, stri
         foreach (string role in targetRoles)
         {
             LoadedRole loaded = library.LoadRole(role, cwd);
-            WriteAgent(agentDir, role, loaded, cwd, force, mode, into);
+            WriteAgent(agentDir, role, loaded, cwd, force, mode, into, root);
 
             foreach (string tier in generatedTiers)
                 if (loaded.Definition.Tiers.ContainsKey(tier))
-                    WriteTierStub(agentDir, role, tier, loaded, cwd, force, mode, into);
+                    WriteTierStub(agentDir, role, tier, loaded, cwd, force, mode, into, root);
         }
 
-        WriteSkill(githubRoot, force, mode, into);
+        WriteSkill(githubRoot, force, mode, into, root);
 
         return into.ToResult(mode);
     }
 
-    private void WriteAgent(string agentDir, string role, LoadedRole loaded, string cwd, bool force, SyncMode mode, SyncAccumulator into)
+    private void WriteAgent(string agentDir, string role, LoadedRole loaded, string cwd, bool force, SyncMode mode, SyncAccumulator into, SyncRoot root)
     {
         string frontmatter = BuildAgentFrontmatter(role, loaded.Definition.Description);
         string body = renderer.Render(role, "high", Harness, cwd).SystemBody;
         string path = Path.Combine(agentDir, $"{role}.agent.md");
-        writer.Write(path, role, frontmatter, body, force, mode, into, localOverride: loaded.IsLocalOverride);
+        writer.Write(path, role, frontmatter, body, force, mode, into, root, localOverride: loaded.IsLocalOverride);
     }
 
-    private void WriteTierStub(string agentDir, string role, string tier, LoadedRole loaded, string cwd, bool force, SyncMode mode, SyncAccumulator into)
+    private void WriteTierStub(string agentDir, string role, string tier, LoadedRole loaded, string cwd, bool force, SyncMode mode, SyncAccumulator into, SyncRoot root)
     {
         // Every copilot stub emits `model: auto`, so the model never differs from the base agent's (#30).
         string frontmatter = BuildAgentFrontmatter($"{role}-{tier}", SyncWriter.TierDescription(role, tier, sameModel: true));
         string body = renderer.RenderTierStub(role, tier, Harness, cwd);
         string path = Path.Combine(agentDir, $"{role}-{tier}.agent.md");
-        writer.Write(path, role, frontmatter, body, force, mode, into, localOverride: loaded.IsLocalOverride);
+        writer.Write(path, role, frontmatter, body, force, mode, into, root, localOverride: loaded.IsLocalOverride);
     }
 
-    private void WriteSkill(string githubRoot, bool force, SyncMode mode, SyncAccumulator into)
+    private void WriteSkill(string githubRoot, bool force, SyncMode mode, SyncAccumulator into, SyncRoot root)
     {
         string skillDir = Path.Combine(githubRoot, "skills", "claustrum");
-        if (mode == SyncMode.Write)
+        if (mode == SyncMode.Write && !root.Escapes(skillDir))
             Directory.CreateDirectory(skillDir);
 
         // No slash-command mechanism exists (class doc comment), so the description front-loads
@@ -96,7 +97,7 @@ public sealed class CopilotSync(RoleLibrary library, RoleRenderer renderer, stri
             """;
         string body = library.ReadShared("_shared/claustrum-skill.md");
         string path = Path.Combine(skillDir, "SKILL.md");
-        writer.Write(path, "claustrum", frontmatter, body, force, mode, into);
+        writer.Write(path, "claustrum", frontmatter, body, force, mode, into, root);
     }
 
     private static string BuildAgentFrontmatter(string name, string description)

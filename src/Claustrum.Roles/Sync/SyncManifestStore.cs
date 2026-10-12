@@ -15,10 +15,11 @@ namespace Claustrum.Roles.Sync;
 internal static class SyncManifestStore
 {
     /// <summary>Paths come back absolute, so every caller keeps treating SyncManifestFile.Path as absolute in memory.</summary>
-    public static Dictionary<string, SyncManifestFile> Read(string cwd)
+    public static Dictionary<string, SyncManifestFile> Read(string cwd, SyncAccumulator into)
     {
         string manifestPath = ManifestPath(cwd);
-        if (!File.Exists(manifestPath))
+        // A refused `.claustrum` is not read through either: its target may be unparsable or foreign.
+        if (into.Refused.ContainsKey(manifestPath) || !File.Exists(manifestPath))
             return [];
 
         SyncManifest? existing = JsonSerializer.Deserialize(File.ReadAllText(manifestPath), RolesJsonContext.Default.SyncManifest);
@@ -35,13 +36,32 @@ internal static class SyncManifestStore
         return byPath;
     }
 
-    /// <summary>Merges <paramref name="manifestFiles"/> into what is already on disk, keyed by path.</summary>
-    public static void Update(string cwd, string libraryVersion, List<SyncManifestFile> manifestFiles)
+    /// <summary>
+    /// Records the manifest as refused when it would land outside <paramref name="root"/> (#95). Called by
+    /// every repo-mode sync before any write, in every mode, so `--dry-run`/`--check` agree with a write.
+    /// </summary>
+    public static void RefuseIfEscaping(string cwd, SyncRoot root, SyncAccumulator into)
     {
+        string manifestPath = ManifestPath(cwd);
+        if (!root.Escapes(manifestPath))
+            return;
+
+        string real = SyncRoot.Resolve(manifestPath);
+        into.Refused[manifestPath] = real;
+        into.RealPaths[manifestPath] = real;
+    }
+
+    /// <summary>Merges <paramref name="into"/>'s manifest files into what is already on disk, keyed by path.</summary>
+    public static void Update(string cwd, string libraryVersion, SyncAccumulator into)
+    {
+        // Already refused by RefuseIfEscaping: the `.claustrum` links out of the root, nothing is created.
+        if (into.Refused.ContainsKey(ManifestPath(cwd)))
+            return;
+
         // Merging by path (rather than replacing the file) is what lets two harnesses in one
         // `sync --only claude,opencode` run both call this without erasing each other's entries.
-        Dictionary<string, SyncManifestFile> merged = Read(cwd);
-        foreach (SyncManifestFile file in manifestFiles)
+        Dictionary<string, SyncManifestFile> merged = Read(cwd, into);
+        foreach (SyncManifestFile file in into.ManifestFiles)
             merged[file.Path] = file;
 
         Directory.CreateDirectory(Path.Combine(cwd, ".claustrum"));

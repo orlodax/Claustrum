@@ -39,64 +39,69 @@ public sealed class ClaudeSync(RoleLibrary library, RoleRenderer renderer, strin
         string claudeRoot = global
             ? globalRoot ?? DefaultGlobalRoot(homeDirectory)
             : Path.Combine(cwd, ".claude");
+        // 2026-10-12: the cwd, not the git root: `GitRootLocator` widens the fence to `~` for a `.git`-less
+        // project under a `git init ~` home, and the issue's overwrite returns (found in re-review).
+        SyncRoot root = global ? SyncRoot.Global(claudeRoot) : SyncRoot.Repo(cwd);
         string agentsDir = Path.Combine(claudeRoot, "agents");
-        if (mode == SyncMode.Write)
+        if (mode == SyncMode.Write && !root.Escapes(agentsDir))
             Directory.CreateDirectory(agentsDir);
 
         SyncAccumulator into = new();
+        if (!global)
+            SyncManifestStore.RefuseIfEscaping(cwd, root, into);
 
         foreach (string role in targetRoles)
         {
             LoadedRole loaded = library.LoadRole(role, cwd);
-            WriteBaseAgent(agentsDir, role, loaded, cwd, force, mode, into);
+            WriteBaseAgent(agentsDir, role, loaded, cwd, force, mode, into, root);
 
             foreach (string tier in generatedTiers)
             {
                 if (loaded.Definition.Tiers.ContainsKey(tier))
-                    WriteTierStub(agentsDir, role, tier, loaded, cwd, force, mode, into);
+                    WriteTierStub(agentsDir, role, tier, loaded, cwd, force, mode, into, root);
             }
         }
 
-        WriteSkill(claudeRoot, force, mode, into);
+        WriteSkill(claudeRoot, force, mode, into, root);
 
         // .mcp.json/.vscode/mcp.json (docs/PLAN.md §B4/§D5) are repo-root files, not part of any
         // --global target (B4's --global list is agent directories and the desktop app's own config
         // file) — skipped entirely under --global, same as the manifest itself. The desktop app's
         // config is the mirror image: a --global-only target, and only where such an app exists.
         if (!global)
-            MergeMcpConfigs(cwd, mode, force, into);
+            MergeMcpConfigs(cwd, mode, force, into, root);
         else if (desktop is not null)
-            MergeDesktopConfig(desktop, mode, force, into);
+            MergeDesktopConfig(desktop, mode, force, into, root);
 
         if (!global && mode == SyncMode.Write)
-            SyncManifestStore.Update(cwd, library.Version, into.ManifestFiles);
+            SyncManifestStore.Update(cwd, library.Version, into);
 
         return into.ToResult(mode);
     }
 
-    private static void MergeMcpConfigs(string cwd, SyncMode mode, bool force, SyncAccumulator into)
+    private static void MergeMcpConfigs(string cwd, SyncMode mode, bool force, SyncAccumulator into, SyncRoot root)
     {
         // One manifest read for both targets: nothing between the two merges can change it.
-        Dictionary<string, SyncManifestFile> existingManifest = SyncManifestStore.Read(cwd);
+        Dictionary<string, SyncManifestFile> existingManifest = SyncManifestStore.Read(cwd, into);
 
         JsonObject claudeCodeEntry = new() { ["command"] = "claustrum", ["args"] = new JsonArray("mcp") };
-        McpConfigSync.Merge(new McpConfigTarget(Harness, Path.Combine(cwd, ".mcp.json"), "mcpServers", claudeCodeEntry), mode, force, into, existingManifest);
+        McpConfigSync.Merge(new McpConfigTarget(Harness, Path.Combine(cwd, ".mcp.json"), "mcpServers", claudeCodeEntry), mode, force, into, existingManifest, root);
 
         JsonObject vsCodeEntry = new() { ["type"] = "stdio", ["command"] = "claustrum", ["args"] = new JsonArray("mcp") };
-        McpConfigSync.Merge(new McpConfigTarget(Harness, Path.Combine(cwd, ".vscode", "mcp.json"), "servers", vsCodeEntry), mode, force, into, existingManifest);
+        McpConfigSync.Merge(new McpConfigTarget(Harness, Path.Combine(cwd, ".vscode", "mcp.json"), "servers", vsCodeEntry), mode, force, into, existingManifest, root);
     }
 
     // issue #24: the desktop app reads no repo, so `.claustrum/sync-manifest.json` cannot prove who
     // wrote the entry here — McpProvenance.OwnKey makes the `claustrum` key its own provenance, and
     // every other server in the file stays untouched exactly as in the repo targets.
-    private static void MergeDesktopConfig(ClaudeDesktopTarget desktop, SyncMode mode, bool force, SyncAccumulator into)
+    private static void MergeDesktopConfig(ClaudeDesktopTarget desktop, SyncMode mode, bool force, SyncAccumulator into, SyncRoot root)
     {
         JsonObject entry = new() { ["command"] = desktop.BinaryPath, ["args"] = new JsonArray("mcp") };
         McpConfigTarget target = new(Harness, desktop.ConfigPath, "mcpServers", entry, Provenance: McpProvenance.OwnKey);
-        McpConfigSync.Merge(target, mode, force, into, ReadOnlyDictionary<string, SyncManifestFile>.Empty);
+        McpConfigSync.Merge(target, mode, force, into, ReadOnlyDictionary<string, SyncManifestFile>.Empty, root);
     }
 
-    private void WriteBaseAgent(string agentsDir, string role, LoadedRole loaded, string cwd, bool force, SyncMode mode, SyncAccumulator into)
+    private void WriteBaseAgent(string agentsDir, string role, LoadedRole loaded, string cwd, bool force, SyncMode mode, SyncAccumulator into, SyncRoot root)
     {
         RoleDefinition definition = loaded.Definition;
         RoleTier tier = definition.Tiers["high"];
@@ -104,10 +109,10 @@ public sealed class ClaudeSync(RoleLibrary library, RoleRenderer renderer, strin
         string frontmatter = BuildFrontmatter(role, definition.Description, ClaudeModelFor(tier.Model), tier.Effort, definition.Color, tools, disallowedTools);
         string body = renderer.Render(role, "high", Harness, cwd).SystemBody;
         string path = Path.Combine(agentsDir, $"{role}.md");
-        writer.Write(path, role, frontmatter, body, force, mode, into, localOverride: loaded.IsLocalOverride);
+        writer.Write(path, role, frontmatter, body, force, mode, into, root, localOverride: loaded.IsLocalOverride);
     }
 
-    private void WriteTierStub(string agentsDir, string role, string tier, LoadedRole loaded, string cwd, bool force, SyncMode mode, SyncAccumulator into)
+    private void WriteTierStub(string agentsDir, string role, string tier, LoadedRole loaded, string cwd, bool force, SyncMode mode, SyncAccumulator into, SyncRoot root)
     {
         RoleDefinition definition = loaded.Definition;
         RoleTier roleTier = definition.Tiers[tier];
@@ -117,13 +122,13 @@ public sealed class ClaudeSync(RoleLibrary library, RoleRenderer renderer, strin
         string frontmatter = BuildFrontmatter($"{role}-{tier}", description, ClaudeModelFor(roleTier.Model), roleTier.Effort, definition.Color, tools, disallowedTools);
         string body = renderer.RenderTierStub(role, tier, Harness, cwd);
         string path = Path.Combine(agentsDir, $"{role}-{tier}.md");
-        writer.Write(path, role, frontmatter, body, force, mode, into, localOverride: loaded.IsLocalOverride);
+        writer.Write(path, role, frontmatter, body, force, mode, into, root, localOverride: loaded.IsLocalOverride);
     }
 
-    private void WriteSkill(string claudeRoot, bool force, SyncMode mode, SyncAccumulator into)
+    private void WriteSkill(string claudeRoot, bool force, SyncMode mode, SyncAccumulator into, SyncRoot root)
     {
         string skillDir = Path.Combine(claudeRoot, "skills", "claustrum");
-        if (mode == SyncMode.Write)
+        if (mode == SyncMode.Write && !root.Escapes(skillDir))
             Directory.CreateDirectory(skillDir);
         string frontmatter = """
             ---
@@ -138,7 +143,7 @@ public sealed class ClaudeSync(RoleLibrary library, RoleRenderer renderer, strin
         // by design; only the frontmatter format differs.
         string body = library.ReadShared("_shared/claustrum-skill.md");
         string path = Path.Combine(skillDir, "SKILL.md");
-        writer.Write(path, "claustrum", frontmatter, body, force, mode, into);
+        writer.Write(path, "claustrum", frontmatter, body, force, mode, into, root);
     }
 
     private static string BuildFrontmatter(string name, string description, string model, string effort, string color, string tools, string? disallowedTools)

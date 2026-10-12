@@ -52,55 +52,58 @@ public sealed class CursorSync(RoleLibrary library, RoleRenderer renderer, strin
 
         // Cursor documents the same three names under `.cursor/` and `~/.cursor/`, mcp.json included
         // — so unlike claude/opencode nothing here is repo-root-only and --global writes all three.
-        string root = global ? globalRoot ?? DefaultGlobalRoot(homeDirectory) : Path.Combine(cwd, ".cursor");
-        string agentDir = Path.Combine(root, "agents");
-        if (mode == SyncMode.Write)
+        string cursorRoot = global ? globalRoot ?? DefaultGlobalRoot(homeDirectory) : Path.Combine(cwd, ".cursor");
+        SyncRoot root = global ? SyncRoot.Global(cursorRoot) : SyncRoot.Repo(cwd);
+        string agentDir = Path.Combine(cursorRoot, "agents");
+        if (mode == SyncMode.Write && !root.Escapes(agentDir))
             Directory.CreateDirectory(agentDir);
 
         SyncAccumulator into = new();
+        if (!global)
+            SyncManifestStore.RefuseIfEscaping(cwd, root, into);
 
         foreach (string role in targetRoles)
         {
             LoadedRole loaded = library.LoadRole(role, cwd);
-            WriteAgent(agentDir, role, loaded, cwd, force, mode, into);
+            WriteAgent(agentDir, role, loaded, cwd, force, mode, into, root);
 
             foreach (string tier in generatedTiers)
                 if (loaded.Definition.Tiers.ContainsKey(tier))
-                    WriteTierStub(agentDir, role, tier, loaded, cwd, force, mode, into);
+                    WriteTierStub(agentDir, role, tier, loaded, cwd, force, mode, into, root);
         }
 
-        WriteSkill(root, force, mode, into);
-        MergeMcpConfig(root, cwd, global, globalBinaryPath, mode, force, into);
+        WriteSkill(cursorRoot, force, mode, into, root);
+        MergeMcpConfig(cursorRoot, cwd, global, globalBinaryPath, mode, force, into, root);
 
         if (!global && mode == SyncMode.Write)
-            SyncManifestStore.Update(cwd, library.Version, into.ManifestFiles);
+            SyncManifestStore.Update(cwd, library.Version, into);
 
         return into.ToResult(mode);
     }
 
-    private void WriteAgent(string agentDir, string role, LoadedRole loaded, string cwd, bool force, SyncMode mode, SyncAccumulator into)
+    private void WriteAgent(string agentDir, string role, LoadedRole loaded, string cwd, bool force, SyncMode mode, SyncAccumulator into, SyncRoot root)
     {
         RoleDefinition definition = loaded.Definition;
         string frontmatter = BuildAgentFrontmatter(role, definition.Description, definition.Permission);
         string body = renderer.Render(role, "high", Harness, cwd).SystemBody;
         string path = Path.Combine(agentDir, $"{role}.md");
-        writer.Write(path, role, frontmatter, body, force, mode, into, localOverride: loaded.IsLocalOverride);
+        writer.Write(path, role, frontmatter, body, force, mode, into, root, localOverride: loaded.IsLocalOverride);
     }
 
-    private void WriteTierStub(string agentDir, string role, string tier, LoadedRole loaded, string cwd, bool force, SyncMode mode, SyncAccumulator into)
+    private void WriteTierStub(string agentDir, string role, string tier, LoadedRole loaded, string cwd, bool force, SyncMode mode, SyncAccumulator into, SyncRoot root)
     {
         // Every cursor stub emits `model: inherit`, so the model never differs from the base agent's (#30).
         string frontmatter = BuildAgentFrontmatter($"{role}-{tier}", SyncWriter.TierDescription(role, tier, sameModel: true), loaded.Definition.Permission);
         string body = renderer.RenderTierStub(role, tier, Harness, cwd);
         string path = Path.Combine(agentDir, $"{role}-{tier}.md");
-        writer.Write(path, role, frontmatter, body, force, mode, into, localOverride: loaded.IsLocalOverride);
+        writer.Write(path, role, frontmatter, body, force, mode, into, root, localOverride: loaded.IsLocalOverride);
     }
 
-    private void WriteSkill(string root, bool force, SyncMode mode, SyncAccumulator into)
+    private void WriteSkill(string cursorRoot, bool force, SyncMode mode, SyncAccumulator into, SyncRoot root)
     {
         // The directory name has to match the skill's `name` (cursor.com/docs/context/skills).
-        string skillDir = Path.Combine(root, "skills", "claustrum");
-        if (mode == SyncMode.Write)
+        string skillDir = Path.Combine(cursorRoot, "skills", "claustrum");
+        if (mode == SyncMode.Write && !root.Escapes(skillDir))
             Directory.CreateDirectory(skillDir);
 
         // No `disable-model-invocation`: leaving it out keeps the skill auto-surfaced by description,
@@ -113,7 +116,7 @@ public sealed class CursorSync(RoleLibrary library, RoleRenderer renderer, strin
             """;
         string body = library.ReadShared("_shared/claustrum-skill.md");
         string path = Path.Combine(skillDir, "SKILL.md");
-        writer.Write(path, "claustrum", frontmatter, body, force, mode, into);
+        writer.Write(path, "claustrum", frontmatter, body, force, mode, into, root);
     }
 
     // Documented shape (cursor.com/docs/context/mcp, checked 2026-09-22): top-level "mcpServers",
@@ -121,7 +124,7 @@ public sealed class CursorSync(RoleLibrary library, RoleRenderer renderer, strin
     // a real user-level target rather than a repo file, so --global writes it too; no manifest exists
     // out there, hence McpProvenance.OwnKey (the key's own name is its provenance).
     private static void MergeMcpConfig(
-        string root, string cwd, bool global, string? globalBinaryPath, SyncMode mode, bool force, SyncAccumulator into)
+        string cursorRoot, string cwd, bool global, string? globalBinaryPath, SyncMode mode, bool force, SyncAccumulator into, SyncRoot root)
     {
         // The user-level file gets the absolute binary, the repo file the bare name: a GUI Cursor's
         // PATH rarely holds the install directory (issue #24's hazard, next door), while
@@ -138,12 +141,12 @@ public sealed class CursorSync(RoleLibrary library, RoleRenderer renderer, strin
 
         JsonObject entry = new() { ["command"] = command, ["args"] = new JsonArray("mcp") };
         McpConfigTarget target = new(
-            Harness, Path.Combine(root, "mcp.json"), "mcpServers", entry,
+            Harness, Path.Combine(cursorRoot, "mcp.json"), "mcpServers", entry,
             Provenance: global ? McpProvenance.OwnKey : McpProvenance.Manifest);
         IReadOnlyDictionary<string, SyncManifestFile> manifest = global
             ? ReadOnlyDictionary<string, SyncManifestFile>.Empty
-            : SyncManifestStore.Read(cwd);
-        McpConfigSync.Merge(target, mode, force, into, manifest);
+            : SyncManifestStore.Read(cwd, into);
+        McpConfigSync.Merge(target, mode, force, into, manifest, root);
     }
 
     private static string BuildAgentFrontmatter(string name, string description, string permission)

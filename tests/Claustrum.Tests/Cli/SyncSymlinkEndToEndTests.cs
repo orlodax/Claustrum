@@ -118,6 +118,8 @@ public sealed class SyncSymlinkEndToEndTests : IDisposable
         Assert.Equal("my own notes\n", File.ReadAllText(target));
     }
 
+    // --force replaces the link and leaves its target alone (#84), so the target's content was never "removed":
+    // the diff's "before" is nothing, and a linked file's content (a secret, say) is never printed (#95).
     [Fact]
     public async Task DryRunWithForceSaysWouldReplaceSymlinkBeforeTheDiffAndTouchesNothingAsync()
     {
@@ -129,8 +131,8 @@ public sealed class SyncSymlinkEndToEndTests : IDisposable
         string[] lines = Lines(result);
         int would = Array.FindIndex(lines, line => line == $"would replace symlink {agentTail} → {target}");
         Assert.True(would >= 0, "no 'would replace symlink' line");
-        Assert.Equal($"--- a/{agentTail}", lines[would + 1]);
-        Assert.Contains("-my own notes", lines);
+        Assert.Equal("--- /dev/null", lines[would + 1]);
+        Assert.DoesNotContain("my own notes", Lf(result.Stdout), StringComparison.Ordinal);
         Assert.Equal(target, new FileInfo(Agent).LinkTarget);
         Assert.Equal("my own notes\n", File.ReadAllText(target));
         AssertNoCrash(result);

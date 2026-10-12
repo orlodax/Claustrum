@@ -78,7 +78,13 @@ public static class SyncCommand
     private static string AnnounceGlobalRoot(string harness)
     {
         (string path, string reason) = SyncGlobalRoot.Resolve(AppServices.Platform, harness);
-        Console.WriteLine($"global root ({harness}): {path} ({reason})");
+
+        // A linked root is the user's own setup (stow): the syncs still get the path as typed, and the
+        // real one is only shown (issue #95).
+        string real = SyncRoot.Resolve(path);
+        Console.WriteLine(SyncRoot.SamePath(path, real)
+            ? $"global root ({harness}): {path} ({reason})"
+            : $"global root ({harness}): {path} → {real} ({reason})");
         return path;
     }
 
@@ -116,6 +122,8 @@ public static class SyncCommand
         List<string> foreign = [];
         Dictionary<string, string>? proposedContent = null;
         Dictionary<string, string> symlinks = [];
+        Dictionary<string, string> refused = [];
+        Dictionary<string, string> realPaths = [];
 
         foreach (SyncResult result in results)
         {
@@ -124,6 +132,10 @@ public static class SyncCommand
             foreign.AddRange(result.Foreign);
             foreach (KeyValuePair<string, string> link in result.Symlinks ?? new Dictionary<string, string>())
                 symlinks[link.Key] = link.Value;
+            foreach (KeyValuePair<string, string> entry in result.Refused ?? new Dictionary<string, string>())
+                refused[entry.Key] = entry.Value;
+            foreach (KeyValuePair<string, string> entry in result.RealPaths ?? new Dictionary<string, string>())
+                realPaths[entry.Key] = entry.Value;
 
             if (result.ProposedContent is null)
                 continue;
@@ -133,26 +145,28 @@ public static class SyncCommand
                 proposedContent[entry.Key] = entry.Value;
         }
 
-        return new SyncResult(written, skipped, foreign, proposedContent, symlinks);
+        return new SyncResult(written, skipped, foreign, proposedContent, symlinks, refused, realPaths);
     }
 
     private static int PrintWrite(SyncResult result)
     {
         IReadOnlyDictionary<string, string> symlinks = result.Symlinks ?? new Dictionary<string, string>();
+        IReadOnlyDictionary<string, string> realPaths = result.RealPaths ?? new Dictionary<string, string>();
 
-        PrintPaths("written", [.. result.Written.Where(path => !symlinks.ContainsKey(path))]);
+        PrintPaths("written", [.. result.Written.Where(path => !symlinks.ContainsKey(path))], realPaths: realPaths);
         PrintPaths(
             "replaced symlink (the link target was left untouched)",
             [.. result.Written.Where(symlinks.ContainsKey).Select(path => $"{path} → {symlinks[path]}")]);
-        PrintPaths("skipped (already up to date)", result.Skipped);
-        PrintPaths("foreign (hand-edited; use --force to adopt)", result.Foreign, symlinks);
+        PrintPaths("skipped (already up to date)", result.Skipped, realPaths: realPaths);
+        PrintPaths("foreign (hand-edited; use --force to adopt)", result.Foreign, symlinks, realPaths);
 
-        return ExitCodes.Ok;
+        return PrintRefused(result) ? ExitCodes.Usage : ExitCodes.Ok;
     }
 
     private static int PrintDryRun(SyncResult result)
     {
         IReadOnlyDictionary<string, string> symlinks = result.Symlinks ?? new Dictionary<string, string>();
+        IReadOnlyDictionary<string, string> realPaths = result.RealPaths ?? new Dictionary<string, string>();
 
         foreach (string path in result.Written)
         {
@@ -160,24 +174,27 @@ public static class SyncCommand
             string relativePath = Path.GetRelativePath(Environment.CurrentDirectory, path);
             if (symlinks.TryGetValue(path, out string? target))
                 Console.WriteLine($"would replace symlink {relativePath} → {target}");
+            else if (realPaths.TryGetValue(path, out string? real))
+                Console.WriteLine($"resolved {relativePath} → {real}");
 
             Console.WriteLine(UnifiedDiff.Format(relativePath, existing, result.ProposedContent![path]));
         }
 
-        PrintPaths("foreign (hand-edited; use --force to adopt)", result.Foreign, symlinks);
+        PrintPaths("foreign (hand-edited; use --force to adopt)", result.Foreign, symlinks, realPaths);
 
-        return ExitCodes.Ok;
+        return PrintRefused(result) ? ExitCodes.Usage : ExitCodes.Ok;
     }
 
-    // File.Exists does not tell a dangling link from a file and ReadAllText through one throws, and a
-    // self-referencing link throws IOException ("Too many levels of symbolic links"): the diff's
-    // "before" is nothing when the link leads nowhere.
+    // Never read through a leaf link: --force replaces the link and leaves its target alone (#84), so
+    // that content is not "removed", and printing it would show a linked secret as deleted lines (#95).
     private static string? ExistingContent(string path, bool isLink)
     {
+        if (isLink)
+            return null;
+
         try
         {
-            bool readable = File.Exists(path) && (!isLink || File.ResolveLinkTarget(path, returnFinalTarget: true)?.Exists == true);
-            return readable ? File.ReadAllText(path) : null;
+            return File.Exists(path) ? File.ReadAllText(path) : null;
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {
@@ -191,6 +208,7 @@ public static class SyncCommand
     private static int PrintCheck(SyncResult result)
     {
         IReadOnlyDictionary<string, string> symlinks = result.Symlinks ?? new Dictionary<string, string>();
+        IReadOnlyDictionary<string, string> realPaths = result.RealPaths ?? new Dictionary<string, string>();
 
         // A link is checked first: File.Exists is true for a dangling one too, and either way sync would replace it.
         foreach (string path in result.Written)
@@ -198,23 +216,46 @@ public static class SyncCommand
             if (symlinks.TryGetValue(path, out string? target))
                 Console.WriteLine($"would replace symlink: {path} → {target}");
             else
-                Console.WriteLine($"{(File.Exists(path) ? "stale" : "missing")}: {path}");
+                Console.WriteLine($"{(File.Exists(path) ? "stale" : "missing")}: {path}{Annotation(path, null, realPaths)}");
         }
 
-        PrintPaths("foreign (hand-edited; use --force to adopt)", result.Foreign, symlinks);
+        PrintPaths("foreign (hand-edited; use --force to adopt)", result.Foreign, symlinks, realPaths);
+        bool refused = PrintRefused(result);
 
-        return result.Written.Count > 0 || result.Foreign.Count > 0 ? ExitCodes.Usage : ExitCodes.Ok;
+        return result.Written.Count > 0 || result.Foreign.Count > 0 || refused ? ExitCodes.Usage : ExitCodes.Ok;
     }
 
-    private static void PrintPaths(string label, IReadOnlyList<string> paths, IReadOnlyDictionary<string, string>? symlinks = null)
+    // Prints the refused section and says whether there was one: a refused target is a failed sync in
+    // every mode, so the caller turns it into exit 2 (issue #95).
+    private static bool PrintRefused(SyncResult result)
+    {
+        if (result.Refused is not { Count: > 0 } refused)
+            return false;
+
+        PrintPaths(
+            "refused (resolves outside the repo; sync never writes through a link that leaves it)",
+            [.. refused.Select(entry => $"{entry.Key} → {entry.Value}")]);
+        return true;
+    }
+
+    private static void PrintPaths(
+        string label, IReadOnlyList<string> paths,
+        IReadOnlyDictionary<string, string>? symlinks = null, IReadOnlyDictionary<string, string>? realPaths = null)
     {
         if (paths.Count == 0)
             return;
 
         Console.WriteLine($"{label}:");
         foreach (string path in paths)
-            Console.WriteLine(symlinks is not null && symlinks.TryGetValue(path, out string? target)
-                ? $"  {path} (symlink → {target})"
-                : $"  {path}");
+            Console.WriteLine($"  {path}{Annotation(path, symlinks, realPaths)}");
+    }
+
+    // A symlink at the path wins over the resolved-path note: the link target is the more specific fact.
+    private static string Annotation(string path, IReadOnlyDictionary<string, string>? symlinks, IReadOnlyDictionary<string, string>? realPaths)
+    {
+        if (symlinks is not null && symlinks.TryGetValue(path, out string? target))
+            return $" (symlink → {target})";
+
+        return realPaths is not null && realPaths.TryGetValue(path, out string? real) ? $" (resolved → {real})" : "";
     }
 }

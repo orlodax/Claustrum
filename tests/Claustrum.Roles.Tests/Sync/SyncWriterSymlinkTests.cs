@@ -51,7 +51,7 @@ public sealed class SyncWriterSymlinkTests : IDisposable
     private SyncAccumulator Write(string path, bool force, SyncMode mode = SyncMode.Write)
     {
         SyncAccumulator into = new();
-        writer.Write(path, "builder", Frontmatter, Body, force, mode, into);
+        writer.Write(path, "builder", Frontmatter, Body, force, mode, into, SyncRoot.Global(root));
         return into;
     }
 

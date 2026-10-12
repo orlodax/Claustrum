@@ -618,8 +618,17 @@ marker or a manifest entry is **never overwritten** (`--force` adopts it).
 A symlinked agent file is foreign whatever it points at; `--force` replaces the link with a regular
 file and never writes through it, so the link's target is left byte-identical. `--dry-run` and
 `--check` print `would replace symlink` with `--force`; without it the link is listed as foreign with
-its target. Hard links are not detected: a hard-linked marked file is written in place. A symlinked *directory* is written into, as the user's
-chosen location (#95).
+its target. Hard links are not detected: a hard-linked marked file is written in place.
+
+In repo mode a target whose directory resolves outside the directory sync runs in (the current directory;
+a committed `.claude -> ../../.claude`, say, or a monorepo subdirectory whose `.claude` links upward) is **refused**: it is listed under `refused
+(resolves outside the repo; sync never writes through a link that leaves it):` with its real path, nothing
+is written or created there, and the command exits 2 in write, `--dry-run` and `--check`; `--force` does
+not override. The `.claustrum` manifest and the JSON MCP targets follow the same rule, and a JSON target
+that is a link resolving inside that directory is merged through. Under `--global` a linked root or
+agents/skills directory is your own setup and is written into; the `global root` line and the
+`(resolved → <real path>)` annotations say where the files really went. For agent and skill files (the targets `--force` replaces rather than merges),
+`--dry-run` never shows a linked file's target as removed lines; a linked JSON target is merged through, so it is read and diffed.
 
 **A synced Claude agent carries no deny list today.** In agent frontmatter, `disallowedTools` cannot
 hold a per-command deny: an entry with a specifier such as `Bash(git push *)` removes the whole
@@ -644,7 +653,8 @@ edit. A local `.claustrum/roles/<role>/role.json` override replaces the whole ar
 | `cursor` | `.cursor/agents/<role>.md` + variants, `.cursor/skills/claustrum/SKILL.md`, `.cursor/mcp.json` | `~/.cursor/{agents,skills,mcp.json}` always: cursor-agent hard-codes that directory for all three, and `CURSOR_CONFIG_DIR` moves only its `cli-config.json` | `/claustrum`, subagents by name |
 
 `sync --global` prints one line per harness, `global root (<harness>): <path> (<reason>)`, in every
-mode (write, `--dry-run`, `--check`), naming the root it chose and the variable that decided it.
+mode (write, `--dry-run`, `--check`), naming the root it chose and the variable that decided it. When
+the root is itself a link the line reads `<path> → <real path> (<reason>)`.
 
 A tier stub (`<role>-xhigh`, `<role>-max`) is the full role rendered at that tier plus a
 `## Non-negotiable` block, so a natively spawned stub receives the role's instructions as its system prompt.

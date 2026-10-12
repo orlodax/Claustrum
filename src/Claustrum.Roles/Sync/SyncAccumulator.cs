@@ -22,7 +22,13 @@ public sealed class SyncAccumulator
     /// <summary>Path → link target for every symlink met at a path sync would write (issue #84).</summary>
     public Dictionary<string, string> Symlinks { get; } = [];
 
+    /// <summary>Path → real path for every target refused because it resolves outside the repo root (issue #95).</summary>
+    public Dictionary<string, string> Refused { get; } = [];
+
+    /// <summary>Path → real path for every target met whose real path differs from the path as typed, refused or not.</summary>
+    public Dictionary<string, string> RealPaths { get; } = [];
+
     /// <summary>ProposedContent is only meaningful outside <see cref="SyncMode.Write"/>.</summary>
     public SyncResult ToResult(SyncMode mode) =>
-        new(Written, Skipped, Foreign, mode == SyncMode.Write ? null : ProposedContent, Symlinks);
+        new(Written, Skipped, Foreign, mode == SyncMode.Write ? null : ProposedContent, Symlinks, Refused, RealPaths);
 }
