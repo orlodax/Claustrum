@@ -178,7 +178,7 @@ missing file (for CI), `--force` adopts a file Claustrum did not generate.
 
 ```bash
 claustrum sync --only claude,opencode,copilot,cursor   # this repo
-claustrum sync --global --only claude                 # your user-wide agents, ~/.claude/agents
+claustrum sync --global --only claude                 # your user-wide agents, $CLAUDE_CONFIG_DIR or ~/.claude/agents
 claustrum sync --check                                # CI: fail on drift
 ```
 

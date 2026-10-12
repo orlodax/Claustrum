@@ -236,10 +236,7 @@ public static class BackendsCommands
     // ("This file is managed automatically"), hence CommentHandling.Skip.
     private static string CopilotLoginFileStatus()
     {
-        string copilotHome = AppServices.Platform.GetEnvironmentVariable("COPILOT_HOME") is { Length: > 0 } relocated
-            ? relocated
-            : Path.Combine(AppServices.Platform.HomeDirectory, ".copilot");
-        string path = Path.Combine(copilotHome, "config.json");
+        string path = Path.Combine(SyncGlobalRoot.Resolve(AppServices.Platform, "copilot").Path, "config.json");
         if (!File.Exists(path))
             return $"not set (env var absent; {path} not present)";
 

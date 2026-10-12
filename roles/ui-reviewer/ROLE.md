@@ -114,7 +114,7 @@ review, and never two browsers at once.
 {{part:browser}}
 
 ## Choosing your tier — effort scales with blast radius
-- **`{{role}}`** (this file, tier `high`): the default. One or two screens, a focused feature or fix,
+- **`{{role}}`** (the base agent, tier `high`): the default. One or two screens, a focused feature or fix,
   a handful of flows.
 - **`{{role}}-xhigh`** (effort `xhigh`): several screens or roles, flows that cross subsystems,
   anything touching auth, money or data the user cannot recover.

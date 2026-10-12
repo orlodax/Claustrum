@@ -4715,9 +4715,12 @@ stdout and on disk, the isolated cases' `commit` holding `partial.txt`, and no `
 - **SIGTERM takes the first-Ctrl-C path** (2026-10-12, #92): `CancelSignalHandler` also holds a
   `PosixSignalRegistration` for it, so `kill <pid>` gets the same cancel and `cancelled` receipt. The
   exit code stays 130: it is a function of the run's status (PLAN §A5), and the sender of SIGTERM
-  already knows which signal it sent. A second signal of either kind forces the exit, no receipt. SIGQUIT
-  stays the runtime's immediate exit (the same escape hatch); SIGHUP is out of #92's scope. On Windows
-  SIGTERM registers but cannot be cancelled, so the process ends once the handler returns.
+  already knows which signal it sent. A second signal of either kind forces the exit, no receipt.
+  SIGQUIT needs no registration: on Unix `Console.CancelKeyPress` fires for SIGINT **and SIGQUIT**, so
+  `kill -QUIT` has taken the first-Ctrl-C path since #88 (measured 2026-10-12: exit 130 with a `cancelled`
+  receipt; a second SIGQUIT is the runtime's default, core dump, exit 131). SIGHUP alone is unregistered,
+  out of #92's scope. On Windows SIGTERM registers but cannot be cancelled, so the process ends once the
+  handler returns.
 - ⚠ **A test that sends SIGINT must start the binary with SIGINT not ignored.** A non-interactive
   shell starts `&` jobs with SIGINT set to ignore and .NET keeps an inherited ignore: the first
   measurement ran the fake to the end, `status: success`. `set -m` in the measuring script fixed it.
@@ -4876,9 +4879,12 @@ Why the resolver sits in Cli and not in the syncs: the environment is read in Cl
 (`ClaudeDesktopConfig` is the precedent), which keeps the Roles syncs free of environment reads and
 lets a test hand a sync a temp directory. The default root is spelled once per harness, in
 `<Harness>Sync.DefaultGlobalRoot`, and both the sync's own fallback and the resolver call it, so the
-two cannot drift.
+two cannot drift (`backends doctor` reads copilot's `config.json` through the same resolver).
 
-## `sync` never writes through a symlink (2026-10-12, issue #84)
+An empty `CLAUDE_CONFIG_DIR` is treated as unset by Claustrum, whereas Claude Code itself uses it
+verbatim (`CLAUDE_CONFIG_DIR ?? ~/.claude`); a broken value is the user's.
+
+## `sync` never writes through a symlinked file (2026-10-12, issue #84)
 
 Dotfiles managers and team install scripts link agent files into `~/.claude/agents/` or
 `~/.config/opencode/agent/` from a checkout. Such a file has no marker, so it is foreign, but
@@ -4888,12 +4894,27 @@ another repository.
 The rule: a link is never sync's own file, because sync never creates one. So `SyncWriter.Write`
 treats it as foreign without `--force` (even if the target carries our marker, and never "up to
 date" even if the content read through it matches), and with `--force` deletes the link and writes a
-regular file in its place: `File.Delete` removes the link, never the target. The link target is left
-byte-identical. `SyncResult.Symlinks` (path → target) lets the CLI annotate the output.
+regular file in its place. The link target is left byte-identical. `SyncResult.Symlinks` (path →
+target) lets the CLI annotate the output; `--check` and `--dry-run` both print `would replace symlink`.
 
-`FileInfo.LinkTarget` is the detector because it reads the link itself and so sees a dangling link,
-where `File.Exists` is true for it on Unix (measured) yet reading it throws.
+Every write is a temporary file in the same directory (`.<name>.claustrum-tmp`) followed by a rename
+over the path. A rename replaces the directory entry, so a symlink goes without its target being
+touched, a **hard link** (what dotfiles scripts fall back to on Windows without Developer Mode, and
+which `LinkTarget` cannot see) is detached instead of written through, and a failed write can no
+longer leave the user's link gone with an empty unmarked file in its place; the temp file is deleted
+if the write fails.
+
+`FileInfo.LinkTarget` is the detector because it reads the link itself; `File.Exists` is true for a
+dangling link on Unix (measured, .NET 10) so it cannot tell one from a file, and reading through one
+throws.
+
+A link to a byte-identical generated file is foreign on every run, so `sync --global --check` exits 2
+until `--force` cuts the link. That is deliberate: a link is never sync's own file.
+
+A symlinked **directory** (stow-style `~/.claude/agents -> dotfiles/...`) is still written into
+(measured 2026-10-12): the link is the user's chosen location. Whether that stays is issue **#95**'s
+decision.
 
 Deliberately out of this change: JSON targets merged by `McpConfigSync` (`claude_desktop_config.json`,
 `~/.cursor/mcp.json`, ...). Merging into a linked config may be exactly what a dotfiles user wants,
-so it needs its own decision (follow-up issue).
+so it needs its own decision (issue #93).

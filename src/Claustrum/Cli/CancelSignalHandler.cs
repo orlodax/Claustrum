@@ -9,7 +9,8 @@ namespace Claustrum.Cli;
 /// </summary>
 // With ProcessTerminationTimeout null (Program.cs, #88) nothing else ends a cancel path that hangs — the
 // post-run commit runs the repo's hooks, bounded only by 5 minutes (2026-10-09, NOTES.md "Ctrl-C reaches the runner").
-// SIGQUIT and SIGHUP are deliberately not registered (2026-10-12, #92, same section).
+// On Unix CancelKeyPress also fires for SIGQUIT, so it takes the Ctrl-C path; only SIGHUP is unregistered
+// (2026-10-12, #92, same section).
 internal sealed class CancelSignalHandler : IDisposable
 {
     private readonly CancellationTokenSource cts = new();
@@ -32,8 +33,8 @@ internal sealed class CancelSignalHandler : IDisposable
             return;
 
         e.Cancel = true;
-        Console.Error.WriteLine("cancelling… press Ctrl-C again to exit without a receipt");
         cts.Cancel();
+        Console.Error.WriteLine("cancelling… press Ctrl-C again to exit without a receipt");
     }
 
     private void OnPosixSignal(PosixSignalContext context)
@@ -42,8 +43,8 @@ internal sealed class CancelSignalHandler : IDisposable
             return;
 
         context.Cancel = true;
-        Console.Error.WriteLine("cancelling… send SIGTERM again to exit without a receipt");
         cts.Cancel();
+        Console.Error.WriteLine("cancelling… send SIGTERM again to exit without a receipt");
     }
 
     // Cancel left false on any later signal: the runtime terminates the process here and now, with no receipt.
@@ -53,6 +54,9 @@ internal sealed class CancelSignalHandler : IDisposable
     {
         Console.CancelKeyPress -= OnCancelKeyPress;
         sigterm.Dispose();
-        cts.Dispose();
+
+        // cts stays undisposed: the runtime hands a handler to a new thread after it read the signal, so
+        // one can still call Cancel here, and on a disposed source that is an unhandled ObjectDisposedException.
+        // A source with no timer holds nothing the GC will not take.
     }
 }

@@ -35,8 +35,8 @@ public sealed class SyncWriter(string harness, string libraryVersion)
         string content = $"{frontmatter.Trim()}\n{marker}\n\n{trimmedBody}\n";
 
         // A link is never sync's own file (sync never creates one), so it is foreign whatever it points
-        // at, even a target carrying our marker, and never "up to date". FileInfo.LinkTarget reads the
-        // link itself, so a dangling one is caught where File.Exists says false (issue #84).
+        // at, even a target carrying our marker, and never "up to date". LinkTarget goes first because
+        // File.Exists does not tell a dangling link from a file and ReadAllText through one throws (#84).
         string? linkTarget = new FileInfo(path).LinkTarget;
         if (linkTarget is not null)
         {
@@ -72,12 +72,21 @@ public sealed class SyncWriter(string harness, string libraryVersion)
         // for the CLI to diff instead (SyncResult.ProposedContent).
         if (mode == SyncMode.Write)
         {
-            // Delete removes the link, never its target: WriteAllText alone would rewrite the target,
-            // possibly a tracked file in another checkout.
-            if (linkTarget is not null)
-                File.Delete(path);
-
-            File.WriteAllText(path, content);
+            // Write-then-rename replaces the directory entry: a symlink goes without its target being
+            // touched, a hard link (what dotfiles scripts fall back to on Windows, invisible to
+            // LinkTarget) is detached instead of written through, and a failed write can no longer
+            // leave the user's link gone with an empty unmarked file in its place.
+            string tmp = Path.Combine(Path.GetDirectoryName(path) ?? "", $".{Path.GetFileName(path)}.claustrum-tmp");
+            try
+            {
+                File.WriteAllText(tmp, content);
+                File.Move(tmp, path, overwrite: true);
+            }
+            catch
+            {
+                File.Delete(tmp);
+                throw;
+            }
         }
         else
             into.ProposedContent[path] = content;

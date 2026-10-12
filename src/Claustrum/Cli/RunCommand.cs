@@ -86,13 +86,14 @@ public static class RunCommand
     {
         string cwd = Path.GetFullPath(cwdOption ?? Environment.CurrentDirectory);
 
-        // The first Ctrl-C lets Runner kill the backend and write the `cancelled` receipt; a second one exits.
+        // Before the handler: it swallows the first signal, and a stdin read blocked here listens on no token.
+        string brief = ResolveBrief(briefText, briefFilePath);
+
+        // The first Ctrl-C or SIGTERM lets Runner kill the backend and write the `cancelled` receipt; a second one exits.
         using CancelSignalHandler cancel = new();
 
         try
         {
-            string brief = ResolveBrief(briefText, briefFilePath);
-
             // docs/PLAN.md §D1: explicit --cast wins; otherwise a repo's default.json applies itself
             // without being asked. A cast's role entry only fills gaps --backend/--model/--tier left
             // open; its budget_usd (even null, meaning unlimited) is authoritative over
