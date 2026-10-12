@@ -75,7 +75,44 @@ public sealed class BackendsCommandsCopilotAuthTests : IDisposable
         Assert.Contains("merged config:", stdout, StringComparison.Ordinal);
     }
 
-    private async Task<(int ExitCode, string Stdout, string Stderr)> RunDoctorProbeAsync(string backendName)
+    // #83: the login file's directory is resolved by the same code `sync --global` uses (SyncGlobalRoot): COPILOT_HOME when it
+    // holds anything but whitespace, else `~/.copilot`. HOME is the scratch home, so on Unix the default is a file the test
+    // owns; Windows resolves the home from the profile, which cannot be redirected, so there only the file's tail is pinned.
+    [Fact]
+    public async Task WithCopilotHomeSetTheLoginFileIsReadThereNotFromTheDefaultHomeDirectoryAsync()
+    {
+        Directory.CreateDirectory(Path.Combine(home, ".copilot"));
+        File.WriteAllText(Path.Combine(home, ".copilot", "config.json"), /*lang=json,strict*/ """{"loggedInUsers":[{"host":"https://github.com","login":"someone"}]}""");
+        string configPath = Path.Combine(copilotHome, "config.json");
+        File.WriteAllText(configPath, /*lang=json,strict*/ """{"loggedInUsers":[]}""");
+
+        (int exitCode, string stdout, _) = await RunDoctorProbeAsync("copilot");
+
+        Assert.Equal(Ok, exitCode);
+        Assert.Contains($"auth:    not set (env var absent; {configPath} lists no logged-in user)", stdout, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task WithCopilotHomeUnsetOrBlankTheLoginFileIsTheOneUnderTheHomeDirectoryAsync(string? copilotHomeValue)
+    {
+        string defaultConfig = Path.Combine(Directory.CreateDirectory(Path.Combine(home, ".copilot")).FullName, "config.json");
+        File.WriteAllText(defaultConfig, /*lang=json,strict*/ """{"loggedInUsers":[{"host":"https://github.com","login":"someone"}]}""");
+
+        (int exitCode, string stdout, _) = await RunDoctorProbeAsync("copilot", new Dictionary<string, string?> { ["COPILOT_HOME"] = copilotHomeValue });
+
+        Assert.Equal(Ok, exitCode);
+        if (OperatingSystem.IsWindows())
+            Assert.Matches(@"auth:    .*\.copilot[\\/]config\.json", stdout);
+        else
+            Assert.Contains($"auth:    present (logged in, {defaultConfig} — no env var set)", stdout, StringComparison.Ordinal);
+
+        Assert.DoesNotContain(copilotHome, stdout, StringComparison.Ordinal);
+    }
+
+    private async Task<(int ExitCode, string Stdout, string Stderr)> RunDoctorProbeAsync(string backendName, IReadOnlyDictionary<string, string?>? extraEnv = null)
     {
         string binary = Path.Combine(AppContext.BaseDirectory, OperatingSystem.IsWindows() ? "claustrum.exe" : "claustrum");
         Assert.True(File.Exists(binary), $"built claustrum binary not found at '{binary}'");
@@ -101,8 +138,16 @@ public sealed class BackendsCommandsCopilotAuthTests : IDisposable
         startInfo.Environment["CLAUSTRUM_HOME"] = home;
         startInfo.Environment["CLAUSTRUM_SKIP_PROBE"] = "1";
         startInfo.Environment.Remove("CLAUSTRUM_PARENT_JOB"); // #66
+        startInfo.Environment["HOME"] = home;
         startInfo.Environment["COPILOT_HOME"] = copilotHome;
         startInfo.Environment["PATH"] = emptyPath;
+        foreach ((string name, string? value) in extraEnv ?? new Dictionary<string, string?>())
+        {
+            if (value is null)
+                startInfo.Environment.Remove(name);
+            else
+                startInfo.Environment[name] = value;
+        }
 
         using Process process = Process.Start(startInfo)!;
         process.StandardInput.Close();

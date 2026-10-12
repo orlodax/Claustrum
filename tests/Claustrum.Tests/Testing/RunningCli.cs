@@ -7,6 +7,7 @@ namespace Claustrum.Tests.Testing;
 /// The built `claustrum` binary started through <see cref="Process"/> and left running, for the tests that signal it.
 /// Started here and not through a shell `&amp;`: a non-interactive shell starts background jobs with SIGINT ignored and
 /// .NET keeps an inherited ignore, so `kill -INT` would do nothing (NOTES.md "Ctrl-C reaches the runner").
+/// The constructor's <c>keepStdinOpen</c> leaves the child's standard input open, so a read of it (`--brief-file -`) blocks.
 /// </summary>
 public sealed class RunningCli : IDisposable
 {
@@ -17,7 +18,7 @@ public sealed class RunningCli : IDisposable
     private readonly TaskCompletionSource<bool> stdoutClosed = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly TaskCompletionSource<bool> stderrClosed = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-    public RunningCli(string binary, string workingDirectory, string home, string path, IEnumerable<string> args)
+    public RunningCli(string binary, string workingDirectory, string home, string path, IEnumerable<string> args, bool keepStdinOpen = false)
     {
         ProcessStartInfo startInfo = new()
         {
@@ -28,6 +29,8 @@ public sealed class RunningCli : IDisposable
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             CreateNoWindow = true,
+            StandardOutputEncoding = Encoding.UTF8,
+            StandardErrorEncoding = Encoding.UTF8,
         };
         foreach (string arg in args)
             startInfo.ArgumentList.Add(arg);
@@ -42,7 +45,9 @@ public sealed class RunningCli : IDisposable
         process.OutputDataReceived += (_, e) => Append(stdout, stdoutClosed, e.Data);
         process.ErrorDataReceived += (_, e) => Append(stderr, stderrClosed, e.Data);
         process.Start();
-        process.StandardInput.Close();
+        if (!keepStdinOpen)
+            process.StandardInput.Close();
+
         process.BeginOutputReadLine();
         process.BeginErrorReadLine();
     }
@@ -70,25 +75,29 @@ public sealed class RunningCli : IDisposable
     }
 
     /// <summary>
-    /// True when the child started with SIGINT ignored, so a signal would do nothing: the test host itself was launched
-    /// from a background job of a non-interactive shell. Linux only (`SigIgn` in /proc); elsewhere it is not checked.
+    /// True when the child started with signal <paramref name="number"/> ignored, so sending it would do nothing: the test
+    /// host itself was launched from a background job of a non-interactive shell (SIGINT and SIGQUIT; 2 and 3).
+    /// Linux only (`SigIgn` in /proc); elsewhere it is not checked.
     /// </summary>
-    public bool IgnoresSigint()
+    public bool IgnoresSignal(int number)
     {
         string status = $"/proc/{process.Id}/status";
         if (!File.Exists(status))
             return false;
 
         string? line = File.ReadLines(status).FirstOrDefault(l => l.StartsWith("SigIgn:", StringComparison.Ordinal));
-        return line is not null && (Convert.ToUInt64(line["SigIgn:".Length..].Trim(), 16) & (1UL << (2 - 1))) != 0;
+        return line is not null && (Convert.ToUInt64(line["SigIgn:".Length..].Trim(), 16) & (1UL << (number - 1))) != 0;
     }
 
     /// <summary>`kill -INT` through the shell builtin: what a terminal's Ctrl-C delivers to the process.</summary>
-    public async Task SendSigintAsync(CancellationToken cancellationToken)
+    public Task SendSigintAsync(CancellationToken cancellationToken) => SendSignalAsync("INT", cancellationToken);
+
+    /// <summary>`kill -&lt;signal&gt; &lt;pid&gt;` through the shell builtin; <paramref name="signal"/> is a name without the `SIG` prefix (INT, TERM, QUIT).</summary>
+    public async Task SendSignalAsync(string signal, CancellationToken cancellationToken)
     {
         ProcessStartInfo startInfo = new() { FileName = "/bin/sh", UseShellExecute = false, CreateNoWindow = true };
         startInfo.ArgumentList.Add("-c");
-        startInfo.ArgumentList.Add($"kill -INT {process.Id}");
+        startInfo.ArgumentList.Add($"kill -{signal} {process.Id}");
         using Process kill = Process.Start(startInfo) ?? throw new InvalidOperationException("sh failed to start");
         await kill.WaitForExitAsync(cancellationToken);
         Assert.Equal(0, kill.ExitCode);

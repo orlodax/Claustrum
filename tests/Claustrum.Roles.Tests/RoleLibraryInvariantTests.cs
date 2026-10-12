@@ -59,22 +59,26 @@ public sealed class RoleLibraryInvariantTests : IDisposable
         }
     }
 
+    // Since #82 a stub renders the base role for its own harness, so each harness the role lists has to render too.
     [Fact]
-    public void EveryRolesXhighAndMaxTierStubRenders()
+    public void EveryRolesXhighAndMaxTierStubRendersForEveryHarnessItLists()
     {
         RoleRenderer renderer = new(library);
 
         foreach (string role in library.ListRoles())
         {
             RoleDefinition definition = library.LoadRole(role, cwd).Definition;
-            foreach (string tier in new[] { "xhigh", "max" })
+            foreach (string harness in definition.Harnesses)
             {
-                if (!definition.Tiers.ContainsKey(tier))
-                    continue;
+                foreach (string tier in new[] { "xhigh", "max" })
+                {
+                    if (!definition.Tiers.ContainsKey(tier))
+                        continue;
 
-                string stub = renderer.RenderTierStub(role, tier, cwd);
-                Assert.Contains($"effort `{definition.Tiers[tier].Effort}`", stub, StringComparison.Ordinal);
-                Assert.Contains("## Non-negotiable", stub, StringComparison.Ordinal);
+                    string stub = renderer.RenderTierStub(role, tier, harness, cwd);
+                    Assert.Contains($"effort `{definition.Tiers[tier].Effort}`", stub, StringComparison.Ordinal);
+                    Assert.Contains("## Non-negotiable", stub, StringComparison.Ordinal);
+                }
             }
         }
     }
