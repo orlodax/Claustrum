@@ -52,8 +52,13 @@ the workspace); `--cwd` on the server and `cwd` on each call override it.
 Exit codes are fixed: `0` ok · `1` backend failure · `2` usage or config error (a bad flag, a
 refused brief, a missing cast, a role sent to a harness it does not list, a `gh` failure, a
 `coordinate` whose cast is not committed) · `3` backend not found · `4` timeout · `5` budget · `130`
-cancelled — by the first Ctrl-C (SIGINT) or SIGTERM, with a `cancelled` receipt; a second
-signal ends the process at once, with no receipt.
+cancelled. The first Ctrl-C (SIGINT), SIGQUIT or SIGTERM cancels with a `cancelled` receipt **once
+the run has started**; a cancel while the run is still queued for a `max_parallel` slot or adding its
+worktree exits 130 with no receipt and leaves the job `pending` (#94). A second signal ends the
+process at once with the runtime's own code (130 after a second Ctrl-C, 143 after a second SIGTERM,
+131 after a second SIGQUIT), no receipt, and the backend may keep running (it received no signal of
+its own when the sender was `kill`). On Windows only Ctrl-C cancels; SIGTERM registers but cannot be
+cancelled there.
 
 ### `claustrum run <role>`
 
@@ -608,7 +613,8 @@ generated JSON keys are tracked by hash in `.claustrum/sync-manifest.json`. A fi
 marker or a manifest entry is **never overwritten** (`--force` adopts it).
 A symlinked agent file is foreign whatever it points at; `--force` replaces the link with a regular
 file and never writes through it, so the link's target is left byte-identical. `--dry-run` and
-`--check` say `would replace symlink → <target>`.
+`--check` both print `would replace symlink`. A symlinked *directory* is written into, as the user's
+chosen location (#95).
 
 **A synced Claude agent carries no deny list today.** In agent frontmatter, `disallowedTools` cannot
 hold a per-command deny: an entry with a specifier such as `Bash(git push *)` removes the whole

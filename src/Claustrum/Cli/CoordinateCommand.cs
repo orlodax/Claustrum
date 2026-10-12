@@ -62,7 +62,12 @@ public static class CoordinateCommand
     {
         string cwd = Path.GetFullPath(cwdOption ?? Environment.CurrentDirectory);
 
-        // The first Ctrl-C lets Runner kill the backend and write the `cancelled` receipt; a second one exits.
+        // No bare stdin here: `--issues` is the other way to state the task, and a stdin
+        // nobody closes would hang the verb (BriefSource). `--brief-file -` still opts in.
+        // Resolved before the handler: it swallows the first signal, and a stdin read blocked here listens on no token.
+        string? brief = BriefSource.TryResolve(briefText, briefFilePath, allowBareStdin: false);
+
+        // The first Ctrl-C or SIGTERM lets Runner kill the backend and write the `cancelled` receipt; a second one exits.
         using CancelSignalHandler cancel = new();
 
         try
@@ -71,9 +76,7 @@ public static class CoordinateCommand
                 Cwd: cwd,
                 CastName: castName,
                 Issues: ParseIssues(issuesCsv),
-                // No bare stdin here: `--issues` is the other way to state the task, and a stdin
-                // nobody closes would hang the verb (BriefSource). `--brief-file -` still opts in.
-                Brief: BriefSource.TryResolve(briefText, briefFilePath, allowBareStdin: false),
+                Brief: brief,
                 TierFlag: tierFlag,
                 Overrides: overrides,
                 Stream: streamMode,

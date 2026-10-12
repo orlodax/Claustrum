@@ -156,10 +156,7 @@ public static class SyncCommand
 
         foreach (string path in result.Written)
         {
-            // File.Exists is true for a dangling link on Unix but ReadAllText then throws: the diff's
-            // "before" is nothing when the link leads nowhere.
-            bool readable = File.Exists(path) && (!symlinks.ContainsKey(path) || File.ResolveLinkTarget(path, returnFinalTarget: true)?.Exists == true);
-            string? existing = readable ? File.ReadAllText(path) : null;
+            string? existing = ExistingContent(path, symlinks.ContainsKey(path));
             string relativePath = Path.GetRelativePath(Environment.CurrentDirectory, path);
             if (symlinks.TryGetValue(path, out string? target))
                 Console.WriteLine($"would replace symlink {relativePath} → {target}");
@@ -172,6 +169,22 @@ public static class SyncCommand
         return ExitCodes.Ok;
     }
 
+    // File.Exists does not tell a dangling link from a file and ReadAllText through one throws, and a
+    // self-referencing link throws IOException ("Too many levels of symbolic links"): the diff's
+    // "before" is nothing when the link leads nowhere.
+    private static string? ExistingContent(string path, bool isLink)
+    {
+        try
+        {
+            bool readable = File.Exists(path) && (!isLink || File.ResolveLinkTarget(path, returnFinalTarget: true)?.Exists == true);
+            return readable ? File.ReadAllText(path) : null;
+        }
+        catch (IOException)
+        {
+            return null;
+        }
+    }
+
     // For CI (docs/PLAN.md §B4 "--check ... exit 2 on hand-edited/stale/missing"): distinguishing
     // "missing" from "stale" only needs a File.Exists check here, so SyncResult does not need its own
     // separate list for it.
@@ -179,11 +192,11 @@ public static class SyncCommand
     {
         IReadOnlyDictionary<string, string> symlinks = result.Symlinks ?? new Dictionary<string, string>();
 
-        // A dangling link fails File.Exists but is not missing: something is there, and sync would replace it.
+        // A link is checked first: File.Exists is true for a dangling one too, and either way sync would replace it.
         foreach (string path in result.Written)
         {
             if (symlinks.TryGetValue(path, out string? target))
-                Console.WriteLine($"stale: {path} (symlink → {target})");
+                Console.WriteLine($"would replace symlink: {path} → {target}");
             else
                 Console.WriteLine($"{(File.Exists(path) ? "stale" : "missing")}: {path}");
         }

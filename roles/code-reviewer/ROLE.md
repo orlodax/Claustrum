@@ -51,7 +51,7 @@ often worth more than the findings.
 ## Choosing your tier — model scales with size/complexity
 Unlike a fixed-model role, this one's *model* changes with the tier, because review quality needs
 matter more as blast radius grows:
-- **`{{role}}`** (this file, tier `high`, model class `standard-coding`): the default. A single
+- **`{{role}}`** (the base agent, tier `high`, model class `standard-coding`): the default. A single
   commit, a focused bugfix, a small/medium PR touching one area.
 - **`{{role}}-xhigh`** (model class `frontier-coding`, effort `xhigh`): a larger or cross-cutting
   PR, several files/subsystems touched, subtle interactions between them, or anything security- or
