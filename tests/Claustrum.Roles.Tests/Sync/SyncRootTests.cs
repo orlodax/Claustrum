@@ -197,6 +197,49 @@ public sealed class SyncRootTests : IDisposable
     }
 
     [Fact]
+    public void IsOpaqueWindowsLinkIsFalseOffWindows()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            Assert.Skip("off-Windows behaviour: the structural check answers false everywhere but Windows.");
+            return;
+        }
+
+        RealDirectory("holder", "real");
+        string link = Under("holder", "rel");
+        LinkFixtures.DirectoryLink(link, Path.Combine("..", "holder", "real"));
+
+        Assert.False(SyncRoot.IsOpaqueWindowsLink(link));
+    }
+
+    // The structural rule (#95 review): ResolveLinkTarget(false).ToString() that is not fully qualified is an absolute
+    // NT-namespace target. The nt and Global links are not guarded on LinkTarget's shape: if the runtime returned a
+    // re-rooted path this fails on the Windows CI leg instead of skipping.
+    [Fact]
+    public void IsOpaqueWindowsLinkSeesAnNtNamespaceTargetAndNotAnOrdinaryOne()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            Assert.Skip("an NT-namespace link target is a Windows form.");
+            return;
+        }
+
+        string repo = RealDirectory("repo");
+        string outside = RealDirectory("outside");
+        LinkFixtures.DirectoryLink(Path.Combine(repo, "rel"), Path.Combine("..", "outside"));
+        LinkFixtures.DirectoryLink(Path.Combine(repo, "abs"), outside);
+        LinkFixtures.DirectoryLink(Path.Combine(repo, "nt"), @"\\?\GLOBALROOT\??\" + outside);
+        LinkFixtures.DirectoryLink(Path.Combine(repo, "global"), @"\\?\Global\GLOBALROOT\??\" + outside);
+
+        Assert.False(SyncRoot.IsOpaqueWindowsLink(Path.Combine(repo, "rel")));
+        Assert.False(SyncRoot.IsOpaqueWindowsLink(Path.Combine(repo, "abs")));
+        Assert.True(SyncRoot.IsOpaqueWindowsLink(Path.Combine(repo, "nt")));
+        Assert.True(SyncRoot.IsOpaqueWindowsLink(Path.Combine(repo, "global")));
+        Assert.True(SyncRoot.Repo(repo).Escapes(Path.Combine(repo, "nt", "file.md")));
+        Assert.True(SyncRoot.Repo(repo).Escapes(Path.Combine(repo, "global", "file.md")));
+    }
+
+    [Fact]
     public void DotDotAtTheFilesystemRootDoesNotThrow()
     {
         string top = Path.GetPathRoot(root) ?? throw new InvalidOperationException("the temp directory has no root");

@@ -5001,19 +5001,28 @@ reports symlinks and junctions alike (the directory-link kind a Windows dotfiles
 inside test is case-insensitive there. The walk stops at 40 link hops; a loop counts as escaping in repo
 mode, since a path that cannot be proved inside the root is not written.
 
-**NT-namespace link targets (found in review, 2026-10-12).** .NET's `LinkTarget` strips only `\??\` from
-an absolute reparse target, so `\\?\GLOBALROOT\…`, `\\?\Volume{GUID}\…` and `\\?\GLOBALROOT\??\C:\…`
-come back as relative-looking strings that `IsPathFullyQualified` rejects; both walks would splice them
-under the repo and say "inside" while Windows follows them anywhere. `SyncRoot.IsOpaqueWindowsLinkTarget`
-refuses any non-fully-qualified target starting with `GLOBALROOT` or `Volume{` or containing `?` or `:`
-(over-refusal accepted); on Windows the walk reports it unresolved (`Resolve`'s `unresolved`) and
-`Escapes` is true. Considered and deferred past v0.1.0: compare `GetFinalPathNameByHandle` of the
-landing directory's nearest existing ancestor and of the root, normalising both sides to avoid the 8.3
-mismatch above; it needs a new Windows P/Invoke in the AOT binary and a Windows machine to validate.
-Known limit: a reparse buffer whose substitute name has no `\??\` prefix at all (a raw
-`\Device\HarddiskVolumeN\…` planted with `FSCTL_SET_REPARSE_POINT`) is mangled by .NET (`\Dev` sliced
-off) and passes as a plain relative name. `CreateSymbolicLinkW`, hence `git checkout`, always stores
-`\??\`, so it cannot arrive through a clone: that is the accepted residue.
+**NT-namespace link targets (found in review, 2026-10-12).** .NET strips `\??\` from ANY absolute reparse
+target (`GetImmediateLinkTarget`), so DOS-device-namespace names come back looking relative, and Windows
+follows them anywhere: `\\?\GLOBALROOT\…`, `\\?\Volume{GUID}\…`, `\\?\Global\GLOBALROOT\Device\…` (→ `Global\GLOBALROOT\…`),
+lowercase `\\?\unc\server\share\…` (.NET's `\??\UNC\` check is case-sensitive; object names are not). All of
+them arrive through `CreateSymbolicLinkW`, hence `git checkout`. A name list cannot recover the fact the
+string lost, whether the reparse target was absolute, so the rule is structural:
+`SyncRoot.IsOpaqueWindowsLink` calls `ResolveLinkTarget(returnFinalTarget: false)`, which joins a
+relative target onto the link's directory (fully qualified) and leaves an absolute one `\??\`-stripped,
+and reads its `ToString()` (the original string; `FullName` would re-root it against the cwd). Not
+`IsPathFullyQualified` ⇒ absolute NT-namespace target ⇒ the walk reports it unresolved and `Escapes` is
+true; a call that throws counts as opaque. The name list `IsOpaqueWindowsLinkTarget` (`GLOBALROOT`,
+`Volume{`, `?`, `:` on a non-fully-qualified target) stays as a second gate: it is free and still fires if
+the runtime's string ever changed shape. Considered and deferred past v0.1.0: prefix `\\?\` and keep
+walking (it would also fix the limit below); `Path.GetFullPath` does not collapse `..` under `\\?\`, so
+the lexical walk would need its own normalisation, and `FileInfo` on `\\?\GLOBALROOT\Device\…` paths is
+unmeasured here. Also deferred: compare `GetFinalPathNameByHandle` of the landing directory's nearest
+existing ancestor and of the root, normalising both sides to avoid the 8.3 mismatch above; it needs a
+new Windows P/Invoke in the AOT binary and a Windows machine to validate. **Known limit (issue #100):**
+a repo under a folder-mounted volume (a `\??\Volume{GUID}\` mount point as an ancestor of the cwd) is
+refused entirely, because the mount point is opaque and an ancestor of every path; fail-closed, where
+before the review the fence was silently off on that layout. The structural rule is Windows-only and not
+yet measured on Windows: the Windows CI leg decides it (`IsOpaqueWindowsLinkSeesAnNtNamespaceTargetAndNotAnOrdinaryOne`).
 
 **`..` in a link target (found in review, 2026-10-12).** `Path.GetFullPath` collapses `..` by string, but
 POSIX applies it after the link is followed: with `d -> ../../.claude/agents` and `.claude -> d/..`
