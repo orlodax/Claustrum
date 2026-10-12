@@ -19,7 +19,10 @@ public sealed class SyncAccumulator
 
     public Dictionary<string, string> ProposedContent { get; } = [];
 
+    /// <summary>Path → link target for every symlink met at a path sync would write (issue #84).</summary>
+    public Dictionary<string, string> Symlinks { get; } = [];
+
     /// <summary>ProposedContent is only meaningful outside <see cref="SyncMode.Write"/>.</summary>
     public SyncResult ToResult(SyncMode mode) =>
-        new(Written, Skipped, Foreign, mode == SyncMode.Write ? null : ProposedContent);
+        new(Written, Skipped, Foreign, mode == SyncMode.Write ? null : ProposedContent, Symlinks);
 }

@@ -115,12 +115,16 @@ public static class SyncCommand
         List<string> skipped = [];
         List<string> foreign = [];
         Dictionary<string, string>? proposedContent = null;
+        Dictionary<string, string> symlinks = [];
 
         foreach (SyncResult result in results)
         {
             written.AddRange(result.Written);
             skipped.AddRange(result.Skipped);
             foreign.AddRange(result.Foreign);
+            foreach (KeyValuePair<string, string> link in result.Symlinks ?? new Dictionary<string, string>())
+                symlinks[link.Key] = link.Value;
+
             if (result.ProposedContent is null)
                 continue;
 
@@ -129,28 +133,41 @@ public static class SyncCommand
                 proposedContent[entry.Key] = entry.Value;
         }
 
-        return new SyncResult(written, skipped, foreign, proposedContent);
+        return new SyncResult(written, skipped, foreign, proposedContent, symlinks);
     }
 
     private static int PrintWrite(SyncResult result)
     {
-        PrintPaths("written", result.Written);
+        IReadOnlyDictionary<string, string> symlinks = result.Symlinks ?? new Dictionary<string, string>();
+
+        PrintPaths("written", [.. result.Written.Where(path => !symlinks.ContainsKey(path))]);
+        PrintPaths(
+            "replaced symlink (the link target was left untouched)",
+            [.. result.Written.Where(symlinks.ContainsKey).Select(path => $"{path} → {symlinks[path]}")]);
         PrintPaths("skipped (already up to date)", result.Skipped);
-        PrintPaths("foreign (hand-edited; use --force to adopt)", result.Foreign);
+        PrintPaths("foreign (hand-edited; use --force to adopt)", result.Foreign, symlinks);
 
         return ExitCodes.Ok;
     }
 
     private static int PrintDryRun(SyncResult result)
     {
+        IReadOnlyDictionary<string, string> symlinks = result.Symlinks ?? new Dictionary<string, string>();
+
         foreach (string path in result.Written)
         {
-            string? existing = File.Exists(path) ? File.ReadAllText(path) : null;
+            // File.Exists is true for a dangling link on Unix but ReadAllText then throws: the diff's
+            // "before" is nothing when the link leads nowhere.
+            bool readable = File.Exists(path) && (!symlinks.ContainsKey(path) || File.ResolveLinkTarget(path, returnFinalTarget: true)?.Exists == true);
+            string? existing = readable ? File.ReadAllText(path) : null;
             string relativePath = Path.GetRelativePath(Environment.CurrentDirectory, path);
+            if (symlinks.TryGetValue(path, out string? target))
+                Console.WriteLine($"would replace symlink {relativePath} → {target}");
+
             Console.WriteLine(UnifiedDiff.Format(relativePath, existing, result.ProposedContent![path]));
         }
 
-        PrintPaths("foreign (hand-edited; use --force to adopt)", result.Foreign);
+        PrintPaths("foreign (hand-edited; use --force to adopt)", result.Foreign, symlinks);
 
         return ExitCodes.Ok;
     }
@@ -160,21 +177,31 @@ public static class SyncCommand
     // separate list for it.
     private static int PrintCheck(SyncResult result)
     {
-        foreach (string path in result.Written)
-            Console.WriteLine($"{(File.Exists(path) ? "stale" : "missing")}: {path}");
+        IReadOnlyDictionary<string, string> symlinks = result.Symlinks ?? new Dictionary<string, string>();
 
-        PrintPaths("foreign (hand-edited; use --force to adopt)", result.Foreign);
+        // A dangling link fails File.Exists but is not missing: something is there, and sync would replace it.
+        foreach (string path in result.Written)
+        {
+            if (symlinks.TryGetValue(path, out string? target))
+                Console.WriteLine($"stale: {path} (symlink → {target})");
+            else
+                Console.WriteLine($"{(File.Exists(path) ? "stale" : "missing")}: {path}");
+        }
+
+        PrintPaths("foreign (hand-edited; use --force to adopt)", result.Foreign, symlinks);
 
         return result.Written.Count > 0 || result.Foreign.Count > 0 ? ExitCodes.Usage : ExitCodes.Ok;
     }
 
-    private static void PrintPaths(string label, IReadOnlyList<string> paths)
+    private static void PrintPaths(string label, IReadOnlyList<string> paths, IReadOnlyDictionary<string, string>? symlinks = null)
     {
         if (paths.Count == 0)
             return;
 
         Console.WriteLine($"{label}:");
         foreach (string path in paths)
-            Console.WriteLine($"  {path}");
+            Console.WriteLine(symlinks is not null && symlinks.TryGetValue(path, out string? target)
+                ? $"  {path} (symlink → {target})"
+                : $"  {path}");
     }
 }

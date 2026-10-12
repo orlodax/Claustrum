@@ -605,6 +605,9 @@ Generated markdown carries `<!-- claustrum:generated role=… harness=… librar
 as its first body line, with `source=local` before `sha256` when the role was overridden (§4);
 generated JSON keys are tracked by hash in `.claustrum/sync-manifest.json`. A file without the
 marker or a manifest entry is **never overwritten** (`--force` adopts it).
+A symlinked agent file is foreign whatever it points at; `--force` replaces the link with a regular
+file and never writes through it, so the link's target is left byte-identical. `--dry-run` and
+`--check` say `would replace symlink → <target>`.
 
 **A synced Claude agent carries no deny list today.** In agent frontmatter, `disallowedTools` cannot
 hold a per-command deny: an entry with a specifier such as `Bash(git push *)` removes the whole

@@ -4872,3 +4872,23 @@ Why the resolver sits in Cli and not in the syncs: the environment is read in Cl
 lets a test hand a sync a temp directory. The default root is spelled once per harness, in
 `<Harness>Sync.DefaultGlobalRoot`, and both the sync's own fallback and the resolver call it, so the
 two cannot drift.
+
+## `sync` never writes through a symlink (2026-10-12, issue #84)
+
+Dotfiles managers and team install scripts link agent files into `~/.claude/agents/` or
+`~/.config/opencode/agent/` from a checkout. Such a file has no marker, so it is foreign, but
+`--force` used to `File.WriteAllText` through the link and silently rewrite a tracked file in
+another repository.
+
+The rule: a link is never sync's own file, because sync never creates one. So `SyncWriter.Write`
+treats it as foreign without `--force` (even if the target carries our marker, and never "up to
+date" even if the content read through it matches), and with `--force` deletes the link and writes a
+regular file in its place: `File.Delete` removes the link, never the target. The link target is left
+byte-identical. `SyncResult.Symlinks` (path → target) lets the CLI annotate the output.
+
+`FileInfo.LinkTarget` is the detector because it reads the link itself and so sees a dangling link,
+where `File.Exists` is true for it on Unix (measured) yet reading it throws.
+
+Deliberately out of this change: JSON targets merged by `McpConfigSync` (`claude_desktop_config.json`,
+`~/.cursor/mcp.json`, ...). Merging into a linked config may be exactly what a dotfiles user wants,
+so it needs its own decision (follow-up issue).
