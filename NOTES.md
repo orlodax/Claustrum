@@ -5001,28 +5001,37 @@ reports symlinks and junctions alike (the directory-link kind a Windows dotfiles
 inside test is case-insensitive there. The walk stops at 40 link hops; a loop counts as escaping in repo
 mode, since a path that cannot be proved inside the root is not written.
 
-**NT-namespace link targets (found in review, 2026-10-12).** .NET strips `\??\` from ANY absolute reparse
-target (`GetImmediateLinkTarget`), so DOS-device-namespace names come back looking relative, and Windows
-follows them anywhere: `\\?\GLOBALROOT\…`, `\\?\Volume{GUID}\…`, `\\?\Global\GLOBALROOT\Device\…` (→ `Global\GLOBALROOT\…`),
+**NT-namespace link targets (found in review, 2026-10-12).** .NET drops the first four characters of ANY
+absolute reparse target (`GetImmediateLinkTarget`; unchecked, a `Debug.Assert` only), except that an exact-case
+`\??\UNC\` prefix becomes `\\`. That is why UNC targets stay valid Win32 paths, and it closes the raw
+no-prefix `\Device\…` buffer that 438fd19 listed as the residue: it is sliced to `ice\…`, not fully qualified,
+opaque. DOS-device-namespace names come back looking relative, and Windows follows them anywhere:
+`\\?\GLOBALROOT\…`, `\\?\Volume{GUID}\…`, `\\?\Global\GLOBALROOT\Device\…` (→ `Global\GLOBALROOT\…`),
 lowercase `\\?\unc\server\share\…` (.NET's `\??\UNC\` check is case-sensitive; object names are not). All of
 them arrive through `CreateSymbolicLinkW`, hence `git checkout`. A name list cannot recover the fact the
 string lost, whether the reparse target was absolute, so the rule is structural:
 `SyncRoot.IsOpaqueWindowsLink` calls `ResolveLinkTarget(returnFinalTarget: false)`, which joins a
-relative target onto the link's directory (fully qualified) and leaves an absolute one `\??\`-stripped,
-and reads its `ToString()` (the original string; `FullName` would re-root it against the cwd). Not
+relative target onto the link's directory (fully qualified) and leaves an absolute one with its first four
+characters dropped, and reads its `ToString()` (the original string; `FullName` would re-root it against the cwd). Not
 `IsPathFullyQualified` ⇒ absolute NT-namespace target ⇒ the walk reports it unresolved and `Escapes` is
-true; a call that throws counts as opaque. The name list `IsOpaqueWindowsLinkTarget` (`GLOBALROOT`,
-`Volume{`, `?`, `:` on a non-fully-qualified target) stays as a second gate: it is free and still fires if
-the runtime's string ever changed shape. Considered and deferred past v0.1.0: prefix `\\?\` and keep
+true; a call that throws `IOException`, `UnauthorizedAccessException` or `ArgumentException` counts as opaque
+(`ArgumentException`: a target `\\?\` is stored as `\??\`, comes back empty, and `GetFullPath` throws inside
+`FileInfo`'s constructor). A target whose remainder after the four dropped characters starts with `\\` or `\?`
+comes back fully qualified and is NOT opaque; the inside test refuses it instead (never inside a drive-rooted
+root). The name list `IsOpaqueWindowsLinkTarget` (`GLOBALROOT`, `Volume{`, `?`, `:` on a non-fully-qualified
+target) is evaluated first and short-circuits; the structural check runs second. The list is free and still
+fires if the runtime's string ever changed shape. Considered and deferred past v0.1.0: prefix `\\?\` and keep
 walking (it would also fix the limit below); `Path.GetFullPath` does not collapse `..` under `\\?\`, so
 the lexical walk would need its own normalisation, and `FileInfo` on `\\?\GLOBALROOT\Device\…` paths is
 unmeasured here. Also deferred: compare `GetFinalPathNameByHandle` of the landing directory's nearest
 existing ancestor and of the root, normalising both sides to avoid the 8.3 mismatch above; it needs a
 new Windows P/Invoke in the AOT binary and a Windows machine to validate. **Known limit (issue #100):**
-a repo under a folder-mounted volume (a `\??\Volume{GUID}\` mount point as an ancestor of the cwd) is
-refused entirely, because the mount point is opaque and an ancestor of every path; fail-closed, where
-before the review the fence was silently off on that layout. The structural rule is Windows-only and not
-yet measured on Windows: the Windows CI leg decides it (`IsOpaqueWindowsLinkSeesAnNtNamespaceTargetAndNotAnOrdinaryOne`).
+any directory link on the cwd's path whose stored target is absolute but neither `X:\…` nor exact-case
+`\??\UNC\…` makes the whole repo refused: a folder-mounted volume (`\??\Volume{GUID}\`), and Windows-container
+bind mounts that surface as links to `\\?\ContainerMappedDirectories\<GUID>` (reported for Go, Node and the JDK;
+not re-measured on a current runtime). Issue #100; fail-closed where the fence was silently off before 438fd19.
+The structural rule is Windows-only and not yet measured on Windows: the Windows CI leg decides it
+(`IsOpaqueWindowsLinkSeesAnNtNamespaceTargetAndNotAnOrdinaryOne`).
 
 **`..` in a link target (found in review, 2026-10-12).** `Path.GetFullPath` collapses `..` by string, but
 POSIX applies it after the link is followed: with `d -> ../../.claude/agents` and `.claude -> d/..`
