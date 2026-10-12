@@ -17,4 +17,16 @@ public static class TestLinks
             Assert.Skip($"symlinks cannot be created here: {ex.Message}");
         }
     }
+
+    public static void CreateDirectoryLink(string linkPath, string target)
+    {
+        try
+        {
+            Directory.CreateSymbolicLink(linkPath, target);
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
+        {
+            Assert.Skip($"symlinks cannot be created here: {ex.Message}");
+        }
+    }
 }
