@@ -129,6 +129,17 @@ use for `{{part:...}}` or `{{delegate...}}`. `tier_guidance` text (one sentence 
 small switch in `RoleRenderer`, not in the template, since it is fixed vocabulary shared by every
 role rather than per-role data.
 
+**2026-10-12 (#82): the stub now carries the base role's full body.** A thin stub left a natively
+spawned `builder-xhigh` without the builder's delegation contract, report format and house rules —
+in Claude Code a subagent's system prompt *is* its file body. Chosen: (a) render the base role into
+every stub, over (b) a harness-aware pointer ("read `builder.md`"). The files are generated, so the
+duplication cannot drift, and a Claude/opencode subagent receives its instructions as its system
+prompt instead of depending on obeying a read instruction and on file-read tools being granted.
+`{{base_body}}` is the one token that bridges the two token sets: it is
+`Render(role, tier, harness, cwd).SystemBody`, rendered at the stub's own tier and for the harness
+the file is written for, so `RenderTierStub` now takes `harness`. The "deliberately thin" sentence
+above is history, not the rule; `## Non-negotiable` stays ahead of the body.
+
 ## ClaudeSync's Claude model mapping is separate from Core's model-class resolution (2026-09-13)
 
 `role.json` tiers name a model **class** (`frontier-coding`, `standard-coding`, ...), resolved to a

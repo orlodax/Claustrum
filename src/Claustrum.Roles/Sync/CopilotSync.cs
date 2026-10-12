@@ -66,7 +66,7 @@ public sealed class CopilotSync(RoleLibrary library, RoleRenderer renderer, stri
     {
         // Every copilot stub emits `model: auto`, so the model never differs from the base agent's (#30).
         string frontmatter = BuildAgentFrontmatter($"{role}-{tier}", SyncWriter.TierDescription(role, tier, sameModel: true));
-        string body = renderer.RenderTierStub(role, tier, cwd);
+        string body = renderer.RenderTierStub(role, tier, Harness, cwd);
         string path = Path.Combine(agentDir, $"{role}-{tier}.agent.md");
         writer.Write(path, role, frontmatter, body, force, mode, into, localOverride: loaded.IsLocalOverride);
     }

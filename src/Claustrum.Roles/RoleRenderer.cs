@@ -68,10 +68,11 @@ public sealed class RoleRenderer(RoleLibrary library)
     }
 
     /// <summary>
-    /// Thin `&lt;role&gt;-xhigh`/`&lt;role&gt;-max` body, generated from `_shared/tier-stub.md` plus
-    /// `role.json`'s `nonNegotiable` — never hand-written (docs/PLAN.md §B1).
+    /// `&lt;role&gt;-xhigh`/`&lt;role&gt;-max` body, generated from `_shared/tier-stub.md`, `role.json`'s
+    /// `nonNegotiable` and the base role rendered at the stub's own tier for <paramref name="harness"/>
+    /// (the stub's system prompt is its file body, #82) — never hand-written (docs/PLAN.md §B1).
     /// </summary>
-    public string RenderTierStub(string role, string tier, string cwd)
+    public string RenderTierStub(string role, string tier, string harness, string cwd)
     {
         LoadedRole loaded = library.LoadRole(role, cwd);
         RoleTier roleTier = RequireTier(loaded.Definition, role, tier);
@@ -91,6 +92,7 @@ public sealed class RoleRenderer(RoleLibrary library)
             "effort" => roleTier.Effort,
             "tier_guidance" => guidance,
             "non_negotiable" => nonNegotiable,
+            "base_body" => Render(role, tier, harness, cwd).SystemBody,
             _ => throw new RoleRenderException($"tier stub for '{role}': unknown token '{{{{{token}}}}}'"),
         }).Trim();
     }

@@ -110,7 +110,7 @@ public sealed class ClaudeSync(RoleLibrary library, RoleRenderer renderer, strin
         bool sameModel = ClaudeModelFor(roleTier.Model) == ClaudeModelFor(definition.Tiers["high"].Model);
         string description = SyncWriter.TierDescription(role, tier, sameModel);
         string frontmatter = BuildFrontmatter($"{role}-{tier}", description, ClaudeModelFor(roleTier.Model), roleTier.Effort, definition.Color, tools, disallowedTools);
-        string body = renderer.RenderTierStub(role, tier, cwd);
+        string body = renderer.RenderTierStub(role, tier, Harness, cwd);
         string path = Path.Combine(agentsDir, $"{role}-{tier}.md");
         writer.Write(path, role, frontmatter, body, force, mode, into, localOverride: loaded.IsLocalOverride);
     }

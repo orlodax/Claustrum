@@ -158,7 +158,7 @@ Load-bearing passages in the seed files (they become invariants, not prose):
 - architect.md:169-201 blind review ("the task as originally stated, and the diff. Nothing else… withhold your plan, rationale, the builders' reports") → enforced by the runner (B3), not by trust.
 - builder.md:54-56 honest report (files+why, behaviour to cover, open decisions, shaky) → the four fields of the builder report block.
 - architect.md:251-278 tier ladder → `tiers` in `role.json` expressed as model **classes**.
-- The `-xhigh`/`-max` stubs are already thin → generated from a template, never hand-written.
+- The `-xhigh`/`-max` stubs are already thin → generated from a template, never hand-written (since 2026-10-12, #82, the stub carries the base role's full body — NOTES.md).
 
 ### B2. Library format (single source of truth, embedded in the binary)
 ```
