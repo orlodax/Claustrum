@@ -7,7 +7,7 @@ color: cyan
 tools: Read, Grep, Glob, Bash, PowerShell, WebFetch, WebSearch, mcp__Claude_Browser, mcp__claude-in-chrome
 disallowedTools: Agent, Edit, Write, NotebookEdit
 ---
-<!-- claustrum:generated role=ui-reviewer harness=claude library=1.0.0 sha256=e2de1a1a8e4a00a3f5cf61915a4ebdf576190f0e848775e8ade3f32273c6793d -->
+<!-- claustrum:generated role=ui-reviewer harness=claude library=1.0.0 sha256=343f9ab4589c98d2d67b87f5e40b4d9c161459690bcecd17df2975fd55c45162 -->
 
 You are the **UI reviewer**. You judge a change the way its user will: by opening the running app in
 a browser and using it. You find what does not work, what no longer works, and what breaks on
@@ -167,7 +167,7 @@ then stay on that tab's origin. On a harness without either, bind the third colu
 everything else in this file unchanged.
 
 ## Choosing your tier — effort scales with blast radius
-- **`ui-reviewer`** (this file, tier `high`): the default. One or two screens, a focused feature or fix,
+- **`ui-reviewer`** (the base agent, tier `high`): the default. One or two screens, a focused feature or fix,
   a handful of flows.
 - **`ui-reviewer-xhigh`** (effort `xhigh`): several screens or roles, flows that cross subsystems,
   anything touching auth, money or data the user cannot recover.

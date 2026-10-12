@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text;
 
 namespace Claustrum.Tests.Testing;
 
@@ -61,6 +62,9 @@ public sealed class ClaustrumCli(string cwdPrefix = "claustrum-cli-") : IDisposa
             RedirectStandardError = true,
             RedirectStandardInput = true,
             CreateNoWindow = true,
+            // The child always writes UTF-8 (ConsoleEncoding); left null, Windows decodes it with the console code page, and `→` or `…` arrive as mojibake.
+            StandardOutputEncoding = Encoding.UTF8,
+            StandardErrorEncoding = Encoding.UTF8,
         };
         foreach (string arg in args)
             startInfo.ArgumentList.Add(arg);

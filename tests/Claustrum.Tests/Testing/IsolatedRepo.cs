@@ -100,11 +100,16 @@ public sealed class IsolatedRepo : IDisposable
         Directory.Exists(JobsRoot) ? [.. Directory.GetDirectories(JobsRoot).Select(Path.GetFileName).OfType<string>()] : [];
 
     /// <summary>The built binary started with these arguments in the repository and left running, for a test that signals it.</summary>
-    public RunningCli StartCli(params string[] args)
+    public RunningCli StartCli(params string[] args) => Start(keepStdinOpen: false, args);
+
+    /// <summary>As <see cref="StartCli(string[])"/>, with the child's stdin left open: `--brief-file -` blocks on it until the test ends the run.</summary>
+    public RunningCli StartCliHoldingStdin(params string[] args) => Start(keepStdinOpen: true, args);
+
+    private RunningCli Start(bool keepStdinOpen, string[] args)
     {
         string binary = Path.Combine(AppContext.BaseDirectory, OperatingSystem.IsWindows() ? "claustrum.exe" : "claustrum");
         Assert.True(File.Exists(binary), $"built claustrum binary not found at '{binary}'");
-        return new RunningCli(binary, Repo, Home, ChildPath(), args);
+        return new RunningCli(binary, Repo, Home, ChildPath(), args, keepStdinOpen);
     }
 
     /// <summary>A `claustrum mcp` server over real stdio in this repository, with the same environment the CLI runs get.</summary>

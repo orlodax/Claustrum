@@ -3,7 +3,7 @@ namespace Claustrum.Roles.Tests;
 // #80: devkit PR #12's rule, ported 2026-10-09 — blind review runs once per cluster of related changes,
 // never once per builder or per fix, and one tester gate follows it. The wording is an instruction a spawned
 // agent obeys literally, so each assertion is one sentence of the port, on every harness the role renders for.
-// Phrases are matched on flattened prose (Prose.Flatten); the tier stubs carry none of this text.
+// Phrases are matched on flattened prose (Prose.Flatten); the tier stubs carry the same text since #82.
 public sealed class ClusterReviewRoleTests : IDisposable
 {
     private readonly string cwd = Directory.CreateTempSubdirectory("claustrum-cluster-review-").FullName;
@@ -112,20 +112,20 @@ public sealed class ClusterReviewRoleTests : IDisposable
         Assert.DoesNotContain("You normally arrive last, over a whole batch", body, StringComparison.Ordinal);
     }
 
-    // The tier stubs carry none of this text (NOTES.md "Architect role: review per cluster"), so only the base
-    // goldens moved: a stub that started repeating it would silently diverge from the role it points at.
+    // #82: a tier stub now carries the base role's whole body, so the cluster-review text reaches a native
+    // -xhigh/-max agent too. The phrase must already be in the base role (guards against a vacuous row) and in the stub.
     [Theory]
-    [InlineData("architect", "xhigh")]
-    [InlineData("architect", "max")]
-    [InlineData("builder", "xhigh")]
-    [InlineData("builder", "max")]
-    [InlineData("tester", "xhigh")]
-    [InlineData("tester", "max")]
-    public void TheTierStubsCarryNoClusterReviewText(string role, string tier)
+    [InlineData("architect", "xhigh", "per set of related changes")]
+    [InlineData("architect", "max", "once per cluster")]
+    [InlineData("builder", "xhigh", "per set of related changes")]
+    [InlineData("builder", "max", "once the whole cluster of builders is in")]
+    [InlineData("tester", "xhigh", "once per cluster")]
+    [InlineData("tester", "max", "Cover the cluster's behaviour as it now stands")]
+    public void TheTierStubsCarryTheClusterReviewTextOfTheirBaseRole(string role, string tier, string phrase)
     {
-        string stub = Prose.Flatten(new RoleRenderer(library).RenderTierStub(role, tier, cwd));
+        string stub = Prose.Flatten(new RoleRenderer(library).RenderTierStub(role, tier, "claude", cwd));
 
-        Assert.DoesNotContain("per set of related changes", stub, StringComparison.Ordinal);
-        Assert.DoesNotContain("once per cluster", stub, StringComparison.Ordinal);
+        Assert.Contains(phrase, Body(role, "claude"), StringComparison.Ordinal);
+        Assert.Contains(phrase, stub, StringComparison.Ordinal);
     }
 }

@@ -61,7 +61,7 @@ public sealed class DevkitRolePortTests : IDisposable
     [InlineData("max")]
     public void TheBuilderTierStubsRepeatTheTestFileBanInTheirNonNegotiables(string tier)
     {
-        string stub = Prose.Flatten(new RoleRenderer(library).RenderTierStub("builder", tier, cwd));
+        string stub = Prose.Flatten(new RoleRenderer(library).RenderTierStub("builder", tier, "claude", cwd));
 
         Assert.Contains("never create, modify or delete a test file — pre-existing ones and fixtures included", stub, StringComparison.Ordinal);
     }
@@ -87,7 +87,7 @@ public sealed class DevkitRolePortTests : IDisposable
     {
         foreach (string tier in new[] { "xhigh", "max" })
         {
-            string stub = Prose.Flatten(new RoleRenderer(library).RenderTierStub("tester", tier, cwd));
+            string stub = Prose.Flatten(new RoleRenderer(library).RenderTierStub("tester", tier, "claude", cwd));
             Assert.Contains("full gate, pre-existing tests included", stub, StringComparison.Ordinal);
         }
 
@@ -112,7 +112,7 @@ public sealed class DevkitRolePortTests : IDisposable
     [InlineData("max")]
     public void TheArchitectTierStubsKeepTheSightedDemoAuthorAndTheTestFileBanInTheirNonNegotiables(string tier)
     {
-        string stub = Prose.Flatten(new RoleRenderer(library).RenderTierStub("architect", tier, cwd));
+        string stub = Prose.Flatten(new RoleRenderer(library).RenderTierStub("architect", tier, "claude", cwd));
 
         Assert.Contains("tester → demo-author for every browser-facing feature", stub, StringComparison.Ordinal);
         Assert.Contains("never touch a test file", stub, StringComparison.Ordinal);

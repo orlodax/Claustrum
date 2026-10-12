@@ -93,11 +93,12 @@ public sealed class ConcurrentBuildersRecipeTests : IDisposable
         Assert.True(pointer < recipe, "the pointer comes before the Delegation contract it names");
     }
 
-    // Tier stubs are a frontmatter and a pointer to the base agent: none of the role's text, so none of the recipe.
+    // #82: a tier stub embeds the base agent's body, so a native architect-xhigh/-max carries the recipe and the pointer
+    // too (once each, not twice) — the Delegation contract it is told to follow has to be in its own file.
     [Theory]
     [InlineData("architect-xhigh.md")]
     [InlineData("architect-max.md")]
-    public void TheTierStubsCarryNeitherTheRecipeNorThePointer(string stub)
+    public void TheTierStubsCarryTheRecipeAndThePointerOfTheBaseAgent(string stub)
     {
         ClaudeSync sync = new(library, new RoleRenderer(library), fakeHome);
         sync.Sync(cwd, roles: ["architect"]);
@@ -105,11 +106,11 @@ public sealed class ConcurrentBuildersRecipeTests : IDisposable
         string content = Prose.Flatten(File.ReadAllText(Path.Combine(cwd, ".claude", "agents", stub)));
 
         Assert.Contains("claustrum:generated", content, StringComparison.Ordinal);
-        Assert.DoesNotContain("Running builders concurrently", content, StringComparison.Ordinal);
-        Assert.DoesNotContain(Pointer, content, StringComparison.Ordinal);
+        Assert.Equal(1, Count(content, "**Running builders concurrently through Claustrum.**"));
+        Assert.Equal(1, Count(content, Pointer));
     }
 
-    // The base agent file is the one that carries it: the golden is byte-compared elsewhere, this names why it moved.
+    // The base agent file carries it: the golden is byte-compared elsewhere, this names why it moved.
     [Fact]
     public void TheBaseClaudeAgentFileCarriesTheRecipeAndThePointer()
     {
