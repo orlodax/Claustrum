@@ -56,6 +56,9 @@ public static class SyncCommand
         // (#53). `--global` takes the user layer alone, never the cwd repo's claustrum.json, for the reason
         // it takes the library alone (#99): what a repo configures applies to that repo.
         Config config = Config.Load(AppServices.Platform, global ? null : Environment.CurrentDirectory);
+
+        // An alias cycle is caught here, before the first harness writes, not partway through the files (#53 review).
+        SyncSettings.ValidateModels(config, AppServices.RoleLibrary, roleFilter, global ? null : Environment.CurrentDirectory);
         SyncResult result = MergeResults(harnesses.Select(harness => SyncOne(harness, roleFilter, global, force, mode, config)));
 
         return dryRun ? PrintDryRun(result) : check ? PrintCheck(result) : PrintWrite(result);

@@ -48,6 +48,20 @@ public sealed class SyncSettings(Config? config)
             : new TierChoice(defaultModel(tier.Model), effort, deny, $"default for class '{tier.Model}' ({via} cannot be used in {harness} agent files)");
     }
 
+    /// <summary>
+    /// Resolves every model spec the target roles and their tiers reference, so an alias cycle (or one deeper
+    /// than the cap) is a `ConfigException` before the first file is written, never partway (#53 review).
+    /// </summary>
+    public static void ValidateModels(Config config, RoleLibrary library, IReadOnlyList<string>? roles, string? overrideCwd)
+    {
+        foreach (string role in roles is { Count: > 0 } ? roles : library.ListRoles())
+        {
+            string? roleModel = config.Merged.Roles?.GetValueOrDefault(role)?.Model;
+            foreach (string spec in library.LoadRole(role, overrideCwd).Definition.Tiers.Values.Select(tier => roleModel ?? tier.Model).Distinct(StringComparer.Ordinal))
+                config.ResolveModel(spec);
+        }
+    }
+
     /// <summary>`--dry-run`'s per-agent line: the model written and why.</summary>
     public static void RecordModel(SyncAccumulator into, string harness, string agent, string model, string reason) =>
         into.Decisions.Add($"{harness} {agent}: model {model} — {reason}");
@@ -60,5 +74,15 @@ public sealed class SyncSettings(Config? config)
     {
         if (choice.Deny.Length > 0)
             into.Decisions.Add($"{harness} {role}: claustrum.json deny ({string.Join(", ", choice.Deny)}) not rendered — {harness} agent files have no per-command deny; only `claustrum run` enforces it");
+    }
+
+    /// <summary>
+    /// `roles.&lt;role&gt;.permission` is rendered by no harness: an agent file's rung comes from role.json alone, and
+    /// widening it from a config file is not something a sync should write. Said once per role in `--dry-run`.
+    /// </summary>
+    public void RecordUnrenderedPermission(SyncAccumulator into, string harness, string role)
+    {
+        if (config?.Merged.Roles?.GetValueOrDefault(role)?.Permission is { } permission)
+            into.Decisions.Add($"{harness} {role}: claustrum.json permission ({permission}) not rendered — the {harness} agent file follows role.json's own permission; only `claustrum run` applies it");
     }
 }

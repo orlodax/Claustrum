@@ -97,6 +97,7 @@ public sealed class CursorSync(RoleLibrary library, RoleRenderer renderer, strin
         TierChoice choice = settings.Choose(Harness, role, "high", definition.Tiers["high"], DefaultModel);
         SyncSettings.RecordModel(into, Harness, role, choice.Model, choice.Reason);
         SyncSettings.RecordUnrenderedDeny(into, Harness, role, choice);
+        settings.RecordUnrenderedPermission(into, Harness, role);
         string frontmatter = BuildAgentFrontmatter(role, definition.Description, definition.Permission, choice.Model);
         string body = renderer.Render(role, "high", Harness, overrideCwd).SystemBody;
         string path = Path.Combine(agentDir, $"{role}.md");

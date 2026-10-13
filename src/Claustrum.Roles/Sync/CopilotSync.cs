@@ -79,6 +79,7 @@ public sealed class CopilotSync(RoleLibrary library, RoleRenderer renderer, stri
         TierChoice choice = settings.Choose(Harness, role, "high", loaded.Definition.Tiers["high"], DefaultModel);
         SyncSettings.RecordModel(into, Harness, role, choice.Model, choice.Reason);
         SyncSettings.RecordUnrenderedDeny(into, Harness, role, choice);
+        settings.RecordUnrenderedPermission(into, Harness, role);
         string frontmatter = BuildAgentFrontmatter(role, loaded.Definition.Description, choice.Model);
         string body = renderer.Render(role, "high", Harness, overrideCwd).SystemBody;
         string path = Path.Combine(agentDir, $"{role}.agent.md");
