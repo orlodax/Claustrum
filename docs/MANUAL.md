@@ -388,6 +388,10 @@ committable, shared with the team:
 - `budget_usd: null` disables the cap (`cast show` prints it as `"budget_usd": null`); a per-call
   `--budget` still applies.
 - Per-call `--model`/`--backend`/`--tier` flags override the cast for that call.
+- A cast is never read, written or listed through a link that leaves the working directory (the fence
+  of `sync`, §12): `cast new`/`create`/`use`/`show`/`list`, `cast_create` and `run`/`delegate` refuse with
+  exit 2, naming the file and where it really leads. A missing `name` or `library` loads as the file's
+  name and the shipped library version.
 
 **The questionnaire** is owned by the tool so it is identical in every host: `claustrum cast
 questions --json` returns one question per library role, then the builders' parallel cap and the

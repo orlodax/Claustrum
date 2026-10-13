@@ -133,6 +133,31 @@ public sealed class CastStoreTests : IDisposable
         Assert.Contains(path, ex.Message, StringComparison.Ordinal);
     }
 
+    // #67: a hand-written cast with no "name"/"library" used to load with nulls that `cast show` printed.
+    [Fact]
+    public void LoadCastFileMissingNameAndLibraryDefaultsToTheFileNameAndTheShippedLibrary()
+    {
+        Directory.CreateDirectory(CastStore.DirectoryFor(cwd));
+        File.WriteAllText(CastStore.PathFor(cwd, "handwritten"), /*lang=json,strict*/ """{"architect":{"mode":"host"},"roles":{},"budget_usd":null}""");
+
+        Cast loaded = CastStore.Load(cwd, "handwritten");
+
+        Assert.Equal("handwritten", loaded.Name);
+        Assert.Equal(AppServices.RoleLibrary.Version, loaded.Library);
+    }
+
+    [Fact]
+    public void LoadCastFileWithItsOwnNameAndLibraryKeepsThem()
+    {
+        Directory.CreateDirectory(CastStore.DirectoryFor(cwd));
+        File.WriteAllText(CastStore.PathFor(cwd, "file-name"), /*lang=json,strict*/ """{"name":"own","library":"0.0.1","architect":{"mode":"host"},"roles":{},"budget_usd":null}""");
+
+        Cast loaded = CastStore.Load(cwd, "file-name");
+
+        Assert.Equal("own", loaded.Name);
+        Assert.Equal("0.0.1", loaded.Library);
+    }
+
     // CastArchitect.Model/Tier are the spawned architect's own model/tier — round-trip them
     // explicitly rather than relying on SaveThenLoadRoundTripsEveryField's "host" sample.
     [Fact]

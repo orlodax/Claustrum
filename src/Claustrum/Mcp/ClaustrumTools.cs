@@ -263,9 +263,6 @@ public sealed class ClaustrumTools
 
     [McpServerTool(Name = "cast_list")]
     [Description("List the names of every cast saved under .claustrum/casts/ in the current working directory.")]
-    public static string CastList()
-    {
-        string[] names = CastStore.ListNames(Environment.CurrentDirectory);
-        return JsonSerializer.Serialize(names, McpJsonContext.Default.StringArray);
-    }
+    public static string CastList() =>
+        McpExceptionBoundary.Guard(() => JsonSerializer.Serialize(CastStore.ListNames(Environment.CurrentDirectory), McpJsonContext.Default.StringArray));
 }

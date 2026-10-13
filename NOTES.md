@@ -5337,3 +5337,28 @@ committed `.claustrum -> outside` put a checkout, the lock files and the probe o
   architect's own writes into `.claustrum/briefs`. An in-repo link (`.claustrum -> .state`) passes.
 - **Windows.** Not run by the builder; the walk and the OS placement are the `sync` fence's.
 
+## Casts are fenced like sync (2026-10-13, issues #103, #46, #67)
+
+**#103.** `CastStore` was the last writer with no fence: a committed `.claustrum/casts/default.json ->
+../../../../.bashrc` made `cast use mine` exit 0 and overwrite `~/.bashrc`, and a committed `.claustrum ->
+outside` put every cast outside the repo. `Save`, `Load` and `ListNames` now call one private
+`RequireInside(cwd, path, verb)`, which asks `SyncRoot.Repo(cwd).Escapes(path)` of the FULL path, leaf
+included (the same rule as `RoleLibrary.ReadLocal` and `InitCommand`), before any read, write or
+`Directory.CreateDirectory`. An escape throws `CastException`: `'<path>' resolves outside the working
+directory (<real>); a cast is never <read|written|listed> through a link that leaves it`. That is the channel
+every cast failure already uses: exit 2 on stderr through `ExceptionBoundary`, an `McpException` through
+`McpExceptionBoundary` (`cast_list` is now guarded too, it was the one cast tool that was not). The fence root
+is the cwd the caller uses, never the git root (the #95 review: a `.git`-less project under `git init ~`).
+`Load` checks `File.Exists` first, so a missing or dangling cast is still "not found"; a cast reached through
+a link that stays inside the repo is read and written as before. Callers needing no change: `cast new`,
+`create`, `use`, `show`, `list`, `questions` (its "existing casts" line), MCP `cast_create`, `run`/`delegate`
+(`CastApplication`) and `coordinate`, since they all go through `CastStore`. Not done: the check and the
+write are two steps (a race is out of scope, as for sync).
+
+**#46.** `cast new` on end of input before the last question saves nothing and exits 2 (`cast not saved:
+input ended before the answer to '<key>'`); `Console.ReadLine() ?? ""` used to save an all-null cast.
+
+**#67.** `CastStore.Load` fills a missing `name` with the cast file's name and a missing `library` with the
+version the binary ships (`AppServices.RoleLibrary.Version`, what `cast create` writes), so hand-written casts
+keep loading and `cast show` prints real values. README's "a role set to `null` is not needed" now says what
+MANUAL §8 always did: only the architect honours it; `run` and `delegate` do not enforce it.

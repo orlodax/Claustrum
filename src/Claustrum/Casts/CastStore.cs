@@ -1,10 +1,13 @@
 using System.Text.Json;
+using Claustrum.Roles.Sync;
 
 namespace Claustrum.Casts;
 
 // `.claustrum/casts/<name>.json` (docs/PLAN.md §D1). Mirrors JobDirectory/ClaudeSync: plain
 // File/Directory I/O, no IPlatform seam — casts are repo-local JSON, not the Windows/env-dependent
 // paths IPlatform exists to make testable (Claustrum.Core.Platform.IPlatform doc comment).
+// Every read, write and directory creation passes SyncRoot.Repo(cwd).Escapes on the full path, leaf
+// included: a committed link must not carry a cast out of the cwd (#103, NOTES "Casts are fenced like sync").
 public static class CastStore
 {
     public const string DefaultName = "default";
@@ -25,6 +28,7 @@ public static class CastStore
         if (!File.Exists(path))
             throw new CastException($"cast '{name}' not found at '{path}'");
 
+        RequireInside(cwd, path, "read");
         try
         {
             Cast cast = JsonSerializer.Deserialize(File.ReadAllText(path), CastJsonContext.Default.Cast)
@@ -39,6 +43,13 @@ public static class CastStore
             if (cast.Architect is null)
                 throw new CastException($"'{path}': missing required field 'architect'");
 
+            // A hand-written cast may leave these out: the file's own name and the shipped library stand in, so
+            // `cast show` and the budget ledger's cast key never see a null (#67).
+            if (string.IsNullOrWhiteSpace(cast.Name))
+                cast = cast with { Name = name };
+            if (string.IsNullOrWhiteSpace(cast.Library))
+                cast = cast with { Library = AppServices.RoleLibrary.Version };
+
             return cast;
         }
         catch (JsonException ex)
@@ -51,8 +62,10 @@ public static class CastStore
 
     public static void Save(string cwd, Cast cast)
     {
+        string path = PathFor(cwd, cast.Name);
+        RequireInside(cwd, path, "written");
         Directory.CreateDirectory(DirectoryFor(cwd));
-        File.WriteAllText(PathFor(cwd, cast.Name), JsonSerializer.Serialize(cast, CastJsonContext.Default.Cast));
+        File.WriteAllText(path, JsonSerializer.Serialize(cast, CastJsonContext.Default.Cast));
     }
 
     public static string[] ListNames(string cwd)
@@ -61,9 +74,18 @@ public static class CastStore
         if (!Directory.Exists(directory))
             return [];
 
+        RequireInside(cwd, directory, "listed");
         return [.. Directory.EnumerateFiles(directory, "*.json")
             .Select(Path.GetFileNameWithoutExtension)
             .OfType<string>()
             .OrderBy(name => name, StringComparer.Ordinal)];
+    }
+
+    // The fence root is the cwd the caller uses, never the git root: a `.git`-less project under `git init ~`
+    // would widen it to `~`. Over-refusal (a loop, a link the walk cannot place) beats a stray write.
+    private static void RequireInside(string cwd, string path, string verb)
+    {
+        if (SyncRoot.Repo(cwd).Escapes(path))
+            throw new CastException($"'{path}' resolves outside the working directory ({SyncRoot.Resolve(path)}); a cast is never {verb} through a link that leaves it");
     }
 }
