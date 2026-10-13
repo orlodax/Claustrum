@@ -5546,8 +5546,7 @@ byte-identically; `ApiHouseRulesTests` pins that against an empty cwd.
   `## Report format`, which `ComposeSystemBody` still splits off the role body before house rules are appended.
   The read instruction becomes "The repository's rules follow; they are law", then one `###` section per file.
 - **The cwd the render got.** `DelegateEngine.Prepare` renders with `request.Cwd`, the directory the caller named,
-  not the git root (#49 proposes the root) and not an isolated run's worktree; the worktree is a checkout of the
-  same commit, so the files agree unless the operator has uncommitted edits to them.
+  not the git root (#49 proposes the root); an isolated run re-reads from its worktree (see "Isolated runs inline the branch's rules" below).
 - **Safety.** The content goes to a third party. A file is read only if `SyncRoot.Repo(cwd).Escapes(path)` is
   false, the fence `sync` and the role overrides use (#95, #97). A refused file is replaced by one line that says
   it resolves outside the working directory, without the real path; the real path is in the receipt warning
@@ -5569,7 +5568,15 @@ byte-identically; `ApiHouseRulesTests` pins that against an empty cwd.
   struct is 24 + 152 + 1024 bytes with the path at offset 176, and anything but a full fill is "cannot say". The
   macOS layout is from `<sys/proc_info.h>` and **not run on a Mac**; other Unixes cannot say and so inline nothing.
   The P/Invokes are AOT-clean (`LibraryImport`; the linux-x64 publish has no IL2026/IL3050).
-- **TODO:** isolated runs read the main checkout's AGENTS.md (review 2026-10-13, finding 4); fixed in the machinery cluster.
+- **Isolated runs inline the branch's rules (2026-10-13, review finding 4).** `Prepare` renders with `request.Cwd`, the
+  main checkout, so an isolated api run (`--branch`, or `max_parallel >= 2`) used to get the working copy's rules, not
+  those of the branch it ran on. Once the worktree exists, `DelegateEngine.RunIsolatedAsync` calls
+  `RoleRenderer.WithRulesFrom(role, worktree.Path)`, which keeps the rendered prompt up to `## House rules` (role
+  overrides still from `request.Cwd`, the appendix intact) and re-composes only the rules from the worktree, fenced by
+  `SyncRoot.Repo(worktree.Path)`: a link in the worktree that leaves it is refused. It also replaces the render warnings,
+  all of which come from `ApiHouseRules`, so the receipt names the worktree's files. Chosen over a second
+  `Render(…, rulesCwd)` because that would re-resolve the role and lose the appendix; in-place runs and the other
+  harnesses never reach it and are byte-identical.
 - **Cap.** 32 KiB per file. One byte past the cap is read to tell "exactly at the cap" from "over"; the cut backs
   off continuation bytes so it never splits a character, the text ends `[truncated: the first N of M bytes of
   NAME are shown]`, and the receipt says `NAME inlined truncated to N of M bytes`.

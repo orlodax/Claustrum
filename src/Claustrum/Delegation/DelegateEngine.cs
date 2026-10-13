@@ -168,7 +168,8 @@ public static class DelegateEngine
     // numeric max_parallel, however many separate `claustrum run` processes a spawned architect fans
     // out — and with --branch behind that branch's lock too (R1). `coordinate`'s architect takes no
     // slot, and is admitted only when `coordinate` itself runs inside a tree. Prepare's config/tier/
-    // harness resolution still read request.Cwd — only the backend's own working directory moves.
+    // harness resolution still read request.Cwd — only the backend's own working directory moves
+    // (and, for api, the rule files it inlines: WithRulesFrom).
     private static async Task<RunResult> RunIsolatedAsync(PreparedDelegation prepared, JobPaths job, CancellationToken cancellationToken)
     {
         PreparedDelegation bound = prepared.ForJob(job.Id);
@@ -278,6 +279,8 @@ public static class DelegateEngine
                 ? await JobWorktree.CheckOutBranchAsync(request.Cwd, job.Id, existing, JobDirectory.ResolveRoot(AppServices.Platform), cancellationToken)
                 : await JobWorktree.AddAsync(request.Cwd, job.Id, cancellationToken);
 
+            // #55: an api run's inlined AGENTS.md/CLAUDE.md are the branch's, fenced at the worktree.
+            role = AppServices.RoleRenderer.WithRulesFrom(role, worktree.Path);
             RunRequest isolatedRunRequest = BuildRunRequest(bound, worktree.Path);
             return await AppServices.Runner.RunAsync(isolatedRunRequest, role, isolatedOptions with { Worktree = worktree }, job, cancellationToken);
         }
