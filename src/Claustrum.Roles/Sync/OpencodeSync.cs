@@ -126,7 +126,8 @@ public sealed class OpencodeSync(RoleLibrary library, RoleRenderer renderer, str
         RoleDefinition definition = loaded.Definition;
         TierChoice choice = settings.Choose(Harness, role, "high", definition.Tiers["high"], OpencodeModelFor);
         SyncSettings.RecordModel(into, Harness, role, choice.Model, choice.Reason);
-        string frontmatter = BuildAgentFrontmatter(definition.Description, definition.Primary, choice);
+        settings.RecordUnrenderedPermission(into, Harness, role);
+        string frontmatter = BuildAgentFrontmatter(definition.Description, definition.Primary, choice, definition.Deny);
         string body = renderer.Render(role, "high", Harness, overrideCwd).SystemBody;
         string path = Path.Combine(agentDir, $"{role}.md");
         writer.Write(path, role, frontmatter, body, force, mode, into, root, localOverride: loaded.IsLocalOverride);
@@ -139,7 +140,7 @@ public sealed class OpencodeSync(RoleLibrary library, RoleRenderer renderer, str
         bool sameModel = choice.Model == settings.Choose(Harness, role, "high", definition.Tiers["high"], OpencodeModelFor).Model;
         if (!sameModel)
             SyncSettings.RecordModel(into, Harness, $"{role}-{tier}", choice.Model, choice.Reason);
-        string frontmatter = BuildAgentFrontmatter(SyncWriter.TierDescription(role, tier, sameModel), definition.Primary, choice);
+        string frontmatter = BuildAgentFrontmatter(SyncWriter.TierDescription(role, tier, sameModel), definition.Primary, choice, definition.Deny);
         string body = renderer.RenderTierStub(role, tier, Harness, overrideCwd);
         string path = Path.Combine(agentDir, $"{role}-{tier}.md");
         writer.Write(path, role, frontmatter, body, force, mode, into, root, localOverride: loaded.IsLocalOverride);
@@ -164,7 +165,7 @@ public sealed class OpencodeSync(RoleLibrary library, RoleRenderer renderer, str
     // `variant:` is opt-in (#35, option c): written only when the model spec itself carries `#<variant>`,
     // never from the tier's effort, which a model may not publish. `mode: all` lets a primary role (the
     // architect) be picked as the main agent and still be spawned as a subagent (#85).
-    private static string BuildAgentFrontmatter(string description, bool primary, TierChoice choice)
+    private static string BuildAgentFrontmatter(string description, bool primary, TierChoice choice, string[] roleDeny)
     {
         (string model, string? variant) = choice.Model.Split('#', 2) is [string name, string tag] ? (name, tag) : (choice.Model, null);
         StringBuilder builder = new();
@@ -175,12 +176,14 @@ public sealed class OpencodeSync(RoleLibrary library, RoleRenderer renderer, str
         if (variant is not null)
             builder.Append($"variant: {variant}\n");
 
-        // claustrum.json's deny, as the bash permission `run` writes (OpencodeBackend.WriteBashRules): deny
-        // entries only, no `"*": allow`, so the block never opens bash for a role whose level closes it.
-        if (choice.Deny.Length > 0)
+        // role.json's deny plus claustrum.json's, as the bash permission `run` writes (OpencodeBackend.WriteBashRules):
+        // deny entries only, no `"*": allow`, so the block never opens bash for a role whose level closes it.
+        // role.json's own `git push` was missing until the #53 review: a synced agent enforced less than `run`.
+        string[] deny = [.. roleDeny, .. choice.Deny];
+        if (deny.Length > 0)
         {
             builder.Append("permission:\n  bash:\n");
-            foreach (string pattern in choice.Deny.Distinct(StringComparer.Ordinal))
+            foreach (string pattern in deny.Distinct(StringComparer.Ordinal))
             {
                 builder.Append($"    {SyncWriter.YamlQuoted(pattern)}: deny\n");
                 builder.Append($"    {SyncWriter.YamlQuoted($"{pattern} *")}: deny\n");

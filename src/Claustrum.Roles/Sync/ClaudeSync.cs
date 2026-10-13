@@ -118,6 +118,7 @@ public sealed class ClaudeSync(RoleLibrary library, RoleRenderer renderer, strin
         TierChoice choice = settings.Choose(Harness, role, "high", definition.Tiers["high"], ClaudeModelFor);
         SyncSettings.RecordModel(into, Harness, role, choice.Model, choice.Reason);
         SyncSettings.RecordUnrenderedDeny(into, Harness, role, choice);
+        settings.RecordUnrenderedPermission(into, Harness, role);
         (string tools, string? disallowedTools) = ToolsFor(definition);
         string frontmatter = BuildFrontmatter(role, definition.Description, choice.Model, choice.Effort, definition.Color, tools, disallowedTools);
         string body = renderer.Render(role, "high", Harness, overrideCwd).SystemBody;
@@ -223,8 +224,10 @@ public sealed class ClaudeSync(RoleLibrary library, RoleRenderer renderer, strin
         // agent's deny list is its prose, and only `claustrum run` enforces it.
         string[] kept = Without(editTools, dropped);
         string[] extra = [.. Without(definition.ExtraTools, dropped).Where(tool => !kept.Contains(tool, StringComparer.Ordinal))];
+        // `extra` may grant `Agent` itself, as the shell rung lets it: then the rung's own `Agent` deny goes (#45 review).
+        bool grantsAgent = definition.MayDelegate.Length > 0 || extra.Contains("Agent", StringComparer.Ordinal);
         string[] tools = definition.MayDelegate.Length > 0 ? [.. kept, .. extra, "Agent"] : [.. kept, .. extra];
-        string[] disallowed = definition.MayDelegate.Length > 0 ? dropped : ["Agent", .. dropped];
+        string[] disallowed = grantsAgent ? dropped : ["Agent", .. dropped];
         return Format(Without(tools, dropped), disallowed);
     }
 

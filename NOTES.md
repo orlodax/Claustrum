@@ -5419,14 +5419,16 @@ config (every pre-#53 caller, and the tests that pass none) is the old hard-code
   its effort, and run applying the config effort to `--tier max` collapses the ladder; a stub keeps its tier's.
 - **Deny.** Only opencode has a per-command deny syntax in agent files: the `permission.bash` block `run`
   writes (`OpencodeBackend.WriteBashRules`), as deny entries only, with no `"*": allow`, so it can never open
-  bash for a role whose level closes it. The entries are **config-layer deny only**: role.json's own `deny`
-  stays unrendered everywhere (MANUAL §12), so default output does not change. Claude, Copilot and Cursor
+  bash for a role whose level closes it. The entries are **role.json's `deny` plus the config layer's**
+  (review 2026-10-13: config-only left a synced agent running `git push` that `run` denies), so default opencode
+  output **changes** for every role with a deny list; MANUAL §12 says so. Claude, Copilot and Cursor
   have none (`disallowedTools: Bash(git push *)` removes the whole tool, 2026-10-02); `--dry-run` says
   `claustrum.json deny (...) not rendered` once per role there. Not live-verified on opencode: no synced
   agent carrying `permission:` was loaded by a real opencode; the frontmatter field is in the 2026-09-18 list
   above, and the shape is `run`'s.
-- **`roles.<r>.permission` is not applied.** It would change `tools`/`disallowedTools` (Claude) and `readonly`
-  (Cursor) with the rungs' own rules; left for its own pass.
+- **`roles.<r>.permission` is not applied** (a decision). It would change `tools`/`disallowedTools` (Claude) and
+  `readonly` (Cursor) with the rungs' own rules; left for its own pass. `--dry-run` records `claustrum.json
+  permission (...) not rendered` once per role (`SyncSettings.RecordUnrenderedPermission`), as it does for deny.
 - **`--dry-run`** prints a `models` section: one line per agent file, `<harness> <agent>: model <m> — <reason>`
   (alias → `backend:id` and the layer that set it, or `default for class …`), stub lines only when the model
   differs from the base's. Not printed in write or `--check`.
@@ -5434,6 +5436,11 @@ config (every pre-#53 caller, and the tests that pass none) is the old hard-code
   repo's configuration applies to that repo, and user-global agent files must not carry it. `Config.Load`
   takes a null cwd for it (no repo layer; the env layer only holds `defaults`, which sync never reads).
 - A malformed `claustrum.json` or an alias cycle is now a `sync` error (exit 2), where sync never read it.
+  The cycle was first caught partway, after earlier files were written (review 2026-10-13): `SyncSettings.ValidateModels`
+  now resolves every model spec of the target roles and tiers right after `Config.Load`, before any harness runs.
+- **`init` loads the config too** (review 2026-10-13: it called `.Sync(cwd)` with none, so `init` and `sync` wrote
+  different files). It loads and validates before its first write (exit 2, nothing created), and reloads after it
+  writes a fresh `claustrum.json` so that file's aliases apply to the harnesses it syncs.
 
 Not done: `backends.<b>.injection` (the issue's last paragraph), which is another builder's file.
 
@@ -5465,7 +5472,9 @@ turned into one. Tiers affect opencode only through the model choice, as a hand-
 appended `Agent` are filtered by it, so a tool is never both granted and denied (`withoutTools:["Agent"]` on
 the builder gave `tools: …, Agent` and `disallowedTools: Agent`). Both lists are de-duplicated: a dropped
 `Agent` on a role that delegates to no one is denied by the rung and by the role. No shipped role's output
-changes (the goldens are untouched).
+changes (the goldens are untouched). Review 2026-10-13: on the edit rungs a role whose `tools` named `Agent`
+without `mayDelegate` still got the rung's `Agent` deny beside the grant; the deny now goes when `extra` grants
+`Agent`, as the `shell` rung already did.
 
 ## A primary role (2026-10-13, issue #85)
 
@@ -5503,8 +5512,25 @@ byte-identically; `ApiHouseRulesTests` pins that against an empty cwd.
 - **Safety.** The content goes to a third party. A file is read only if `SyncRoot.Repo(cwd).Escapes(path)` is
   false, the fence `sync` and the role overrides use (#95, #97). A refused file is replaced by one line that says
   it resolves outside the working directory, without the real path; the real path is in the receipt warning
-  (`AGENTS.md not inlined: <link> resolves outside the working directory (<real path>)`). The check and the read are
-  two steps, so a link swapped in between is not caught; the same window the other fenced reads have.
+  (`AGENTS.md not inlined: <link> resolves outside the working directory (<real path>)`).
+- **Reviewed 2026-10-13: the fence is checked on the opened handle.** Two findings. (1) An in-cwd link passed the
+  path fence: a fork PR commits `AGENTS.md -> .git/config`, which holds `GITHUB_TOKEN` under `actions/checkout`, and
+  it went to OpenRouter in the system prompt. (2) The path check and `File.OpenRead` were two steps; measured, 230
+  of 3000 renders read a secret swapped in between. Now the string fence stays as a cheap pre-filter (it keeps a
+  clearly outside or network path from being opened at all), the file is opened, and `OpenedFilePath.TryGet` asks the
+  OS for the handle's real path, which must lie under the fence root and be a seekable file named `*.md` with no
+  `.git` component below the root (case-insensitive on Windows). The same rule holds for a plain file and a link,
+  so nothing depends on a "is it a link" read that could itself be raced. Where the path cannot be determined,
+  nothing is inlined and the receipt says so (fail closed).
+- **How the handle is asked.** Linux: `readlink /proc/self/fd/<fd>` (`FileInfo.LinkTarget`). Windows:
+  `GetFinalPathNameByHandleW` with the DOS name, stripped of `\\?\` like `WindowsFinalPath`; the root is spelled by
+  `WindowsFinalPath.TryResolve`, so both sides are the OS's. macOS: **not `fcntl(F_GETPATH)`, a deviation**: `fcntl` is
+  variadic and on Apple arm64 variadic arguments go on the stack, which a `[LibraryImport]` cannot do, so the buffer
+  pointer would be read from the wrong place. `proc_pidfdinfo(PROC_PIDFDVNODEPATHINFO)` is not variadic; its
+  struct is 24 + 152 + 1024 bytes with the path at offset 176, and anything but a full fill is "cannot say". The
+  macOS layout is from `<sys/proc_info.h>` and **not run on a Mac**; other Unixes cannot say and so inline nothing.
+  The P/Invokes are AOT-clean (`LibraryImport`; the linux-x64 publish has no IL2026/IL3050).
+- **TODO:** isolated runs read the main checkout's AGENTS.md (review 2026-10-13, finding 4); fixed in the machinery cluster.
 - **Cap.** 32 KiB per file. One byte past the cap is read to tell "exactly at the cap" from "over"; the cut backs
   off continuation bytes so it never splits a character, the text ends `[truncated: the first N of M bytes of
   NAME are shown]`, and the receipt says `NAME inlined truncated to N of M bytes`.

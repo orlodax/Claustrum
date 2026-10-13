@@ -1,6 +1,7 @@
 using System.CommandLine;
 using System.Text;
 using System.Text.Json;
+using Claustrum.Core.Config;
 using Claustrum.Roles.Sync;
 
 namespace Claustrum.Cli;
@@ -58,6 +59,9 @@ public static class InitCommand
         // The cwd, not the git root, as in `sync` (NOTES.md "Why the fence is the cwd and not the git root").
         SyncRoot root = SyncRoot.Repo(cwd);
 
+        // Before the first write, so a malformed claustrum.json or an alias cycle is exit 2 with nothing created (#53 review).
+        Config config = LoadConfig(cwd);
+
         string? scaffoldEscape = Scaffold(root, cwd);
         if (scaffoldEscape is not null)
             Console.WriteLine($".claustrum/: {RefusedStatus(scaffoldEscape)}");
@@ -65,6 +69,9 @@ public static class InitCommand
         string configPath = Path.Combine(cwd, "claustrum.json");
         string? configEscape = Refusal(root, configPath);
         bool wroteConfig = configEscape is null && WriteConfigIfAbsent(configPath);
+        if (wroteConfig)
+            config = LoadConfig(cwd);
+
         string gitignorePath = Path.Combine(cwd, ".gitignore");
         string? gitignoreEscape = Refusal(root, gitignorePath);
         bool updatedGitignore = gitignoreEscape is null && EnsureGitignoreEntries(gitignorePath);
@@ -79,7 +86,7 @@ public static class InitCommand
         Console.WriteLine($".gitignore: {Status(gitignoreEscape, updatedGitignore ? "updated" : "already up to date")}");
         bool refused = scaffoldEscape is not null || configEscape is not null || gitignoreEscape is not null;
         foreach (string harness in harnesses)
-            refused |= SyncHarness(harness, cwd);
+            refused |= SyncHarness(harness, cwd, config);
 
         string agentsPath = Path.Combine(cwd, "AGENTS.md");
         string? agentsEscape = Refusal(root, agentsPath);
@@ -128,15 +135,22 @@ public static class InitCommand
         return [.. harnesses];
     }
 
+    private static Config LoadConfig(string cwd)
+    {
+        Config config = Config.Load(AppServices.Platform, cwd);
+        SyncSettings.ValidateModels(config, AppServices.RoleLibrary, null, cwd);
+        return config;
+    }
+
     // True when sync refused a target for resolving outside the repo (issue #95): init finishes, then exits 2.
-    private static bool SyncHarness(string harness, string cwd)
+    private static bool SyncHarness(string harness, string cwd, Config config)
     {
         SyncResult result = harness switch
         {
-            "claude" => new ClaudeSync(AppServices.RoleLibrary, AppServices.RoleRenderer, AppServices.Platform.HomeDirectory).Sync(cwd),
-            "opencode" => new OpencodeSync(AppServices.RoleLibrary, AppServices.RoleRenderer, AppServices.Platform.HomeDirectory).Sync(cwd),
-            "copilot" => new CopilotSync(AppServices.RoleLibrary, AppServices.RoleRenderer, AppServices.Platform.HomeDirectory).Sync(cwd),
-            "cursor" => new CursorSync(AppServices.RoleLibrary, AppServices.RoleRenderer, AppServices.Platform.HomeDirectory).Sync(cwd),
+            "claude" => new ClaudeSync(AppServices.RoleLibrary, AppServices.RoleRenderer, AppServices.Platform.HomeDirectory).Sync(cwd, config: config),
+            "opencode" => new OpencodeSync(AppServices.RoleLibrary, AppServices.RoleRenderer, AppServices.Platform.HomeDirectory).Sync(cwd, config: config),
+            "copilot" => new CopilotSync(AppServices.RoleLibrary, AppServices.RoleRenderer, AppServices.Platform.HomeDirectory).Sync(cwd, config: config),
+            "cursor" => new CursorSync(AppServices.RoleLibrary, AppServices.RoleRenderer, AppServices.Platform.HomeDirectory).Sync(cwd, config: config),
             _ => throw new ArgumentOutOfRangeException(nameof(harness), harness, "not a supported harness"),
         };
 

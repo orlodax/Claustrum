@@ -258,8 +258,11 @@ law"). The report format sits second because a model skipped it on short tasks w
 The `api` backend cannot read files, so for it alone `## House rules` carries the working directory's
 `AGENTS.md` and `CLAUDE.md` themselves, each under its own heading and capped at 32 KiB (cut at a
 character boundary and marked). A file that is absent is said so in one line. A file whose real path
-leaves the working directory (a committed `AGENTS.md -> ~/.ssh/id_rsa`) is never read; the run's
-`warnings` name the file and where it really points, and so does a truncation (#55).
+leaves the working directory (a committed `AGENTS.md -> ~/.ssh/id_rsa`) is never read, and neither is a
+linked one that does not land on a regular `*.md` file outside any `.git` directory (`AGENTS.md -> .git/config`
+holds the CI token). The check is made on the file as opened, not on its path, so a link swapped in meanwhile
+is not read; where the OS cannot say what was opened, nothing is inlined. The run's `warnings` name the file
+and why, and so does a truncation (#55).
 
 ## 5. The brief
 
@@ -690,7 +693,7 @@ hold a per-command deny: an entry with a specifier such as `Bash(git push *)` re
 Bash tool ([code.claude.com/docs/en/sub-agents](https://code.claude.com/docs/en/sub-agents), read
 2026-10-02). A frontmatter `PreToolUse` hook on `Bash` that exits 2 could carry it, scoped to that
 agent; that is not implemented yet (a follow-up issue). Until then `sync` renders role.json `deny`
-nowhere, a native agent — the builder's `git push`, the demo-author's git verbs — keeps it as prose
+nowhere in Claude files, a native agent — the builder's `git push`, the demo-author's git verbs — keeps it as prose
 only, and the deny list is enforced only when a role runs through `claustrum run`/`delegate`.
 
 **`claustrum.json` decides the model.** `sync` loads the layers `run` uses and chases each tier's model
@@ -702,11 +705,15 @@ for Claude, the two OpenRouter ids for opencode, `auto` for Copilot, `inherit` f
 applies to every tier of the role; `roles.<role>.effort` re-points the base agent only, because a `-xhigh`/`-max`
 stub is named for its effort. `roles.<role>.permission` is not applied to synced files. `--dry-run` lists, after
 the diffs, one line per agent file: the model and the reason (`alias 'x' → backend:id (layer)`, or `default for
-class '…'` with why the alias was not used). A malformed `claustrum.json` fails `sync` with exit 2.
+class '…'` with why the alias was not used; and, for a role with `roles.<role>.permission`, `claustrum.json permission
+(…) not rendered`). A malformed `claustrum.json`, or a model alias cycle among the roles being synced, fails `sync`
+with exit 2 before anything is written. `claustrum init` loads the same configuration and fails the same way.
 
 **Deny.** Only opencode has a per-command deny syntax in an agent file: `claustrum.json`'s `roles.<role>.deny`
-becomes `permission.bash` entries (`"<deny>": deny` and `"<deny> *": deny`, no allow rule). role.json's own `deny`
-is still rendered nowhere (above). Claude, Copilot and Cursor files cannot carry a per-command deny, so
+and role.json's own `deny` (the builder's `git push`) become `permission.bash` entries (`"<deny>": deny` and
+`"<deny> *": deny`, no allow rule), so a synced opencode agent enforces what `claustrum run` does. **That changes
+default opencode output**: every role with a deny list now has a `permission:` block, where there was none, so
+a re-sync reports those agent files as stale. Claude, Copilot and Cursor files cannot carry a per-command deny, so
 `--dry-run` says `claustrum.json deny (…) not rendered` for the role, and only `claustrum run` enforces it.
 
 **opencode `mode` and `variant`.** A synced opencode agent is `mode: subagent`, except a role whose `role.json`

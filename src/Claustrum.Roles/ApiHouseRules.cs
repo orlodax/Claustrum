@@ -5,7 +5,8 @@ namespace Claustrum.Roles;
 
 // #55: the api backend has no file access, so "read AGENTS.md" cannot be obeyed there; the files ride in the
 // system prompt instead. The content goes to a third-party API, hence the fence: a file whose real path leaves
-// the cwd is never read (NOTES.md "The api backend gets AGENTS.md and CLAUDE.md inlined").
+// the cwd is never read, and the check is made on the OPENED handle, not the path (NOTES.md "The api backend gets
+// AGENTS.md and CLAUDE.md inlined").
 internal static class ApiHouseRules
 {
     public const int CapBytes = 32 * 1024;
@@ -47,6 +48,14 @@ internal static class ApiHouseRules
         try
         {
             using FileStream stream = File.OpenRead(path);
+
+            // Open first, then ask the OS where the handle lands: a link swapped in after the check above is what this catches.
+            if (Unfit(stream, fence) is { } problem)
+            {
+                warnings.Add($"{name} not inlined: {problem}");
+                return $"### {name} (not inlined: its real path is not a Markdown file inside the working directory)";
+            }
+
             byte[] buffer = new byte[CapBytes + 1];
             int read = stream.ReadAtLeast(buffer, buffer.Length, throwOnEndOfStream: false);
             string heading = $"### {name} (inlined; the api backend has no file access)";
@@ -66,6 +75,26 @@ internal static class ApiHouseRules
             warnings.Add($"{name} not inlined: {e.Message}");
             return $"### {name} (not inlined: it could not be read)";
         }
+    }
+
+    // Why the opened file may not be inlined, or null. Inside the fence, a regular file named *.md, with no `.git`
+    // component below the root (`AGENTS.md -> .git/config` carries a CI token): the same rules for a plain file and a link.
+    private static string? Unfit(FileStream stream, SyncRoot fence)
+    {
+        string? real = OpenedFilePath.TryGet(stream.SafeFileHandle);
+        string? root = OpenedFilePath.RootSpelling(fence);
+        if (real is null || root is null)
+            return "the real path of the opened file could not be determined";
+
+        StringComparison comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        string trimmedRoot = Path.TrimEndingDirectorySeparator(root);
+        if (!real.StartsWith(trimmedRoot + Path.DirectorySeparatorChar, comparison))
+            return $"the opened file is {real}, outside the working directory";
+
+        bool inGit = real[(trimmedRoot.Length + 1)..].Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar).Contains(".git", StringComparer.FromComparison(comparison));
+        return stream.CanSeek && !inGit && real.EndsWith(".md", comparison)
+            ? null
+            : $"the opened file is {real}, which is not a regular .md file outside .git";
     }
 
     private static string Section(string heading, string content) =>
