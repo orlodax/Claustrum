@@ -5108,7 +5108,7 @@ replaced by the library's text would exit 0 and hide that the override was dropp
 `run` from sending the bytes to a backend. Known consequence: a sync aborts mid-loop, so roles earlier in
 alphabetical order are already written, exactly as a malformed `role.json` does today; loading every role
 before writing anything was considered and not done. `HasLocalOverride` is existence-only and static: it
-reads nothing, so it needs no fence. The fence root is the cwd the caller passes, the hard constraint from
+reads nothing, and since #105 it still fences before touching a path (see that section). The fence root is the cwd the caller passes, the hard constraint from
 the #95 review (a `.git`-less project under `git init ~`). Dangling links: `File.Exists` is true for a
 dangling symlink on Unix, so a dangling override link that points outside throws the #97 message; one that
 points inside still reaches `ReadAllText` and throws `FileNotFoundException` as before.
@@ -5221,6 +5221,58 @@ line reads `path → real`, and the typed path on the right would claim the fenc
 
 **Still out:** TOCTOU, and the typed-spelling limit for a path with no opaque component (see "Known limit:
 Windows spelling" in the #95 section).
+
+## UNC targets are refused without opening (2026-10-13, issue #105)
+
+**The defect.** Since #100 the walk handed a target it could not place to `CreateFileW`, and the string walk
+itself statted every component (`Directory.Exists`, `LinkTarget`, `Attributes`). Opening or statting a UNC path
+authenticates to that host (NTLM) before the fence can say no: a committed link
+(`CreateSymbolicLinkW` target `\\?\unc\attacker\share` or `\\?\GLOBALROOT\Device\Mup\attacker\share`) made the
+victim's machine send a hash on `sync`. Refusing afterwards is too late; the fix is to never ask.
+
+**The decision (architect, 2026-10-13): refuse on the string, before any call that touches the path.**
+`SyncRoot.IsNetworkSpelled` is pure string logic over every spelling Windows resolves: `\\server\share`,
+`\\?\UNC\`, `\\.\UNC\`, `\??\UNC\` in any letter case, `GLOBALROOT\Device\Mup` (also behind `Global\`,
+`GLOBAL??\`, `??\`), `\Device\Mup`, plus `LanmanRedirector` and `WebDavRedirector` (builder's addition: the
+same providers under other device names), and any other `\\` prefix that is not `\\?\` or `\\.\`. A bare `\\?`
+or `\\.` is refused (fail closed). `\\?\C:\`, `\\.\pipe\x`, `\\?\Volume{GUID}\`, `\Windows\x` and relative
+paths are not network: a pipe is a local object, and no link of ours is meant to reach one.
+
+**Where it bites.** `Walk` checks every component path (`next`) before `ReadLink`, so a spliced target such as
+`\\attacker\share\x` is never statted: the walk returns it as spelled with `unresolved` true, and `Escapes` is
+true. For an opaque link the raw target has lost its first four characters, so the walk puts `\??\` back and
+asks the same predicate before `PlaceByOs`, which therefore never reaches `WindowsFinalPath.TryResolve` for a
+network target. `SyncRoot.OsPlacements` counts those calls: the test seam, via `InternalsVisibleTo` for
+`Claustrum.Roles.Tests`. The refusal line shows the target as spelled.
+
+**The one exception: the walk's own share.** A repo whose cwd is `\\srv\share\repo` must still sync, and a link
+to `\\srv\share\other` is then a link on a share the process is already authenticated to. The walk takes the
+share of the path it starts from (`ShareOf`, normalised to `\\server\share`, case-insensitive; the `\\?\UNC\`
+spellings map to it) and allows a network path only on that share. A start path on a drive has no share, so every
+network target is foreign. A `GLOBALROOT\Device\Mup` spelling has no share the code reads, so it is never excepted.
+Staying on the share is not staying in the root: a target elsewhere on the same share is walked, then fails the
+ordinary inside test.
+
+**`--global`: decided, may not stat a foreign host, never refuses.** The static walk has no mode, so the one rule
+runs under `--global` too: it does not stat a foreign network path (`Escapes` still returns false for an
+unfenced root before any walk). The effect is display only: a `--global` root or agents directory linked to a
+UNC share is written into as before (the OS follows the link on the write, the user's own setup, #95), and the
+`global root ... → real` line and the `(resolved → ...)` annotation show the target as spelled instead of
+walking inside the share. Authenticating to a host only to print where a file went is not worth it.
+
+**Residuals, by reading.**
+- A link whose reparse data is unreadable (`LinkTarget` null, opaque by #101) still goes to the OS: its target is
+  unknown, and `git checkout` does not create one.
+- An opaque link to a local volume (`\\?\Volume{GUID}\...`) is placed by opening the typed path, which follows
+  any further link on that volume, including one to a UNC host. The string cannot see past the first opaque hop.
+- `RoleLibrary.ReadLocal` used to call `File.Exists(path)` before the fence (#97), which follows a directory
+  link in the middle of the path and would have opened a UNC host. Fixed in this issue: it builds
+  `SyncRoot.Repo(cwd)` and calls `Escapes` first, one walk per override candidate.
+  `HasLocalOverride` is fenced too: `Escapes` on `role.json`, `ROLE.md` and `parts/` before any
+  `File.Exists`, `Directory.Exists` or `EnumerateFiles`; an escaping path answers true (an override exists, ignored
+  under `--global`) and is never touched.
+- Unmeasured on Windows: that `Directory.Exists` on a local component never reaches a link target, and that
+  `ResolveLinkTarget(false)` does not open it.
 
 ## A cancel before Runner starts writes its receipt too (2026-10-13, issue #94)
 

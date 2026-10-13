@@ -105,12 +105,22 @@ public sealed class RoleLibrary
 
     /// <summary>
     /// True when <paramref name="cwd"/> holds a local override of <paramref name="role"/>: a `role.json`, a
-    /// `ROLE.md`, or any file under `parts/`. Existence only, nothing is read, so the #97 fence does not apply.
+    /// `ROLE.md`, or any file under `parts/`. Nothing is read; a path that leaves <paramref name="cwd"/> counts as an override without being touched (#105).
     /// </summary>
     public static bool HasLocalOverride(string role, string cwd)
     {
         string partsDir = LocalPath(cwd, role, "parts");
-        if (File.Exists(LocalPath(cwd, role, "role.json")) || File.Exists(LocalPath(cwd, role, "ROLE.md")))
+        string roleJson = LocalPath(cwd, role, "role.json");
+        string roleMd = LocalPath(cwd, role, "ROLE.md");
+
+        // 2026-10-13 (#105): the fence comes before any existence check, which follows a mid-path directory link and
+        // on Windows would open a UNC host. A path that leaves cwd is not an error here: it only feeds the "ignored
+        // local overrides" notice, so true is the honest answer and nothing is touched.
+        SyncRoot fence = SyncRoot.Repo(cwd);
+        if (fence.Escapes(roleJson) || fence.Escapes(roleMd) || fence.Escapes(partsDir))
+            return true;
+
+        if (File.Exists(roleJson) || File.Exists(roleMd))
             return true;
 
         try
@@ -160,17 +170,15 @@ public sealed class RoleLibrary
 
     private static string LocalPath(string cwd, string role, string relative) => Path.Combine(cwd, ".claustrum", "roles", role, relative);
 
-    // The one place an override's bytes are read, so the fence cannot be skipped by a new call site. The
-    // SyncRoot is built only for a file that exists: the common no-override case pays nothing (#97).
+    // The one place an override's bytes are read, so the fence cannot be skipped by a new call site. The fence
+    // comes before File.Exists (2026-10-13, #105): that call follows a directory link in the middle of the path,
+    // and on Windows a link to a UNC host would authenticate to it. Every candidate pays one walk.
     private static string? ReadLocal(string cwd, string role, string path)
     {
-        if (!File.Exists(path))
-            return null;
-
         if (SyncRoot.Repo(cwd).Escapes(path))
             throw new RoleRenderException($"role '{role}': local override '{path}' resolves outside the working directory ({SyncRoot.Resolve(path)}); an override is never read through a link that leaves it");
 
-        return File.ReadAllText(path);
+        return File.Exists(path) ? File.ReadAllText(path) : null;
     }
 
     private static JsonNode DeepMerge(JsonNode baseNode, JsonNode overrideNode)
