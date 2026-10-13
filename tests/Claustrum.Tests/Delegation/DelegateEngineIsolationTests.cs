@@ -208,4 +208,133 @@ public sealed class DelegateEngineIsolationTests(AppServicesHomeFixture fixture)
 
         Assert.False(Directory.Exists(Path.Combine(repo.Repo, ".claustrum", "worktrees")));
     }
+
+    // #94, in process so the Windows leg covers it too (the signal tests are POSIX-only): a cancel in any wait before the add is
+    // a `cancelled` receipt in the job that was already minted, not an exception over a job that would stay `pending`.
+    private static readonly TimeSpan holdLimit = TimeSpan.FromSeconds(5);
+
+    private string JobsRoot => JobDirectory.ResolveRoot(fixture.Platform);
+
+    private string[] JobIds() =>
+        Directory.Exists(JobsRoot) ? [.. Directory.GetDirectories(JobsRoot).Select(Path.GetFileName).OfType<string>()] : [];
+
+    private static string BuilderKey => RoleConcurrencyGate.KeyFor("default", "builder");
+
+    private async Task<string> WaitForNewJobAsync(string[] before)
+    {
+        for (int attempt = 0; attempt < 400; attempt++)
+        {
+            if (JobIds().Except(before).FirstOrDefault() is { } minted)
+                return minted;
+
+            await Task.Delay(25, Ct);
+        }
+
+        throw new Xunit.Sdk.XunitException("the queued run never minted its job");
+    }
+
+    private void AssertCancelledReceiptWithNothingLeft(RunResult result)
+    {
+        Assert.Equal(RunStatus.Cancelled, result.Status);
+        Assert.Contains("canceled", result.Error, StringComparison.OrdinalIgnoreCase);
+        Assert.Null(result.Worktree);
+        Assert.Null(result.Branch);
+        Assert.True(JobDirectory.HasResult(JobsRoot, result.JobId));
+        Assert.False(Directory.Exists(Path.Combine(repo.Repo, ".claustrum", "worktrees")));
+        Assert.DoesNotContain(TestGit.Branches(repo.Repo), branch => branch.StartsWith("claustrum/", StringComparison.Ordinal));
+        Assert.Single(TestGit.WorktreePaths(repo.Repo));
+    }
+
+    [Fact]
+    public async Task ACancelWhileAnIsolatedRunWaitsForASlotIsACancelledReceiptWithNoWorktreeOrBranchAsync()
+    {
+        repo.WriteCast(maxParallel: 2);
+        string[] before = JobIds();
+        await using RoleConcurrencyGate first = await RoleConcurrencyGate.AcquireAsync(repo.Repo, BuilderKey, 2, holdLimit, Ct);
+        await using RoleConcurrencyGate second = await RoleConcurrencyGate.AcquireAsync(repo.Repo, BuilderKey, 2, holdLimit, Ct);
+        using CancellationTokenSource cancel = CancellationTokenSource.CreateLinkedTokenSource(Ct);
+        Task<RunResult> run = DelegateEngine.RunAsync(Request(maxParallel: 2), cancel.Token);
+        string minted = await WaitForNewJobAsync(before);
+
+        await cancel.CancelAsync();
+        RunResult result = await run.WaitAsync(TimeSpan.FromSeconds(10), Ct);
+
+        Assert.Equal(minted, result.JobId);
+        AssertCancelledReceiptWithNothingLeft(result);
+        Assert.Equal("A task was canceled.", result.Error);
+    }
+
+    // In place at a cap of 1 no job exists until the run is refused: the cancel mints the one that carries its receipt.
+    [Fact]
+    public async Task ACancelWhileAnInPlaceRunWaitsForTheCapOfOneIsACancelledReceiptInAJobItMintedAsync()
+    {
+        repo.WriteCast(maxParallel: 1);
+        string[] before = JobIds();
+        await using RoleConcurrencyGate held = await RoleConcurrencyGate.AcquireAsync(repo.Repo, BuilderKey, 1, holdLimit, Ct);
+        using CancellationTokenSource cancel = CancellationTokenSource.CreateLinkedTokenSource(Ct);
+        Task<RunResult> run = DelegateEngine.RunAsync(Request(maxParallel: 1), cancel.Token);
+        await Task.Delay(300, Ct);
+        Assert.False(run.IsCompleted, "the run must be waiting for the slot");
+        Assert.Empty(JobIds().Except(before));
+
+        await cancel.CancelAsync();
+        RunResult result = await run.WaitAsync(TimeSpan.FromSeconds(10), Ct);
+
+        Assert.Equal(result.JobId, Assert.Single(JobIds().Except(before)));
+        AssertCancelledReceiptWithNothingLeft(result);
+    }
+
+    // `--branch` takes a slot and then the branch's lock: a cancel in the lock wait is a receipt, the slot is given back and the
+    // user's branch is untouched.
+    [Fact]
+    public async Task ACancelWhileARunWaitsForTheBranchLockIsACancelledReceiptAndGivesItsSlotBackAsync()
+    {
+        repo.WriteCast(maxParallel: 2);
+        repo.Git("branch", "feature");
+        string tip = TestGit.RevParse(repo.Repo, "refs/heads/feature");
+        string[] before = JobIds();
+        await using RoleConcurrencyGate lockHeld = await RoleConcurrencyGate.AcquireAsync(repo.Repo, JobWorktree.LockKeyFor("feature"), 1, holdLimit, Ct);
+        using CancellationTokenSource cancel = CancellationTokenSource.CreateLinkedTokenSource(Ct);
+        Task<RunResult> run = DelegateEngine.RunAsync(Request(maxParallel: 2, branch: "feature"), cancel.Token);
+        await WaitForNewJobAsync(before);
+        await Task.Delay(300, Ct);
+        Assert.False(run.IsCompleted, "the run must be waiting for the branch lock");
+
+        await cancel.CancelAsync();
+        RunResult result = await run.WaitAsync(TimeSpan.FromSeconds(10), Ct);
+
+        AssertCancelledReceiptWithNothingLeft(result);
+        Assert.Equal(tip, TestGit.RevParse(repo.Repo, "refs/heads/feature"));
+        await using RoleConcurrencyGate slotA = await RoleConcurrencyGate.AcquireAsync(repo.Repo, BuilderKey, 2, TimeSpan.FromSeconds(2), Ct);
+        await using RoleConcurrencyGate slotB = await RoleConcurrencyGate.AcquireAsync(repo.Repo, BuilderKey, 2, TimeSpan.FromSeconds(2), Ct);
+    }
+
+    // A cancel after the slot and the admission, as the add begins: the receipt closes the reservation at $0 through Runner's
+    // funnel (as F10's refusal does), or the next admission would read the entry as abandoned. A token cancelled up front
+    // reaches that point on every platform without a hook; the add undoes what it made, and nothing is left.
+    [Fact]
+    public async Task ACancelBeforeTheWorktreeIsAddedIsACancelledReceiptThatClosesItsLedgerEntryAtZeroAsync()
+    {
+        string treeId = $"tree-{Guid.NewGuid():N}";
+        fixture.Platform.Environment["CLAUSTRUM_PARENT_JOB"] = treeId;
+        CastStore.Save(repo.Repo, new Cast(
+            "default", "1.0.0", new CastArchitect("host"),
+            new Dictionary<string, CastRoleEntry?> { ["builder"] = new CastRoleEntry(Model: null, Backend: "claude", Tier: null, MaxParallel: 2) },
+            BudgetUsd: 5.00m));
+        (string tier, ConfigOverrides overrides, CastBudget? castBudget, int? maxParallel, string? castName) =
+            CastApplication.Resolve(repo.Repo, "builder", castName: null, tierFlag: null, new ConfigOverrides());
+        DelegateRequest request = Request(maxParallel: maxParallel) with { Tier = tier, Overrides = overrides, CastBudget = castBudget, CastName = castName };
+        using CancellationTokenSource cancel = new();
+        await cancel.CancelAsync();
+
+        RunResult result = await DelegateEngine.RunAsync(request, cancel.Token);
+
+        AssertCancelledReceiptWithNothingLeft(result);
+        BudgetLedgerState state = await BudgetLedger.ReadAsync(fixture.Platform, treeId);
+        BudgetLedgerRow row = Assert.Single(state.Rows, r => r.Entry.JobId == result.JobId);
+        Assert.Equal(BudgetEntryState.Done, row.State);
+        Assert.Equal(0m, row.Entry.Cost);
+        Assert.Equal(0m, state.Reserved);
+        Assert.Equal(5.00m, await BudgetLedger.PeekRemainingAsync(fixture.Platform, new JobTreeBudget(treeId, 5.00m)));
+    }
 }

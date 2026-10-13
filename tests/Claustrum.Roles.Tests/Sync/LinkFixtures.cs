@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Runtime.Versioning;
 
 namespace Claustrum.Roles.Tests.Sync;
 
@@ -89,6 +90,39 @@ internal static class LinkFixtures
         {
             Assert.Skip($"symlinks cannot be created here: {ex.Message}");
         }
+    }
+
+    /// <summary>
+    /// POSIX: `chmod 000` on <paramref name="directory"/> until the scope is disposed (restore before the tree is deleted).
+    /// Skips where that stops nothing: Windows has no modes, and root (or a capability-holding account) lists it anyway,
+    /// which the probe measures rather than guessing from the user name.
+    /// </summary>
+    [UnsupportedOSPlatform("windows")]
+    public static IDisposable Lock(string directory)
+    {
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("POSIX file modes do not exist on Windows.");
+
+        File.SetUnixFileMode(directory, UnixFileMode.None);
+        ModeScope scope = new(directory);
+        try
+        {
+            _ = Directory.GetFileSystemEntries(directory);
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return scope;
+        }
+
+        scope.Dispose();
+        Assert.Skip("this account is not stopped by chmod 000 (root, or a capability that bypasses modes).");
+        return scope;
+    }
+
+    [UnsupportedOSPlatform("windows")]
+    private sealed class ModeScope(string directory) : IDisposable
+    {
+        public void Dispose() => File.SetUnixFileMode(directory, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
     }
 
     /// <summary>Every entry under <paramref name="directory"/>, sorted, so a before/after pair shows anything created or removed.</summary>

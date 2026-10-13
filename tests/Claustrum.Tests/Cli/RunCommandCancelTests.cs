@@ -2,9 +2,10 @@ using Claustrum.Cli;
 
 namespace Claustrum.Tests.Cli;
 
-// T1: a cancel whose message says more than the framework's default — JobWorktree's undo naming what a
-// cancelled `git worktree add` could not remove — is printed as a warning, still exits 130; a plain Ctrl-C
-// stays silent. Console.Error is process-wide, so the class takes the collection nothing else shares.
+// T1: a cancel whose message says more than the framework's default is printed as a warning, still exits 130; a plain
+// Ctrl-C stays silent. Since #94 a cancelled `worktree add`'s "left behind" text is the receipt's `error`, not a line
+// here: `Cancelled` sees only cancels raised before a job exists (`coordinate`'s planning). Console.Error is
+// process-wide, so every class that prints through it (ExceptionBoundaryTests, #102) shares this collection.
 [Collection("console redirect")]
 public sealed class RunCommandCancelTests : IDisposable
 {

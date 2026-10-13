@@ -129,9 +129,15 @@ public sealed class SyncRootTests : IDisposable
         LinkFixtures.Junction(Path.Combine(repo, "in"), real);
         string outPath = Path.Combine(repo, "out", "file.md");
 
-        Assert.Equal(Path.Combine(outside, "file.md"), SyncRoot.Resolve(outPath), LinkFixtures.PathComparer);
+        string inPath = Path.Combine(repo, "in", "file.md");
+
+        // A junction's target is fully qualified, so the string walk places it (the OS is not asked): both stay resolved (#100).
+        Assert.Equal(Path.Combine(outside, "file.md"), SyncRoot.Resolve(outPath, out bool outUnresolved), LinkFixtures.PathComparer);
+        Assert.Equal(Path.Combine(real, "file.md"), SyncRoot.Resolve(inPath, out bool inUnresolved), LinkFixtures.PathComparer);
+        Assert.False(outUnresolved);
+        Assert.False(inUnresolved);
         Assert.True(SyncRoot.Repo(repo).Escapes(outPath));
-        Assert.False(SyncRoot.Repo(repo).Escapes(Path.Combine(repo, "in", "file.md")));
+        Assert.False(SyncRoot.Repo(repo).Escapes(inPath));
         Assert.False(SyncRoot.Global(repo).Escapes(outPath));
     }
 
@@ -173,6 +179,9 @@ public sealed class SyncRootTests : IDisposable
         Assert.False(SyncRoot.IsOpaqueWindowsLinkTarget(target));
     }
 
+    // #100: the OS can place a `\\?\GLOBALROOT\??\<outside>` link whose target exists, so it is no longer unresolved; it is
+    // refused because the place the OS names is outside the root. The typed temp root may be 8.3 (`RUNNER~1`) where the OS
+    // answers with the long name, so the tail is compared, never the whole path.
     [Fact]
     public void AGlobalRootLinkTargetIsRefusedOnWindows()
     {
@@ -189,10 +198,9 @@ public sealed class SyncRootTests : IDisposable
         string path = Path.Combine(link, "file.md");
 
         Assert.True(SyncRoot.Repo(repo).Escapes(path));
-        SyncRoot.Resolve(path, out bool unresolved);
-        if (!Path.IsPathFullyQualified(new DirectoryInfo(link).LinkTarget ?? ""))
-            Assert.True(unresolved);
-
+        string resolved = SyncRoot.Resolve(path, out bool unresolved);
+        Assert.False(unresolved);
+        Assert.EndsWith(Path.Combine("outside", "file.md"), resolved, StringComparison.OrdinalIgnoreCase);
         Assert.False(SyncRoot.Global(repo).Escapes(path));
     }
 

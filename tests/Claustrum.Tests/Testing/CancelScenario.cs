@@ -56,11 +56,17 @@ public sealed class CancelScenario : IDisposable
     }
 
     /// <summary>A pre-commit hook that sleeps: the cheapest slow cancel path, since the post-run commit runs the repository's hooks.</summary>
-    public void PlantHangingPreCommitHook(string hookSleep)
+    public void PlantHangingPreCommitHook(string hookSleep) => PlantHangingHook("pre-commit", hookSleep);
+
+    /// <summary>
+    /// A git hook named <paramref name="hookName"/> that sleeps. `post-checkout` is the one git runs inside `worktree add`, so a
+    /// sleeping one holds the add open for a cancel to land on (#94).
+    /// </summary>
+    public void PlantHangingHook(string hookName, string hookSleep)
     {
         sleeps.Add(hookSleep);
         string hooks = Directory.CreateDirectory(Path.Combine(Repo.Repo, ".git", "hooks")).FullName;
-        string hook = Path.Combine(hooks, "pre-commit");
+        string hook = Path.Combine(hooks, hookName);
         File.WriteAllText(hook, $"#!/bin/sh\nsleep {hookSleep}\n");
         if (!OperatingSystem.IsWindows())
             File.SetUnixFileMode(hook, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
