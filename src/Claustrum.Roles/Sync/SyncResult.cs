@@ -13,6 +13,7 @@ namespace Claustrum.Roles.Sync;
 /// from the path as typed; for an agent file that is the landing path (its directory resolved plus its own name),
 /// so a replaced leaf link maps to where the new file goes, not to the link's target.
 /// <paramref name="IgnoredOverrides"/> lists the target roles whose repo-local override <c>--global</c> ignored (#99).
+/// <paramref name="Decisions"/> is what `--dry-run` prints per agent file: the model chosen and why (#53).
 /// </summary>
 public sealed record SyncResult(
     IReadOnlyList<string> Written,
@@ -22,4 +23,5 @@ public sealed record SyncResult(
     IReadOnlyDictionary<string, string>? Symlinks = null,
     IReadOnlyDictionary<string, string>? Refused = null,
     IReadOnlyDictionary<string, string>? RealPaths = null,
-    IReadOnlyList<string>? IgnoredOverrides = null);
+    IReadOnlyList<string>? IgnoredOverrides = null,
+    IReadOnlyList<string>? Decisions = null);

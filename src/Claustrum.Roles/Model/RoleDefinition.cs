@@ -1,6 +1,10 @@
 namespace Claustrum.Roles.Model;
 
-/// <summary>Deserialized `roles/&lt;role&gt;/role.json` (docs/PLAN.md §B2), after any local-override deep merge.</summary>
+/// <summary>
+/// Deserialized `roles/&lt;role&gt;/role.json` (docs/PLAN.md §B2), after any local-override deep merge.
+/// <paramref name="Primary"/> marks a role meant to be picked as the main agent and orchestrate others
+/// (the architect); only opencode's `mode` reads it today (#85, NOTES.md "A primary role").
+/// </summary>
 public sealed record RoleDefinition(
     string Name,
     string Description,
@@ -14,7 +18,8 @@ public sealed record RoleDefinition(
     string[] Harnesses,
     string[] NonNegotiable,
     string[]? Tools = null,
-    string[]? WithoutTools = null)
+    string[]? WithoutTools = null,
+    bool Primary = false)
 {
     /// <summary>
     /// Tool names this role needs on top of what `permission` grants — the browser MCP servers, or
@@ -28,5 +33,4 @@ public sealed record RoleDefinition(
     /// `NotebookEdit` on `edit+shell` (PR #42 review). Optional, like <see cref="Tools"/>.
     /// </summary>
     public string[] DroppedTools => WithoutTools ?? [];
-
 }

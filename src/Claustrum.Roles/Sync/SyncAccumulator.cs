@@ -31,7 +31,10 @@ public sealed class SyncAccumulator
     /// <summary>Target roles whose repo-local override `--global` ignored (issue #99); empty in repo mode.</summary>
     public List<string> IgnoredOverrides { get; } = [];
 
+    /// <summary>One line per agent file saying which model `claustrum.json` or the defaults chose, and what could not be rendered (#53).</summary>
+    public List<string> Decisions { get; } = [];
+
     /// <summary>ProposedContent is only meaningful outside <see cref="SyncMode.Write"/>.</summary>
     public SyncResult ToResult(SyncMode mode) =>
-        new(Written, Skipped, Foreign, mode == SyncMode.Write ? null : ProposedContent, Symlinks, Refused, RealPaths, IgnoredOverrides);
+        new(Written, Skipped, Foreign, mode == SyncMode.Write ? null : ProposedContent, Symlinks, Refused, RealPaths, IgnoredOverrides, Decisions);
 }

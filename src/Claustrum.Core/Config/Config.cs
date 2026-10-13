@@ -19,7 +19,8 @@ public sealed class Config
     // overrides too, not just the four file/env layers (review finding #2).
     public required Dictionary<string, ConfigLayer> Origins { get; init; }
 
-    public static Config Load(IPlatform platform, string cwd)
+    // A null cwd loads no repo layer: `sync --global` is the user's config alone (#53, as #99 made it the library alone).
+    public static Config Load(IPlatform platform, string? cwd)
     {
         Dictionary<string, ConfigLayer> origins = [];
         ConfigDocument merged = TrackDefaults(BuiltInDefaults(), ConfigLayer.Builtin, origins);
@@ -28,7 +29,7 @@ public sealed class Config
         if (platform.FileExists(userPath))
             merged = MergeLayer(merged, ReadDocument(platform, userPath), ConfigLayer.User, origins);
 
-        string? gitRoot = GitRootLocator.Find(cwd, platform);
+        string? gitRoot = cwd is null ? null : GitRootLocator.Find(cwd, platform);
         if (gitRoot is not null)
         {
             string repoPath = Path.Combine(gitRoot, "claustrum.json");
@@ -110,7 +111,7 @@ public sealed class Config
     // checks whether the landing spot is itself still an alias — checking termination inside the
     // same bounded loop (as a first build did) needs a 4th iteration to notice hop 3 was terminal,
     // silently capping real resolution at 2 hops.
-    private (string Backend, string ModelId) ResolveModel(string spec)
+    public (string Backend, string ModelId) ResolveModel(string spec)
     {
         HashSet<string> seen = [spec];
         string current = spec;
