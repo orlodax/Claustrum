@@ -262,7 +262,8 @@ leaves the working directory (a committed `AGENTS.md -> ~/.ssh/id_rsa`) is never
 linked one that does not land on a regular `*.md` file outside any `.git` directory (`AGENTS.md -> .git/config`
 holds the CI token). The check is made on the file as opened, not on its path, so a link swapped in meanwhile
 is not read; where the OS cannot say what was opened, nothing is inlined. The run's `warnings` name the file
-and why, and so does a truncation (#55).
+and why, and so does a truncation (#55). An isolated run (`--branch`, or a cast with `max_parallel` of 2 or more) inlines the
+files of its own worktree, that is of the branch it runs on, and not those of the main checkout's working copy.
 
 ## 5. The brief
 

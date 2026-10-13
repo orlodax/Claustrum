@@ -58,6 +58,31 @@ public sealed class RoleRenderer(RoleLibrary library)
             Warnings: warnings.Count > 0 ? [.. warnings] : null);
     }
 
+    /// <summary>
+    /// <paramref name="role"/> with an api run's inlined rule files re-read from <paramref name="rulesCwd"/>
+    /// (an isolated run's worktree, #55) and the render warnings replaced by that re-read's; any other
+    /// backend is returned as is. Only the text after `## House rules` changes, so the role overrides and any
+    /// appendix stay those of the original render. Those warnings come from nowhere else today.
+    /// </summary>
+    public ResolvedRole WithRulesFrom(ResolvedRole role, string rulesCwd)
+    {
+        if (role.Backend != "api")
+            return role;
+
+        const string heading = "\n## House rules\n\n";
+        int index = role.SystemPrompt.IndexOf(heading, StringComparison.Ordinal);
+        if (index < 0)
+            throw new RoleRenderException($"role '{role.Name}': the rendered system prompt has no '## House rules' section to re-read the rules into");
+
+        List<string> warnings = [];
+        string houseRules = ApiHouseRules.Compose(library.ReadShared("_shared/house-rules.md").Trim(), rulesCwd, warnings);
+        return role with
+        {
+            SystemPrompt = string.Concat(role.SystemPrompt.AsSpan(0, index + heading.Length), houseRules),
+            Warnings = warnings.Count > 0 ? [.. warnings] : null,
+        };
+    }
+
     // `## Report format` sits right after the role's opening description (before the long
     // ground-rules/how-you-work body), not at the very end after `## House rules` — a live smoke
     // test found the model skipping a report-format section that only appeared last in a long system
