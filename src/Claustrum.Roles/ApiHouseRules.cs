@@ -47,7 +47,12 @@ internal static class ApiHouseRules
 
         try
         {
-            using FileStream stream = File.OpenRead(path);
+            using FileStream? stream = PlainFile.OpenRead(path, out string? refusal);
+            if (stream is null)
+            {
+                warnings.Add($"{name} not inlined: {refusal}");
+                return $"### {name} (not inlined: it is not a regular file)";
+            }
 
             // Open first, then ask the OS where the handle lands: a link swapped in after the check above is what this catches.
             if (Unfit(stream, fence) is { } problem)
@@ -91,7 +96,7 @@ internal static class ApiHouseRules
         if (!real.StartsWith(trimmedRoot + Path.DirectorySeparatorChar, comparison))
             return $"the opened file is {real}, outside the working directory";
 
-        bool inGit = real[(trimmedRoot.Length + 1)..].Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar).Contains(".git", StringComparer.FromComparison(comparison));
+        bool inGit = real[(trimmedRoot.Length + 1)..].Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar).Any(PlainFile.IsGitDirName);
         return stream.CanSeek && !inGit && real.EndsWith(".md", comparison)
             ? null
             : $"the opened file is {real}, which is not a regular .md file outside .git";

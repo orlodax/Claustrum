@@ -198,7 +198,12 @@ public sealed class RoleLibrary
         if (!SyncRoot.SamePath(real, path) && !IsPlainOverrideFile(fence, path, real))
             throw new RoleRenderException($"role '{role}': local override '{path}' is a link to '{real}', which is not a regular {Path.GetExtension(path)} file outside .git; an override is read through a link only to such a file");
 
-        return File.ReadAllText(path);
+        // A FIFO passes File.Exists and would block the read forever; refuse it like any other non-file (2026-10-13, found by review).
+        using FileStream stream = PlainFile.OpenRead(path, out string? refusal)
+            ?? throw new RoleRenderException($"role '{role}': local override '{path}' is {refusal}");
+
+        using StreamReader reader = new(stream);
+        return reader.ReadToEnd();
     }
 
     // The extension is the typed name's own (role.json, ROLE.md, parts/*.md), so a link cannot change what kind of file is read.
@@ -208,7 +213,7 @@ public sealed class RoleLibrary
         string tail = relative.StartsWith("..", StringComparison.Ordinal) ? real : relative;
         return File.Exists(real)
             && Path.GetExtension(real).Equals(Path.GetExtension(path), StringComparison.OrdinalIgnoreCase)
-            && !tail.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar).Any(name => name.Equals(".git", StringComparison.OrdinalIgnoreCase));
+            && !tail.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar).Any(PlainFile.IsGitDirName);
     }
 
     private static JsonNode DeepMerge(JsonNode baseNode, JsonNode overrideNode)

@@ -35,7 +35,12 @@ public static class CastStore
 
         try
         {
-            Cast cast = JsonSerializer.Deserialize(File.ReadAllText(path), CastJsonContext.Default.Cast)
+            // A FIFO passes File.Exists and would block the read forever (2026-10-13, found by review).
+            using FileStream stream = PlainFile.OpenRead(path, out string? refusal)
+                ?? throw new CastException($"'{path}': {refusal}");
+
+            using StreamReader reader = new(stream);
+            Cast cast = JsonSerializer.Deserialize(reader.ReadToEnd(), CastJsonContext.Default.Cast)
                 ?? throw new CastException($"'{path}' does not contain a JSON object");
 
             // Positional-record construction does not enforce non-nullable reference types at

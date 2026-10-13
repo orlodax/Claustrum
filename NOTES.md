@@ -5165,6 +5165,10 @@ points inside still reaches `ReadAllText` and throws `FileNotFoundException` as 
   `ROLE.md -> .git/config` carried a CI token into an api system prompt. "Linked" is `Resolve(path)` differing
   from the typed full path, so a mid-path directory link counts too; "regular" is `File.Exists` (a FIFO named
   `x.md` is not excluded, git cannot commit one).
+- **A FIFO and the Windows spellings of `.git` (2026-10-13, found by review).** A FIFO named `ROLE.md` (or a cast
+  file) passed `File.Exists` and blocked `File.ReadAllText` forever in open(2); `PlainFile.OpenRead` now opens
+  O_NONBLOCK and refuses a handle that does not seek (`RoleRenderException` / `CastException`), no path stat first.
+  The `.git` test is `PlainFile.IsGitDirName`, shared with `ApiHouseRules`: on Windows `.git.`, `.git ` and `GIT~1` count too.
 - **Out of scope in that review, all pre-existing, deferred past v0.1.0:** cast store writes through
   committed links (#103); worktrees, locks and the probe under a linked `.claustrum` (#104); UNC placement
   opens the host (#105).
@@ -5607,3 +5611,10 @@ byte-identically; `ApiHouseRulesTests` pins that against an empty cwd.
   does not trip it and the blind gate is unaffected (`RunnerTests`). Nothing from the inlined files reaches the brief.
 - **Not done.** The `{{house_rules}}` template token still expands the plain shared text for every harness; no
   role uses it today, and `ComposeSystemBody` is the one place the section is placed.
+- **A FIFO named `AGENTS.md`, and the Windows spellings of `.git` (2026-10-13, found by review).** `File.Exists` is
+  true for a FIFO, so `File.OpenRead` blocked in open(2) before the handle checks ran. `PlainFile.OpenRead` opens
+  `O_RDONLY|O_NONBLOCK|O_CLOEXEC` (Linux `0x800|0x80000`, macOS `0x4|0x1000000`, FreeBSD `0x4|0x100000`; Windows keeps
+  `File.OpenRead`, a pipe cannot sit in its filesystem), then refuses a handle that does not seek: the heading says
+  `not a regular file` and the receipt names it. `Unfit` treats a segment as `.git` via `PlainFile.IsGitDirName`
+  (Windows: `.git.`, `.git `, `GIT~N`). Case is ignored on every OS, a deviation toward strict: macOS volumes are
+  usually case-insensitive. macOS flag values are from the headers, **not run on a Mac**.
