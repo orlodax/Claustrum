@@ -58,9 +58,10 @@ with a `cancelled` receipt: exit 130, the document on stdout under `--json`, `re
 (#94). A cancel while queued or adding leaves no worktree or branch; one just after the add, before
 the backend starts, leaves the registered worktree and its branch at the starting commit (`jobs
 clean` removes the worktree later, never the branch); one while running keeps both with a commit of
-the work so far (§9). Before the job directory exists
-(`run`/`coordinate` reading the brief from stdin, `coordinate` planning, e.g. while `gh` runs) the
-runtime's default exit applies (130 for Ctrl-C, 143 for SIGTERM) and nothing is minted. A second signal ends the
+any work so far (§9). Before the job directory exists nothing is minted: a signal while
+`run`/`coordinate` is still reading its brief from stdin gets the runtime's default exit (130 for
+Ctrl-C, 143 for SIGTERM, no handler yet); one during `coordinate`'s planning (while `gh` runs) is
+exit 130 with no receipt. A second signal ends the
 process at once with the runtime's own code (130 after a second Ctrl-C, 143 after a second SIGTERM,
 131 after a second SIGQUIT), no receipt, and the backend may keep running (it received no signal of
 its own when the sender was `kill`). On Windows Ctrl-C and Ctrl-Break take the cancel path (both reach
