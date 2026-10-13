@@ -19,6 +19,11 @@ public sealed class RoleConcurrencyGate : IAsyncDisposable
         this.slot = slot;
     }
 
+    // #104: where AcquireAsync creates and opens, public so the caller that owns the fence can check exactly these.
+    public static string LockDirectory(string cwd) => Path.Combine(cwd, ".claustrum", "locks");
+
+    public static string SlotPath(string cwd, string key, int slotIndex) => Path.Combine(LockDirectory(cwd), $"{key}.{slotIndex}.lock");
+
     /// <summary>
     /// Waits for one of <paramref name="maxParallel"/> slots named by <paramref name="key"/>, for at
     /// most <paramref name="timeout"/>. Build the key with <see cref="KeyFor"/>: the pool is a set of
@@ -29,7 +34,7 @@ public sealed class RoleConcurrencyGate : IAsyncDisposable
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(maxParallel, 1);
 
-        string directory = Path.Combine(cwd, ".claustrum", "locks");
+        string directory = LockDirectory(cwd);
         Directory.CreateDirectory(directory);
 
         // A bounded wait, not `while (true)`: a sibling builder that hangs holds its slot until its
@@ -41,7 +46,7 @@ public sealed class RoleConcurrencyGate : IAsyncDisposable
         {
             for (int slotIndex = 0; slotIndex < maxParallel; slotIndex++)
             {
-                string path = Path.Combine(directory, $"{key}.{slotIndex}.lock");
+                string path = SlotPath(cwd, key, slotIndex);
                 try
                 {
                     return new RoleConcurrencyGate(new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None));

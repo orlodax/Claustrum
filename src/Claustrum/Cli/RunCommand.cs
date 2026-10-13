@@ -118,15 +118,27 @@ public static class RunCommand
                 OnStreamLine: streamMode ? Console.Error.WriteLine : null,
                 Branch: branch is { Length: > 0 } ? branch : null);
 
-            RunResult result = await DelegateEngine.RunAsync(request, cancel.Token);
+            RunResult result;
+            int? refusedExit = null;
+            try
+            {
+                result = await DelegateEngine.RunAsync(request, cancel.Token);
+            }
+            catch (MachineryRefusedException ex)
+            {
+                // #104: a usage refusal (exit 2), whose failed receipt is still the document --json readers parse.
+                (result, refusedExit) = (ex.Receipt, ExitCodes.Usage);
+            }
+
             RunResult output = rawMode ? result : result with { Raw = null };
 
+            int exitCode = refusedExit ?? ExitCodeFor(output.Status);
             if (jsonMode)
                 Console.WriteLine(JsonSerializer.Serialize(output, ClaustrumJsonContext.Default.RunResult));
             else
-                PrintHuman(output);
+                PrintHuman(output, exitCode);
 
-            return ExitCodeFor(output.Status);
+            return exitCode;
         }
         // Everything else (ConfigException, RoleRenderException, CliUsageException,
         // BlindGateException, BackendNotFoundException, ...) is intentionally not caught here —
@@ -182,9 +194,9 @@ public static class RunCommand
         _ => throw new ArgumentOutOfRangeException(nameof(status), status, null),
     };
 
-    private static void PrintHuman(RunResult result)
+    private static void PrintHuman(RunResult result, int exitCode)
     {
-        Console.WriteLine($"status: {result.Status} (exit {ExitCodeFor(result.Status)})");
+        Console.WriteLine($"status: {result.Status} (exit {exitCode})");
 
         // An isolated run's work is on its branch, not in the directory the reader is looking at (F3).
         if (result.Branch is { } branch)
