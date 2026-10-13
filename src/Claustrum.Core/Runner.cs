@@ -35,7 +35,8 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
     /// <summary>
     /// A run refused before anything but its job directory existed: no process, no worktree — only the
     /// `result.json` a caller parsing `--json` must still find (issue #20: a `max_parallel` gate that
-    /// times out waiting for a slot; #63: a `--branch` nobody can check out). Same "nothing ran" shape
+    /// times out waiting for a slot; #63: a `--branch` nobody can check out; #94: a cancel while queued
+    /// or while the worktree is added, as a `cancelled` receipt). Same "nothing ran" shape
     /// and the same finish funnel as the BackendMissing and BudgetExceeded refusals this class builds
     /// internally; it is public because that caller decides *before* Runner is ever entered. A caller
     /// already holding an admission hands its <paramref name="reservation"/> in: it closes at $0, and

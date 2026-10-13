@@ -133,6 +133,12 @@ public static class DelegateEngine
         {
             return await Runner.RefuseAsync(job ?? JobDirectory.Create(AppServices.Platform), run.Role, RunStatus.Failed, ex.Message);
         }
+        catch (OperationCanceledException ex) when (cancellationToken.IsCancellationRequested)
+        {
+            // 2026-10-13, #94: a cancel in the queue is a receipt too — it used to reach RunCommand as a bare
+            // exit 130 with no document under --json and no result.json. Minted for it exactly as above.
+            return await Runner.RefuseAsync(job ?? JobDirectory.Create(AppServices.Platform), run.Role, RunStatus.Cancelled, ex.Message);
+        }
 
         await using RoleConcurrencyGate gate = slot;
         return await RunInPlaceAsync(run, job, cancellationToken);
@@ -166,8 +172,23 @@ public static class DelegateEngine
         ResolvedRole role = IsolatedRole(bound.Role);
 
         // Before the gate: a branch that does not exist is answered now, not after a wait for a slot.
-        if (request.Branch is { } branch && !await JobWorktree.BranchExistsAsync(request.Cwd, branch, cancellationToken))
-            return await Runner.RefuseAsync(job, role, RunStatus.Failed, JobWorktree.NoSuchBranch(request.Cwd, branch));
+        // #94: a cancel in any wait before the add is a `cancelled` receipt, never an exception over a
+        // job that is already minted and would stay `pending` — the same shape as each refusal below.
+        if (request.Branch is { } branch)
+        {
+            bool exists;
+            try
+            {
+                exists = await JobWorktree.BranchExistsAsync(request.Cwd, branch, cancellationToken);
+            }
+            catch (OperationCanceledException ex) when (cancellationToken.IsCancellationRequested)
+            {
+                return await Runner.RefuseAsync(job, role, RunStatus.Cancelled, ex.Message);
+            }
+
+            if (!exists)
+                return await Runner.RefuseAsync(job, role, RunStatus.Failed, JobWorktree.NoSuchBranch(request.Cwd, branch));
+        }
 
         RoleConcurrencyGate? slot = null;
         if (request.MaxParallel is { } cap && cap >= 1)
@@ -182,6 +203,10 @@ public static class DelegateEngine
                 // architect parsing --json cannot read an exception on stderr. Nothing to undo — no
                 // worktree, no branch, and admission comes after the gate, so no reservation exists yet.
                 return await Runner.RefuseAsync(job, role, RunStatus.Failed, ex.Message);
+            }
+            catch (OperationCanceledException ex) when (cancellationToken.IsCancellationRequested)
+            {
+                return await Runner.RefuseAsync(job, role, RunStatus.Cancelled, ex.Message);
             }
         }
 
@@ -201,6 +226,11 @@ public static class DelegateEngine
             catch (TimeoutException ex)
             {
                 return await Runner.RefuseAsync(job, role, RunStatus.Failed, $"--branch {locked}: another run on this branch outlasted the wait — {ex.Message}");
+            }
+            catch (OperationCanceledException ex) when (cancellationToken.IsCancellationRequested)
+            {
+                // The slot above is released on this return by its `await using`.
+                return await Runner.RefuseAsync(job, role, RunStatus.Cancelled, ex.Message);
             }
         }
 
@@ -241,16 +271,26 @@ public static class DelegateEngine
             // through Runner's funnel instead of waiting to be read as abandoned. No worktree is left.
             return await Runner.RefuseAsync(job, role, RunStatus.Failed, ex.Message, admission?.Reservation);
         }
+        catch (OperationCanceledException ex) when (cancellationToken.IsCancellationRequested)
+        {
+            // 2026-10-13, #94: a cancel before Runner ran — the add undid what it made itself (T1) — is a
+            // `cancelled` receipt like Runner's own, with the reservation closed at $0 through its funnel.
+            // `worktree` is null unless the add returned, but "no half-made worktree" is kept as an invariant.
+            string message = ex.Message;
+            if (worktree is not null && await JobWorktree.TryRemoveAbandonedAsync(request.Cwd, worktree, CancellationToken.None) is { } cleanupFailure)
+                message = $"{message} (and cleaning up {worktree.Path} failed: {cleanupFailure.Message})";
+
+            return await Runner.RefuseAsync(job, role, RunStatus.Cancelled, message, admission?.Reservation);
+        }
         catch (Exception ex)
         {
             // Runner writes a result.json for everything that fails once the backend process has run,
-            // so landing here means none was written — a failed `-b` add or a cancel before the run (an
-            // add undoes what it made itself, T1), an unwritable result.json after it. Two things must
-            // be undone. The reservation, because Runner closes it through its funnel but may never have
-            // received it; releasing the handle is enough (the next admission reads the entry as
-            // abandoned, worth $0) and disposing twice is harmless. And the worktree: `jobs clean` only
-            // removes those of finished jobs, so one left here would never go — its branch too, unless
-            // the run moved it.
+            // so landing here means none was written — a failed `-b` add, an unwritable result.json after
+            // the run (a cancel is the catch above, #94). Two things must be undone. The reservation,
+            // because Runner closes it through its funnel but may never have received it; releasing the
+            // handle is enough (the next admission reads the entry as abandoned, worth $0) and disposing
+            // twice is harmless. And the worktree: `jobs clean` only removes those of finished jobs, so
+            // one left here would never go — its branch too, unless the run moved it.
             if (admission?.Reservation is { } reservation)
                 await reservation.DisposeAsync();
 
