@@ -93,12 +93,13 @@ claustrum run <role> [--brief <text> | --brief-file <path|->]
   will not check out (mid-rebase in another worktree) or does not check out within 5 minutes, or a
   wait for the branch that outlasts `--timeout` comes back `status: failed` (exit 1, a receipt like
   any other) with the reason — and the holder, if any — in `error`, and no worktree left behind
-  (`error` names anything the undo could not remove). A Ctrl-C, SIGTERM or timeout
-  during the free of the previous job's worktree does not leave it half removed: a `git worktree remove`
-  killed by the signal (git shares the terminal's process group) is finished at once with `--force` — only
-  after Claustrum's own check found nothing uncommitted — and the run ends `cancelled`; `error` names
-  anything still left. If the process itself is killed (SIGKILL), the next `--branch` run, or `jobs clean`,
-  finishes that remove, and only that one: a dirty worktree without Claustrum's marker is still refused.
+  (`error` names anything the undo could not remove). The free of the previous job's worktree never
+  uses `git worktree remove`: once Claustrum's own checks pass (clean, new files included; no submodule
+  populated; not `git worktree lock`-ed), the directory is renamed to `.claustrum/worktrees/.trash-<job>-<random>`
+  and `git worktree prune` drops its registration; the trash is then deleted. A Ctrl-C or SIGTERM before the
+  rename leaves the worktree intact and the run ends `cancelled`; after it, only trash and a registration the
+  next `--branch` run or `jobs clean` prunes. A SIGKILL is the same. A trash directory that would not delete
+  is a `warnings` entry on the receipt, never a failure; nothing is ever forced.
 - `--stream` echoes the backend's output to **stderr** while it runs; stdout still carries only
   the final document. `--raw` adds the backend's untouched response under `raw`.
 - Without `--json`, stdout gets `status:`, then `branch:`/`worktree:`/`commit:` when the run was
@@ -155,12 +156,13 @@ backend, or it skips with "no model alias … resolves to this backend".
 - `show`: the receipt (`result.json`), or the request if it has not finished.
 - `logs`: the captured stdout (readable while the job runs); `--stderr` for the other stream.
 - `clean`: removes the **worktrees** of finished isolated jobs; their branches stay, with the work
-  committed on them. It never forces — except to finish a remove it (or a `--branch` free) started and
-  a signal or kill cut short, which Claustrum marks in the worktree's git directory once its own check
-  found nothing uncommitted. The first Ctrl-C or SIGTERM lets the remove in flight finish and stops the
-  sweep (exit 130); a second one exits at once. A worktree with anything uncommitted — new files included,
+  committed on them. It never forces: a clean worktree is renamed to a `.trash-*` sibling, its registration
+  pruned and the trash deleted, and the sweep first deletes any `.trash-*` an earlier interrupted free left
+  (`swept N leftover trash directories`; a trash that will not delete is a `warning:` line, not a failure).
+  The first Ctrl-C or SIGTERM stops the sweep (exit 130); a worktree not yet renamed stays intact, and
+  the next `jobs clean` finishes any trash. A worktree with anything uncommitted — new files included,
   whatever `status.showUntrackedFiles` says (a commit the runner could not make, a hard-killed run)
-  — or one git will not remove plainly (a submodule the role populated) is printed as `could not
+  — or one Claustrum will not remove (a populated submodule, a `git worktree lock`-ed one) — is printed as `could not
   remove <job>: <path> left in place: <reason>` and exits 1. Commit or discard what is in it, then
   rerun. Only `<cwd>/.claustrum/worktrees` is swept: a `coordinate` architect's worktree holds its
   builders' under its own, and is left in place (`it holds job worktrees of its own …`) until
@@ -534,9 +536,9 @@ job, a job this `CLAUSTRUM_HOME` has no directory for (one run under another hom
 `jobs.keep_last`: `claustrum jobs clean` under the home that ran it frees it) or anything else is
 refused with the holder named. Runs on one branch never overlap: a second `--branch` run on it waits
 for the first one's receipt (up to its `--timeout`), then takes the branch over from the finished
-worktree. `claustrum jobs clean` removes the worktrees of finished jobs, never with `--force` (except to finish
-a remove of its own that a signal or a kill cut short), and keeps the branches. Its first Ctrl-C or SIGTERM
-lets the remove in flight finish and stops the sweep (exit 130); a second one exits at once.
+worktree. `claustrum jobs clean` removes the worktrees of finished jobs, never with `--force` (it renames a
+clean one aside and prunes it, as `--branch` does), and keeps the branches. Its first Ctrl-C or SIGTERM
+stops the sweep (exit 130); a second one exits at once.
 
 ## 10. Budget
 

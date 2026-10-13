@@ -131,8 +131,8 @@ public static class JobsCommands
     // JobDirectory.IsFinished decides which ones are done with. The branch is never touched here, and
     // it carries the job's work as a commit since #61, so the architect can still rebase from it. A
     // worktree that still holds uncommitted work is reported and left, never forced (F3) — and so is a
-    // coordinate architect's that still holds its children's (#74): `--cwd <it>` sweeps those first. The one
-    // forced remove finishes a free of ours that was cut short (#106, JobWorktree's marker).
+    // coordinate architect's that still holds its children's (#74): `--cwd <it>` sweeps those first. A clean
+    // one is renamed aside and pruned (#106); the sweep first deletes any `.trash-*` an earlier free left.
     private static async Task<int> CleanAsync(string? cwdOption)
     {
         string cwd = Path.GetFullPath(cwdOption ?? Environment.CurrentDirectory);
@@ -151,9 +151,24 @@ public static class JobsCommands
         int removed = 0;
         OperationCanceledException? cancelled = null;
         List<string> failures = [];
-        foreach (string worktreeDirectory in Directory.EnumerateDirectories(worktreesRoot))
+        try
         {
-            if (cancel.Token.IsCancellationRequested)
+            (int swept, string[] sweepFailures) = await JobWorktree.SweepTrashAsync(cwd, cancel.Token);
+            if (swept > 0)
+                Console.WriteLine($"swept {swept} leftover trash {(swept == 1 ? "directory" : "directories")}");
+            foreach (string sweepFailure in sweepFailures)
+                Console.Error.WriteLine($"warning: could not sweep {sweepFailure}");
+            removed += swept;
+        }
+        catch (OperationCanceledException ex)
+        {
+            cancelled = ex;
+        }
+
+        // A snapshot, taken after the sweep: freeing a worktree creates (and deletes) a `.trash-*` beside it.
+        foreach (string worktreeDirectory in Directory.EnumerateDirectories(worktreesRoot).Where(directory => !JobWorktree.IsTrash(Path.GetFileName(directory))).ToArray())
+        {
+            if (cancel.Token.IsCancellationRequested || cancelled is not null)
                 break;
 
             string jobId = Path.GetFileName(worktreeDirectory);
@@ -176,8 +191,10 @@ public static class JobsCommands
             // finding). Report it and keep going.
             try
             {
-                await JobWorktree.RemoveAsync(cwd, jobId, cancel.Token);
+                string? warning = await JobWorktree.RemoveAsync(cwd, jobId, cancel.Token);
                 Console.WriteLine($"removed {jobId} (branch {RecordedBranch(jobsRoot, jobId) ?? JobWorktree.BranchFor(jobId)} kept)");
+                if (warning is not null)
+                    Console.Error.WriteLine($"warning: {warning}");
                 removed++;
             }
             catch (OperationCanceledException ex)
