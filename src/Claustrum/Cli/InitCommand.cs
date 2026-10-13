@@ -10,7 +10,8 @@ namespace Claustrum.Cli;
 // every supported one with --all), and appends a short pointer to an existing AGENTS.md. Never
 // creates AGENTS.md itself and never writes CLAUDE.md at all (docs/PLAN.md's own explicit rule) —
 // claustrum.json, .gitignore, and the .claustrum/ scaffold are the only new files this can create in
-// a repo that has none of them yet.
+// a repo that has none of them yet. Every write is fenced to the cwd first: a committed link that
+// leaves it is refused, not followed, and init exits 2 at the end (issue #98).
 public static class InitCommand
 {
     // .claustrum/casts/ is committable (docs/PLAN.md §D1); worktrees/, briefs/ and locks/ are not
@@ -30,6 +31,8 @@ public static class InitCommand
     // meant a repo initialised by an earlier version never received a rule added later.
     private static readonly string[] gitignoreEntries =
         [".claustrum/worktrees/", ".claustrum/briefs/", ".claustrum/locks/"];
+
+    private static readonly string[] scaffoldDirectories = ["casts", "briefs", "worktrees"];
 
     private const string AgentsMdMarker = "## Claustrum delegation";
 
@@ -52,13 +55,19 @@ public static class InitCommand
     private static int Execute(bool all)
     {
         string cwd = Environment.CurrentDirectory;
+        // The cwd, not the git root, as in `sync` (NOTES.md "Why the fence is the cwd and not the git root").
+        SyncRoot root = SyncRoot.Repo(cwd);
 
-        Directory.CreateDirectory(Path.Combine(cwd, ".claustrum", "casts"));
-        Directory.CreateDirectory(Path.Combine(cwd, ".claustrum", "briefs"));
-        Directory.CreateDirectory(Path.Combine(cwd, ".claustrum", "worktrees"));
+        string? scaffoldEscape = Scaffold(root, cwd);
+        if (scaffoldEscape is not null)
+            Console.WriteLine($".claustrum/: {RefusedStatus(scaffoldEscape)}");
 
-        bool wroteConfig = WriteConfigIfAbsent(cwd);
-        bool updatedGitignore = EnsureGitignoreEntries(cwd);
+        string configPath = Path.Combine(cwd, "claustrum.json");
+        string? configEscape = Refusal(root, configPath);
+        bool wroteConfig = configEscape is null && WriteConfigIfAbsent(configPath);
+        string gitignorePath = Path.Combine(cwd, ".gitignore");
+        string? gitignoreEscape = Refusal(root, gitignorePath);
+        bool updatedGitignore = gitignoreEscape is null && EnsureGitignoreEntries(gitignorePath);
 
         // "claude" is always synced, --all or not: its Sync is the one that merges the claustrum MCP
         // server into .mcp.json/.vscode/mcp.json, which every host that reads those two files picks
@@ -66,17 +75,43 @@ public static class InitCommand
         // are harmless even in a repo that has not adopted Claude Code.
         string[] harnesses = all ? ["claude", "opencode", "copilot", "cursor"] : DetectHarnesses(cwd);
 
-        Console.WriteLine($"claustrum.json: {(wroteConfig ? "written" : "already present, left unchanged")}");
-        Console.WriteLine($".gitignore: {(updatedGitignore ? "updated" : "already up to date")}");
-        bool refused = false;
+        Console.WriteLine($"claustrum.json: {Status(configEscape, wroteConfig ? "written" : "already present, left unchanged")}");
+        Console.WriteLine($".gitignore: {Status(gitignoreEscape, updatedGitignore ? "updated" : "already up to date")}");
+        bool refused = scaffoldEscape is not null || configEscape is not null || gitignoreEscape is not null;
         foreach (string harness in harnesses)
             refused |= SyncHarness(harness, cwd);
 
-        bool appendedAgentsMd = AppendAgentsMdPointer(cwd);
-        Console.WriteLine($"AGENTS.md: {(appendedAgentsMd ? "pointer appended" : "unchanged")}");
+        string agentsPath = Path.Combine(cwd, "AGENTS.md");
+        string? agentsEscape = Refusal(root, agentsPath);
+        bool appendedAgentsMd = agentsEscape is null && AppendAgentsMdPointer(agentsPath);
+        Console.WriteLine($"AGENTS.md: {Status(agentsEscape, appendedAgentsMd ? "pointer appended" : "unchanged")}");
+        refused |= agentsEscape is not null;
 
         return refused ? ExitCodes.Usage : ExitCodes.Ok;
     }
+
+    // Creates the three directories, or none: null when they now exist, otherwise the real path of the first
+    // one that leaves the repo (`.claustrum` itself linked out makes all three do so), with nothing created.
+    private static string? Scaffold(SyncRoot root, string cwd)
+    {
+        string[] directories = [.. scaffoldDirectories.Select(name => Path.Combine(cwd, ".claustrum", name))];
+        string? escapesTo = directories.Select(directory => Refusal(root, directory)).FirstOrDefault(real => real is not null);
+        if (escapesTo is not null)
+            return escapesTo;
+
+        foreach (string directory in directories)
+            Directory.CreateDirectory(directory);
+
+        return null;
+    }
+
+    // The real path when `path` resolves outside the repo, else null. Checked on the full path, leaf
+    // included: File.WriteAllText and AppendAllText follow a leaf link, and a dangling one creates its target.
+    private static string? Refusal(SyncRoot root, string path) => root.Escapes(path) ? SyncRoot.Resolve(path) : null;
+
+    private static string RefusedStatus(string escapesTo) => $"refused (resolves outside the repo → {escapesTo})";
+
+    private static string Status(string? escapesTo, string outcome) => escapesTo is null ? outcome : RefusedStatus(escapesTo);
 
     private static string[] DetectHarnesses(string cwd)
     {
@@ -114,9 +149,8 @@ public static class InitCommand
         return refused.Count > 0;
     }
 
-    private static bool WriteConfigIfAbsent(string cwd)
+    private static bool WriteConfigIfAbsent(string path)
     {
-        string path = Path.Combine(cwd, "claustrum.json");
         if (File.Exists(path))
             return false;
 
@@ -147,9 +181,8 @@ public static class InitCommand
         return true;
     }
 
-    private static bool EnsureGitignoreEntries(string cwd)
+    private static bool EnsureGitignoreEntries(string path)
     {
-        string path = Path.Combine(cwd, ".gitignore");
         if (!File.Exists(path))
         {
             File.WriteAllText(path, GitignoreBlock + "\n");
@@ -171,9 +204,8 @@ public static class InitCommand
         return true;
     }
 
-    private static bool AppendAgentsMdPointer(string cwd)
+    private static bool AppendAgentsMdPointer(string path)
     {
-        string path = Path.Combine(cwd, "AGENTS.md");
         if (!File.Exists(path))
             return false;
 

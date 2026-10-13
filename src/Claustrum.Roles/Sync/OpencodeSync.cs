@@ -40,6 +40,10 @@ public sealed class OpencodeSync(RoleLibrary library, RoleRenderer renderer, str
         string cwd, IReadOnlyList<string>? roles = null, bool global = false, bool force = false,
         SyncMode mode = SyncMode.Write, string? globalRoot = null)
     {
+        // `--global` renders the library alone: a repo's `.claustrum/roles/` applies to that repo, and its
+        // files must not leak into the user-global agents (issue #99).
+        string? overrideCwd = global ? null : cwd;
+
         // Unlike ClaudeSync (where every current role happens to list "claude" and ship an
         // environment.claude.md), ui-reviewer lists only "claude" and has no environment.default.md
         // fallback — rendering it for "opencode" throws by design. The default "sync everything" case
@@ -47,7 +51,7 @@ public sealed class OpencodeSync(RoleLibrary library, RoleRenderer renderer, str
         // naming an unsupported role is left to fail loudly with RoleRenderer's own clear exception.
         IReadOnlyList<string> targetRoles = roles is { Count: > 0 }
             ? roles
-            : [.. library.ListRoles().Where(role => library.LoadRole(role, cwd).Definition.Harnesses.Contains(Harness))];
+            : [.. library.ListRoles().Where(role => library.LoadRole(role, overrideCwd).Definition.Harnesses.Contains(Harness))];
 
         // docs/PLAN.md's own "Where files live" table (opencode's bundled reference doc): project
         // agents/commands live under .opencode/, global ones under ~/.config/opencode/ (NOT
@@ -68,12 +72,15 @@ public sealed class OpencodeSync(RoleLibrary library, RoleRenderer renderer, str
 
         foreach (string role in targetRoles)
         {
-            LoadedRole loaded = library.LoadRole(role, cwd);
-            WriteAgent(agentDir, role, loaded, cwd, force, mode, into, root);
+            LoadedRole loaded = library.LoadRole(role, overrideCwd);
+            if (global && RoleLibrary.HasLocalOverride(role, cwd))
+                into.IgnoredOverrides.Add(role);
+
+            WriteAgent(agentDir, role, loaded, overrideCwd, force, mode, into, root);
 
             foreach (string tier in generatedTiers)
                 if (loaded.Definition.Tiers.ContainsKey(tier))
-                    WriteTierStub(agentDir, role, tier, loaded, cwd, force, mode, into, root);
+                    WriteTierStub(agentDir, role, tier, loaded, overrideCwd, force, mode, into, root);
         }
 
         WriteCommand(harnessRoot, force, mode, into, root);
@@ -110,22 +117,22 @@ public sealed class OpencodeSync(RoleLibrary library, RoleRenderer renderer, str
         McpConfigSync.Merge(new McpConfigTarget(Harness, path, "mcp", entry, rootOnCreate), mode, force, into, SyncManifestStore.Read(cwd, into), root);
     }
 
-    private void WriteAgent(string agentDir, string role, LoadedRole loaded, string cwd, bool force, SyncMode mode, SyncAccumulator into, SyncRoot root)
+    private void WriteAgent(string agentDir, string role, LoadedRole loaded, string? overrideCwd, bool force, SyncMode mode, SyncAccumulator into, SyncRoot root)
     {
         RoleDefinition definition = loaded.Definition;
         RoleTier tier = definition.Tiers["high"];
         string frontmatter = BuildAgentFrontmatter(definition.Description, OpencodeModelFor(tier.Model), tier.Effort);
-        string body = renderer.Render(role, "high", Harness, cwd).SystemBody;
+        string body = renderer.Render(role, "high", Harness, overrideCwd).SystemBody;
         string path = Path.Combine(agentDir, $"{role}.md");
         writer.Write(path, role, frontmatter, body, force, mode, into, root, localOverride: loaded.IsLocalOverride);
     }
 
-    private void WriteTierStub(string agentDir, string role, string tier, LoadedRole loaded, string cwd, bool force, SyncMode mode, SyncAccumulator into, SyncRoot root)
+    private void WriteTierStub(string agentDir, string role, string tier, LoadedRole loaded, string? overrideCwd, bool force, SyncMode mode, SyncAccumulator into, SyncRoot root)
     {
         RoleTier roleTier = loaded.Definition.Tiers[tier];
         bool sameModel = OpencodeModelFor(roleTier.Model) == OpencodeModelFor(loaded.Definition.Tiers["high"].Model);
         string frontmatter = BuildAgentFrontmatter(SyncWriter.TierDescription(role, tier, sameModel), OpencodeModelFor(roleTier.Model), roleTier.Effort);
-        string body = renderer.RenderTierStub(role, tier, Harness, cwd);
+        string body = renderer.RenderTierStub(role, tier, Harness, overrideCwd);
         string path = Path.Combine(agentDir, $"{role}-{tier}.md");
         writer.Write(path, role, frontmatter, body, force, mode, into, root, localOverride: loaded.IsLocalOverride);
     }

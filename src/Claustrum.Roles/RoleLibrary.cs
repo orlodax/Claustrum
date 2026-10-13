@@ -4,6 +4,7 @@ using System.Text.Json.Nodes;
 using System.Text.Json.Serialization.Metadata;
 using Claustrum.Roles.Json;
 using Claustrum.Roles.Model;
+using Claustrum.Roles.Sync;
 
 namespace Claustrum.Roles;
 
@@ -53,27 +54,38 @@ public sealed class RoleLibrary
         return [.. roles.Distinct(StringComparer.Ordinal).OrderBy(name => name, StringComparer.Ordinal)];
     }
 
-    public LoadedRole LoadRole(string role, string cwd)
+    /// <summary>
+    /// The role as the library defines it, with <paramref name="cwd"/>'s `.claustrum/roles/&lt;role&gt;/` laid
+    /// over it. A null <paramref name="cwd"/> means the library alone: no local override is looked for or
+    /// read (`sync --global`, #99). An override file is read only when its real path stays inside
+    /// <paramref name="cwd"/>, leaf link included; one that leaves it throws <see cref="RoleRenderException"/>
+    /// (#97). A link that stays inside is read through.
+    /// </summary>
+    public LoadedRole LoadRole(string role, string? cwd)
     {
         string embeddedJson = ReadEmbedded($"{role}/role.json");
         JsonNode baseNode = JsonNode.Parse(embeddedJson)
             ?? throw new RoleRenderException($"role '{role}': embedded role.json parsed to null");
 
-        string localDir = Path.Combine(cwd, ".claustrum", "roles", role);
-        string localRoleJsonPath = Path.Combine(localDir, "role.json");
-        string localRoleMdPath = Path.Combine(localDir, "ROLE.md");
-        string localPartsDir = Path.Combine(localDir, "parts");
-        bool hasLocalRoleJson = File.Exists(localRoleJsonPath);
-        bool isLocalOverride = hasLocalRoleJson || File.Exists(localRoleMdPath)
-            || (Directory.Exists(localPartsDir) && Directory.EnumerateFiles(localPartsDir).Any());
+        string localRoleJsonPath = "";
+        string? localRoleJson = null;
+        string? localRoleMd = null;
+        bool isLocalOverride = false;
+        if (cwd is not null)
+        {
+            localRoleJsonPath = LocalPath(cwd, role, "role.json");
+            localRoleJson = ReadLocal(cwd, role, localRoleJsonPath);
+            localRoleMd = ReadLocal(cwd, role, LocalPath(cwd, role, "ROLE.md"));
+            isLocalOverride = HasLocalOverride(role, cwd);
+        }
 
         RoleDefinition definition;
         try
         {
             JsonNode mergedNode = baseNode;
-            if (hasLocalRoleJson)
+            if (localRoleJson is not null)
             {
-                JsonNode overrideNode = JsonNode.Parse(File.ReadAllText(localRoleJsonPath))
+                JsonNode overrideNode = JsonNode.Parse(localRoleJson)
                     ?? throw new RoleRenderException($"role '{role}': '{localRoleJsonPath}' parsed to null");
                 mergedNode = DeepMerge(baseNode, overrideNode);
             }
@@ -81,18 +93,25 @@ public sealed class RoleLibrary
             definition = JsonSerializer.Deserialize(mergedNode.ToJsonString(), RolesJsonContext.Default.RoleDefinition)
                 ?? throw new RoleRenderException($"role '{role}': merged role.json deserialized to null");
         }
-        catch (JsonException ex) when (hasLocalRoleJson)
+        catch (JsonException ex) when (localRoleJson is not null)
         {
             // The embedded role.json is pinned by RoleLibraryInvariantTests, so a parse or type error
             // here is the local file's; without its path the CLI printed a bare `error:` and exit 1.
             throw new RoleRenderException($"role '{role}': '{localRoleJsonPath}': {ex.Message}");
         }
 
-        string roleMd = File.Exists(localRoleMdPath)
-            ? File.ReadAllText(localRoleMdPath)
-            : ReadEmbedded($"{role}/ROLE.md");
+        return new LoadedRole(definition, localRoleMd ?? ReadEmbedded($"{role}/ROLE.md"), isLocalOverride);
+    }
 
-        return new LoadedRole(definition, roleMd, isLocalOverride);
+    /// <summary>
+    /// True when <paramref name="cwd"/> holds a local override of <paramref name="role"/>: a `role.json`, a
+    /// `ROLE.md`, or any file under `parts/`. Existence only, nothing is read, so the #97 fence does not apply.
+    /// </summary>
+    public static bool HasLocalOverride(string role, string cwd)
+    {
+        string partsDir = LocalPath(cwd, role, "parts");
+        return File.Exists(LocalPath(cwd, role, "role.json")) || File.Exists(LocalPath(cwd, role, "ROLE.md"))
+            || (Directory.Exists(partsDir) && Directory.EnumerateFiles(partsDir).Any());
     }
 
     /// <summary>Reads a `_shared/...` file (house rules, report format, tier stub template).</summary>
@@ -100,19 +119,23 @@ public sealed class RoleLibrary
 
     /// <summary>
     /// Resolves `{{part:name}}`: local override wins over embedded, harness-specific file wins over
-    /// `.default.md` (docs/PLAN.md §B2).
+    /// `.default.md` (docs/PLAN.md §B2). A null <paramref name="cwd"/> reads the library alone, and a local
+    /// part whose real path leaves <paramref name="cwd"/> throws <see cref="RoleRenderException"/>, as in
+    /// <see cref="LoadRole"/> (#99, #97).
     /// </summary>
-    public string ReadPart(string role, string partName, string harness, string cwd)
+    public string ReadPart(string role, string partName, string harness, string? cwd)
     {
         string harnessRel = $"{role}/parts/{partName}.{harness}.md";
         string defaultRel = $"{role}/parts/{partName}.default.md";
-        string localRoot = Path.Combine(cwd, ".claustrum", "roles");
 
-        foreach (string rel in new[] { harnessRel, defaultRel })
+        if (cwd is not null)
         {
-            string localPath = Path.Combine(localRoot, rel.Replace('/', Path.DirectorySeparatorChar));
-            if (File.Exists(localPath))
-                return File.ReadAllText(localPath);
+            foreach (string rel in new[] { harnessRel, defaultRel })
+            {
+                string localPath = Path.Combine(cwd, ".claustrum", "roles", rel.Replace('/', Path.DirectorySeparatorChar));
+                if (ReadLocal(cwd, role, localPath) is string localPart)
+                    return localPart;
+            }
         }
 
         foreach (string rel in new[] { harnessRel, defaultRel })
@@ -122,6 +145,21 @@ public sealed class RoleLibrary
         }
 
         throw new RoleRenderException($"role '{role}': no part '{partName}' for harness '{harness}' (looked for {harnessRel} and {defaultRel})");
+    }
+
+    private static string LocalPath(string cwd, string role, string relative) => Path.Combine(cwd, ".claustrum", "roles", role, relative);
+
+    // The one place an override's bytes are read, so the fence cannot be skipped by a new call site. The
+    // SyncRoot is built only for a file that exists: the common no-override case pays nothing (#97).
+    private static string? ReadLocal(string cwd, string role, string path)
+    {
+        if (!File.Exists(path))
+            return null;
+
+        if (SyncRoot.Repo(cwd).Escapes(path))
+            throw new RoleRenderException($"role '{role}': local override '{path}' resolves outside the working directory ({SyncRoot.Resolve(path)}); an override is never read through a link that leaves it");
+
+        return File.ReadAllText(path);
     }
 
     private static JsonNode DeepMerge(JsonNode baseNode, JsonNode overrideNode)

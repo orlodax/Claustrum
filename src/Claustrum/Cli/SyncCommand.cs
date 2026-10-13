@@ -114,7 +114,8 @@ public static class SyncCommand
 
     // Multiple --only harnesses report as one combined result: each list is a simple concatenation
     // (there is no overlap in the paths two different harnesses touch), and ProposedContent (DryRun
-    // only) merges by path since no two harnesses ever propose the same one.
+    // only) merges by path since no two harnesses ever propose the same one. A role's ignored override
+    // is the exception: every harness that syncs the role names it, so it is listed once.
     private static SyncResult MergeResults(IEnumerable<SyncResult> results)
     {
         List<string> written = [];
@@ -124,12 +125,14 @@ public static class SyncCommand
         Dictionary<string, string> symlinks = [];
         Dictionary<string, string> refused = [];
         Dictionary<string, string> realPaths = [];
+        List<string> ignoredOverrides = [];
 
         foreach (SyncResult result in results)
         {
             written.AddRange(result.Written);
             skipped.AddRange(result.Skipped);
             foreign.AddRange(result.Foreign);
+            ignoredOverrides.AddRange(result.IgnoredOverrides ?? []);
             foreach (KeyValuePair<string, string> link in result.Symlinks ?? new Dictionary<string, string>())
                 symlinks[link.Key] = link.Value;
             foreach (KeyValuePair<string, string> entry in result.Refused ?? new Dictionary<string, string>())
@@ -145,7 +148,7 @@ public static class SyncCommand
                 proposedContent[entry.Key] = entry.Value;
         }
 
-        return new SyncResult(written, skipped, foreign, proposedContent, symlinks, refused, realPaths);
+        return new SyncResult(written, skipped, foreign, proposedContent, symlinks, refused, realPaths, [.. ignoredOverrides.Distinct(StringComparer.Ordinal)]);
     }
 
     private static int PrintWrite(SyncResult result)
@@ -159,6 +162,7 @@ public static class SyncCommand
             [.. result.Written.Where(symlinks.ContainsKey).Select(path => $"{path} → {symlinks[path]}{LandsAt(path, realPaths)}")]);
         PrintPaths("skipped (already up to date)", result.Skipped, realPaths: realPaths);
         PrintPaths("foreign (hand-edited; use --force to adopt)", result.Foreign, symlinks, realPaths);
+        PrintIgnoredOverrides(result);
 
         return PrintRefused(result) ? ExitCodes.Usage : ExitCodes.Ok;
     }
@@ -181,6 +185,7 @@ public static class SyncCommand
         }
 
         PrintPaths("foreign (hand-edited; use --force to adopt)", result.Foreign, symlinks, realPaths);
+        PrintIgnoredOverrides(result);
 
         return PrintRefused(result) ? ExitCodes.Usage : ExitCodes.Ok;
     }
@@ -220,10 +225,18 @@ public static class SyncCommand
         }
 
         PrintPaths("foreign (hand-edited; use --force to adopt)", result.Foreign, symlinks, realPaths);
+        PrintIgnoredOverrides(result);
         bool refused = PrintRefused(result);
 
         return result.Written.Count > 0 || result.Foreign.Count > 0 || refused ? ExitCodes.Usage : ExitCodes.Ok;
     }
+
+    // Said in every mode and never an error: `--global` renders the library alone, so a repo's own
+    // override is not in the global files, and the user would otherwise see no sign it was left out (#99).
+    private static void PrintIgnoredOverrides(SyncResult result) =>
+        PrintPaths(
+            "ignored local overrides (--global renders the library only; a repo's .claustrum/roles/ applies to that repo)",
+            result.IgnoredOverrides ?? []);
 
     // Prints the refused section and says whether there was one: a refused target is a failed sync in
     // every mode, so the caller turns it into exit 2 (issue #95).

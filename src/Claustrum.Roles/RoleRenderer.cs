@@ -21,10 +21,14 @@ public sealed class RoleRenderer(RoleLibrary library)
     /// will actually run on before <see cref="Render"/> needs one (review finding #2 "harness chosen
     /// before resolution").
     /// </summary>
-    public string TierModelClass(string role, string tier, string cwd) =>
+    public string TierModelClass(string role, string tier, string? cwd) =>
         RequireTier(library.LoadRole(role, cwd).Definition, role, tier).Model;
 
-    public RenderedRole Render(string role, string tier, string harness, string cwd)
+    /// <summary>
+    /// <paramref name="cwd"/> is the directory whose `.claustrum/roles/` overrides apply; null renders the
+    /// role from the library alone (<see cref="RoleLibrary.LoadRole"/>), as does <see cref="RenderTierStub"/>.
+    /// </summary>
+    public RenderedRole Render(string role, string tier, string harness, string? cwd)
     {
         LoadedRole loaded = library.LoadRole(role, cwd);
         RoleDefinition definition = loaded.Definition;
@@ -72,7 +76,7 @@ public sealed class RoleRenderer(RoleLibrary library)
     /// `nonNegotiable` and the base role rendered at the stub's own tier for <paramref name="harness"/>
     /// (the stub's system prompt is its file body, #82) — never hand-written (docs/PLAN.md §B1).
     /// </summary>
-    public string RenderTierStub(string role, string tier, string harness, string cwd)
+    public string RenderTierStub(string role, string tier, string harness, string? cwd)
     {
         LoadedRole loaded = library.LoadRole(role, cwd);
         RoleTier roleTier = RequireTier(loaded.Definition, role, tier);
@@ -102,7 +106,7 @@ public sealed class RoleRenderer(RoleLibrary library)
             ? roleTier
             : throw new RoleRenderException($"role '{role}' has no tier '{tier}'");
 
-    private string ResolveToken(string token, string role, string tier, string harness, string cwd, RoleTier roleTier, RoleDefinition definition, int partDepth = 0)
+    private string ResolveToken(string token, string role, string tier, string harness, string? cwd, RoleTier roleTier, RoleDefinition definition, int partDepth = 0)
     {
         if (token.StartsWith("part:", StringComparison.Ordinal))
         {
