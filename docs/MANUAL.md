@@ -51,7 +51,7 @@ the workspace); `--cwd` on the server and `cwd` on each call override it.
 
 Exit codes are fixed: `0` ok · `1` backend failure · `2` usage or config error (a bad flag, a
 refused brief, a missing cast, a role sent to a harness it does not list, a `gh` failure, a
-`coordinate` whose cast is not committed) · `3` backend not found · `4` timeout · `5` budget · `130`
+`coordinate` whose cast is not committed, a `.claustrum` link that leaves the repo) · `3` backend not found · `4` timeout · `5` budget · `130`
 cancelled. Once the job directory exists (queued for a `max_parallel` slot, waiting for a `--branch`
 lock, adding its worktree, or running), the first Ctrl-C (SIGINT), SIGQUIT or SIGTERM ends the run
 with a `cancelled` receipt: exit 130, the document on stdout under `--json`, `result.json` on disk
@@ -93,7 +93,9 @@ claustrum run <role> [--brief <text> | --brief-file <path|->]
   will not check out (mid-rebase in another worktree) or does not check out within 5 minutes, or a
   wait for the branch that outlasts `--timeout` comes back `status: failed` (exit 1, a receipt like
   any other) with the reason — and the holder, if any — in `error`, and no worktree left behind
-  (`error` names anything the undo could not remove).
+  (`error` names anything the undo could not remove). A cancel or a timeout during the free of the
+  previous job's worktree lets `git worktree remove` finish (up to 5 minutes), then ends the run; `error`
+  names a worktree git left partly removed, and the next `--branch` run finishes that one itself.
 - `--stream` echoes the backend's output to **stderr** while it runs; stdout still carries only
   the final document. `--raw` adds the backend's untouched response under `raw`.
 - Without `--json`, stdout gets `status:`, then `branch:`/`worktree:`/`commit:` when the run was
@@ -428,6 +430,12 @@ included — before the run reports or exits, so no half-made worktree stays reg
 needs a git repository: outside one, a run its `max_parallel` would isolate runs in the working
 directory instead, queued one at a time as at 1, and its receipt warns `no git repository at <cwd>:
 ran in place, no worktree, no commit`; `--branch` there is refused.
+
+**The job machinery is fenced.** A `.claustrum` that resolves outside the working directory through a
+committed link (or a `worktrees/` or `locks/` inside it that does) gets nothing created through it: a run
+that needs a worktree or a lock file is refused with exit 2 and a `failed` receipt whose `error` names the path
+and its real path, and `coordinate` refuses the same way before any job exists. A link that stays inside the
+repo is fine. The MCP tools return the `failed` document.
 
 **An isolated run stays in its worktree.** Its prompt ends with a trailer naming the worktree, its
 branch and the main checkout it must never touch, and its deny list gains `git checkout` and

@@ -5,6 +5,7 @@ using Claustrum.Core.Git;
 using Claustrum.Core.Jobs;
 using Claustrum.Core.Model;
 using Claustrum.Roles;
+using Claustrum.Roles.Sync;
 
 namespace Claustrum.Delegation;
 
@@ -119,6 +120,9 @@ public static class DelegateEngine
         if (request.MaxParallel is null or < 1)
             return await RunInPlaceAsync(run, job, cancellationToken);
 
+        // #104: the slot file is created under `.claustrum/locks`, which may be a link that leaves the repo.
+        await RequireInsideAsync(request.Cwd, job, run.Role, LockPaths(request.Cwd, RoleConcurrencyGate.KeyFor(request.CastName, request.Role), 1));
+
         // #58: max_parallel 1 — the one cap that does not isolate — is a cap too, so two runs of one cast
         // role queue instead of editing one tree at once; H7's fallback queues the same way whatever the
         // cap, as N in-place runs would read each other's edits into their receipts. No pre-admission here:
@@ -170,6 +174,14 @@ public static class DelegateEngine
         PreparedDelegation bound = prepared.ForJob(job.Id);
         DelegateRequest request = bound.Request;
         ResolvedRole role = IsolatedRole(bound.Role);
+
+        // #104: before anything is created — the worktree, the slot files, the branch lock.
+        List<string> machinery = [JobWorktree.PathFor(request.Cwd, job.Id)];
+        if (request.MaxParallel is { } slots && slots >= 1)
+            machinery.AddRange(LockPaths(request.Cwd, RoleConcurrencyGate.KeyFor(request.CastName, request.Role), slots));
+        if (request.Branch is { } branched)
+            machinery.AddRange(LockPaths(request.Cwd, JobWorktree.LockKeyFor(branched), 1));
+        await RequireInsideAsync(request.Cwd, job, role, machinery);
 
         // Before the gate: a branch that does not exist is answered now, not after a wait for a slot.
         // #94: a cancel in any wait before the add is a `cancelled` receipt, never an exception over a
@@ -299,6 +311,24 @@ public static class DelegateEngine
                 throw new AggregateException($"{ex.Message} (and cleaning up {worktree.Path} failed)", ex, cleanupFailure);
             throw;
         }
+    }
+
+    private static IEnumerable<string> LockPaths(string cwd, string key, int slots) =>
+        Enumerable.Range(0, slots).Select(slot => RoleConcurrencyGate.SlotPath(cwd, key, slot));
+
+    // #104: a committed `.claustrum -> outside` would put the job worktree and the lock files outside the repo.
+    // Refused with a failed receipt (a job is minted for it if the caller has none) and an exception for exit 2.
+    // Rooted at the cwd the run uses, never the git root: over-refusing beats a stray write.
+    private static async Task RequireInsideAsync(string cwd, JobPaths? job, ResolvedRole role, IEnumerable<string> paths)
+    {
+        SyncRoot root = SyncRoot.Repo(cwd);
+        if (paths.FirstOrDefault(root.Escapes) is not { } escaping)
+            return;
+
+        string error = $"refused: {escaping} resolves outside the working directory ({SyncRoot.Resolve(escaping)}); `.claustrum` is a link that leaves it, "
+            + "and a run's worktree and lock files are never created through one";
+        RunResult receipt = await Runner.RefuseAsync(job ?? JobDirectory.Create(AppServices.Platform), role, RunStatus.Failed, error);
+        throw new MachineryRefusedException(receipt);
     }
 
     private static async Task<RoleConcurrencyGate> AcquireSlotAsync(DelegateRequest request, int cap, int timeoutSeconds, CancellationToken cancellationToken) =>

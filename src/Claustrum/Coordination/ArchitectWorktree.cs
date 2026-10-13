@@ -3,6 +3,7 @@ using System.Text.RegularExpressions;
 using Claustrum.Casts;
 using Claustrum.Cli;
 using Claustrum.Core.Git;
+using Claustrum.Roles.Sync;
 
 namespace Claustrum.Coordination;
 
@@ -50,7 +51,7 @@ public static partial class ArchitectWorktree
                 + $"run it from {gitRoot} (or --cwd \"{gitRoot}\"), with the cast in .claustrum/casts/ there");
         }
 
-        (string[] unignored, string[] ruleFiles) = await MachineryIgnoresAsync(gitRoot, cancellationToken);
+        (string[] unignored, string[] ruleFiles) = await MachineryIgnoresAsync(cwd, gitRoot, cancellationToken);
         string[] paths =
         [
             OnDiskPath(gitRoot, CastStore.PathFor(cwd, castName)),
@@ -140,7 +141,7 @@ public static partial class ArchitectWorktree
     // Which machinery directories a rule ignores, and the in-tree files those rules live in: only those
     // can differ in the worktree — `.git/info/exclude` and the global excludes file are shared by every
     // worktree. A `!` pattern is a match that un-ignores.
-    private static async Task<(string[] Unignored, string[] RuleFiles)> MachineryIgnoresAsync(string gitRoot, CancellationToken cancellationToken)
+    private static async Task<(string[] Unignored, string[] RuleFiles)> MachineryIgnoresAsync(string cwd, string gitRoot, CancellationToken cancellationToken)
     {
         // F1 (2026-10-09): asked about the shapes Claustrum really writes there — a whitelist `.gitignore`
         // (`*`, `!*/`, `!*.md`) ignores a file named `probe` and un-ignores a worktree directory and a brief.
@@ -148,6 +149,17 @@ public static partial class ArchitectWorktree
         string worktrees = Path.Combine(gitRoot, ".claustrum", "worktrees");
         bool madeWorktrees = !Directory.Exists(worktrees);
         string probeName = $"{ProbePrefix}{Random.Shared.Next():x8}";
+
+        // #104: the probe directory (and `.claustrum/worktrees`, if absent) is made below, through a `.claustrum`
+        // link that may leave the repo. Rooted at the cwd — equal to gitRoot here — and refused before it is made.
+        string probe = Path.Combine(worktrees, probeName);
+        if (SyncRoot.Repo(cwd).Escapes(probe))
+        {
+            throw new CliUsageException(
+                $"coordinate runs the architect in a worktree under {worktrees}, which resolves outside the working directory ({SyncRoot.Resolve(probe)}): "
+                + "`.claustrum` is a link that leaves it, and a worktree is never created through one");
+        }
+
         (string Directory, string Probe)[] probes =
         [
             (WorktreesDirectory, $"{WorktreesDirectory}{probeName}/"),

@@ -58,7 +58,7 @@ public sealed class ClaustrumTools
         McpExceptionBoundary.GuardAsync(async () =>
         {
             DelegateRequest request = BuildRequest(role, brief, cwd, backend, model, effort, tier, permission, deny, budgetUsd, timeoutSeconds, resumeSession, files, cast, branch);
-            RunResult result = await DelegateEngine.RunAsync(request, cancellationToken);
+            RunResult result = await MachineryRefusedException.AsReceiptAsync(DelegateEngine.RunAsync(request, cancellationToken));
             RunResult output = includeRaw ? result : result with { Raw = null };
 
             return JsonSerializer.Serialize(output, ClaustrumJsonContext.Default.RunResult);
@@ -141,7 +141,7 @@ public sealed class ClaustrumTools
             // JobManager's JobPaths-first overload. CancellationToken.None for the same reason
             // delegate_async does: the job outlives this tool call.
             (string jobId, string logPath) = AppServices.JobManager.Start(
-                (job, token) => CoordinateEngine.RunAsync(plan, prepared, job, token), CancellationToken.None);
+                (job, token) => MachineryRefusedException.AsReceiptAsync(CoordinateEngine.RunAsync(plan, prepared, job, token)), CancellationToken.None);
 
             return JsonSerializer.Serialize(new CoordinateStartResult(jobId, logPath, plan.Warnings), McpJsonContext.Default.CoordinateStartResult);
         });

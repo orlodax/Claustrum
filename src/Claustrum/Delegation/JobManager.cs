@@ -23,7 +23,7 @@ public sealed class JobManager
         // tool call's own error, not a `pending (no result.json)` directory nobody will ever close.
         PreparedDelegation prepared = DelegateEngine.Prepare(request);
 
-        return Start((job, token) => DelegateEngine.RunAsync(prepared, job, token), cancellationToken);
+        return Start((job, token) => MachineryRefusedException.AsReceiptAsync(DelegateEngine.RunAsync(prepared, job, token)), cancellationToken);
     }
 
     /// <summary>

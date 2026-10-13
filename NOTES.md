@@ -3930,6 +3930,23 @@ git drops the lock before it runs the hook.
   - ⚠ A directory prune unregistered keeps whatever files are left in it, and `jobs clean` then
     reports it (`not a working tree`) on every sweep until it is deleted by hand.
 
+- **A cancel during the free of the previous worktree (issue #106, 2026-10-13).** The free's plain `git
+  worktree remove` took the run's token, so a SIGTERM 0.3 s in (60k tracked files) killed git with 56,710
+  ` D` entries still registered; `prune` does not drop that, and the retry was refused. Three changes, all in
+  `TryRemoveAsync`: (1) once started, the remove runs under `CancellationToken.None` bounded by the repo-code
+  five minutes, and only then is the cancel honoured (`ThrowIfCancellationRequested`) — a finished remove
+  leaves nothing, so the cancelled receipt's `error` is the plain framework text; (2) a cancel that arrives
+  while the remove ends non-zero with the directory still there throws `git worktree remove was cancelled;
+  left behind: <path> (<git's reason>)`, which is the receipt's `error`, and a timeout rethrows with `<path>
+  may be left partly removed — git worktree remove --force "<path>" finishes it`; (3) detection, for what (1)
+  cannot reach (SIGKILL, a crash, the bound, a terminal Ctrl-C that signals git itself): `FreeBranchAsync`
+  finishes the remove with `--force` only when `IsHalfRemovedFreeAsync` proves it — the receipt holds no
+  "left uncommitted" warning, HEAD is the receipt's `commit`, no nested job worktrees, and status shows only
+  ` D` entries. Chosen over the issue's looser "mass deletions" because a force-remove of anything else is
+  lost work; an unproven state is still the plain refusal. Nothing commits the old worktree on this path. The
+  same `TryRemoveAsync` serves `jobs clean`, so a Ctrl-C there now waits for the remove too (a second press
+  still forces the exit). Not measured against a real 60k-file repo by the builder.
+
 ### The job's own worktree off its branch keeps its snapshot (review T3, 2026-10-08)
 
 R5 skipped the after-snapshot on any `VerifyAsync` mismatch. When `--show-prefix` is empty — the
@@ -5231,9 +5248,40 @@ that catch is by reading.
 - **Still open, by reading, not in #94's scope:** a plain failed `AddAsync` (`InvalidOperationException`) is
   rethrown with no receipt, so that job stays `pending`; `Runner.Validate` throwing inside
   `RunAsync(prepared, job, …)` for a caller that minted first likely does the same.
-- **Also open, pre-existing (issue #106):** the `--branch` free step can be cancelled mid-`git worktree
-  remove` and leaves the previous job's worktree half-deleted with a clean-looking receipt.
+- **Closed since (issue #106, 2026-10-13):** the `--branch` free step can no longer be cancelled mid-`git
+  worktree remove`; see T1 "A cancel during the free" above and the section "Job machinery is fenced" below.
 - **Who sees the change.** MCP `delegate_async` and `coordinate` pass `CancellationToken.None`, so no cancel
   reaches the engine there. The synchronous MCP `delegate` now returns a cancelled `RunResult` instead of an
   exception. `RunCommand.Cancelled` is unchanged and still handles any other `OperationCanceledException`
   (for example from `coordinate`'s planning).
+
+## Job machinery is fenced (2026-10-13, issue #104)
+
+`git worktree add` (`.claustrum/worktrees/<job>`), the slot and branch-lock files (`.claustrum/locks/`) and
+`coordinate`'s ignore probe (`.claustrum/worktrees/probe-*`) created directories and files with no check, so a
+committed `.claustrum -> outside` put a checkout, the lock files and the probe outside the repo. The fence is
+`SyncRoot.Repo(cwd).Escapes(path)`, as for `sync`.
+
+- **Where.** `Claustrum.Roles` references Core, not the reverse, so the check lives in `src/Claustrum`:
+  `DelegateEngine` (every door that reaches Core's worktree and gate: `run`, `delegate`, `delegate_async`,
+  `coordinate`'s architect) and `ArchitectWorktree.MachineryIgnoresAsync`. Core only gained
+  `RoleConcurrencyGate.LockDirectory/SlotPath`, so the engine checks the exact files `AcquireAsync` will open
+  (every slot, and the branch lock's) rather than a copy of the naming.
+- **When.** Before the first thing is created: the isolated path checks the job worktree, every slot file and
+  the branch lock before even `BranchExistsAsync`; the `max_parallel 1` in-place path checks its one slot file
+  before the wait; `coordinate` checks the probe before `CreateDirectory`. After `Runner.Validate`, so a blind-gate
+  rejection stays an exception with nothing minted.
+- **Root.** The cwd the run uses, never the git root (see "`sync` never writes outside its root"): over-refusing
+  beats a stray write. The job directory under `~/.claustrum/jobs` is not in the repo and is not fenced.
+- **What comes back.** A job is minted if the caller has none, and `Runner.RefuseAsync` writes a `failed`
+  receipt whose `error` is `refused: <path> resolves outside the working directory (<real path>); …`. A failed
+  status maps to exit 1, so `DelegateEngine` then throws `MachineryRefusedException` carrying the receipt:
+  `RunCommand` prints it (the `--json` document stays) and exits 2; `ExceptionBoundary` maps it to 2 anywhere
+  else; the MCP doors (`delegate`, `delegate_async`'s job, `coordinate`'s job) turn it back into the receipt
+  document, as for every other refusal. `coordinate` itself refuses at planning with a `CliUsageException`, like
+  every `ArchitectWorktree` refusal: exit 2, no job, so no receipt (the architect's own isolated run would hit
+  the same fence if a link appeared in between).
+- **Left alone.** `jobs clean` removes through `.claustrum/worktrees` and is not fenced here; neither are the
+  architect's own writes into `.claustrum/briefs`. An in-repo link (`.claustrum -> .state`) passes.
+- **Windows.** Not run by the builder; the walk and the OS placement are the `sync` fence's.
+

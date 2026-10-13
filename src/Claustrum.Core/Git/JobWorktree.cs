@@ -1,7 +1,10 @@
 using System.ComponentModel;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using Claustrum.Core.Jobs;
+using Claustrum.Core.Json;
+using Claustrum.Core.Model;
 
 namespace Claustrum.Core.Git;
 
@@ -625,13 +628,31 @@ public static class JobWorktree
 
     // Null when git removed it; otherwise why not. A plain remove asks git what is uncommitted first
     // (R2): git's own check honours `status.showUntrackedFiles=no` and then deletes new files silently.
+    // #106: once `remove` has started it is never cancelled — a SIGTERM 0.3 s in left a 60k-file worktree
+    // registered with 56k ` D` entries (measured). It runs out under the five minutes of repo code, then the
+    // cancel is honoured, naming whatever is still there.
     private static async Task<string?> TryRemoveAsync(string cwd, string path, bool force, CancellationToken cancellationToken)
     {
         if (!force && (NestedWorktrees(path) ?? await UncommittedAsync(path, cancellationToken)) is { } refusal)
             return refusal;
 
         string[] args = force ? ["worktree", "remove", "--force", path] : ["worktree", "remove", path];
-        (int exitCode, string stdout, string stderr) = await GitProcess.RunAsync(cwd, args, cancellationToken);
+        int exitCode;
+        string stdout;
+        string stderr;
+        try
+        {
+            (exitCode, stdout, stderr) = await GitProcess.RunAsync(cwd, args, repoCodeTimeout, CancellationToken.None);
+        }
+        catch (TimeoutException ex) when (Directory.Exists(path))
+        {
+            throw new TimeoutException($"{ex.Message}; {path} may be left partly removed — `git worktree remove --force \"{path}\"` finishes it", ex);
+        }
+
+        if (cancellationToken.IsCancellationRequested && exitCode != 0 && Directory.Exists(path))
+            throw new OperationCanceledException($"git worktree remove was cancelled; left behind: {path} ({Reason("worktree remove", exitCode, stderr, stdout)})", cancellationToken);
+
+        cancellationToken.ThrowIfCancellationRequested();
         return exitCode == 0 ? null : Reason("worktree remove", exitCode, stderr, stdout);
     }
 
@@ -721,8 +742,10 @@ public static class JobWorktree
         }
 
         // Not --force: a finished job whose commit failed (#61's warning) still has its work there
-        // uncommitted, and taking its branch back must not destroy it.
-        if (await TryRemoveAsync(cwd, ours, force: false, cancellationToken) is not { } refusal)
+        // uncommitted, and taking its branch back must not destroy it. The one exception is a free that was
+        // itself killed halfway (#106): there the deletions are git's, and the forced remove only finishes them.
+        bool halfRemoved = await IsHalfRemovedFreeAsync(ours, jobsRoot, holderJobId, cancellationToken);
+        if (await TryRemoveAsync(cwd, ours, force: halfRemoved, cancellationToken) is not { } refusal)
             return null;
 
         // Round 4's English match, kept behind the probe as a fallback: whole at the end, never a fragment — this remedy is
@@ -731,6 +754,47 @@ public static class JobWorktree
         return refusal.EndsWith(SubmoduleRefusal, StringComparison.Ordinal)
             ? PopulatedSubmodule(branch, ours)
             : LeftInPlace(branch, holder, holderJobId, refusal);
+    }
+
+    // #106: a `worktree remove` killed past the cancel's reach (SIGKILL, the bound, a crash) leaves the worktree
+    // registered with part of its files gone. Only provably so: the job finished clean (its receipt holds no
+    // "left uncommitted" warning), HEAD is still the commit the receipt names, nothing but ` D` entries and no
+    // nested job worktrees. Any other state is a refusal as before — the work in it is nobody's to guess.
+    private static async Task<bool> IsHalfRemovedFreeAsync(string path, string jobsRoot, string jobId, CancellationToken cancellationToken)
+    {
+        if (NestedWorktrees(path) is not null || ReadReceipt(jobsRoot, jobId) is not { } receipt
+            || receipt.Warnings.Any(warning => warning.Contains("uncommitted", StringComparison.Ordinal)))
+        {
+            return false;
+        }
+
+        try
+        {
+            (int headExit, string head, _) = await GitProcess.RunAsync(path, ["rev-parse", "--verify", "--quiet", "HEAD"], cancellationToken);
+            if (headExit != 0 || (receipt.Commit is { } commit && head.Trim() != commit))
+                return false;
+
+            (int statusExit, string porcelain, _) = await GitProcess.RunAsync(path, statusArgs, cancellationToken);
+            string[] entries = [.. porcelain.Split('\n', StringSplitOptions.RemoveEmptyEntries)];
+            return statusExit == 0 && entries.Length > 0 && entries.All(entry => entry.StartsWith(" D ", StringComparison.Ordinal));
+        }
+        catch (Win32Exception)
+        {
+            // Gone between the holder check and git's start: TryRemoveAsync answers for it.
+            return false;
+        }
+    }
+
+    private static RunResult? ReadReceipt(string jobsRoot, string jobId)
+    {
+        try
+        {
+            return JsonSerializer.Deserialize(File.ReadAllText(Path.Combine(jobsRoot, jobId, "result.json")), ClaustrumJsonContext.Default.RunResult);
+        }
+        catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
     }
 
     private static string LeftInPlace(string branch, string holder, string holderJobId, string refusal)
