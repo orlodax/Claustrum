@@ -37,8 +37,9 @@ public static partial class ArchitectWorktree
     /// Refuses, as a <see cref="CliUsageException"/> (exit 2) naming what to fix: a cwd below the git root; a cast,
     /// `claustrum.json` or a role file under `.claustrum/roles/` that differs from HEAD — modified, staged, untracked,
     /// ignored, or hidden by `skip-worktree`/`assume-unchanged`; an uncommitted file holding the machinery's ignore
-    /// rules; an untracked harness config `claustrum init` writes; and a machinery directory no committed rule
-    /// ignores. Returns what does not refuse: a tracked harness config whose local edit stays out of the worktree.
+    /// rules; an untracked harness config `claustrum init` writes; a machinery directory no committed rule
+    /// ignores; a symlink committed under `.claustrum`; a `.claustrum` that leaves the repo (#104). Returns what
+    /// does not refuse: a tracked harness config whose local edit stays out of the worktree.
     /// </summary>
     public static async Task<string[]> RequireReadyAsync(string cwd, string gitRoot, string castName, CancellationToken cancellationToken)
     {
@@ -51,6 +52,7 @@ public static partial class ArchitectWorktree
                 + $"run it from {gitRoot} (or --cwd \"{gitRoot}\"), with the cast in .claustrum/casts/ there");
         }
 
+        await RefuseTrackedLinksAsync(gitRoot, cancellationToken);
         (string[] unignored, string[] ruleFiles) = await MachineryIgnoresAsync(cwd, gitRoot, cancellationToken);
         string[] paths =
         [
@@ -138,6 +140,28 @@ public static partial class ArchitectWorktree
         }
     }
 
+    // #104: a symlink committed under `.claustrum` (`briefs/1-builder.md -> ~/.ssh/id_rsa`) is checked out into the
+    // architect's worktree, and its harness would read or write through it. Mode 120000 in the index, whatever it targets.
+    private static async Task RefuseTrackedLinksAsync(string gitRoot, CancellationToken cancellationToken)
+    {
+        // `-z`: `<mode> <sha> <stage>\t<path>` per entry, the path raw.
+        string output = await GitAsync(gitRoot, "ls-files", ["--literal-pathspecs", "ls-files", "-s", "-z", "--", ".claustrum"], 0, cancellationToken);
+        string[] links =
+        [
+            .. output.Split('\0', StringSplitOptions.RemoveEmptyEntries)
+                .Where(entry => entry.StartsWith("120000 ", StringComparison.Ordinal))
+                .Select(entry => entry[(entry.IndexOf('\t') + 1)..]),
+        ];
+
+        if (links.Length > 0)
+        {
+            throw new CliUsageException(
+                $"coordinate runs the architect in a worktree that would check out {string.Join(", ", links.Take(NamedCap))}"
+                + $"{(links.Length > NamedCap ? $" (and {links.Length - NamedCap} more)" : "")}, a symlink committed under .claustrum: "
+                + "its harness would read or write through the link — `git rm` it first");
+        }
+    }
+
     // Which machinery directories a rule ignores, and the in-tree files those rules live in: only those
     // can differ in the worktree — `.git/info/exclude` and the global excludes file are shared by every
     // worktree. A `!` pattern is a match that un-ignores.
@@ -150,14 +174,19 @@ public static partial class ArchitectWorktree
         bool madeWorktrees = !Directory.Exists(worktrees);
         string probeName = $"{ProbePrefix}{Random.Shared.Next():x8}";
 
-        // #104: the probe directory (and `.claustrum/worktrees`, if absent) is made below, through a `.claustrum`
-        // link that may leave the repo. Rooted at the cwd — equal to gitRoot here — and refused before it is made.
+        // #104: the probe (and `.claustrum/worktrees`, if absent) is made below, through a `.claustrum` link that may
+        // leave the repo; the briefs and locks the architect's children write get the same question. Rooted at the
+        // cwd — equal to gitRoot here — and refused before anything is made.
+        SyncRoot root = SyncRoot.Repo(cwd);
         string probe = Path.Combine(worktrees, probeName);
-        if (SyncRoot.Repo(cwd).Escapes(probe))
+        foreach (string machinery in new[] { probe, Path.Combine(gitRoot, ".claustrum", "briefs", probeName), Path.Combine(gitRoot, ".claustrum", "locks", probeName) })
         {
-            throw new CliUsageException(
-                $"coordinate runs the architect in a worktree under {worktrees}, which resolves outside the working directory ({SyncRoot.Resolve(probe)}): "
-                + "`.claustrum` is a link that leaves it, and a worktree is never created through one");
+            if (root.Escapes(machinery))
+            {
+                throw new CliUsageException(
+                    $"coordinate runs the architect in a worktree and its children write under {Path.Combine(gitRoot, ".claustrum")}, but {machinery} resolves outside "
+                    + $"the working directory ({SyncRoot.Resolve(machinery)}): `.claustrum` is a link that leaves it, and nothing is created through one");
+            }
         }
 
         (string Directory, string Probe)[] probes =

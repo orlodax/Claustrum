@@ -102,12 +102,24 @@ public static class CoordinateCommand
             // spawns will join (docs/PLAN.md §D3), and the appendix prints it (DelegateRequest.JobIdToken).
             JobPaths job = JobDirectory.Create(AppServices.Platform);
 
-            RunResult result = await CoordinateEngine.RunAsync(plan, prepared, job, cancel.Token);
+            RunResult result;
+            int? refusedExit = null;
+            try
+            {
+                result = await CoordinateEngine.RunAsync(plan, prepared, job, cancel.Token);
+            }
+            catch (MachineryRefusedException ex)
+            {
+                // #104, as `run` does: a usage refusal (exit 2) whose failed receipt is still the one --json document.
+                (result, refusedExit) = (ex.Receipt, ExitCodes.Usage);
+            }
+
             RunResult output = rawMode ? result : result with { Raw = null };
 
             // Only a capped cast has a ledger at all (DelegateEngine builds no JobTreeBudget without
             // one), so this decides between two different true sentences, not a number and its zero.
             bool capped = plan.Cast.BudgetUsd is not null;
+            int exitCode = refusedExit ?? RunCommand.ExitCodeFor(output.Status);
 
             if (jsonMode)
             {
@@ -118,9 +130,9 @@ public static class CoordinateCommand
                 await WriteTreeCostAsync(job, Console.Error, capped);
             }
             else
-                await PrintHumanAsync(output, job, capped);
+                await PrintHumanAsync(output, exitCode, job, capped);
 
-            return RunCommand.ExitCodeFor(output.Status);
+            return exitCode;
         }
         catch (OperationCanceledException ex)
         {
@@ -145,9 +157,9 @@ public static class CoordinateCommand
         return [.. numbers];
     }
 
-    private static async Task PrintHumanAsync(RunResult result, JobPaths job, bool capped)
+    private static async Task PrintHumanAsync(RunResult result, int exitCode, JobPaths job, bool capped)
     {
-        Console.WriteLine($"status: {result.Status} (exit {RunCommand.ExitCodeFor(result.Status)})");
+        Console.WriteLine($"status: {result.Status} (exit {exitCode})");
         Console.WriteLine($"job:    {job.Id}");
         Console.WriteLine($"tree:   claustrum jobs budget {job.Id}");
         Console.WriteLine($"logs:   claustrum jobs logs {job.Id}");

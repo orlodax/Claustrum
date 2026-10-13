@@ -131,7 +131,7 @@ public static class DelegateEngine
         RoleConcurrencyGate slot;
         try
         {
-            slot = await AcquireSlotAsync(request, cap: 1, run.TimeoutSeconds, cancellationToken);
+            slot = await AcquireSlotAsync(request, job, run.Role, cap: 1, run.TimeoutSeconds, cancellationToken);
         }
         catch (TimeoutException ex)
         {
@@ -207,7 +207,7 @@ public static class DelegateEngine
         {
             try
             {
-                slot = await AcquireSlotAsync(request, cap, bound.TimeoutSeconds, cancellationToken);
+                slot = await AcquireSlotAsync(request, job, role, cap, bound.TimeoutSeconds, cancellationToken);
             }
             catch (TimeoutException ex)
             {
@@ -233,7 +233,7 @@ public static class DelegateEngine
         {
             try
             {
-                branchLock = await AcquireBranchLockAsync(request.Cwd, locked, bound.TimeoutSeconds, cancellationToken);
+                branchLock = await AcquireBranchLockAsync(request.Cwd, job, role, locked, bound.TimeoutSeconds, cancellationToken);
             }
             catch (TimeoutException ex)
             {
@@ -247,6 +247,10 @@ public static class DelegateEngine
         }
 
         await using RoleConcurrencyGate? branchGate = branchLock;
+
+        // #104, again: the waits above can take minutes, and `.claustrum` may have become a link meanwhile. Before
+        // admission, so a refusal here holds no reservation; the gates above are released by their `await using`.
+        await RequireInsideAsync(request.Cwd, job, role, [JobWorktree.PathFor(request.Cwd, job.Id)]);
 
         // Binding, and before any isolation: this path cuts a branch and holds a slot before Runner
         // ever sees the request, so a job the ledger will refuse has to be refused here. The slot
@@ -283,7 +287,7 @@ public static class DelegateEngine
             // through Runner's funnel instead of waiting to be read as abandoned. No worktree is left.
             return await Runner.RefuseAsync(job, role, RunStatus.Failed, ex.Message, admission?.Reservation);
         }
-        catch (OperationCanceledException ex) when (cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException ex) when (cancellationToken.IsCancellationRequested || ex is WorktreeInterruptedException)
         {
             // 2026-10-13, #94: a cancel before Runner ran — the add undid what it made itself (T1) — is a
             // `cancelled` receipt like Runner's own, with the reservation closed at $0 through its funnel.
@@ -322,21 +326,58 @@ public static class DelegateEngine
     private static async Task RequireInsideAsync(string cwd, JobPaths? job, ResolvedRole role, IEnumerable<string> paths)
     {
         SyncRoot root = SyncRoot.Repo(cwd);
-        if (paths.FirstOrDefault(root.Escapes) is not { } escaping)
-            return;
-
-        string error = $"refused: {escaping} resolves outside the working directory ({SyncRoot.Resolve(escaping)}); `.claustrum` is a link that leaves it, "
-            + "and a run's worktree and lock files are never created through one";
-        RunResult receipt = await Runner.RefuseAsync(job ?? JobDirectory.Create(AppServices.Platform), role, RunStatus.Failed, error);
-        throw new MachineryRefusedException(receipt);
+        if (paths.FirstOrDefault(root.Escapes) is { } escaping)
+            throw await RefusedAsync(job, role, escaping);
     }
 
-    private static async Task<RoleConcurrencyGate> AcquireSlotAsync(DelegateRequest request, int cap, int timeoutSeconds, CancellationToken cancellationToken) =>
-        await RoleConcurrencyGate.AcquireAsync(
-            request.Cwd, RoleConcurrencyGate.KeyFor(request.CastName, request.Role), cap, TimeSpan.FromSeconds(timeoutSeconds), cancellationToken);
+    private static async Task<MachineryRefusedException> RefusedAsync(JobPaths? job, ResolvedRole role, string escaping)
+    {
+        string error = $"refused: {escaping} resolves outside the working directory ({SyncRoot.Resolve(escaping)}); `.claustrum` is a link that leaves it, "
+            + "and a run's worktree and lock files are never created through one";
+        return new MachineryRefusedException(await Runner.RefuseAsync(job ?? JobDirectory.Create(AppServices.Platform), role, RunStatus.Failed, error));
+    }
 
-    private static async Task<RoleConcurrencyGate> AcquireBranchLockAsync(string cwd, string branch, int timeoutSeconds, CancellationToken cancellationToken) =>
-        await RoleConcurrencyGate.AcquireAsync(cwd, JobWorktree.LockKeyFor(branch), 1, TimeSpan.FromSeconds(timeoutSeconds), cancellationToken);
+    // The gate asks before it creates each path (the directory, every slot file it tries), so a link that appeared
+    // during the wait is caught on the next poll. Thrown out of the gate, turned into the receipt by the callers.
+    private sealed class EscapedException(string path) : Exception
+    {
+        public string Path { get; } = path;
+    }
+
+    private static Action<string> Fence(string cwd)
+    {
+        SyncRoot root = SyncRoot.Repo(cwd);
+        return path =>
+        {
+            if (root.Escapes(path))
+                throw new EscapedException(path);
+        };
+    }
+
+    private static async Task<RoleConcurrencyGate> AcquireSlotAsync(DelegateRequest request, JobPaths? job, ResolvedRole role, int cap, int timeoutSeconds, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await RoleConcurrencyGate.AcquireAsync(
+                request.Cwd, RoleConcurrencyGate.KeyFor(request.CastName, request.Role), cap, TimeSpan.FromSeconds(timeoutSeconds), cancellationToken, Fence(request.Cwd));
+        }
+        catch (EscapedException ex)
+        {
+            throw await RefusedAsync(job, role, ex.Path);
+        }
+    }
+
+    private static async Task<RoleConcurrencyGate> AcquireBranchLockAsync(string cwd, JobPaths job, ResolvedRole role, string branch, int timeoutSeconds, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await RoleConcurrencyGate.AcquireAsync(cwd, JobWorktree.LockKeyFor(branch), 1, TimeSpan.FromSeconds(timeoutSeconds), cancellationToken, Fence(cwd));
+        }
+        catch (EscapedException ex)
+        {
+            throw await RefusedAsync(job, role, ex.Path);
+        }
+    }
 
     // role.json `harnesses` is where a role is written to run (#43): anywhere else it fails to render
     // (demo-author's and ui-reviewer's browser part is claude-only) or runs without the tools it needs,
