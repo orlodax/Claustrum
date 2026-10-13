@@ -4950,9 +4950,10 @@ and exits 2 in write, `--dry-run` and `--check` alike (`init` finishes, then exi
 is fenced with the same check, and so are the JSON targets and `.claustrum/sync-manifest.json`: in `sync`
 an escaping `.claustrum` is refused in every mode, before the directory or the file exists
 (`SyncManifestStore.RefuseIfEscaping`, called ahead of any write by the claude/opencode/cursor syncs,
-the three that keep a manifest). `claustrum init` is not covered yet: it scaffolds
-`.claustrum/{casts,briefs,worktrees}` before it syncs, and its `AGENTS.md`/`.gitignore`/`claustrum.json`
-writes are not fenced at all (issue #98).
+the three that keep a manifest). `claustrum init` was not covered by this first pass: it scaffolded
+`.claustrum/{casts,briefs,worktrees}` before it synced, and its `AGENTS.md`/`.gitignore`/`claustrum.json`
+writes were not fenced at all (issue #98). It is now, since 2026-10-13: see "The read side of the fence,
+`--global`, and init's own writes" below.
 
 **Why the fence is the cwd and not the git root (found in re-review, 2026-10-12).** A first pass fenced on
 `GitRootLocator.Find(cwd) ?? cwd` so that a monorepo package could link to the repo's shared `.claude`.
@@ -4965,9 +4966,9 @@ be widened by a `.git` somewhere above it, so the monorepo convenience is the pr
 **A refused `.claustrum` skips the manifest only.** `SyncManifestStore.Read(cwd, into)` returns nothing
 when `into.Refused` holds the manifest path, so `sync-manifest.json` is neither read nor written through
 an escaping `.claustrum` link (reading it would otherwise throw `JsonException` out of the sync on an
-unparsable target instead of refusing). Nothing else under `.claustrum` is fenced on the read side:
-`RoleLibrary.LoadRole` still reads `.claustrum/roles/` through the refused link, so a role override the
-link points at is rendered — issue #97.
+unparsable target instead of refusing). As first written, nothing else under `.claustrum` was fenced on
+the read side: `RoleLibrary.LoadRole` read `.claustrum/roles/` through the refused link, so a role
+override the link pointed at was rendered (issue #97). Fixed 2026-10-13, in the section named above.
 
 **Why the leaf keeps #84's semantics.** The fence is on the leaf's parent, not on the leaf, because
 sync never writes through a leaf link: #84 replaces it or refuses it, so the bytes land in the parent.
@@ -5020,17 +5021,20 @@ true; a call that throws `IOException`, `UnauthorizedAccessException` or `Argume
 comes back fully qualified and is NOT opaque; the inside test refuses it instead (never inside a drive-rooted
 root). The name list `IsOpaqueWindowsLinkTarget` (`GLOBALROOT`, `Volume{`, `?`, `:` on a non-fully-qualified
 target) is evaluated first and short-circuits; the structural check runs second. The list is free and still
-fires if the runtime's string ever changed shape. Considered and deferred past v0.1.0: prefix `\\?\` and keep
-walking (it would also fix the limit below); `Path.GetFullPath` does not collapse `..` under `\\?\`, so
-the lexical walk would need its own normalisation, and `FileInfo` on `\\?\GLOBALROOT\Device\…` paths is
-unmeasured here. Also deferred: compare `GetFinalPathNameByHandle` of the landing directory's nearest
-existing ancestor and of the root, normalising both sides to avoid the 8.3 mismatch above; it needs a
-new Windows P/Invoke in the AOT binary and a Windows machine to validate. **Known limit (issue #100):**
-any directory link on the cwd's path whose stored target is absolute but neither `X:\…` nor exact-case
-`\??\UNC\…` makes the whole repo refused: a folder-mounted volume (`\??\Volume{GUID}\`), and Windows-container
-bind mounts that surface as links to `\\?\ContainerMappedDirectories\<GUID>` (reported for Go, Node and the JDK;
-not re-measured on a current runtime). Issue #100; fail-closed where the fence was silently off before 438fd19.
-The structural rule is Windows-only and not yet measured on Windows: the Windows CI leg decides it
+fires if the runtime's string ever changed shape. Considered on 2026-10-12 and deferred past v0.1.0, chosen
+on 2026-10-13: compare `GetFinalPathNameByHandle` of the landing directory's nearest existing ancestor and of
+the root, normalising both sides to avoid the 8.3 mismatch above (a new Windows P/Invoke in the AOT binary).
+The other deferred option, prefix `\\?\` and keep walking, stayed rejected: `Path.GetFullPath` does not
+collapse `..` under `\\?\`, so the lexical walk would need its own normalisation, and `FileInfo` on
+`\\?\GLOBALROOT\Device\…` paths is unmeasured here. So the opaque target is no longer refused outright: the
+walk hands the typed path to the OS, which places it, and only a link the OS cannot place stays refused
+(issues #100, #101: "A Windows link the string walk cannot place is placed by the OS" below). What used to
+be the **known limit (issue #100)** was this: any directory link on the cwd's path whose stored target is
+absolute but neither `X:\…` nor exact-case `\??\UNC\…` made the whole repo refused: a folder-mounted volume
+(`\??\Volume{GUID}\`), and Windows-container bind mounts that surface as links to
+`\\?\ContainerMappedDirectories\<GUID>` (reported for Go, Node and the JDK; not re-measured on a current
+runtime); fail-closed where the fence was silently off before 438fd19. The structural rule is Windows-only
+and not yet measured on Windows: the Windows CI leg decides it
 (`IsOpaqueWindowsLinkSeesAnNtNamespaceTargetAndNotAnOrdinaryOne`).
 
 **`..` in a link target (found in review, 2026-10-12).** `Path.GetFullPath` collapses `..` by string, but
@@ -5041,11 +5045,13 @@ On Windows NTFS canonicalises a relative reparse target textually, so the OS-fai
 that is reasoned, not measured here, so `Escapes` also runs the physical walk on Windows and refuses if
 either reading leaves the root (the printed real path is the lexical one).
 
-**Known limit: Windows spelling.** The walk compares path strings and never calls
-`GetFinalPathNameByHandle`, so an absolute link target spelled differently from the cwd (8.3 short name
-vs long, a `subst` drive, a mapped drive vs UNC) makes an in-repo link look as if it escapes and it is
-refused: that fails safe. The same holds on a case-insensitive APFS volume on macOS, where the
-inside test is `Ordinal`.
+**Known limit: Windows spelling.** For a path with no opaque component the walk compares path strings
+and never calls `GetFinalPathNameByHandle`, so an absolute link target spelled differently from the cwd
+(8.3 short name vs long, a `subst` drive, a mapped drive vs UNC) makes an in-repo link look as if it
+escapes and it is refused: that fails safe. A path WITH an OS-placed component (2026-10-13, #100) is
+compared canonical-against-canonical, so it does not have this limit. Routing every Windows verdict
+through the final path would close it for the rest; that was deliberately not done before v0.1.0. The
+same holds on a case-insensitive APFS volume on macOS, where the inside test is `Ordinal`.
 
 **Known limit: a linked JSON target is read through the link, `--dry-run` included.** `McpConfigSync.Merge`
 never fills `Symlinks`, and a merged-through file's content really is the "before", so the diff shows it.
@@ -5058,10 +5064,157 @@ also runs the physical walk against that same root. If the repo's own path goes 
 whose two readings differ, every target can look outside and the whole repo is refused: exit 2, never a
 write elsewhere.
 
-**Known limit: the role override is still read through a link.** `RoleLibrary.LoadRole` reads
-`.claustrum/roles/<role>/ROLE.md` even when it is a link that leaves the repo, so a committed link to a
-secret is rendered into the agent body and printed by `--dry-run`. That is a read-path problem, separate
-from the write fence (issue #97).
+**Was a known limit: the role override was read through a link.** `RoleLibrary.LoadRole` read
+`.claustrum/roles/<role>/ROLE.md` even when it was a link that left the repo, so a committed link to a
+secret was rendered into the agent body and printed by `--dry-run`. A read-path problem, separate from the
+write fence (issue #97); fixed 2026-10-13 in "The read side of the fence, `--global`, and init's own writes"
+below.
 
 **Known limit: hard links are still invisible**, as in #84: a hard-linked file inside the repo is
 written in place, and a hard link cannot be told apart from a regular file by any API.
+
+## The read side of the fence, `--global`, and init's own writes (2026-10-13, issues #97, #99, #98)
+
+The #95 fence stopped writes. Three holes were left on its edges, closed together because they share the
+one `SyncRoot.Repo(cwd)` check.
+
+**#97, a role override is never read through a link that leaves the cwd.** `RoleLibrary.ReadLocal` is the
+one place an override's bytes are read (`role.json`, `ROLE.md`, every `parts/` file), so a new call site
+cannot skip the check. It builds `SyncRoot.Repo(cwd)` only for a file that exists (the no-override case pays
+nothing) and asks `Escapes` of the FULL path, leaf included: the bytes are read through the leaf, so this is
+`McpConfigSync.Merge`'s rule, not `SyncWriter`'s parent-only one. An escaping file throws
+`RoleRenderException`: `role '<role>': local override '<path>' resolves outside the working directory
+(<real>); an override is never read through a link that leaves it`. That is the channel a malformed local
+`role.json` already uses (exit 2 on stderr through `ExceptionBoundary`), so `sync`, `sync --dry-run`, `run`,
+`roles show` and the MCP tools all refuse. Why a throw and not a `Refused` entry: a refused override silently
+replaced by the library's text would exit 0 and hide that the override was dropped, and the throw also keeps
+`run` from sending the bytes to a backend. Known consequence: a sync aborts mid-loop, so roles earlier in
+alphabetical order are already written, exactly as a malformed `role.json` does today; loading every role
+before writing anything was considered and not done. `HasLocalOverride` is existence-only and static: it
+reads nothing, so it needs no fence. The fence root is the cwd the caller passes, the hard constraint from
+the #95 review (a `.git`-less project under `git init ~`). Dangling links: `File.Exists` is true for a
+dangling symlink on Unix, so a dangling override link that points outside throws the #97 message; one that
+points inside still reaches `ReadAllText` and throws `FileNotFoundException` as before.
+
+**#99, `sync --global` renders the library alone.** The owner's decision, 2026-10-13, option (a) of the
+issue: a repo's `.claustrum/roles/` applies to that repo and must not leak into `~/.claude/agents/` and its
+siblings, which every project on the machine shares. The alternatives were (b) refuse unless a
+flag says otherwise and (c) keep applying the override but warn. Mechanism: `LoadRole`, `ReadPart`, `Render`
+and `RenderTierStub` take `string? cwd`, null meaning the library only; the four syncs pass `global ? null :
+cwd` everywhere, the harness filters (`Harnesses.Contains`) included, or a repo override could still change
+which roles a global sync writes. Silence would have hidden the omission, so `SyncResult.IgnoredOverrides`
+(role names; deduplicated across `--only` harnesses in `SyncCommand.MergeResults`, since every harness that
+syncs the role names it) is printed in write, `--dry-run` and `--check` under `ignored local overrides
+(--global renders the library only; a repo's .claustrum/roles/ applies to that repo):`, one role per
+indented line. It never changes the exit code.
+
+**#98, init fences its own writes.** `InitCommand` builds `SyncRoot.Repo(cwd)` first. The scaffold
+(`.claustrum/{casts,briefs,worktrees}`) is created only if none of the three escapes: otherwise nothing is
+created, not even `.claustrum`, and the line is `.claustrum/: refused (resolves outside the repo → <real>)`.
+`claustrum.json`, `.gitignore` and `AGENTS.md` are fenced on the full path, leaf included, because
+`File.WriteAllText` and `AppendAllText` follow a leaf link and a dangling one creates its target outside:
+refused means no read and no write, with the status line `<name>: refused (resolves outside the repo →
+<real>)`. The harness syncs still run (they carry their own fence) and init exits 2 at the end. The three
+reproductions from the issue: `AGENTS.md -> ../../.claude/CLAUDE.md` appended the delegation block to the
+global `CLAUDE.md`; `.gitignore -> ../../.bashrc` appended to `~/.bashrc`, where bash then runs the
+backticked command in the pointer text; `.claustrum -> ../../outside` scaffolded its directories there.
+Consequence worth knowing: an existing `claustrum.json` or `AGENTS.md` that is a leaf link leaving the repo is
+now `refused` with exit 2 where it used to say "already present" or "pointer appended".
+
+## A Windows link the string walk cannot place is placed by the OS (2026-10-13, issues #100, #101)
+
+**The defect (#100).** A folder-mounted volume (`mountvol C:\src \\?\Volume{GUID}\`) anywhere on the cwd's
+path made every repo-mode target opaque, so the whole repo was refused; Windows-container bind mounts
+(`\\?\ContainerMappedDirectories\<GUID>`) did the same. Fail-closed, where the fence was silently off before
+438fd19, but a repo on a mounted volume could not be synced at all.
+
+**The decision (architect, 2026-10-13): `GetFinalPathNameByHandle` through a P/Invoke, not "prefix `\\?\` and
+keep walking".** The final path is the OS's own answer to where a handle opened through the path lands,
+which is exactly where a write lands. It covers mount points, bind mounts and reparse points that are not
+links with no name list and no hand-rolled `..` normalisation under `\\?\`. Both sides, root and
+candidate, get the OS's spelling, so the 8.3 trap that ruled out `ResolveLinkTarget(returnFinalTarget:
+true)` (resolved side rewritten, root not) cannot bite, and the GLOBALROOT bypass stays closed because the
+verdict compares true locations. Over-refusal stays preferable: any failure leaves the component unplaced,
+and unplaced is refused.
+
+**Mechanism.** `Walk` meets an opaque component and calls `WindowsFinalPath.TryResolve(<typed full
+path>)`; on success `unresolved` is false and the result is flagged `canonical`. `EscapesUnder` compares a
+canonical candidate only with `canonicalRealPath` (the OS final path of the root, computed lazily; null means
+escapes) and a typed one only with `RealPath`, never across: an 8.3 `RUNNER~1` against the long name would
+compare unequal. `Resolve` therefore returns the OS's path for such a component, so the `(resolved → …)`
+annotations and the `Refused` entries carry it.
+
+**`WindowsFinalPath`** (`src/Claustrum.Roles/Sync/WindowsFinalPath.cs`).
+- `CreateFileW` with the `\\?\`-prefixed path, access 0, share 0x7, `OPEN_EXISTING` and
+  `FILE_FLAG_BACKUP_SEMANTICS`. ⚠ NOT `FILE_FLAG_OPEN_REPARSE_POINT` on the main open: links would not be
+  followed and the answer would be the link's own place. Then `GetFinalPathNameByHandleW` with
+  `VOLUME_NAME_DOS | FILE_NAME_NORMALIZED`, retried with `VOLUME_NAME_GUID` on ERROR_PATH_NOT_FOUND (a
+  volume with no DOS name). The buffer starts at 1024 and grows to the size returned, capped at 32768. The
+  result is spelled `X:\…`, `\\server\share\…`, or verbatim `\\?\Volume{…}\…`.
+- The nearest existing ancestor is found by opening, not by `Exists` (an ACL-hidden ancestor could hide a
+  link): only ERROR_FILE_NOT_FOUND (2) and ERROR_PATH_NOT_FOUND (3) pop a name, any other error gives null.
+  The names below it are appended as typed.
+- Two guards added by the builder. (1) `MayExist` re-opens a
+  "missing" entry with `FILE_FLAG_OPEN_REPARSE_POINT`: a dangling link has a directory entry but cannot be
+  opened through, and writing through a dangling file link creates its target, so a dangling opaque leaf link
+  (`repo\.mcp.json -> \\?\GLOBALROOT\??\C:\Users\me\x.json`) must stay unplaced, not be popped as missing and
+  placed inside the repo. (2) The `\\?\` extended-length prefix on every open: without it `CreateFileW`
+  stops at MAX_PATH and reports path-not-found for an existing long path, which would pop a real ancestor.
+- The P/Invokes are `[LibraryImport]` (source-generated, AOT-clean). The generator rejects `Span<char>` and
+  `ref char` for the buffer with SYSLIB1051, hence `char*` in a `fixed` block and `AllowUnsafeBlocks` in
+  `Claustrum.Roles.csproj`. Linux AOT publish: 0 IL2026/IL3050.
+
+**#101, an unreadable link is opaque, never a plain directory.** `ReadLink` makes a component opaque when
+building its `FileSystemInfo`, reading `LinkTarget` or reading `Attributes` throws (`IOException`,
+`UnauthorizedAccessException`, `ArgumentException`), or when `LinkTarget` is null while `Attributes` is
+readable and carries `ReparsePoint`. ⚠ Trap, named `NoSuchEntry` in the code: a missing path reads
+`(FileAttributes)(-1)`, every bit set, so `HasFlag(ReparsePoint)` is true for it. Test `-1` first, or every
+not-yet-existing trailing component becomes opaque. On Windows an opaque component goes through OS
+placement, so a directory reparse point that is not a link (a OneDrive Files-On-Demand placeholder,
+dedup) resolves to its real path instead of being refused; off Windows, or if placement fails, it is
+unresolved and refused. Measured on Linux (the builder's probe, 2026-10-13): a file under a mode-000
+directory gives `LinkTarget == null` and `Attributes` throws `UnauthorizedAccessException`, so opaque and
+refused; a readable symlink reads attributes 1040; a missing path reads -1.
+
+**Unmeasured on Windows, all of it; the Windows CI leg decides.**
+- That DOS mode spells a folder mount through the mount point.
+- The error code a dangling `\??\Global\NoSuchDevice\…` link reports (2, 3 or other): all three end in null.
+- That `Attributes` returns -1 (not throws) for a missing path on Windows. If it threw, every missing tail
+  would become canonical and the 8.3 temp-path tests would break.
+- The second, physical `..` walk on Windows calls `TryResolve` on the typed path, which `GetFullPath`s
+  first, so for a typed path with `..` after an opaque link the OS reading is the lexical one. Sync builds
+  its paths from the cwd plus fixed names, so this does not arise.
+- Windows-only tests whose expectation changed: `AGlobalRootLinkTargetIsRefusedOnWindows` (a GLOBALROOT
+  target the OS can place is now `unresolved == false`, still `Escapes`).
+
+**Still out:** TOCTOU, and the typed-spelling limit for a path with no opaque component (see "Known limit:
+Windows spelling" in the #95 section).
+
+## A cancel before Runner starts writes its receipt too (2026-10-13, issue #94)
+
+A cancel (Ctrl-C, SIGTERM) that arrived before `Runner` was entered used to reach `RunCommand` as a bare
+exit 130: no document under `--json`, no `result.json`, and a job already minted left `pending`. Three paths
+in `DelegateEngine` each now catch `OperationCanceledException` when the token is cancelled and return
+`Runner.RefuseAsync(job, role, RunStatus.Cancelled, ex.Message[, admission?.Reservation])`: the in-place
+`max_parallel` slot wait; the isolated path's `BranchExistsAsync`, slot wait and `--branch` lock wait; and the
+worktree add/checkout. It is the same funnel as the #20 timeout and the #63 refusals, so `run --json` prints
+the document and exits 130 through `ExitCodeFor`, `coordinate` and MCP `job_result` see it, the reservation
+closes at $0, and the add's T1 undo leaves no worktree or branch. The in-place path mints a job for the
+receipt exactly as its timeout branch does.
+
+Measured by the builder with the real binary (SIGTERM 3 s in, slots held with `flock`, a sleeping
+`post-checkout` hook for the add): in-place cap, isolated queued (the owner's case), cancel during
+`worktree add`, and `--branch` lock held all exit 130 with a `cancelled` document on stdout and on disk,
+`exit_code: -1`, `duration_seconds: 0`, no worktree, no `claustrum/<job>` branch. The recorded `error` is the
+framework's `A task was canceled.` (the cancel arrives as `TaskCanceledException` from `Task.Delay` or
+`WaitForExitAsync`), the same text Runner's own cancel path records; human mode prints it as `error: …`
+after `status: Cancelled (exit 130)`. A cancel during `BranchExistsAsync` is too fast to provoke by hand, so
+that catch is by reading.
+
+- **Still open, by reading, not in #94's scope:** a plain failed `AddAsync` (`InvalidOperationException`) is
+  rethrown with no receipt, so that job stays `pending`; `Runner.Validate` throwing inside
+  `RunAsync(prepared, job, …)` for a caller that minted first likely does the same.
+- **Who sees the change.** MCP `delegate_async` and `coordinate` pass `CancellationToken.None`, so no cancel
+  reaches the engine there. The synchronous MCP `delegate` now returns a cancelled `RunResult` instead of an
+  exception. `RunCommand.Cancelled` is unchanged and still handles any other `OperationCanceledException`
+  (for example from `coordinate`'s planning).

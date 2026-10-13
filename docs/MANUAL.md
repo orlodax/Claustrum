@@ -52,10 +52,10 @@ the workspace); `--cwd` on the server and `cwd` on each call override it.
 Exit codes are fixed: `0` ok · `1` backend failure · `2` usage or config error (a bad flag, a
 refused brief, a missing cast, a role sent to a harness it does not list, a `gh` failure, a
 `coordinate` whose cast is not committed) · `3` backend not found · `4` timeout · `5` budget · `130`
-cancelled. The first Ctrl-C (SIGINT), SIGQUIT or SIGTERM cancels with a `cancelled` receipt **once
-the run has started**; a cancel while the run is still queued for a `max_parallel` slot or adding its
-worktree exits 130 with no receipt, and a job that was already minted stays `pending` (#94; an
-in-place `max_parallel` queue has no job yet, so nothing is left behind). A signal that arrives while
+cancelled. The first Ctrl-C (SIGINT), SIGQUIT or SIGTERM cancels with a `cancelled` receipt at any
+point after the brief is read: queued for a `max_parallel` slot, waiting for a `--branch` lock, adding
+its worktree, or running. It exits 130, prints the document on stdout under `--json`, writes
+`result.json`, and leaves no worktree or branch (#94). A signal that arrives while
 `run`/`coordinate` is still reading its brief from stdin gets the runtime's default exit (130 for
 Ctrl-C, 143 for SIGTERM): there is nothing to cancel yet. A second signal ends the
 process at once with the runtime's own code (130 after a second Ctrl-C, 143 after a second SIGTERM,
@@ -182,6 +182,11 @@ plus each harness the repo already shows signs of (`.opencode/` or `opencode.jso
 `AGENTS.md`. It never creates `AGENTS.md`/`CLAUDE.md` and never overwrites a file it did not
 generate; a rerun reports "already present, left unchanged".
 
+Every write is fenced to the current directory, as in `sync` (§12): a `.claustrum`, `claustrum.json`,
+`.gitignore` or `AGENTS.md` that resolves outside it through a committed link is reported
+`refused (resolves outside the repo → <real path>)`, nothing is read or written there, and `init` exits 2
+at the end. The harness syncs still run.
+
 ### `claustrum mcp [--cwd <dir>]`
 
 The stdio server. Logging goes to stderr; stdout is the protocol.
@@ -227,7 +232,10 @@ the binary. A repo may override one under `.claustrum/roles/<role>/` in the **wo
 each `parts/` file replace the library's; `role.json` is deep-merged (objects merge, arrays
 replace); `_shared/` (house rules, report formats, tier stub) is not overridable. A file synced
 from an overridden role carries `source=local` in its marker, `roles show` prints `source: local`,
-and a malformed local `role.json` is exit 2 naming the file.
+and a malformed local `role.json` is exit 2 naming the file. An override file is read only when its real
+path stays inside the working directory, a link at the file itself included: one that leaves it is exit 2
+naming the file and its real path, in `sync`, `run` and `roles show` alike. `sync --global` never applies a
+repo's overrides (§12).
 
 Each role's system body is: the opening paragraph of the rendered `ROLE.md`, then `## Report format`,
 then the rest of `ROLE.md`, then `## House rules` ("read `AGENTS.md` and `CLAUDE.md` first; they are
@@ -615,6 +623,10 @@ Generated markdown carries `<!-- claustrum:generated role=… harness=… librar
 as its first body line, with `source=local` before `sha256` when the role was overridden (§4);
 generated JSON keys are tracked by hash in `.claustrum/sync-manifest.json`. A file without the
 marker or a manifest entry is **never overwritten** (`--force` adopts it).
+`sync --global` renders the library only: a repo's `.claustrum/roles/` applies to that repo, and its files
+must not end up in your user-global agents. Run inside a repo that overrides a role being synced, every mode
+(write, `--dry-run`, `--check`) lists the role under `ignored local overrides (--global renders the library
+only; a repo's .claustrum/roles/ applies to that repo):`; the exit code is unchanged.
 A symlinked agent file is foreign whatever it points at; `--force` replaces the link with a regular
 file and never writes through it, so the link's target is left byte-identical. `--dry-run` and
 `--check` print `would replace symlink` with `--force`; without it the link is listed as foreign with
@@ -625,7 +637,12 @@ a committed `.claude -> ../../.claude`, say, or a monorepo subdirectory whose `.
 (resolves outside the repo; sync never writes through a link that leaves it):` with its real path, nothing
 is written or created there, and the command exits 2 in write, `--dry-run` and `--check`; `--force` does
 not override. The `.claustrum` manifest and the JSON MCP targets follow the same rule, and a JSON target
-that is a link resolving inside that directory is merged through. Under `--global` a linked root or
+that is a link resolving inside that directory is merged through. The fence covers reads too: a local role
+override whose real path leaves the directory is never read (exit 2, with the real path), so its content
+cannot reach an agent file or a `--dry-run` diff. On Windows a repo under a folder-mounted volume or a
+container bind mount is not refused for that: a link the string walk cannot place is placed by the OS
+(`GetFinalPathNameByHandle`), and only a link the OS cannot place is refused. Not yet measured on Windows
+outside CI. Under `--global` a linked root or
 agents/skills directory is your own setup and is written into; the `global root` line and the
 `(resolved → <real path>)` annotations say where the files really went. In either mode, whenever a replaced link's
 directory resolves elsewhere (a linked root, a linked agents directory, a `.claude` linked inside the repo), the
@@ -764,4 +781,6 @@ metaconcert roles.
 Not yet measured on a real install: opencode and `api` end to end on this machine (no key);
 copilot ids other than `auto`, `--resume`, the `full` rung; cursor on a paid plan; whether opencode
 and cursor tolerate the unquoted `description:` their syncs emit; `coordinate` through the MCP door
-from a real host; and the Windows leg of everything above.
+from a real host; the Windows leg of everything above, the OS-placed links of §12 (folder-mounted volumes,
+container bind mounts, cloud placeholders) among it; and a plain failed `git worktree add` (not a cancel),
+which by reading still leaves its job `pending` with no receipt.
