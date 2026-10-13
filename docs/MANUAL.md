@@ -410,7 +410,8 @@ committable, shared with the team:
 - Per-call `--model`/`--backend`/`--tier` flags override the cast for that call.
 - A cast is never read, written or listed through a link that leaves the working directory (the fence
   of `sync`, §12): `cast new`/`create`/`use`/`show`/`list`, `cast_create` and `run`/`delegate` refuse with
-  exit 2, naming the file and where it really leads. A missing `name` or `library` loads as the file's
+  exit 2, naming the file and where it really leads (the fence decides before any existence check; a link out
+  to nothing reads as "no such cast"). A missing `name` or `library` loads as the file's
   name and the shipped library version.
 
 **The questionnaire** is owned by the tool so it is identical in every host: `claustrum cast
@@ -677,10 +678,12 @@ is written or created there, and the command exits 2 in write, `--dry-run` and `
 not override. The `.claustrum` manifest and the JSON MCP targets follow the same rule, and a JSON target
 that is a link resolving inside that directory is merged through. The fence covers reads too: a local role
 override whose real path leaves the directory is never read (exit 2, with the real path), so its content
-cannot reach an agent file or a `--dry-run` diff. On Windows a repo under a folder-mounted volume or a
+cannot reach an agent file or a `--dry-run` diff; a link to nothing outside is just no override. A local override
+linked to a file inside the directory is read only if that file has the same extension (`.json` or `.md`) and no
+`.git` path component, so `ROLE.md -> .git/config` is refused too. On Windows a repo under a folder-mounted volume or a
 container bind mount is expected to resolve through the OS placement (`GetFinalPathNameByHandle`) of a link
 the string walk cannot place; if the OS can spell neither a DOS nor a GUID name for it, the repo stays refused.
-On Windows a link or target spelled as a network path (`\\server\share`, `\\?\UNC\…`, `\\?\GLOBALROOT\Device\Mup\…`, any letter case) is refused **without being opened**, so a committed link cannot make `sync` authenticate to a foreign host; a repo whose own directory is on a share keeps working for links that stay on that share (#105). None of this is measured on Windows beyond the CI leg's link tests. Under `--global` a linked root or
+On Windows a link or target spelled as a network path (`\\server\share`, `\\?\UNC\…`, `\\?\GLOBALROOT\Device\Mup\…`, any letter case) is refused **without being opened** (a link's own target is read before the link is statted), so a committed link cannot make `sync` authenticate to a foreign host; a repo whose own directory is on a share keeps working for links that stay on that share (#105). None of this is measured on Windows beyond the CI leg's link tests. Under `--global` a linked root or
 agents/skills directory is your own setup and is written into; the `global root` line and the
 `(resolved → <real path>)` annotations say where the files really went. In either mode, whenever a replaced link's
 directory resolves elsewhere (a linked root, a linked agents directory, a `.claude` linked inside the repo), the

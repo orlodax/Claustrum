@@ -58,8 +58,9 @@ public sealed class RoleLibrary
     /// The role as the library defines it, with <paramref name="cwd"/>'s `.claustrum/roles/&lt;role&gt;/` laid
     /// over it. A null <paramref name="cwd"/> means the library alone: no local override is looked for or
     /// read (`sync --global`, #99). An override file is read only when its real path stays inside
-    /// <paramref name="cwd"/>, leaf link included; one that leaves it throws <see cref="RoleRenderException"/>
-    /// (#97). A link that stays inside is read through.
+    /// <paramref name="cwd"/>, leaf link included; one that leaves it and exists throws <see cref="RoleRenderException"/>
+    /// (#97), and one that leaves it with nothing there is no override. A link that stays inside is read through
+    /// only to a regular file of the same extension outside `.git`.
     /// </summary>
     public LoadedRole LoadRole(string role, string? cwd)
     {
@@ -105,7 +106,7 @@ public sealed class RoleLibrary
 
     /// <summary>
     /// True when <paramref name="cwd"/> holds a local override of <paramref name="role"/>: a `role.json`, a
-    /// `ROLE.md`, or any file under `parts/`. Nothing is read; a path that leaves <paramref name="cwd"/> counts as an override without being touched (#105).
+    /// `ROLE.md`, or any file under `parts/`. Nothing is read; a path that leaves <paramref name="cwd"/> counts as an override only if something is at its real path (#105).
     /// </summary>
     public static bool HasLocalOverride(string role, string cwd)
     {
@@ -114,14 +115,20 @@ public sealed class RoleLibrary
         string roleMd = LocalPath(cwd, role, "ROLE.md");
 
         // 2026-10-13 (#105): the fence comes before any existence check, which follows a mid-path directory link and
-        // on Windows would open a UNC host. A path that leaves cwd is not an error here: it only feeds the "ignored
-        // local overrides" notice, so true is the honest answer and nothing is touched.
+        // on Windows would open a UNC host. A path that leaves cwd counts only if something is really there; it feeds
+        // the "ignored local overrides" notice, so it is never touched as typed.
         SyncRoot fence = SyncRoot.Repo(cwd);
-        if (fence.Escapes(roleJson) || fence.Escapes(roleMd) || fence.Escapes(partsDir))
+        EscapeVerdict json = fence.ProbeEscaping(roleJson);
+        EscapeVerdict md = fence.ProbeEscaping(roleMd);
+        EscapeVerdict parts = fence.ProbeEscaping(partsDir);
+        if (json == EscapeVerdict.Present || md == EscapeVerdict.Present || parts == EscapeVerdict.Present)
             return true;
 
-        if (File.Exists(roleJson) || File.Exists(roleMd))
+        if ((json == EscapeVerdict.Inside && File.Exists(roleJson)) || (md == EscapeVerdict.Inside && File.Exists(roleMd)))
             return true;
+
+        if (parts != EscapeVerdict.Inside)
+            return false;
 
         try
         {
@@ -170,15 +177,38 @@ public sealed class RoleLibrary
 
     private static string LocalPath(string cwd, string role, string relative) => Path.Combine(cwd, ".claustrum", "roles", role, relative);
 
-    // The one place an override's bytes are read, so the fence cannot be skipped by a new call site. The fence
-    // comes before File.Exists (2026-10-13, #105): that call follows a directory link in the middle of the path,
-    // and on Windows a link to a UNC host would authenticate to it. Every candidate pays one walk.
+    // The one place an override's bytes are read, so the fence cannot be skipped by a new call site. The fence comes
+    // before File.Exists (2026-10-13, #105): that follows a mid-path directory link, and on Windows a UNC host would be
+    // contacted. A path that leaves cwd with nothing at its real path is "no override" (#97); one with something there throws.
     private static string? ReadLocal(string cwd, string role, string path)
     {
-        if (SyncRoot.Repo(cwd).Escapes(path))
+        SyncRoot fence = SyncRoot.Repo(cwd);
+        EscapeVerdict verdict = fence.ProbeEscaping(path);
+        if (verdict == EscapeVerdict.Present)
             throw new RoleRenderException($"role '{role}': local override '{path}' resolves outside the working directory ({SyncRoot.Resolve(path)}); an override is never read through a link that leaves it");
 
-        return File.Exists(path) ? File.ReadAllText(path) : null;
+        if (verdict == EscapeVerdict.Absent)
+            return null;
+
+        if (!File.Exists(path))
+            return null;
+
+        // 2026-10-13 (found by review): a link that stays inside is not a licence to read `.git/config` as a ROLE.md.
+        string real = SyncRoot.Resolve(path);
+        if (!SyncRoot.SamePath(real, path) && !IsPlainOverrideFile(fence, path, real))
+            throw new RoleRenderException($"role '{role}': local override '{path}' is a link to '{real}', which is not a regular {Path.GetExtension(path)} file outside .git; an override is read through a link only to such a file");
+
+        return File.ReadAllText(path);
+    }
+
+    // The extension is the typed name's own (role.json, ROLE.md, parts/*.md), so a link cannot change what kind of file is read.
+    private static bool IsPlainOverrideFile(SyncRoot fence, string path, string real)
+    {
+        string relative = Path.GetRelativePath(fence.RealPath, real);
+        string tail = relative.StartsWith("..", StringComparison.Ordinal) ? real : relative;
+        return File.Exists(real)
+            && Path.GetExtension(real).Equals(Path.GetExtension(path), StringComparison.OrdinalIgnoreCase)
+            && !tail.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar).Any(name => name.Equals(".git", StringComparison.OrdinalIgnoreCase));
     }
 
     private static JsonNode DeepMerge(JsonNode baseNode, JsonNode overrideNode)
