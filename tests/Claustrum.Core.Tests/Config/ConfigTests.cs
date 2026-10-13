@@ -171,4 +171,20 @@ public sealed class ConfigTests
         ConfigException ex = Assert.Throws<ConfigException>(() => CoreConfig.Load(platform, repoDir));
         Assert.Contains(repoConfigPath, ex.Message);
     }
+
+    // #56: `backends.<name>.injection` was removed (nothing read it); a config written for the older
+    // build still loads, the key is ignored like any unknown one, and `path` beside it survives.
+    [Fact]
+    public void ARemovedBackendInjectionKeyIsIgnoredAndItsSiblingPathIsKept()
+    {
+        FakePlatform platform = NewPlatform();
+        platform.Files[repoConfigPath] = /*lang=json,strict*/ """{"backends":{"claude":{"path":"/opt/claude","injection":"append-file"}}}""";
+        platform.ExtraExistingPaths.Add(gitMarker);
+
+        CoreConfig config = CoreConfig.Load(platform, repoDir);
+
+        Assert.Equal("/opt/claude", config.Merged.Backends?["claude"].Path);
+        Assert.DoesNotContain("backends.claude.injection", config.Origins.Keys);
+        Assert.Equal(ConfigLayer.Repo, config.Origins["backends.claude.path"]);
+    }
 }

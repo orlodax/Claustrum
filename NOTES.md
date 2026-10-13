@@ -5454,3 +5454,40 @@ entry of its own. The architect sets it; `roles show` prints `primary: True` onl
 
 Goldens: only `tests/golden/claude/` exists, and no Claude byte changes, so none is re-recorded.
 
+## The api backend gets AGENTS.md and CLAUDE.md inlined; `backends.<name>.injection` is removed (2026-10-13, issues #55, #56)
+
+**#56.** `backends.<name>.injection` was parsed, merged and shown by `backends doctor`, and nothing read it.
+It is gone from `BackendConfig`, `Config`'s merge (and its origin entry) and the doctor output. v0.1.0 is not
+released, so no one depends on it. A config that still carries the key loads: `ClaustrumJsonContext` ignores
+unmapped members, the same rule that lets a `$schema` through (`ConfigTests`).
+
+**#55.** `## House rules` says "read `AGENTS.md` and `CLAUDE.md`"; the api backend has no tools, so the model
+could not. `RoleRenderer.Render` now calls `ApiHouseRules.Compose` when `harness == "api"` and the cwd is known
+(`cwd` is null for the library-alone render, which keeps the read instruction). Every other harness renders
+byte-identically; `ApiHouseRulesTests` pins that against an empty cwd.
+
+- **Where.** In the system prompt, inside `## House rules`, so it is the last thing in it and does not move
+  `## Report format`, which `ComposeSystemBody` still splits off the role body before house rules are appended.
+  The read instruction becomes "The repository's rules follow; they are law", then one `###` section per file.
+- **The cwd the render got.** `DelegateEngine.Prepare` renders with `request.Cwd`, the directory the caller named,
+  not the git root (#49 proposes the root) and not an isolated run's worktree; the worktree is a checkout of the
+  same commit, so the files agree unless the operator has uncommitted edits to them.
+- **Safety.** The content goes to a third party. A file is read only if `SyncRoot.Repo(cwd).Escapes(path)` is
+  false, the fence `sync` and the role overrides use (#95, #97). A refused file is replaced by one line that says
+  it resolves outside the working directory, without the real path; the real path is in the receipt warning
+  (`AGENTS.md not inlined: <link> resolves outside the working directory (<real path>)`). The check and the read are
+  two steps, so a link swapped in between is not caught; the same window the other fenced reads have.
+- **Cap.** 32 KiB per file. One byte past the cap is read to tell "exactly at the cap" from "over"; the cut backs
+  off continuation bytes so it never splits a character, the text ends `[truncated: the first N of M bytes of
+  NAME are shown]`, and the receipt says `NAME inlined truncated to N of M bytes`.
+- **Missing or unreadable.** An absent file is one heading line (`### CLAUDE.md (not present in the working
+  directory)`) and no warning. A file that exists but cannot be read (permissions, I/O) is replaced by a line
+  and warned about.
+- **Receipt plumbing.** `RenderedRole.Warnings` -> `ResolvedRole.Warnings` (`Config.Resolve`) -> `Runner.RunCoreAsync`
+  puts them in front of `RunOptions.PreRunWarnings`, so they reach `result.json` through the one `FinishAsync`
+  funnel. A refusal that returns before Runner is entered (`Runner.RefuseAsync`, no options) carries none.
+- **Blind roles.** `code-reviewer` is blind and lists `api`. `Runner.EnsureBlindGate` reads the brief only
+  (`ValidatedBrief`), never `ResolvedRole.SystemPrompt`, so a repo whose `AGENTS.md` has a `## Context` heading
+  does not trip it and the blind gate is unaffected (`RunnerTests`). Nothing from the inlined files reaches the brief.
+- **Not done.** The `{{house_rules}}` template token still expands the plain shared text for every harness; no
+  role uses it today, and `ComposeSystemBody` is the one place the section is placed.

@@ -14,4 +14,5 @@ public sealed record ResolvedRole(
     string Effort,
     PermissionPolicy Permission,
     bool Blind,
-    bool HasReport);
+    bool HasReport,
+    string[]? Warnings = null);

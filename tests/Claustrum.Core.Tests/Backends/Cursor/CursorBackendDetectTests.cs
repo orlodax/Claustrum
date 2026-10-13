@@ -19,7 +19,7 @@ public sealed class CursorBackendDetectTests
         CursorBackend backend = new(platform);
         string missingPath = Path.Combine(Path.GetTempPath(), "claustrum-cursor-detect-" + Guid.NewGuid(), "cursor-agent");
 
-        Doctor doctor = await backend.DetectAsync(new BackendConfig(missingPath, Injection: null), TestContext.Current.CancellationToken);
+        Doctor doctor = await backend.DetectAsync(new BackendConfig(missingPath), TestContext.Current.CancellationToken);
 
         Assert.False(doctor.Found);
         Assert.Equal(

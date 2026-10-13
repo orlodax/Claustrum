@@ -53,6 +53,21 @@ public sealed class RunnerTests : IDisposable
         await Assert.ThrowsAsync<BlindGateException>(() => runner.RunAsync(request, MakeRole(blind: true), DefaultOptions(), CancellationToken.None));
     }
 
+    // #55: the blind gate reads the brief only; a system prompt that inlines a repo's own `## Context` (the api
+    // backend does) must not trip it, and what rendering could not do as asked is the receipt's first warning.
+    [Fact]
+    public async Task ASystemPromptWithAContextHeadingPassesTheBlindGateAndRenderWarningsLeadTheReceiptAsync()
+    {
+        Runner runner = NewRunner(ScriptedBackend.Success());
+        ResolvedRole role = MakeRole(blind: true) with { SystemPrompt = "### AGENTS.md\n\n## Context\nrules", Warnings = ["AGENTS.md inlined truncated"] };
+        RunOptions options = DefaultOptions() with { PreRunWarnings = ["decided earlier"] };
+
+        RunResult result = await runner.RunAsync(MakeRequest(brief: "## Task\ndo it\n"), role, options, CancellationToken.None);
+
+        Assert.Equal(RunStatus.Success, result.Status);
+        Assert.Equal(["AGENTS.md inlined truncated", "decided earlier"], result.Warnings.Take(2));
+    }
+
     // 2026-09-14 review finding #7: JobDirectory.Create (and the Prune it triggers) used to run as an
     // argument, before ValidateTimeout/EnsureBlindGate — a rejection left an empty job dir behind and
     // had already pruned history. Post-fix, a blind-gate rejection must create no job directory at all.

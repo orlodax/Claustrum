@@ -65,7 +65,7 @@ public sealed class Config
 
         RecordFlagOrigins(role.Name, overrides);
 
-        return new ResolvedRole(role.Name, role.SystemBody, backend, modelId, effort, new PermissionPolicy(level, deny), role.Blind, role.ReportSchema is { Length: > 0 });
+        return new ResolvedRole(role.Name, role.SystemBody, backend, modelId, effort, new PermissionPolicy(level, deny), role.Blind, role.ReportSchema is { Length: > 0 }, role.Warnings);
     }
 
     // Exposes the alias chase for callers that only have a bare model spec, not a role — the cast
@@ -214,10 +214,8 @@ public sealed class Config
     {
         if (incoming.Path is not null)
             origins[$"backends.{name}.path"] = layer;
-        if (incoming.Injection is not null)
-            origins[$"backends.{name}.injection"] = layer;
 
-        return new BackendConfig(incoming.Path ?? existing?.Path, incoming.Injection ?? existing?.Injection);
+        return new BackendConfig(incoming.Path ?? existing?.Path);
     }
 
     private static DefaultsSettings? MergeDefaults(DefaultsSettings? existing, DefaultsSettings? incoming, ConfigLayer layer, Dictionary<string, ConfigLayer> origins)
