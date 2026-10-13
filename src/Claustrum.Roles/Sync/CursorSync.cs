@@ -43,12 +43,16 @@ public sealed class CursorSync(RoleLibrary library, RoleRenderer renderer, strin
         SyncMode mode = SyncMode.Write, string? globalBinaryPath = null,
         string? globalRoot = null)
     {
+        // `--global` renders the library alone: a repo's `.claustrum/roles/` applies to that repo, and its
+        // files must not leak into the user-global agents (issue #99).
+        string? overrideCwd = global ? null : cwd;
+
         // Same reasoning as Opencode/CopilotSync: ui-reviewer lists only "claude" and has no
         // environment.default.md fallback, so the default "sync everything" case has to filter to
         // roles that actually declare cursor support.
         IReadOnlyList<string> targetRoles = roles is { Count: > 0 }
             ? roles
-            : [.. library.ListRoles().Where(role => library.LoadRole(role, cwd).Definition.Harnesses.Contains(Harness))];
+            : [.. library.ListRoles().Where(role => library.LoadRole(role, overrideCwd).Definition.Harnesses.Contains(Harness))];
 
         // Cursor documents the same three names under `.cursor/` and `~/.cursor/`, mcp.json included
         // — so unlike claude/opencode nothing here is repo-root-only and --global writes all three.
@@ -64,12 +68,15 @@ public sealed class CursorSync(RoleLibrary library, RoleRenderer renderer, strin
 
         foreach (string role in targetRoles)
         {
-            LoadedRole loaded = library.LoadRole(role, cwd);
-            WriteAgent(agentDir, role, loaded, cwd, force, mode, into, root);
+            LoadedRole loaded = library.LoadRole(role, overrideCwd);
+            if (global && RoleLibrary.HasLocalOverride(role, cwd))
+                into.IgnoredOverrides.Add(role);
+
+            WriteAgent(agentDir, role, loaded, overrideCwd, force, mode, into, root);
 
             foreach (string tier in generatedTiers)
                 if (loaded.Definition.Tiers.ContainsKey(tier))
-                    WriteTierStub(agentDir, role, tier, loaded, cwd, force, mode, into, root);
+                    WriteTierStub(agentDir, role, tier, loaded, overrideCwd, force, mode, into, root);
         }
 
         WriteSkill(cursorRoot, force, mode, into, root);
@@ -81,20 +88,20 @@ public sealed class CursorSync(RoleLibrary library, RoleRenderer renderer, strin
         return into.ToResult(mode);
     }
 
-    private void WriteAgent(string agentDir, string role, LoadedRole loaded, string cwd, bool force, SyncMode mode, SyncAccumulator into, SyncRoot root)
+    private void WriteAgent(string agentDir, string role, LoadedRole loaded, string? overrideCwd, bool force, SyncMode mode, SyncAccumulator into, SyncRoot root)
     {
         RoleDefinition definition = loaded.Definition;
         string frontmatter = BuildAgentFrontmatter(role, definition.Description, definition.Permission);
-        string body = renderer.Render(role, "high", Harness, cwd).SystemBody;
+        string body = renderer.Render(role, "high", Harness, overrideCwd).SystemBody;
         string path = Path.Combine(agentDir, $"{role}.md");
         writer.Write(path, role, frontmatter, body, force, mode, into, root, localOverride: loaded.IsLocalOverride);
     }
 
-    private void WriteTierStub(string agentDir, string role, string tier, LoadedRole loaded, string cwd, bool force, SyncMode mode, SyncAccumulator into, SyncRoot root)
+    private void WriteTierStub(string agentDir, string role, string tier, LoadedRole loaded, string? overrideCwd, bool force, SyncMode mode, SyncAccumulator into, SyncRoot root)
     {
         // Every cursor stub emits `model: inherit`, so the model never differs from the base agent's (#30).
         string frontmatter = BuildAgentFrontmatter($"{role}-{tier}", SyncWriter.TierDescription(role, tier, sameModel: true), loaded.Definition.Permission);
-        string body = renderer.RenderTierStub(role, tier, Harness, cwd);
+        string body = renderer.RenderTierStub(role, tier, Harness, overrideCwd);
         string path = Path.Combine(agentDir, $"{role}-{tier}.md");
         writer.Write(path, role, frontmatter, body, force, mode, into, root, localOverride: loaded.IsLocalOverride);
     }

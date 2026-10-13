@@ -30,12 +30,16 @@ public sealed class CopilotSync(RoleLibrary library, RoleRenderer renderer, stri
         string cwd, IReadOnlyList<string>? roles = null, bool global = false, bool force = false,
         SyncMode mode = SyncMode.Write, string? globalRoot = null)
     {
+        // `--global` renders the library alone: a repo's `.claustrum/roles/` applies to that repo, and its
+        // files must not leak into the user-global agents (issue #99).
+        string? overrideCwd = global ? null : cwd;
+
         // Same reasoning as OpencodeSync: ui-reviewer lists only "claude" and has no
         // environment.default.md fallback, so the default "sync everything" case has to filter to
         // roles that actually declare copilot support.
         IReadOnlyList<string> targetRoles = roles is { Count: > 0 }
             ? roles
-            : [.. library.ListRoles().Where(role => library.LoadRole(role, cwd).Definition.Harnesses.Contains(Harness))];
+            : [.. library.ListRoles().Where(role => library.LoadRole(role, overrideCwd).Definition.Harnesses.Contains(Harness))];
 
         // Both halves are now measured, not extrapolated: `copilot skill --help` names
         // `~/.copilot/skills/` as the personal skill location, and copilot 1.0.87 really does load
@@ -51,12 +55,15 @@ public sealed class CopilotSync(RoleLibrary library, RoleRenderer renderer, stri
 
         foreach (string role in targetRoles)
         {
-            LoadedRole loaded = library.LoadRole(role, cwd);
-            WriteAgent(agentDir, role, loaded, cwd, force, mode, into, root);
+            LoadedRole loaded = library.LoadRole(role, overrideCwd);
+            if (global && RoleLibrary.HasLocalOverride(role, cwd))
+                into.IgnoredOverrides.Add(role);
+
+            WriteAgent(agentDir, role, loaded, overrideCwd, force, mode, into, root);
 
             foreach (string tier in generatedTiers)
                 if (loaded.Definition.Tiers.ContainsKey(tier))
-                    WriteTierStub(agentDir, role, tier, loaded, cwd, force, mode, into, root);
+                    WriteTierStub(agentDir, role, tier, loaded, overrideCwd, force, mode, into, root);
         }
 
         WriteSkill(githubRoot, force, mode, into, root);
@@ -64,19 +71,19 @@ public sealed class CopilotSync(RoleLibrary library, RoleRenderer renderer, stri
         return into.ToResult(mode);
     }
 
-    private void WriteAgent(string agentDir, string role, LoadedRole loaded, string cwd, bool force, SyncMode mode, SyncAccumulator into, SyncRoot root)
+    private void WriteAgent(string agentDir, string role, LoadedRole loaded, string? overrideCwd, bool force, SyncMode mode, SyncAccumulator into, SyncRoot root)
     {
         string frontmatter = BuildAgentFrontmatter(role, loaded.Definition.Description);
-        string body = renderer.Render(role, "high", Harness, cwd).SystemBody;
+        string body = renderer.Render(role, "high", Harness, overrideCwd).SystemBody;
         string path = Path.Combine(agentDir, $"{role}.agent.md");
         writer.Write(path, role, frontmatter, body, force, mode, into, root, localOverride: loaded.IsLocalOverride);
     }
 
-    private void WriteTierStub(string agentDir, string role, string tier, LoadedRole loaded, string cwd, bool force, SyncMode mode, SyncAccumulator into, SyncRoot root)
+    private void WriteTierStub(string agentDir, string role, string tier, LoadedRole loaded, string? overrideCwd, bool force, SyncMode mode, SyncAccumulator into, SyncRoot root)
     {
         // Every copilot stub emits `model: auto`, so the model never differs from the base agent's (#30).
         string frontmatter = BuildAgentFrontmatter($"{role}-{tier}", SyncWriter.TierDescription(role, tier, sameModel: true));
-        string body = renderer.RenderTierStub(role, tier, Harness, cwd);
+        string body = renderer.RenderTierStub(role, tier, Harness, overrideCwd);
         string path = Path.Combine(agentDir, $"{role}-{tier}.agent.md");
         writer.Write(path, role, frontmatter, body, force, mode, into, root, localOverride: loaded.IsLocalOverride);
     }

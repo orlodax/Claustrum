@@ -32,6 +32,10 @@ public sealed class ClaudeSync(RoleLibrary library, RoleRenderer renderer, strin
         SyncMode mode = SyncMode.Write, ClaudeDesktopTarget? desktop = null, string? globalRoot = null)
     {
         IReadOnlyList<string> targetRoles = roles is { Count: > 0 } ? roles : library.ListRoles();
+        // `--global` renders the library alone: a repo's `.claustrum/roles/` applies to that repo, and its
+        // files must not leak into the user-global agents (issue #99).
+        string? overrideCwd = global ? null : cwd;
+
         // `--global` targets the global root throughout, not just the agents dir (review finding #3:
         // the skill file used to hardcode `cwd` here regardless of `global`). The root and
         // `homeDirectory` are caller-supplied, never read from the environment here, so a test can
@@ -52,13 +56,16 @@ public sealed class ClaudeSync(RoleLibrary library, RoleRenderer renderer, strin
 
         foreach (string role in targetRoles)
         {
-            LoadedRole loaded = library.LoadRole(role, cwd);
-            WriteBaseAgent(agentsDir, role, loaded, cwd, force, mode, into, root);
+            LoadedRole loaded = library.LoadRole(role, overrideCwd);
+            if (global && RoleLibrary.HasLocalOverride(role, cwd))
+                into.IgnoredOverrides.Add(role);
+
+            WriteBaseAgent(agentsDir, role, loaded, overrideCwd, force, mode, into, root);
 
             foreach (string tier in generatedTiers)
             {
                 if (loaded.Definition.Tiers.ContainsKey(tier))
-                    WriteTierStub(agentsDir, role, tier, loaded, cwd, force, mode, into, root);
+                    WriteTierStub(agentsDir, role, tier, loaded, overrideCwd, force, mode, into, root);
             }
         }
 
@@ -101,18 +108,18 @@ public sealed class ClaudeSync(RoleLibrary library, RoleRenderer renderer, strin
         McpConfigSync.Merge(target, mode, force, into, ReadOnlyDictionary<string, SyncManifestFile>.Empty, root);
     }
 
-    private void WriteBaseAgent(string agentsDir, string role, LoadedRole loaded, string cwd, bool force, SyncMode mode, SyncAccumulator into, SyncRoot root)
+    private void WriteBaseAgent(string agentsDir, string role, LoadedRole loaded, string? overrideCwd, bool force, SyncMode mode, SyncAccumulator into, SyncRoot root)
     {
         RoleDefinition definition = loaded.Definition;
         RoleTier tier = definition.Tiers["high"];
         (string tools, string? disallowedTools) = ToolsFor(definition);
         string frontmatter = BuildFrontmatter(role, definition.Description, ClaudeModelFor(tier.Model), tier.Effort, definition.Color, tools, disallowedTools);
-        string body = renderer.Render(role, "high", Harness, cwd).SystemBody;
+        string body = renderer.Render(role, "high", Harness, overrideCwd).SystemBody;
         string path = Path.Combine(agentsDir, $"{role}.md");
         writer.Write(path, role, frontmatter, body, force, mode, into, root, localOverride: loaded.IsLocalOverride);
     }
 
-    private void WriteTierStub(string agentsDir, string role, string tier, LoadedRole loaded, string cwd, bool force, SyncMode mode, SyncAccumulator into, SyncRoot root)
+    private void WriteTierStub(string agentsDir, string role, string tier, LoadedRole loaded, string? overrideCwd, bool force, SyncMode mode, SyncAccumulator into, SyncRoot root)
     {
         RoleDefinition definition = loaded.Definition;
         RoleTier roleTier = definition.Tiers[tier];
@@ -120,7 +127,7 @@ public sealed class ClaudeSync(RoleLibrary library, RoleRenderer renderer, strin
         bool sameModel = ClaudeModelFor(roleTier.Model) == ClaudeModelFor(definition.Tiers["high"].Model);
         string description = SyncWriter.TierDescription(role, tier, sameModel);
         string frontmatter = BuildFrontmatter($"{role}-{tier}", description, ClaudeModelFor(roleTier.Model), roleTier.Effort, definition.Color, tools, disallowedTools);
-        string body = renderer.RenderTierStub(role, tier, Harness, cwd);
+        string body = renderer.RenderTierStub(role, tier, Harness, overrideCwd);
         string path = Path.Combine(agentsDir, $"{role}-{tier}.md");
         writer.Write(path, role, frontmatter, body, force, mode, into, root, localOverride: loaded.IsLocalOverride);
     }
