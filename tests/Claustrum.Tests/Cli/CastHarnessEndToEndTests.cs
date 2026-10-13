@@ -152,15 +152,43 @@ public sealed class CastHarnessEndToEndTests : IDisposable
         Assert.False(File.Exists(DefaultCastPath));
     }
 
-    // End of input must end the questionnaire: a blank answer is "no answer" (CastHarnessCheck.Problem is
-    // null for it), not a reason to ask again. The helper kills a run that outlives its timeout, so a
-    // loop shows up as the timeout failure rather than a stuck suite.
+    // End of input must end the questionnaire (not loop): the helper kills a run that outlives its timeout, so a loop shows
+    // up as the timeout failure. And it saves nothing: a blank answer used to land as an all-null cast (#46).
     [Fact]
-    public async Task CastNewAtEndOfInputTerminatesRatherThanAskingAgainAsync()
+    public async Task CastNewAtEndOfInputExitsTwoSavingNothingAsync()
     {
         CliResult result = await RunAsync(["cast", "new"]);
 
-        Assert.True(result.ExitCode is ExitCodes.Ok or ExitCodes.Usage, $"exit {result.ExitCode}: {result.Stderr}");
+        Assert.Equal(ExitCodes.Usage, result.ExitCode);
+        Assert.Contains("cast not saved: input ended before the answer to 'architect'", result.Stderr, StringComparison.Ordinal);
+        Assert.False(File.Exists(DefaultCastPath));
+        Assert.False(Directory.Exists(cli.CastsDirectory));
+    }
+
+    [Fact]
+    public async Task CastNewWhoseInputEndsMidQuestionnaireExitsTwoSavingNothingAsync()
+    {
+        CliResult result = await RunAsync(["cast", "new"], "host\nclaude:opus\nnot needed\n");
+
+        Assert.Equal(ExitCodes.Usage, result.ExitCode);
+        Assert.Contains("cast not saved: input ended before the answer to 'demo-author'", result.Stderr, StringComparison.Ordinal);
+        Assert.False(File.Exists(DefaultCastPath));
+        Assert.False(Directory.Exists(cli.CastsDirectory));
+    }
+
+    // #67 through `cast show`: a hand-written cast with no name/library prints real values, not nulls.
+    [Fact]
+    public async Task CastShowOfAHandWrittenCastWithNoNameOrLibraryPrintsTheFileNameAndTheShippedLibraryAsync()
+    {
+        Directory.CreateDirectory(cli.CastsDirectory);
+        File.WriteAllText(Path.Combine(cli.CastsDirectory, "hand.json"), /*lang=json,strict*/ """{"architect":{"mode":"host"},"roles":{},"budget_usd":null}""");
+
+        CliResult result = await RunAsync(["cast", "show", "hand"]);
+
+        Assert.Equal(ExitCodes.Ok, result.ExitCode);
+        using JsonDocument cast = JsonDocument.Parse(result.Stdout);
+        Assert.Equal("hand", cast.RootElement.GetProperty("name").GetString());
+        Assert.False(string.IsNullOrWhiteSpace(cast.RootElement.GetProperty("library").GetString()));
     }
 
     [Fact]

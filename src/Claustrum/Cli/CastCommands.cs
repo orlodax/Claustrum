@@ -121,7 +121,9 @@ public static class CastCommands
         while (true)
         {
             Console.Write($"{key}> ");
-            string answer = Console.ReadLine() ?? "";
+
+            // End of input before the last question is no answer: saving blanks wrote an all-null cast (#46).
+            string answer = Console.ReadLine() ?? throw new CastException($"cast not saved: input ended before the answer to '{key}'");
             bool isRole = key != Cast.ArchitectRole && AppServices.RoleLibrary.ListRoles().Contains(key, StringComparer.Ordinal);
             bool notNeeded = answer.Trim().Equals(CastBuilder.NotNeeded, StringComparison.OrdinalIgnoreCase);
             if (!isRole || notNeeded || CastHarnessCheck.Problem(key, answer.Trim(), AppServices.RoleLibrary, AppServices.Backends, config, cwd) is not { } problem)
