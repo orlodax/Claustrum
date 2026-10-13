@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.Text;
 using System.Text.Json.Nodes;
+using Claustrum.Core.Config;
 using Claustrum.Roles.Model;
 
 namespace Claustrum.Roles.Sync;
@@ -26,10 +27,12 @@ public sealed class ClaudeSync(RoleLibrary library, RoleRenderer renderer, strin
     /// <paramref name="global"/>, and a caller that has no desktop app to write to (Linux) passes null.
     /// <paramref name="globalRoot"/> is the global root the caller already resolved from the
     /// environment (`CLAUDE_CONFIG_DIR`); null means the default under `homeDirectory`.
+    /// <paramref name="config"/> is the merged `claustrum.json` the agents' model and effort follow (#53); null means
+    /// the hard-coded defaults.
     /// </summary>
     public SyncResult Sync(
         string cwd, IReadOnlyList<string>? roles = null, bool global = false, bool force = false,
-        SyncMode mode = SyncMode.Write, ClaudeDesktopTarget? desktop = null, string? globalRoot = null)
+        SyncMode mode = SyncMode.Write, ClaudeDesktopTarget? desktop = null, string? globalRoot = null, Config? config = null)
     {
         IReadOnlyList<string> targetRoles = roles is { Count: > 0 } ? roles : library.ListRoles();
         // `--global` renders the library alone: a repo's `.claustrum/roles/` applies to that repo, and its
@@ -51,6 +54,7 @@ public sealed class ClaudeSync(RoleLibrary library, RoleRenderer renderer, strin
             Directory.CreateDirectory(agentsDir);
 
         SyncAccumulator into = new();
+        SyncSettings settings = new(config);
         if (!global)
             SyncManifestStore.RefuseIfEscaping(cwd, root, into);
 
@@ -60,12 +64,12 @@ public sealed class ClaudeSync(RoleLibrary library, RoleRenderer renderer, strin
             if (global && RoleLibrary.HasLocalOverride(role, cwd))
                 into.IgnoredOverrides.Add(role);
 
-            WriteBaseAgent(agentsDir, role, loaded, overrideCwd, force, mode, into, root);
+            WriteBaseAgent(agentsDir, role, loaded, settings, overrideCwd, force, mode, into, root);
 
             foreach (string tier in generatedTiers)
             {
                 if (loaded.Definition.Tiers.ContainsKey(tier))
-                    WriteTierStub(agentsDir, role, tier, loaded, overrideCwd, force, mode, into, root);
+                    WriteTierStub(agentsDir, role, tier, loaded, settings, overrideCwd, force, mode, into, root);
             }
         }
 
@@ -108,25 +112,30 @@ public sealed class ClaudeSync(RoleLibrary library, RoleRenderer renderer, strin
         McpConfigSync.Merge(target, mode, force, into, ReadOnlyDictionary<string, SyncManifestFile>.Empty, root);
     }
 
-    private void WriteBaseAgent(string agentsDir, string role, LoadedRole loaded, string? overrideCwd, bool force, SyncMode mode, SyncAccumulator into, SyncRoot root)
+    private void WriteBaseAgent(string agentsDir, string role, LoadedRole loaded, SyncSettings settings, string? overrideCwd, bool force, SyncMode mode, SyncAccumulator into, SyncRoot root)
     {
         RoleDefinition definition = loaded.Definition;
-        RoleTier tier = definition.Tiers["high"];
+        TierChoice choice = settings.Choose(Harness, role, "high", definition.Tiers["high"], ClaudeModelFor);
+        SyncSettings.RecordModel(into, Harness, role, choice.Model, choice.Reason);
+        SyncSettings.RecordUnrenderedDeny(into, Harness, role, choice);
         (string tools, string? disallowedTools) = ToolsFor(definition);
-        string frontmatter = BuildFrontmatter(role, definition.Description, ClaudeModelFor(tier.Model), tier.Effort, definition.Color, tools, disallowedTools);
+        string frontmatter = BuildFrontmatter(role, definition.Description, choice.Model, choice.Effort, definition.Color, tools, disallowedTools);
         string body = renderer.Render(role, "high", Harness, overrideCwd).SystemBody;
         string path = Path.Combine(agentsDir, $"{role}.md");
         writer.Write(path, role, frontmatter, body, force, mode, into, root, localOverride: loaded.IsLocalOverride);
     }
 
-    private void WriteTierStub(string agentsDir, string role, string tier, LoadedRole loaded, string? overrideCwd, bool force, SyncMode mode, SyncAccumulator into, SyncRoot root)
+    private void WriteTierStub(string agentsDir, string role, string tier, LoadedRole loaded, SyncSettings settings, string? overrideCwd, bool force, SyncMode mode, SyncAccumulator into, SyncRoot root)
     {
         RoleDefinition definition = loaded.Definition;
-        RoleTier roleTier = definition.Tiers[tier];
+        TierChoice choice = settings.Choose(Harness, role, tier, definition.Tiers[tier], ClaudeModelFor);
+        TierChoice baseChoice = settings.Choose(Harness, role, "high", definition.Tiers["high"], ClaudeModelFor);
+        bool sameModel = choice.Model == baseChoice.Model;
+        if (!sameModel)
+            SyncSettings.RecordModel(into, Harness, $"{role}-{tier}", choice.Model, choice.Reason);
         (string tools, string? disallowedTools) = ToolsFor(definition);
-        bool sameModel = ClaudeModelFor(roleTier.Model) == ClaudeModelFor(definition.Tiers["high"].Model);
         string description = SyncWriter.TierDescription(role, tier, sameModel);
-        string frontmatter = BuildFrontmatter($"{role}-{tier}", description, ClaudeModelFor(roleTier.Model), roleTier.Effort, definition.Color, tools, disallowedTools);
+        string frontmatter = BuildFrontmatter($"{role}-{tier}", description, choice.Model, choice.Effort, definition.Color, tools, disallowedTools);
         string body = renderer.RenderTierStub(role, tier, Harness, overrideCwd);
         string path = Path.Combine(agentsDir, $"{role}-{tier}.md");
         writer.Write(path, role, frontmatter, body, force, mode, into, root, localOverride: loaded.IsLocalOverride);
@@ -189,8 +198,11 @@ public sealed class ClaudeSync(RoleLibrary library, RoleRenderer renderer, strin
 
     private static (string Tools, string? DisallowedTools) ToolsFor(RoleDefinition definition)
     {
+        // `withoutTools` is honoured at every rung (#45): a dropped tool leaves `tools` and joins
+        // `disallowedTools`, so a tool is never both granted and denied.
+        string[] dropped = definition.DroppedTools;
         if (definition.Permission == "readonly")
-            return (string.Join(", ", readTools), "Agent, Edit, Write");
+            return Format(Without(readTools, dropped), ["Agent", "Edit", "Write", .. dropped]);
 
         // `shell` is read + run, never edit — the rung M3 added for ui-reviewer. Before #29 it fell
         // through to the edit set, so a browser role synced with Edit/Write its own ground rules
@@ -198,8 +210,8 @@ public sealed class ClaudeSync(RoleLibrary library, RoleRenderer renderer, strin
         if (definition.Permission == "shell")
         {
             string[] granted = definition.MayDelegate.Length > 0 ? [.. definition.ExtraTools, "Agent"] : definition.ExtraTools;
-            string[] denied = [.. shellDenied.Where(tool => !granted.Contains(tool, StringComparer.Ordinal))];
-            return (string.Join(", ", (string[])[.. readTools, .. granted]), denied.Length > 0 ? string.Join(", ", denied) : null);
+            string[] denied = [.. shellDenied.Where(tool => !granted.Contains(tool, StringComparer.Ordinal)), .. dropped];
+            return Format(Without([.. readTools, .. granted], dropped), denied);
         }
 
         // The edit rungs add role.json's `tools` too: the demo-author moved here from `shell` (#43) and
@@ -209,10 +221,20 @@ public sealed class ClaudeSync(RoleLibrary library, RoleRenderer renderer, strin
         // removes the whole Bash tool (code.claude.com/docs/en/sub-agents, read 2026-10-02). A
         // frontmatter PreToolUse hook could carry it and is a follow-up issue; until then a synced
         // agent's deny list is its prose, and only `claustrum run` enforces it.
-        string[] kept = [.. editTools.Where(tool => !definition.DroppedTools.Contains(tool, StringComparer.Ordinal))];
-        string[] extra = [.. definition.ExtraTools.Where(tool => !kept.Contains(tool, StringComparer.Ordinal))];
-        string[] disallowed = definition.MayDelegate.Length > 0 ? definition.DroppedTools : ["Agent", .. definition.DroppedTools];
+        string[] kept = Without(editTools, dropped);
+        string[] extra = [.. Without(definition.ExtraTools, dropped).Where(tool => !kept.Contains(tool, StringComparer.Ordinal))];
         string[] tools = definition.MayDelegate.Length > 0 ? [.. kept, .. extra, "Agent"] : [.. kept, .. extra];
-        return (string.Join(", ", tools), disallowed.Length > 0 ? string.Join(", ", disallowed) : null);
+        string[] disallowed = definition.MayDelegate.Length > 0 ? dropped : ["Agent", .. dropped];
+        return Format(Without(tools, dropped), disallowed);
+    }
+
+    private static string[] Without(IEnumerable<string> tools, string[] dropped) =>
+        [.. tools.Where(tool => !dropped.Contains(tool, StringComparer.Ordinal))];
+
+    // Distinct: a dropped `Agent` on a role that delegates to no one is denied by the rung and by the role.
+    private static (string Tools, string? DisallowedTools) Format(string[] tools, string[] disallowed)
+    {
+        string[] distinctDisallowed = [.. disallowed.Distinct(StringComparer.Ordinal)];
+        return (string.Join(", ", tools.Distinct(StringComparer.Ordinal)), distinctDisallowed.Length > 0 ? string.Join(", ", distinctDisallowed) : null);
     }
 }

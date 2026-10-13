@@ -41,6 +41,8 @@ public static class RolesCommands
             Console.WriteLine($"source:      {(loaded.IsLocalOverride ? "local (.claustrum/roles/)" : "library")}");
             Console.WriteLine($"description: {definition.Description}");
             Console.WriteLine($"blind:       {definition.Blind}");
+            if (definition.Primary)
+                Console.WriteLine("primary:     True");
             Console.WriteLine($"permission:  {definition.Permission}");
             Console.WriteLine($"deny:        {string.Join(", ", definition.Deny)}");
             Console.WriteLine($"mayDelegate: {string.Join(", ", definition.MayDelegate)}");

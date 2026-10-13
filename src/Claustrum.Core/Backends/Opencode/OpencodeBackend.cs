@@ -33,8 +33,9 @@ public sealed class OpencodeBackend(IPlatform platform) : IBackend
         // level, not just Full: without it a headless run stalls on a prompt nobody can answer, and
         // explicit denies survive it — which is the whole reason WritePermission turns opencode's
         // own `ask` defaults into denies. v2 also dropped `--dir`; ProcessRunner's WorkingDirectory
-        // is what puts the run in run.Cwd now.
-        List<string> args = ["run", "--standalone", "--agent", agentName, "--model", ModelSpec(run.Role), "--format", "json", "--auto"];
+        // is what puts the run in run.Cwd now. `--model` is the resolved model as is: a `#<variant>` rides
+        // only when the model spec itself carries one, never from the tier's effort (#35, NOTES.md).
+        List<string> args = ["run", "--standalone", "--agent", agentName, "--model", run.Role.Model, "--format", "json", "--auto"];
         if (run.ResumeSession is { Length: > 0 } resumeSession)
             args.AddRange(["--session", resumeSession]);
         args.Add(run.Brief);
@@ -145,13 +146,6 @@ public sealed class OpencodeBackend(IPlatform platform) : IBackend
 
         return new ParsedOutput(finalMessage, sessionId, cost, usage, [], lastEvent, IsError: exitCode != 0 || errorMessage is not null);
     }
-
-    // v2 dropped `--variant`; the tier rides on the model id instead (`--model` help: "Model to use
-    // in the format provider/model#variant"). A spec that already names one is left alone.
-    private static string ModelSpec(ResolvedRole role) =>
-        role.Effort is { Length: > 0 } effort && !role.Model.Contains('#', StringComparison.Ordinal)
-            ? $"{role.Model}#{effort}"
-            : role.Model;
 
     // Two genuinely captured shapes, one per major version, so both are read: v2.0.12 writes
     // `error: {type, message}` (2026-09-22), v1.18.31 wrote `error: {name, data: {message, ref}}`

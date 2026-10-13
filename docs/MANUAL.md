@@ -176,7 +176,8 @@ claustrum sync [--only claude,opencode,copilot,cursor] [--roles a,b] [--global] 
 ```
 
 §12. `--check` exits 2 on a hand-edited, stale or missing generated file (for CI); `--dry-run`
-prints the unified diff; `--force` adopts a file Claustrum did not generate.
+prints the unified diff and, after it, the model each agent file names and why; `--force` adopts a file
+Claustrum did not generate. `sync` reads `claustrum.json` (§7, §12).
 
 ### `claustrum init [--all]`
 
@@ -328,6 +329,9 @@ Layers, later wins per key, `deny` lists concatenate:
   "jobs":     { "keep_last": 200 }
 }
 ```
+
+`sync` reads the same layers (§12): `models` aliases, and `roles.<name>.model|effort|deny`, decide the synced
+agent files. `sync --global` reads only the user file, never the repo's `claustrum.json`.
 
 `backends.<name>` takes `path` and `injection`; `doctor` shows `injection`, but no backend reads it
 — `claude` always injects with `--append-system-prompt-file`. There is no JSON schema file, and a key
@@ -674,11 +678,36 @@ agent; that is not implemented yet (a follow-up issue). Until then `sync` render
 nowhere, a native agent — the builder's `git push`, the demo-author's git verbs — keeps it as prose
 only, and the deny list is enforced only when a role runs through `claustrum run`/`delegate`.
 
+**`claustrum.json` decides the model.** `sync` loads the layers `run` uses and chases each tier's model
+class (or `roles.<role>.model`) through `models`. The model is written when the alias lands on the harness
+being synced: `claude:opus` in a Claude file, `opencode:openrouter/…` in an opencode file, `copilot:<id>`,
+`cursor:<id>`. An alias on another backend (an `api:` model in a Claude agent file, or the built-in
+`claude:*` aliases in an opencode file) cannot be expressed there, and the default stands: `opus`/`sonnet`/`haiku`
+for Claude, the two OpenRouter ids for opencode, `auto` for Copilot, `inherit` for Cursor. `roles.<role>.model`
+applies to every tier of the role; `roles.<role>.effort` re-points the base agent only, because a `-xhigh`/`-max`
+stub is named for its effort. `roles.<role>.permission` is not applied to synced files. `--dry-run` lists, after
+the diffs, one line per agent file: the model and the reason (`alias 'x' → backend:id (layer)`, or `default for
+class '…'` with why the alias was not used). A malformed `claustrum.json` fails `sync` with exit 2.
+
+**Deny.** Only opencode has a per-command deny syntax in an agent file: `claustrum.json`'s `roles.<role>.deny`
+becomes `permission.bash` entries (`"<deny>": deny` and `"<deny> *": deny`, no allow rule). role.json's own `deny`
+is still rendered nowhere (above). Claude, Copilot and Cursor files cannot carry a per-command deny, so
+`--dry-run` says `claustrum.json deny (…) not rendered` for the role, and only `claustrum run` enforces it.
+
+**opencode `mode` and `variant`.** A synced opencode agent is `mode: subagent`, except a role whose `role.json`
+says `"primary": true` (the library's architect, and its tier stubs): that one is `mode: all`, so it can be picked
+as the main agent and still be spawned. Claude Code, Copilot and Cursor need nothing for a primary role: Claude
+Code runs any agent file as the main thread with `claude --agent <name>`, and Copilot's `--agent` selects any
+agent. A local `.claustrum/roles/<role>/role.json` sets `primary` like any scalar. `variant:` is written only
+when the resolved model carries `#<variant>` (an alias such as `opencode:openrouter/deepseek/deepseek-v4-pro#xhigh`);
+a tier's effort never becomes one, since a model may not publish it. `claustrum run` on opencode follows the
+same rule: `--model` is the resolved model as is, so a `-max` tier on the default `cheap-coding` alias sends no `#max`.
+
 role.json `withoutTools` names tools a role's level grants but it never uses (the demo-author's
 `NotebookEdit`); a synced Claude agent leaves them out of `tools` and lists them under
 `disallowedTools`. It reaches **synced Claude agent files only**: under `claustrum run` the claude
 backend's `edit+shell` flags do not name it, and `acceptEdits` approves `NotebookEdit` like any
-edit. A local `.claustrum/roles/<role>/role.json` override replaces the whole array, as it does
+edit. It is honoured at every level (`readonly` and `shell` too), and a dropped tool is never also in `tools`. A local `.claustrum/roles/<role>/role.json` override replaces the whole array, as it does
 `tools` and `deny`.
 
 | Harness | Repo files | Global (`--global`) | In chat |

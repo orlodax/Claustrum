@@ -152,6 +152,9 @@ file. `ClaudeSync.ClaudeModelFor` is therefore a small static class→literal-mo
 roster (`builder: opus`, `code-reviewer: sonnet` at `high` / `opus` at `xhigh`+`max`) without
 depending on A7 landing first.
 
+*Superseded in part, 2026-10-13 (#53): the maps are now the fallback. See "`sync` reads `claustrum.json`
+(2026-10-13, issue #53)".*
+
 ## Generated-file marker covers the body, not the frontmatter (2026-09-13)
 
 The `<!-- claustrum:generated ... sha256=... -->` marker's hash is computed over the rendered body
@@ -2800,7 +2803,8 @@ the `--standalone` question and handed over the v2 error shape. A deliberately w
      provider/model#variant"*, so the tier rides on the model id: `ModelSpec` appends `#<effort>`
      unless the spec already names one. `openrouter/deepseek/deepseek-v4-flash#high` was accepted by
      every paid run above — models.dev lists `reasoning_options: [{type:"toggle"},{type:"effort",
-     values:["high","xhigh"]}]` for it, so `max` would need a model that offers it.
+     values:["high","xhigh"]}]` for it, so `max` would need a model that offers it. *(2026-10-13, #35: no
+     longer true of the code: the effort is not appended; a `#<variant>` in the model spec is left alone.)*
    - **`OPENCODE_PERMISSION` is gone** — zero occurrences in the 2.0.12 binary, against the
      2026-09-18 note that confirmed it live in 1.18.31. The same JSON moves into
      `OPENCODE_CONFIG_CONTENT`, which is where docs/PLAN.md §A3's opencode row always drew it.
@@ -3058,6 +3062,8 @@ the `--standalone` question and handed over the v2 error shape. A deliberately w
     a model publishing only `high`/`xhigh` (models.dev's `reasoning_options` for this one) fails
     fast with a clear message. Whether that should instead clamp to the highest published variant,
     or refuse earlier in `ResolvedRole`, is the open design question.
+    **Decided 2026-10-13 (#35): option (c), the variant is opt-in.** See "opencode: a variant is opt-in
+    (2026-10-13, issue #35)"; `ModelSpec` is gone.
 
 **Still unverified, for the record:** the Anthropic path end to end, including `AnthropicMaxTokens`
 and `anthropic-success.json`; `--session <id>` resume against a real opencode session; the `full`
@@ -5362,3 +5368,89 @@ input ended before the answer to '<key>'`); `Console.ReadLine() ?? ""` used to s
 version the binary ships (`AppServices.RoleLibrary.Version`, what `cast create` writes), so hand-written casts
 keep loading and `cast show` prints real values. README's "a role set to `null` is not needed" now says what
 MANUAL §8 always did: only the architect honours it; `run` and `delegate` do not enforce it.
+
+## `sync` reads `claustrum.json` (2026-10-13, issue #53)
+
+`sync` loaded no `Config`, so a synced `@builder` and a delegated `builder` could name different models.
+`SyncCommand` now calls `Config.Load` (the layering `run` uses) and hands the result to each harness's
+`Sync(..., config)`; `SyncSettings.Choose` (`src/Claustrum.Roles/Sync/`) decides per agent file. A null
+config (every pre-#53 caller, and the tests that pass none) is the old hard-coded behaviour byte for byte.
+
+- **The model.** `roles.<r>.model` if set, else the tier's class, chased through `models` as
+  `Config.Resolve` does (`Config.ResolveModel` is public for it). The result is written only when its
+  backend **is the harness** (`claude:` for a Claude file, `opencode:` for opencode, `copilot:`,
+  `cursor:`). Any other backend cannot be expressed there (an `api:` alias in a Claude file, or the
+  built-in `claude:opus` in an opencode file) and the old default stands: `opus`/`sonnet`/`haiku`, the two
+  OpenRouter ids, `auto`, `inherit`. The fallback is for the **tier's own class**, not for what the
+  override spelled. A tier class that is no alias and carries no `backend:` is also a fallback (`run` would
+  hand it to Claude as a literal id; a typo in a local `role.json` must not become `model: frontier-codnig`).
+  The built-in aliases are `claude:opus|sonnet|haiku`, i.e. exactly the old Claude map, so Claude output
+  without a `claustrum.json` is unchanged.
+- **Like `run`:** `roles.<r>.model` applies to every tier of the role, stubs included.
+  **Unlike `run`:** `roles.<r>.effort` re-points the **base agent only**. A `-xhigh`/`-max` stub is named for
+  its effort, and run applying the config effort to `--tier max` collapses the ladder; a stub keeps its tier's.
+- **Deny.** Only opencode has a per-command deny syntax in agent files: the `permission.bash` block `run`
+  writes (`OpencodeBackend.WriteBashRules`), as deny entries only, with no `"*": allow`, so it can never open
+  bash for a role whose level closes it. The entries are **config-layer deny only**: role.json's own `deny`
+  stays unrendered everywhere (MANUAL §12), so default output does not change. Claude, Copilot and Cursor
+  have none (`disallowedTools: Bash(git push *)` removes the whole tool, 2026-10-02); `--dry-run` says
+  `claustrum.json deny (...) not rendered` once per role there. Not live-verified on opencode: no synced
+  agent carrying `permission:` was loaded by a real opencode; the frontmatter field is in the 2026-09-18 list
+  above, and the shape is `run`'s.
+- **`roles.<r>.permission` is not applied.** It would change `tools`/`disallowedTools` (Claude) and `readonly`
+  (Cursor) with the rungs' own rules; left for its own pass.
+- **`--dry-run`** prints a `models` section: one line per agent file, `<harness> <agent>: model <m> — <reason>`
+  (alias → `backend:id` and the layer that set it, or `default for class …`), stub lines only when the model
+  differs from the base's. Not printed in write or `--check`.
+- **`--global` uses the user layer only, never the cwd repo's `claustrum.json`.** The reason is #99's: a
+  repo's configuration applies to that repo, and user-global agent files must not carry it. `Config.Load`
+  takes a null cwd for it (no repo layer; the env layer only holds `defaults`, which sync never reads).
+- A malformed `claustrum.json` or an alias cycle is now a `sync` error (exit 2), where sync never read it.
+
+Not done: `backends.<b>.injection` (the issue's last paragraph), which is another builder's file.
+
+## opencode: a variant is opt-in (2026-10-13, issue #35)
+
+Option (c) of #35. A `#<variant>` rides only when the **model spec itself carries one**
+(`openrouter/deepseek/deepseek-v4-pro#xhigh` in an alias or a `roles.<r>.model`); a tier's effort is never
+turned into one. Tiers affect opencode only through the model choice, as a hand-maintained opencode ladder
+(`-pro` changing only `model`) already does.
+
+- **Run:** `OpencodeBackend` passes `ResolvedRole.Model` to `--model` as is; `ModelSpec` appended `#<effort>`.
+  The measurement behind it is the 2026-09-22 one in "The opencode and api backends, validated against real
+  endpoints" item 11: `#max` on `deepseek-v4-flash` is refused client-side, 0.7 s, $0 (`Variant unavailable`).
+  So `builder-max` on the default `cheap-coding` alias now sends no variant. **Not re-run against a live
+  opencode** (no key here): that the run then succeeds rests on the 2026-09-22 receipt that `…flash` with no
+  `#` and with `#high` were accepted by every paid run in that pass.
+- **Sync:** `OpencodeSync.BuildAgentFrontmatter` splits the resolved model at `#` and writes `variant:` only
+  then. The default ids carry none, so a default-config opencode agent has no `variant:` line (it had
+  `variant: high|xhigh|max` before). The `-xhigh`/`-max` stubs differ from the base only in prose there, as
+  on Copilot and Cursor; `sameModel` is true for them unless a `code-reviewer`-style class step lands on
+  another id.
+- Not done: a per-model tier-to-variant table (a), or a catalogue query (b).
+
+## `withoutTools` is honoured at every rung (2026-10-13, issue #45)
+
+`ClaudeSync.ToolsFor` read `DroppedTools` on the edit rungs only. Now every rung removes a dropped tool from
+`tools` and lists it under `disallowedTools` (`readonly` and `shell` included; before, a local
+`{"withoutTools":["Bash"]}` on `ui-reviewer` changed nothing), and `extra` (role.json `tools`) and the
+appended `Agent` are filtered by it, so a tool is never both granted and denied (`withoutTools:["Agent"]` on
+the builder gave `tools: …, Agent` and `disallowedTools: Agent`). Both lists are de-duplicated: a dropped
+`Agent` on a role that delegates to no one is denied by the rung and by the role. No shipped role's output
+changes (the goldens are untouched).
+
+## A primary role (2026-10-13, issue #85)
+
+`role.json` takes `"primary": true` (default false; `RoleDefinition.Primary`). It is a scalar, so a
+`.claustrum/roles/<role>/role.json` override sets it through the existing deep merge, with no merge-table
+entry of its own. The architect sets it; `roles show` prints `primary: True` only then.
+
+| Harness | What a primary role needs | Rendered |
+|---|---|---|
+| opencode | `mode: all` (primary and spawnable) instead of `subagent`; stubs follow the base role | yes |
+| Claude Code | **nothing.** Any agent file runs as the main thread with `claude --agent <name>` or the `agent` setting; the ability to spawn comes from `Agent` in `tools`, which a role with `mayDelegate` already has (code.claude.com/docs/en/sub-agents, read 2026-10-13) | no |
+| Copilot | **nothing.** `copilot --agent <name>` selects any agent; the accepted fields are `name, description, model, tools, infer, skills` (NOTES.md "The copilot backend, validated against a real install") and none says primary | no |
+| Cursor | **nothing.** Subagent fields are `name, description, model, readonly, is_background`; the main agent is Cursor's own (NOTES.md "CursorSync") | no |
+
+Goldens: only `tests/golden/claude/` exists, and no Claude byte changes, so none is re-recorded.
+

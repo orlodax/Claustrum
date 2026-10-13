@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.Text;
 using System.Text.Json.Nodes;
+using Claustrum.Core.Config;
 using Claustrum.Roles.Model;
 
 namespace Claustrum.Roles.Sync;
@@ -37,11 +38,12 @@ public sealed class CursorSync(RoleLibrary library, RoleRenderer renderer, strin
     /// <c>~/.cursor/mcp.json</c> under <paramref name="global"/> — resolved by the caller, as
     /// <see cref="ClaudeDesktopTarget.BinaryPath"/> is. Null skips that one merge: a caller that is
     /// not the binary (a `dotnet run`) has nothing honest to write there.
+    /// <paramref name="config"/> is the merged `claustrum.json` the agents' model follows (#53); null means `inherit`.
     /// </summary>
     public SyncResult Sync(
         string cwd, IReadOnlyList<string>? roles = null, bool global = false, bool force = false,
         SyncMode mode = SyncMode.Write, string? globalBinaryPath = null,
-        string? globalRoot = null)
+        string? globalRoot = null, Config? config = null)
     {
         // `--global` renders the library alone: a repo's `.claustrum/roles/` applies to that repo, and its
         // files must not leak into the user-global agents (issue #99).
@@ -63,6 +65,7 @@ public sealed class CursorSync(RoleLibrary library, RoleRenderer renderer, strin
             Directory.CreateDirectory(agentDir);
 
         SyncAccumulator into = new();
+        SyncSettings settings = new(config);
         if (!global)
             SyncManifestStore.RefuseIfEscaping(cwd, root, into);
 
@@ -72,11 +75,11 @@ public sealed class CursorSync(RoleLibrary library, RoleRenderer renderer, strin
             if (global && RoleLibrary.HasLocalOverride(role, cwd))
                 into.IgnoredOverrides.Add(role);
 
-            WriteAgent(agentDir, role, loaded, overrideCwd, force, mode, into, root);
+            WriteAgent(agentDir, role, loaded, settings, overrideCwd, force, mode, into, root);
 
             foreach (string tier in generatedTiers)
                 if (loaded.Definition.Tiers.ContainsKey(tier))
-                    WriteTierStub(agentDir, role, tier, loaded, overrideCwd, force, mode, into, root);
+                    WriteTierStub(agentDir, role, tier, loaded, settings, overrideCwd, force, mode, into, root);
         }
 
         WriteSkill(cursorRoot, force, mode, into, root);
@@ -88,19 +91,26 @@ public sealed class CursorSync(RoleLibrary library, RoleRenderer renderer, strin
         return into.ToResult(mode);
     }
 
-    private void WriteAgent(string agentDir, string role, LoadedRole loaded, string? overrideCwd, bool force, SyncMode mode, SyncAccumulator into, SyncRoot root)
+    private void WriteAgent(string agentDir, string role, LoadedRole loaded, SyncSettings settings, string? overrideCwd, bool force, SyncMode mode, SyncAccumulator into, SyncRoot root)
     {
         RoleDefinition definition = loaded.Definition;
-        string frontmatter = BuildAgentFrontmatter(role, definition.Description, definition.Permission);
+        TierChoice choice = settings.Choose(Harness, role, "high", definition.Tiers["high"], DefaultModel);
+        SyncSettings.RecordModel(into, Harness, role, choice.Model, choice.Reason);
+        SyncSettings.RecordUnrenderedDeny(into, Harness, role, choice);
+        string frontmatter = BuildAgentFrontmatter(role, definition.Description, definition.Permission, choice.Model);
         string body = renderer.Render(role, "high", Harness, overrideCwd).SystemBody;
         string path = Path.Combine(agentDir, $"{role}.md");
         writer.Write(path, role, frontmatter, body, force, mode, into, root, localOverride: loaded.IsLocalOverride);
     }
 
-    private void WriteTierStub(string agentDir, string role, string tier, LoadedRole loaded, string? overrideCwd, bool force, SyncMode mode, SyncAccumulator into, SyncRoot root)
+    private void WriteTierStub(string agentDir, string role, string tier, LoadedRole loaded, SyncSettings settings, string? overrideCwd, bool force, SyncMode mode, SyncAccumulator into, SyncRoot root)
     {
-        // Every cursor stub emits `model: inherit`, so the model never differs from the base agent's (#30).
-        string frontmatter = BuildAgentFrontmatter($"{role}-{tier}", SyncWriter.TierDescription(role, tier, sameModel: true), loaded.Definition.Permission);
+        RoleDefinition definition = loaded.Definition;
+        TierChoice choice = settings.Choose(Harness, role, tier, definition.Tiers[tier], DefaultModel);
+        bool sameModel = choice.Model == settings.Choose(Harness, role, "high", definition.Tiers["high"], DefaultModel).Model;
+        if (!sameModel)
+            SyncSettings.RecordModel(into, Harness, $"{role}-{tier}", choice.Model, choice.Reason);
+        string frontmatter = BuildAgentFrontmatter($"{role}-{tier}", SyncWriter.TierDescription(role, tier, sameModel), definition.Permission, choice.Model);
         string body = renderer.RenderTierStub(role, tier, Harness, overrideCwd);
         string path = Path.Combine(agentDir, $"{role}-{tier}.md");
         writer.Write(path, role, frontmatter, body, force, mode, into, root, localOverride: loaded.IsLocalOverride);
@@ -156,16 +166,18 @@ public sealed class CursorSync(RoleLibrary library, RoleRenderer renderer, strin
         McpConfigSync.Merge(target, mode, force, into, manifest, root);
     }
 
-    private static string BuildAgentFrontmatter(string name, string description, string permission)
+    // `inherit` is the field's documented default and the only value that works on a Free plan, which
+    // refuses named model ids outright (NOTES.md "The cursor backend, validated against a real install"):
+    // only a `cursor:<id>` alias in claustrum.json names one (#53), so a tier otherwise lives in the body.
+    private static string DefaultModel(string _) => "inherit";
+
+    private static string BuildAgentFrontmatter(string name, string description, string permission, string model)
     {
         StringBuilder builder = new();
         builder.Append("---\n");
         builder.Append($"name: {name}\n");
         builder.Append($"description: {SyncWriter.YamlQuoted(description)}\n");
-        // `inherit` is the field's documented default and the only value that works on a Free plan,
-        // which refuses named model ids outright (NOTES.md "The cursor backend, validated against a
-        // real install") — so a role's tier lives in its body here, not in this field.
-        builder.Append("model: inherit\n");
+        builder.Append($"model: {model}\n");
         // `readonly: true` is cursor's own restricted-write rung; false is the default, so it is
         // written only where the role asks for it.
         if (permission == "readonly")

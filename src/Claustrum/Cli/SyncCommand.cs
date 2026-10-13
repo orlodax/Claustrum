@@ -1,4 +1,5 @@
 using System.CommandLine;
+using Claustrum.Core.Config;
 using Claustrum.Roles.Sync;
 
 namespace Claustrum.Cli;
@@ -50,25 +51,30 @@ public static class SyncCommand
             : null;
 
         SyncMode mode = check ? SyncMode.Check : dryRun ? SyncMode.DryRun : SyncMode.Write;
-        SyncResult result = MergeResults(harnesses.Select(harness => SyncOne(harness, roleFilter, global, force, mode)));
+
+        // The same layering `run` uses, so a synced @builder and a delegated builder name the same model
+        // (#53). `--global` takes the user layer alone, never the cwd repo's claustrum.json, for the reason
+        // it takes the library alone (#99): what a repo configures applies to that repo.
+        Config config = Config.Load(AppServices.Platform, global ? null : Environment.CurrentDirectory);
+        SyncResult result = MergeResults(harnesses.Select(harness => SyncOne(harness, roleFilter, global, force, mode, config)));
 
         return dryRun ? PrintDryRun(result) : check ? PrintCheck(result) : PrintWrite(result);
     }
 
-    private static SyncResult SyncOne(string harness, string[]? roleFilter, bool global, bool force, SyncMode mode)
+    private static SyncResult SyncOne(string harness, string[]? roleFilter, bool global, bool force, SyncMode mode, Config config)
     {
         string? globalRoot = global ? AnnounceGlobalRoot(harness) : null;
         string home = AppServices.Platform.HomeDirectory;
         return harness switch
         {
             "claude" => new ClaudeSync(AppServices.RoleLibrary, AppServices.RoleRenderer, home)
-                .Sync(Environment.CurrentDirectory, roleFilter, global, force, mode, global ? DesktopTarget() : null, globalRoot),
+                .Sync(Environment.CurrentDirectory, roleFilter, global, force, mode, global ? DesktopTarget() : null, globalRoot, config),
             "opencode" => new OpencodeSync(AppServices.RoleLibrary, AppServices.RoleRenderer, home)
-                .Sync(Environment.CurrentDirectory, roleFilter, global, force, mode, globalRoot),
+                .Sync(Environment.CurrentDirectory, roleFilter, global, force, mode, globalRoot, config),
             "copilot" => new CopilotSync(AppServices.RoleLibrary, AppServices.RoleRenderer, home)
-                .Sync(Environment.CurrentDirectory, roleFilter, global, force, mode, globalRoot),
+                .Sync(Environment.CurrentDirectory, roleFilter, global, force, mode, globalRoot, config),
             "cursor" => new CursorSync(AppServices.RoleLibrary, AppServices.RoleRenderer, home)
-                .Sync(Environment.CurrentDirectory, roleFilter, global, force, mode, global ? CursorGlobalBinary() : null, globalRoot),
+                .Sync(Environment.CurrentDirectory, roleFilter, global, force, mode, global ? CursorGlobalBinary() : null, globalRoot, config),
             _ => throw new ArgumentOutOfRangeException(nameof(harness), harness, "not in supportedHarnesses"),
         };
     }
@@ -126,6 +132,7 @@ public static class SyncCommand
         Dictionary<string, string> refused = [];
         Dictionary<string, string> realPaths = [];
         List<string> ignoredOverrides = [];
+        List<string> decisions = [];
 
         foreach (SyncResult result in results)
         {
@@ -133,6 +140,7 @@ public static class SyncCommand
             skipped.AddRange(result.Skipped);
             foreign.AddRange(result.Foreign);
             ignoredOverrides.AddRange(result.IgnoredOverrides ?? []);
+            decisions.AddRange(result.Decisions ?? []);
             foreach (KeyValuePair<string, string> link in result.Symlinks ?? new Dictionary<string, string>())
                 symlinks[link.Key] = link.Value;
             foreach (KeyValuePair<string, string> entry in result.Refused ?? new Dictionary<string, string>())
@@ -148,7 +156,7 @@ public static class SyncCommand
                 proposedContent[entry.Key] = entry.Value;
         }
 
-        return new SyncResult(written, skipped, foreign, proposedContent, symlinks, refused, realPaths, [.. ignoredOverrides.Distinct(StringComparer.Ordinal)]);
+        return new SyncResult(written, skipped, foreign, proposedContent, symlinks, refused, realPaths, [.. ignoredOverrides.Distinct(StringComparer.Ordinal)], decisions);
     }
 
     private static int PrintWrite(SyncResult result)
@@ -186,6 +194,7 @@ public static class SyncCommand
 
         PrintPaths("foreign (hand-edited; use --force to adopt)", result.Foreign, symlinks, realPaths);
         PrintIgnoredOverrides(result);
+        PrintPaths("models (the model each agent file names, and why; claustrum.json or the defaults)", [.. result.Decisions ?? []]);
 
         return PrintRefused(result) ? ExitCodes.Usage : ExitCodes.Ok;
     }

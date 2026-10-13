@@ -1,4 +1,5 @@
 using System.Text;
+using Claustrum.Core.Config;
 
 namespace Claustrum.Roles.Sync;
 
@@ -25,10 +26,11 @@ public sealed class CopilotSync(RoleLibrary library, RoleRenderer renderer, stri
     /// <summary>
     /// <paramref name="globalRoot"/> is the global root the caller already resolved from the
     /// environment (`COPILOT_HOME`); null means the default under `homeDirectory`.
+    /// <paramref name="config"/> is the merged `claustrum.json` the agents' model follows (#53); null means `auto`.
     /// </summary>
     public SyncResult Sync(
         string cwd, IReadOnlyList<string>? roles = null, bool global = false, bool force = false,
-        SyncMode mode = SyncMode.Write, string? globalRoot = null)
+        SyncMode mode = SyncMode.Write, string? globalRoot = null, Config? config = null)
     {
         // `--global` renders the library alone: a repo's `.claustrum/roles/` applies to that repo, and its
         // files must not leak into the user-global agents (issue #99).
@@ -52,6 +54,7 @@ public sealed class CopilotSync(RoleLibrary library, RoleRenderer renderer, stri
             Directory.CreateDirectory(agentDir);
 
         SyncAccumulator into = new();
+        SyncSettings settings = new(config);
 
         foreach (string role in targetRoles)
         {
@@ -59,11 +62,11 @@ public sealed class CopilotSync(RoleLibrary library, RoleRenderer renderer, stri
             if (global && RoleLibrary.HasLocalOverride(role, cwd))
                 into.IgnoredOverrides.Add(role);
 
-            WriteAgent(agentDir, role, loaded, overrideCwd, force, mode, into, root);
+            WriteAgent(agentDir, role, loaded, settings, overrideCwd, force, mode, into, root);
 
             foreach (string tier in generatedTiers)
                 if (loaded.Definition.Tiers.ContainsKey(tier))
-                    WriteTierStub(agentDir, role, tier, loaded, overrideCwd, force, mode, into, root);
+                    WriteTierStub(agentDir, role, tier, loaded, settings, overrideCwd, force, mode, into, root);
         }
 
         WriteSkill(githubRoot, force, mode, into, root);
@@ -71,18 +74,24 @@ public sealed class CopilotSync(RoleLibrary library, RoleRenderer renderer, stri
         return into.ToResult(mode);
     }
 
-    private void WriteAgent(string agentDir, string role, LoadedRole loaded, string? overrideCwd, bool force, SyncMode mode, SyncAccumulator into, SyncRoot root)
+    private void WriteAgent(string agentDir, string role, LoadedRole loaded, SyncSettings settings, string? overrideCwd, bool force, SyncMode mode, SyncAccumulator into, SyncRoot root)
     {
-        string frontmatter = BuildAgentFrontmatter(role, loaded.Definition.Description);
+        TierChoice choice = settings.Choose(Harness, role, "high", loaded.Definition.Tiers["high"], DefaultModel);
+        SyncSettings.RecordModel(into, Harness, role, choice.Model, choice.Reason);
+        SyncSettings.RecordUnrenderedDeny(into, Harness, role, choice);
+        string frontmatter = BuildAgentFrontmatter(role, loaded.Definition.Description, choice.Model);
         string body = renderer.Render(role, "high", Harness, overrideCwd).SystemBody;
         string path = Path.Combine(agentDir, $"{role}.agent.md");
         writer.Write(path, role, frontmatter, body, force, mode, into, root, localOverride: loaded.IsLocalOverride);
     }
 
-    private void WriteTierStub(string agentDir, string role, string tier, LoadedRole loaded, string? overrideCwd, bool force, SyncMode mode, SyncAccumulator into, SyncRoot root)
+    private void WriteTierStub(string agentDir, string role, string tier, LoadedRole loaded, SyncSettings settings, string? overrideCwd, bool force, SyncMode mode, SyncAccumulator into, SyncRoot root)
     {
-        // Every copilot stub emits `model: auto`, so the model never differs from the base agent's (#30).
-        string frontmatter = BuildAgentFrontmatter($"{role}-{tier}", SyncWriter.TierDescription(role, tier, sameModel: true));
+        TierChoice choice = settings.Choose(Harness, role, tier, loaded.Definition.Tiers[tier], DefaultModel);
+        bool sameModel = choice.Model == settings.Choose(Harness, role, "high", loaded.Definition.Tiers["high"], DefaultModel).Model;
+        if (!sameModel)
+            SyncSettings.RecordModel(into, Harness, $"{role}-{tier}", choice.Model, choice.Reason);
+        string frontmatter = BuildAgentFrontmatter($"{role}-{tier}", SyncWriter.TierDescription(role, tier, sameModel), choice.Model);
         string body = renderer.RenderTierStub(role, tier, Harness, overrideCwd);
         string path = Path.Combine(agentDir, $"{role}-{tier}.agent.md");
         writer.Write(path, role, frontmatter, body, force, mode, into, root, localOverride: loaded.IsLocalOverride);
@@ -107,13 +116,17 @@ public sealed class CopilotSync(RoleLibrary library, RoleRenderer renderer, stri
         writer.Write(path, "claustrum", frontmatter, body, force, mode, into, root);
     }
 
-    private static string BuildAgentFrontmatter(string name, string description)
+    // Without a `copilot:` alias the model is `auto`, for every class and tier (#30); a `copilot:<id>` alias
+    // in claustrum.json replaces it (#53).
+    private static string DefaultModel(string _) => "auto";
+
+    private static string BuildAgentFrontmatter(string name, string description, string model)
     {
         StringBuilder builder = new();
         builder.Append("---\n");
         builder.Append($"name: {name}\n");
         builder.Append($"description: {SyncWriter.YamlQuoted(description)}\n");
-        builder.Append("model: auto\n");
+        builder.Append($"model: {model}\n");
         builder.Append("---");
         return builder.ToString();
     }

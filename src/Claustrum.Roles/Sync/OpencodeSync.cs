@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json.Nodes;
+using Claustrum.Core.Config;
 using Claustrum.Roles.Model;
 
 namespace Claustrum.Roles.Sync;
@@ -35,10 +36,12 @@ public sealed class OpencodeSync(RoleLibrary library, RoleRenderer renderer, str
     /// <summary>
     /// <paramref name="globalRoot"/> is the global root the caller already resolved from the
     /// environment (`OPENCODE_CONFIG_DIR`, `XDG_CONFIG_HOME`); null means the default under `homeDirectory`.
+    /// <paramref name="config"/> is the merged `claustrum.json` the agents' model and deny follow (#53); null means
+    /// the hard-coded defaults.
     /// </summary>
     public SyncResult Sync(
         string cwd, IReadOnlyList<string>? roles = null, bool global = false, bool force = false,
-        SyncMode mode = SyncMode.Write, string? globalRoot = null)
+        SyncMode mode = SyncMode.Write, string? globalRoot = null, Config? config = null)
     {
         // `--global` renders the library alone: a repo's `.claustrum/roles/` applies to that repo, and its
         // files must not leak into the user-global agents (issue #99).
@@ -67,6 +70,7 @@ public sealed class OpencodeSync(RoleLibrary library, RoleRenderer renderer, str
             Directory.CreateDirectory(agentDir);
 
         SyncAccumulator into = new();
+        SyncSettings settings = new(config);
         if (!global)
             SyncManifestStore.RefuseIfEscaping(cwd, root, into);
 
@@ -76,11 +80,11 @@ public sealed class OpencodeSync(RoleLibrary library, RoleRenderer renderer, str
             if (global && RoleLibrary.HasLocalOverride(role, cwd))
                 into.IgnoredOverrides.Add(role);
 
-            WriteAgent(agentDir, role, loaded, overrideCwd, force, mode, into, root);
+            WriteAgent(agentDir, role, loaded, settings, overrideCwd, force, mode, into, root);
 
             foreach (string tier in generatedTiers)
                 if (loaded.Definition.Tiers.ContainsKey(tier))
-                    WriteTierStub(agentDir, role, tier, loaded, overrideCwd, force, mode, into, root);
+                    WriteTierStub(agentDir, role, tier, loaded, settings, overrideCwd, force, mode, into, root);
         }
 
         WriteCommand(harnessRoot, force, mode, into, root);
@@ -117,21 +121,25 @@ public sealed class OpencodeSync(RoleLibrary library, RoleRenderer renderer, str
         McpConfigSync.Merge(new McpConfigTarget(Harness, path, "mcp", entry, rootOnCreate), mode, force, into, SyncManifestStore.Read(cwd, into), root);
     }
 
-    private void WriteAgent(string agentDir, string role, LoadedRole loaded, string? overrideCwd, bool force, SyncMode mode, SyncAccumulator into, SyncRoot root)
+    private void WriteAgent(string agentDir, string role, LoadedRole loaded, SyncSettings settings, string? overrideCwd, bool force, SyncMode mode, SyncAccumulator into, SyncRoot root)
     {
         RoleDefinition definition = loaded.Definition;
-        RoleTier tier = definition.Tiers["high"];
-        string frontmatter = BuildAgentFrontmatter(definition.Description, OpencodeModelFor(tier.Model), tier.Effort);
+        TierChoice choice = settings.Choose(Harness, role, "high", definition.Tiers["high"], OpencodeModelFor);
+        SyncSettings.RecordModel(into, Harness, role, choice.Model, choice.Reason);
+        string frontmatter = BuildAgentFrontmatter(definition.Description, definition.Primary, choice);
         string body = renderer.Render(role, "high", Harness, overrideCwd).SystemBody;
         string path = Path.Combine(agentDir, $"{role}.md");
         writer.Write(path, role, frontmatter, body, force, mode, into, root, localOverride: loaded.IsLocalOverride);
     }
 
-    private void WriteTierStub(string agentDir, string role, string tier, LoadedRole loaded, string? overrideCwd, bool force, SyncMode mode, SyncAccumulator into, SyncRoot root)
+    private void WriteTierStub(string agentDir, string role, string tier, LoadedRole loaded, SyncSettings settings, string? overrideCwd, bool force, SyncMode mode, SyncAccumulator into, SyncRoot root)
     {
-        RoleTier roleTier = loaded.Definition.Tiers[tier];
-        bool sameModel = OpencodeModelFor(roleTier.Model) == OpencodeModelFor(loaded.Definition.Tiers["high"].Model);
-        string frontmatter = BuildAgentFrontmatter(SyncWriter.TierDescription(role, tier, sameModel), OpencodeModelFor(roleTier.Model), roleTier.Effort);
+        RoleDefinition definition = loaded.Definition;
+        TierChoice choice = settings.Choose(Harness, role, tier, definition.Tiers[tier], OpencodeModelFor);
+        bool sameModel = choice.Model == settings.Choose(Harness, role, "high", definition.Tiers["high"], OpencodeModelFor).Model;
+        if (!sameModel)
+            SyncSettings.RecordModel(into, Harness, $"{role}-{tier}", choice.Model, choice.Reason);
+        string frontmatter = BuildAgentFrontmatter(SyncWriter.TierDescription(role, tier, sameModel), definition.Primary, choice);
         string body = renderer.RenderTierStub(role, tier, Harness, overrideCwd);
         string path = Path.Combine(agentDir, $"{role}-{tier}.md");
         writer.Write(path, role, frontmatter, body, force, mode, into, root, localOverride: loaded.IsLocalOverride);
@@ -153,14 +161,32 @@ public sealed class OpencodeSync(RoleLibrary library, RoleRenderer renderer, str
         writer.Write(path, "claustrum", frontmatter, body, force, mode, into, root);
     }
 
-    private static string BuildAgentFrontmatter(string description, string model, string variant)
+    // `variant:` is opt-in (#35, option c): written only when the model spec itself carries `#<variant>`,
+    // never from the tier's effort, which a model may not publish. `mode: all` lets a primary role (the
+    // architect) be picked as the main agent and still be spawned as a subagent (#85).
+    private static string BuildAgentFrontmatter(string description, bool primary, TierChoice choice)
     {
+        (string model, string? variant) = choice.Model.Split('#', 2) is [string name, string tag] ? (name, tag) : (choice.Model, null);
         StringBuilder builder = new();
         builder.Append("---\n");
-        builder.Append("mode: subagent\n");
+        builder.Append(primary ? "mode: all\n" : "mode: subagent\n");
         builder.Append($"description: {SyncWriter.YamlQuoted(description)}\n");
         builder.Append($"model: {model}\n");
-        builder.Append($"variant: {variant}\n");
+        if (variant is not null)
+            builder.Append($"variant: {variant}\n");
+
+        // claustrum.json's deny, as the bash permission `run` writes (OpencodeBackend.WriteBashRules): deny
+        // entries only, no `"*": allow`, so the block never opens bash for a role whose level closes it.
+        if (choice.Deny.Length > 0)
+        {
+            builder.Append("permission:\n  bash:\n");
+            foreach (string pattern in choice.Deny.Distinct(StringComparer.Ordinal))
+            {
+                builder.Append($"    {SyncWriter.YamlQuoted(pattern)}: deny\n");
+                builder.Append($"    {SyncWriter.YamlQuoted($"{pattern} *")}: deny\n");
+            }
+        }
+
         builder.Append("---");
         return builder.ToString();
     }
