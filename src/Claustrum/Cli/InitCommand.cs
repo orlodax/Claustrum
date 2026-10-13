@@ -106,7 +106,7 @@ public static class InitCommand
     }
 
     // The real path when `path` resolves outside the repo, else null. Checked on the full path, leaf
-    // included: File.WriteAllText and AppendAllText follow a leaf link, and a dangling one creates its target.
+    // included, because File.WriteAllText and AppendAllText follow a leaf link, so the bytes land at its target.
     private static string? Refusal(SyncRoot root, string path) => root.Escapes(path) ? SyncRoot.Resolve(path) : null;
 
     private static string RefusedStatus(string escapesTo) => $"refused (resolves outside the repo → {escapesTo})";

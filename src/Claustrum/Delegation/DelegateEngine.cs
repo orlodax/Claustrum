@@ -275,7 +275,8 @@ public static class DelegateEngine
         {
             // 2026-10-13, #94: a cancel before Runner ran — the add undid what it made itself (T1) — is a
             // `cancelled` receipt like Runner's own, with the reservation closed at $0 through its funnel.
-            // `worktree` is null unless the add returned, but "no half-made worktree" is kept as an invariant.
+            // The `worktree is not null` branch is unreachable today: Runner never throws a cancel (its
+            // before-snapshot one is caught inside). Kept so a future throw cannot leave a worktree behind.
             string message = ex.Message;
             if (worktree is not null && await JobWorktree.TryRemoveAbandonedAsync(request.Cwd, worktree, CancellationToken.None) is { } cleanupFailure)
                 message = $"{message} (and cleaning up {worktree.Path} failed: {cleanupFailure.Message})";

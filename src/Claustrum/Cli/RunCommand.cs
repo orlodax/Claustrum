@@ -160,8 +160,9 @@ public static class RunCommand
         return env;
     }
 
-    // A cancel that says more than the framework's default — JobWorktree's undo naming what it left
-    // behind — is printed; a plain Ctrl-C stays silent. Shared with `coordinate`.
+    // Since #94 (2026-10-13) a cancelled add's "left behind: …" message is the receipt's `error`, printed by
+    // PrintHuman; this sees only cancels raised before a job exists (`coordinate`'s planning). A message
+    // beyond the framework's default is printed, a plain Ctrl-C stays silent. Shared with `coordinate`.
     internal static int Cancelled(OperationCanceledException ex)
     {
         if (!defaultCancelMessages.Contains(ex.Message, StringComparer.Ordinal))
