@@ -3931,27 +3931,44 @@ git drops the lock before it runs the hook.
     advises for removable media. Not narrowed to Claustrum's own entries: telling one from a stale
     foreign entry would need the realpath of a directory that no longer exists.
   - ⚠ A remove killed while the `.git` file still exists stays registered with part of its files
-    gone. prune leaves it, and the free refuses it as `uncommitted changes: D …`; `git worktree
-    remove --force <path>` clears it by hand.
+    gone. prune leaves it; since #106 the marker (below) lets the next free or `jobs clean` finish it,
+    and a worktree without the marker is refused as `uncommitted changes: D …` (`git worktree remove
+    --force <path>` clears it by hand).
   - ⚠ A directory prune unregistered keeps whatever files are left in it, and `jobs clean` then
     reports it (`not a working tree`) on every sweep until it is deleted by hand.
 
-- **A cancel during the free of the previous worktree (issue #106, 2026-10-13).** The free's plain `git
-  worktree remove` took the run's token, so a SIGTERM 0.3 s in (60k tracked files) killed git with 56,710
-  ` D` entries still registered; `prune` does not drop that, and the retry was refused. Three changes, all in
-  `TryRemoveAsync`: (1) once started, the remove runs under `CancellationToken.None` bounded by the repo-code
-  five minutes, and only then is the cancel honoured (`ThrowIfCancellationRequested`) — a finished remove
-  leaves nothing, so the cancelled receipt's `error` is the plain framework text; (2) a cancel that arrives
-  while the remove ends non-zero with the directory still there throws `git worktree remove was cancelled;
-  left behind: <path> (<git's reason>)`, which is the receipt's `error`, and a timeout rethrows with `<path>
-  may be left partly removed — git worktree remove --force "<path>" finishes it`; (3) detection, for what (1)
-  cannot reach (SIGKILL, a crash, the bound, a terminal Ctrl-C that signals git itself): `FreeBranchAsync`
-  finishes the remove with `--force` only when `IsHalfRemovedFreeAsync` proves it — the receipt holds no
-  "left uncommitted" warning, HEAD is the receipt's `commit`, no nested job worktrees, and status shows only
-  ` D` entries. Chosen over the issue's looser "mass deletions" because a force-remove of anything else is
-  lost work; an unproven state is still the plain refusal. Nothing commits the old worktree on this path. The
-  same `TryRemoveAsync` serves `jobs clean`, so a Ctrl-C there now waits for the remove too (a second press
-  still forces the exit). Not measured against a real 60k-file repo by the builder.
+- **A cancel during the free of the previous worktree (issue #106, 2026-10-13; redone the same day).** A
+  SIGTERM 0.3 s into a plain `git worktree remove` (60k tracked files) killed git with 56,710 ` D` entries still
+  registered; `prune` does not drop that. The first fix ran the remove under `CancellationToken.None` and
+  guessed a half-removed worktree by its shape (only ` D`, HEAD at the receipt's commit, no "uncommitted"
+  warning). A blind review measured it wrong 4/4: **on Unix git inherits Claustrum's process group, so the
+  terminal's SIGINT kills git regardless of the token** (receipt `failed`, not `cancelled`; 2/4 left thousands of
+  ` D`), and the shape misses real states (ignored files show as `??` once their `.gitignore` is deleted) and can
+  force-remove real uncommitted deletions. Now, in `TryRemoveAsync`, no guessing:
+  - **The marker.** After Claustrum's own clean check passes (`UncommittedAsync`/`NestedWorktrees`), a file
+    `claustrum-removing` is written into the worktree's git admin dir (`<common dir>/worktrees/<id>/`, found by
+    `rev-parse --git-dir` inside it and refused unless it differs from `--git-common-dir` and holds a `gitdir`
+    file). Git deletes that dir only once the worktree is fully gone, so the marker means "a remove proved safe
+    was started". A normal git refusal (non-zero, no signal) deletes it again.
+  - **Killed or timed out.** Exit code > 128 on Unix (a signal: 130 SIGINT, 143 SIGTERM, 137 SIGKILL) or the
+    five-minute bound: the marker stays and `git worktree remove --force` finishes the job at once under
+    `CancellationToken.None`, safe because the clean check passed just before (a failed finish also runs
+    `worktree prune`). If a cancel was requested, or git died of 130/143, the outcome is **cancelled**: a plain
+    `OperationCanceledException` when the token is cancelled, else `WorktreeInterruptedException` (a subclass,
+    so the engine's catch also takes the race where git's death is seen before the handler cancels the token).
+    The message names any leftover. Otherwise a leftover is the refusal text `…left partly removed…`.
+  - **Recovery on a retry.** `FreeBranchAsync` and `RemoveAsync` (`jobs clean`) call `HasRemovingMarkerAsync`:
+    the admin dirs are scanned for a marker whose `gitdir` file ends in `/.claustrum/worktrees/<job id>/.git`
+    (the worktree's own `.git` may already be deleted, so `rev-parse` there cannot be used). Marker present: the
+    remove is `--force`; absent: a dirty worktree is refused exactly as before. The receipt is no longer read.
+  - **`jobs clean`** installs `CancelSignalHandler` like `run`: the first Ctrl-C/SIGTERM lets the remove in flight
+    finish (it runs under no token), stops the sweep and exits 130; a second press exits at once. The earlier
+    note that a Ctrl-C there "waits for the remove" was false: `jobs clean` passed `None` and had no handler.
+  - **Smoke (2026-10-13, 60k files, fake backend, `kill -INT -<pgid>` 0.4 s into the free): 3/3 receipts
+    `cancelled`, worktree gone, a retry of `--branch` succeeds; SIGKILL of the group at 0.7 s and 0.85 s left
+    51,737 and 9,493 files, the next `--branch` and `jobs clean` finished them. `jobs clean` SIGINT: exit 130,
+    nothing left.** Open: a worktree whose `.git` file was already deleted when the kill came is dropped by
+    `prune` (its marker with it) and the leftover directory stays, reported by `jobs clean` as before.
 
 ### The job's own worktree off its branch keeps its snapshot (review T3, 2026-10-08)
 
@@ -5329,6 +5346,11 @@ committed `.claustrum -> outside` put a checkout, the lock files and the probe o
   the branch lock before even `BranchExistsAsync`; the `max_parallel 1` in-place path checks its one slot file
   before the wait; `coordinate` checks the probe before `CreateDirectory`. After `Runner.Validate`, so a blind-gate
   rejection stays an exception with nothing minted.
+- **Re-checked after the waits (review, 2026-10-13).** A slot wait and a branch-lock wait can take minutes, and a
+  link can appear meanwhile. `RoleConcurrencyGate.AcquireAsync` takes a `beforeCreate` callback, asked for the
+  lock directory and for every slot file just before it is opened (each poll); the engine's callback throws and
+  the wrapper turns it into the same refused receipt. The engine then asks about the job worktree once more after
+  both waits and before admission (so no reservation to release), i.e. before `CheckOutBranchAsync`/`AddAsync`.
 - **Root.** The cwd the run uses, never the git root (see "`sync` never writes outside its root"): over-refusing
   beats a stray write. The job directory under `~/.claustrum/jobs` is not in the repo and is not fenced.
 - **What comes back.** A job is minted if the caller has none, and `Runner.RefuseAsync` writes a `failed`
@@ -5339,8 +5361,14 @@ committed `.claustrum -> outside` put a checkout, the lock files and the probe o
   document, as for every other refusal. `coordinate` itself refuses at planning with a `CliUsageException`, like
   every `ArchitectWorktree` refusal: exit 2, no job, so no receipt (the architect's own isolated run would hit
   the same fence if a link appeared in between).
-- **Left alone.** `jobs clean` removes through `.claustrum/worktrees` and is not fenced here; neither are the
-  architect's own writes into `.claustrum/briefs`. An in-repo link (`.claustrum -> .state`) passes.
+- **`coordinate` planning (review, 2026-10-13).** `ArchitectWorktree` also fences `.claustrum/briefs/<probe>` and
+  `.claustrum/locks/<probe>`, and refuses any symlink *tracked* under `.claustrum` (`git ls-files -s -z --
+  .claustrum`, mode `120000`) with a `CliUsageException` naming the paths: a committed
+  `.claustrum/briefs/1-builder.md -> ~/.ssh/id_rsa` would be checked out into the architect's worktree and read
+  or written by its harness. `coordinate --json` catches `MachineryRefusedException` from the run like `run`
+  does: one `RunResult` document on stdout, exit 2.
+- **Left alone.** `jobs clean` removes through `.claustrum/worktrees` and is not fenced here. An in-repo link
+  (`.claustrum -> .state`) passes.
 - **Windows.** Not run by the builder; the walk and the OS placement are the `sync` fence's.
 
 ## Casts are fenced like sync (2026-10-13, issues #103, #46, #67)

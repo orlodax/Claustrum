@@ -28,13 +28,16 @@ public sealed class RoleConcurrencyGate : IAsyncDisposable
     /// Waits for one of <paramref name="maxParallel"/> slots named by <paramref name="key"/>, for at
     /// most <paramref name="timeout"/>. Build the key with <see cref="KeyFor"/>: the pool is a set of
     /// files on disk shared by every process in the repo, so two casts naming the same role with
-    /// different caps must not draw from one pool.
+    /// different caps must not draw from one pool. <paramref name="beforeCreate"/> sees each path
+    /// just before it is created (#104: the caller's fence, re-asked after every wait) and may throw.
     /// </summary>
-    public static async Task<RoleConcurrencyGate> AcquireAsync(string cwd, string key, int maxParallel, TimeSpan timeout, CancellationToken cancellationToken)
+    public static async Task<RoleConcurrencyGate> AcquireAsync(
+        string cwd, string key, int maxParallel, TimeSpan timeout, CancellationToken cancellationToken, Action<string>? beforeCreate = null)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(maxParallel, 1);
 
         string directory = LockDirectory(cwd);
+        beforeCreate?.Invoke(directory);
         Directory.CreateDirectory(directory);
 
         // A bounded wait, not `while (true)`: a sibling builder that hangs holds its slot until its
@@ -47,6 +50,7 @@ public sealed class RoleConcurrencyGate : IAsyncDisposable
             for (int slotIndex = 0; slotIndex < maxParallel; slotIndex++)
             {
                 string path = SlotPath(cwd, key, slotIndex);
+                beforeCreate?.Invoke(path);
                 try
                 {
                     return new RoleConcurrencyGate(new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None));

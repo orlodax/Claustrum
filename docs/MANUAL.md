@@ -93,9 +93,12 @@ claustrum run <role> [--brief <text> | --brief-file <path|->]
   will not check out (mid-rebase in another worktree) or does not check out within 5 minutes, or a
   wait for the branch that outlasts `--timeout` comes back `status: failed` (exit 1, a receipt like
   any other) with the reason — and the holder, if any — in `error`, and no worktree left behind
-  (`error` names anything the undo could not remove). A cancel or a timeout during the free of the
-  previous job's worktree lets `git worktree remove` finish (up to 5 minutes), then ends the run; `error`
-  names a worktree git left partly removed, and the next `--branch` run finishes that one itself.
+  (`error` names anything the undo could not remove). A Ctrl-C, SIGTERM or timeout
+  during the free of the previous job's worktree does not leave it half removed: a `git worktree remove`
+  killed by the signal (git shares the terminal's process group) is finished at once with `--force` — only
+  after Claustrum's own check found nothing uncommitted — and the run ends `cancelled`; `error` names
+  anything still left. If the process itself is killed (SIGKILL), the next `--branch` run, or `jobs clean`,
+  finishes that remove, and only that one: a dirty worktree without Claustrum's marker is still refused.
 - `--stream` echoes the backend's output to **stderr** while it runs; stdout still carries only
   the final document. `--raw` adds the backend's untouched response under `raw`.
 - Without `--json`, stdout gets `status:`, then `branch:`/`worktree:`/`commit:` when the run was
@@ -152,7 +155,10 @@ backend, or it skips with "no model alias … resolves to this backend".
 - `show`: the receipt (`result.json`), or the request if it has not finished.
 - `logs`: the captured stdout (readable while the job runs); `--stderr` for the other stream.
 - `clean`: removes the **worktrees** of finished isolated jobs; their branches stay, with the work
-  committed on them. It never forces: a worktree with anything uncommitted — new files included,
+  committed on them. It never forces — except to finish a remove it (or a `--branch` free) started and
+  a signal or kill cut short, which Claustrum marks in the worktree's git directory once its own check
+  found nothing uncommitted. The first Ctrl-C or SIGTERM lets the remove in flight finish and stops the
+  sweep (exit 130); a second one exits at once. A worktree with anything uncommitted — new files included,
   whatever `status.showUntrackedFiles` says (a commit the runner could not make, a hard-killed run)
   — or one git will not remove plainly (a submodule the role populated) is printed as `could not
   remove <job>: <path> left in place: <reason>` and exits 1. Commit or discard what is in it, then
@@ -523,8 +529,9 @@ job, a job this `CLAUSTRUM_HOME` has no directory for (one run under another hom
 `jobs.keep_last`: `claustrum jobs clean` under the home that ran it frees it) or anything else is
 refused with the holder named. Runs on one branch never overlap: a second `--branch` run on it waits
 for the first one's receipt (up to its `--timeout`), then takes the branch over from the finished
-worktree. `claustrum jobs clean` removes the worktrees of finished jobs, never with `--force`, and
-keeps the branches.
+worktree. `claustrum jobs clean` removes the worktrees of finished jobs, never with `--force` (except to finish
+a remove of its own that a signal or a kill cut short), and keeps the branches. Its first Ctrl-C or SIGTERM
+lets the remove in flight finish and stops the sweep (exit 130); a second one exits at once.
 
 ## 10. Budget
 
@@ -612,7 +619,8 @@ local edit hidden by `git update-index --skip-worktree` or `--assume-unchanged` 
 whatever the edit is), an untracked `.mcp.json`/`opencode.json`/`opencode.jsonc` (what `claustrum
 init` writes: commit it, or git-ignore it as a local copy), and a `.claustrum/{worktrees,briefs,locks}/`
 that no committed rule ignores (`claustrum jobs clean` could not remove the architect's worktree, and
-the architect's own `git add` would take in its builders' worktrees, briefs and locks). Commit them,
+the architect's own `git add` would take in its builders' worktrees, briefs and locks), and a symlink
+committed anywhere under `.claustrum` (the architect's harness would read or write through it: `git rm` it). Commit them,
 then rerun. A committed harness config with a local edit only warns: the worktree gets `HEAD`'s copy.
 The runner's own commit leaves `.claustrum/{worktrees,briefs,locks}/` out whatever the rules say, and
 leaves out — with a warning, committing the rest — any other directory that is a git repository of

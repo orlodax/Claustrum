@@ -33,7 +33,8 @@ public static class JobsCommands
             "clean",
             "Remove finished isolated jobs' worktrees (docs/PLAN.md §D4); their branches, which carry the work, are kept. "
                 + "A worktree with uncommitted changes is reported and left in place, and so is one holding job worktrees of its own "
-                + "(a coordinate architect's: clean it with --cwd <that worktree> first).") { cleanCwd };
+                + "(a coordinate architect's: clean it with --cwd <that worktree> first). The first Ctrl-C or SIGTERM lets the remove in "
+                + "flight finish and stops the sweep (exit 130); a second one exits at once.") { cleanCwd };
         clean.SetAction(async parseResult => await CleanAsync(parseResult.GetValue(cleanCwd)));
 
         Argument<string> budgetTree = new("tree") { Description = "Job tree id — the CLAUSTRUM_PARENT_JOB its members ran with." };
@@ -130,7 +131,8 @@ public static class JobsCommands
     // JobDirectory.IsFinished decides which ones are done with. The branch is never touched here, and
     // it carries the job's work as a commit since #61, so the architect can still rebase from it. A
     // worktree that still holds uncommitted work is reported and left, never forced (F3) — and so is a
-    // coordinate architect's that still holds its children's (#74): `--cwd <it>` sweeps those first.
+    // coordinate architect's that still holds its children's (#74): `--cwd <it>` sweeps those first. The one
+    // forced remove finishes a free of ours that was cut short (#106, JobWorktree's marker).
     private static async Task<int> CleanAsync(string? cwdOption)
     {
         string cwd = Path.GetFullPath(cwdOption ?? Environment.CurrentDirectory);
@@ -142,10 +144,18 @@ public static class JobsCommands
         }
 
         string jobsRoot = JobDirectory.ResolveRoot(AppServices.Platform);
+
+        // #106: the first Ctrl-C or SIGTERM lets the remove in flight finish (it runs to its end under no token) and
+        // stops the sweep; a second one exits. Same handler as `run`; git shares our process group, so it hears the signal too.
+        using CancelSignalHandler cancel = new();
         int removed = 0;
+        OperationCanceledException? cancelled = null;
         List<string> failures = [];
         foreach (string worktreeDirectory in Directory.EnumerateDirectories(worktreesRoot))
         {
+            if (cancel.Token.IsCancellationRequested)
+                break;
+
             string jobId = Path.GetFileName(worktreeDirectory);
 
             // #74 G5: a `coordinate` hard-killed mid-probe leaves an empty `probe-<hex>` no job owns, which
@@ -166,9 +176,14 @@ public static class JobsCommands
             // finding). Report it and keep going.
             try
             {
-                await JobWorktree.RemoveAsync(cwd, jobId, CancellationToken.None);
+                await JobWorktree.RemoveAsync(cwd, jobId, cancel.Token);
                 Console.WriteLine($"removed {jobId} (branch {RecordedBranch(jobsRoot, jobId) ?? JobWorktree.BranchFor(jobId)} kept)");
                 removed++;
+            }
+            catch (OperationCanceledException ex)
+            {
+                cancelled = ex;
+                break;
             }
             catch (Exception ex) when (ex is InvalidOperationException or IOException or TimeoutException)
             {
@@ -176,11 +191,14 @@ public static class JobsCommands
             }
         }
 
-        if (removed == 0 && failures.Count == 0)
+        if (removed == 0 && failures.Count == 0 && !cancel.Token.IsCancellationRequested)
             Console.WriteLine("(nothing to clean)");
 
         foreach (string failure in failures)
             Console.Error.WriteLine($"could not remove {failure}");
+
+        if (cancelled is not null || cancel.Token.IsCancellationRequested)
+            return cancelled is null ? ExitCodes.Cancelled : RunCommand.Cancelled(cancelled);
 
         // Exit 1 when anything was left behind so a script does not read a partial sweep as a full
         // one; the worktrees that did come off are still gone.
