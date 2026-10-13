@@ -565,8 +565,8 @@ public static class JobWorktree
         }
         catch (OperationCanceledException ex)
         {
-            // Still a cancel, so `run` exits 130; what the undo could not remove rides on the message,
-            // which RunCommand.Cancelled prints.
+            // Still a cancel, so `run` exits 130; what the undo could not remove rides on the message. Since
+            // #94 (2026-10-13) that message is the cancelled receipt's `error`, not a RunCommand.Cancelled line.
             if (await UndoAddAsync(cwd, worktree) is { } left)
                 throw new OperationCanceledException($"git worktree add was cancelled; left behind: {left}", ex, ex.CancellationToken);
             throw;

@@ -110,8 +110,19 @@ public sealed class RoleLibrary
     public static bool HasLocalOverride(string role, string cwd)
     {
         string partsDir = LocalPath(cwd, role, "parts");
-        return File.Exists(LocalPath(cwd, role, "role.json")) || File.Exists(LocalPath(cwd, role, "ROLE.md"))
-            || (Directory.Exists(partsDir) && Directory.EnumerateFiles(partsDir).Any());
+        if (File.Exists(LocalPath(cwd, role, "role.json")) || File.Exists(LocalPath(cwd, role, "ROLE.md")))
+            return true;
+
+        try
+        {
+            return Directory.Exists(partsDir) && Directory.EnumerateFiles(partsDir).Any();
+        }
+        catch (Exception e) when (e is UnauthorizedAccessException or IOException)
+        {
+            // 2026-10-13 (#99 review): a repo link to an unreadable directory must not abort `sync --global`, where
+            // this probe only feeds the "ignored local overrides" notice. Something is there: the notice is honest.
+            return true;
+        }
     }
 
     /// <summary>Reads a `_shared/...` file (house rules, report format, tier stub template).</summary>

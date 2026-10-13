@@ -52,12 +52,15 @@ the workspace); `--cwd` on the server and `cwd` on each call override it.
 Exit codes are fixed: `0` ok · `1` backend failure · `2` usage or config error (a bad flag, a
 refused brief, a missing cast, a role sent to a harness it does not list, a `gh` failure, a
 `coordinate` whose cast is not committed) · `3` backend not found · `4` timeout · `5` budget · `130`
-cancelled. The first Ctrl-C (SIGINT), SIGQUIT or SIGTERM cancels with a `cancelled` receipt at any
-point after the brief is read: queued for a `max_parallel` slot, waiting for a `--branch` lock, adding
-its worktree, or running. It exits 130, prints the document on stdout under `--json`, writes
-`result.json`, and leaves no worktree or branch (#94). A signal that arrives while
-`run`/`coordinate` is still reading its brief from stdin gets the runtime's default exit (130 for
-Ctrl-C, 143 for SIGTERM): there is nothing to cancel yet. A second signal ends the
+cancelled. Once the job directory exists (queued for a `max_parallel` slot, waiting for a `--branch`
+lock, adding its worktree, or running), the first Ctrl-C (SIGINT), SIGQUIT or SIGTERM ends the run
+with a `cancelled` receipt: exit 130, the document on stdout under `--json`, `result.json` on disk
+(#94). A cancel while queued or adding leaves no worktree or branch; one just after the add, before
+the backend starts, leaves the registered worktree and its branch at the starting commit (`jobs
+clean` removes the worktree later, never the branch); one while running keeps both with a commit of
+the work so far (§9). Before the job directory exists
+(`run`/`coordinate` reading the brief from stdin, `coordinate` planning, e.g. while `gh` runs) the
+runtime's default exit applies (130 for Ctrl-C, 143 for SIGTERM) and nothing is minted. A second signal ends the
 process at once with the runtime's own code (130 after a second Ctrl-C, 143 after a second SIGTERM,
 131 after a second SIGQUIT), no receipt, and the backend may keep running (it received no signal of
 its own when the sender was `kill`). On Windows Ctrl-C and Ctrl-Break take the cancel path (both reach
@@ -640,9 +643,9 @@ not override. The `.claustrum` manifest and the JSON MCP targets follow the same
 that is a link resolving inside that directory is merged through. The fence covers reads too: a local role
 override whose real path leaves the directory is never read (exit 2, with the real path), so its content
 cannot reach an agent file or a `--dry-run` diff. On Windows a repo under a folder-mounted volume or a
-container bind mount is not refused for that: a link the string walk cannot place is placed by the OS
-(`GetFinalPathNameByHandle`), and only a link the OS cannot place is refused. Not yet measured on Windows
-outside CI. Under `--global` a linked root or
+container bind mount is expected to resolve through the OS placement (`GetFinalPathNameByHandle`) of a link
+the string walk cannot place; if the OS can spell neither a DOS nor a GUID name for it, the repo stays refused.
+None of this is measured on Windows beyond the CI leg's link tests. Under `--global` a linked root or
 agents/skills directory is your own setup and is written into; the `global root` line and the
 `(resolved → <real path>)` annotations say where the files really went. In either mode, whenever a replaced link's
 directory resolves elsewhere (a linked root, a linked agents directory, a `.claude` linked inside the repo), the
@@ -752,7 +755,7 @@ created. Budget ledgers live beside them under `budget/<tree>/`.
 | `api backend model must be 'openrouter:<model>' or 'anthropic:<model>'` | `--backend api` without a provider-prefixed model | `--model api:anthropic:<id>` |
 | `report_status: missing` | the role never wrote its report fence | read `final_message`; the run still counts, the report does not |
 | `status: failed`, "… slots … stayed unavailable" | waited past `--timeout` for a `max_parallel` slot | start fewer at once, or raise `--timeout` |
-| `status: failed`, "`--branch <name>`: …" | the branch does not exist locally, another checkout holds it (the main checkout, a running job, a dirty finished worktree, a job unknown under this `CLAUSTRUM_HOME`), git would not check it out or did not within 5 minutes (a slow smudge filter or post-checkout hook), or another run on the branch outlasted `--timeout` | read `error`: it names the holder, or quotes git; switch that checkout off the branch, let the job finish, commit/discard its changes, or run `claustrum jobs clean` under the home that ran the job; after a slow checkout, `left behind: …` names anything the undo could not remove (a cancelled add prints it on stderr as `warning: git worktree add was cancelled; left behind: …`) — `git worktree remove -f -f <path>` removes a worktree git left locked |
+| `status: failed`, "`--branch <name>`: …" | the branch does not exist locally, another checkout holds it (the main checkout, a running job, a dirty finished worktree, a job unknown under this `CLAUSTRUM_HOME`), git would not check it out or did not within 5 minutes (a slow smudge filter or post-checkout hook), or another run on the branch outlasted `--timeout` | read `error`: it names the holder, or quotes git; switch that checkout off the branch, let the job finish, commit/discard its changes, or run `claustrum jobs clean` under the home that ran the job; after a slow checkout, `left behind: …` names anything the undo could not remove (a cancelled add records `git worktree add was cancelled; left behind: …` as the receipt's `error`: `error: …` on stderr in human mode, inside the document under `--json`) — `git worktree remove -f -f <path>` removes a worktree git left locked |
 | `status: failed`, "`--branch <name>`: its previous worktree <path> holds a populated submodule, which git will not remove — …" | the finished job's worktree on that branch is clean but has a submodule checked out, and git refuses to remove any worktree that does | a commit made inside that submodule and pushed nowhere lives only in that worktree's git directory, so push or copy it first; then `git worktree remove --force "<path>"` and rerun |
 | `warnings[]`: "work left uncommitted on <branch>: …" | git refused the runner's commit of an isolated run (no identity, a hook), or — `… git add staged nothing: <git's line>` — `git add` staged nothing at all (a stale `index.lock`, or every path left out) | the work is still in the job's worktree: fix what git names, then commit it there; `jobs clean` leaves that worktree in place until you do |
 | `warnings[]`: "embedded repository at <path> left out of the commit on <branch> — move it out or add it as a submodule" | the role left a directory with its own `.git` (a clone, a `git init` with no commit, a hand-made worktree) that `.gitmodules` does not list; the rest of its work is committed on the branch | the repository is still in the job's worktree: move it out, or `git submodule add` it there and commit; `jobs clean` leaves that worktree in place until you do |

@@ -5096,6 +5096,14 @@ the #95 review (a `.git`-less project under `git init ~`). Dangling links: `File
 dangling symlink on Unix, so a dangling override link that points outside throws the #97 message; one that
 points inside still reaches `ReadAllText` and throws `FileNotFoundException` as before.
 
+- **`HasLocalOverride` tolerates an unreadable parts directory (found in review, 2026-10-13).** The probe
+  `Directory.EnumerateFiles` throws through a repo's link to an unreadable directory, and under `sync
+  --global` the probe only feeds the "ignored local overrides" notice, so `UnauthorizedAccessException` and
+  `IOException` count as "an override is present" and a repo cannot abort the global sync (#99).
+- **Out of scope in that review, all pre-existing, deferred past v0.1.0:** cast store writes through
+  committed links (#103); worktrees, locks and the probe under a linked `.claustrum` (#104); UNC placement
+  opens the host (#105).
+
 **#99, `sync --global` renders the library alone.** The owner's decision, 2026-10-13, option (a) of the
 issue: a repo's `.claustrum/roles/` applies to that repo and must not leak into `~/.claude/agents/` and its
 siblings, which every project on the machine shares. The alternatives were (b) refuse unless a
@@ -5112,8 +5120,8 @@ indented line. It never changes the exit code.
 (`.claustrum/{casts,briefs,worktrees}`) is created only if none of the three escapes: otherwise nothing is
 created, not even `.claustrum`, and the line is `.claustrum/: refused (resolves outside the repo → <real>)`.
 `claustrum.json`, `.gitignore` and `AGENTS.md` are fenced on the full path, leaf included, because
-`File.WriteAllText` and `AppendAllText` follow a leaf link and a dangling one creates its target outside:
-refused means no read and no write, with the status line `<name>: refused (resolves outside the repo →
+`File.WriteAllText` and `AppendAllText` follow a leaf link, so the bytes land at its target (`File.Exists` is
+true for a dangling link, so the writers would report "already present" or throw, not create): refused means no read and no write, with the status line `<name>: refused (resolves outside the repo →
 <real>)`. The harness syncs still run (they carry their own fence) and init exits 2 at the end. The three
 reproductions from the issue: `AGENTS.md -> ../../.claude/CLAUDE.md` appended the delegation block to the
 global `CLAUDE.md`; `.gitignore -> ../../.bashrc` appended to `~/.bashrc`, where bash then runs the
@@ -5185,7 +5193,14 @@ refused; a readable symlink reads attributes 1040; a missing path reads -1.
   first, so for a typed path with `..` after an opaque link the OS reading is the lexical one. Sync builds
   its paths from the cwd plus fixed names, so this does not arise.
 - Windows-only tests whose expectation changed: `AGlobalRootLinkTargetIsRefusedOnWindows` (a GLOBALROOT
-  target the OS can place is now `unresolved == false`, still `Escapes`).
+  target the OS can place is now `unresolved == false`, still `Escapes`). It was stale at review time; the
+  tester updates it in this batch.
+- Container bind mounts (`\\?\ContainerMappedDirectories\<GUID>`): if the OS can spell neither a DOS nor a
+  GUID name for the path, `canonicalRealPath` is null and the repo stays refused. Reasoned, not measured.
+
+**Display of an unplaceable component (review, 2026-10-13).** When the OS cannot place an opaque component,
+`Walk` returns its raw link target plus the rest (the typed path when no target is readable, #101): a refusal
+line reads `path → real`, and the typed path on the right would claim the fence resolved it.
 
 **Still out:** TOCTOU, and the typed-spelling limit for a path with no opaque component (see "Known limit:
 Windows spelling" in the #95 section).
@@ -5198,8 +5213,9 @@ in `DelegateEngine` each now catch `OperationCanceledException` when the token i
 `Runner.RefuseAsync(job, role, RunStatus.Cancelled, ex.Message[, admission?.Reservation])`: the in-place
 `max_parallel` slot wait; the isolated path's `BranchExistsAsync`, slot wait and `--branch` lock wait; and the
 worktree add/checkout. It is the same funnel as the #20 timeout and the #63 refusals, so `run --json` prints
-the document and exits 130 through `ExitCodeFor`, `coordinate` and MCP `job_result` see it, the reservation
-closes at $0, and the add's T1 undo leaves no worktree or branch. The in-place path mints a job for the
+the document and exits 130 through `ExitCodeFor`, `coordinate` (CLI) sees it, the MCP `delegate` tool returns
+the cancelled document, `job_result` cannot show a #94 receipt (`delegate_async` passes no cancellable
+token), the reservation closes at $0, and the add's T1 undo leaves no worktree or branch. The in-place path mints a job for the
 receipt exactly as its timeout branch does.
 
 Measured by the builder with the real binary (SIGTERM 3 s in, slots held with `flock`, a sleeping
@@ -5207,13 +5223,16 @@ Measured by the builder with the real binary (SIGTERM 3 s in, slots held with `f
 `worktree add`, and `--branch` lock held all exit 130 with a `cancelled` document on stdout and on disk,
 `exit_code: -1`, `duration_seconds: 0`, no worktree, no `claustrum/<job>` branch. The recorded `error` is the
 framework's `A task was canceled.` (the cancel arrives as `TaskCanceledException` from `Task.Delay` or
-`WaitForExitAsync`), the same text Runner's own cancel path records; human mode prints it as `error: …`
-after `status: Cancelled (exit 130)`. A cancel during `BranchExistsAsync` is too fast to provoke by hand, so
+`WaitForExitAsync`). Only Runner's before-snapshot cancel records the exception text; a cancel while the
+backend runs records an empty `error`, so human mode prints `error: A task was canceled.` after `status:
+Cancelled (exit 130)` for a cancel before start and no error line for one while running. A cancel during `BranchExistsAsync` is too fast to provoke by hand, so
 that catch is by reading.
 
 - **Still open, by reading, not in #94's scope:** a plain failed `AddAsync` (`InvalidOperationException`) is
   rethrown with no receipt, so that job stays `pending`; `Runner.Validate` throwing inside
   `RunAsync(prepared, job, …)` for a caller that minted first likely does the same.
+- **Also open, pre-existing (issue #106):** the `--branch` free step can be cancelled mid-`git worktree
+  remove` and leaves the previous job's worktree half-deleted with a clean-looking receipt.
 - **Who sees the change.** MCP `delegate_async` and `coordinate` pass `CancellationToken.None`, so no cancel
   reaches the engine there. The synchronous MCP `delegate` now returns a cancelled `RunResult` instead of an
   exception. `RunCommand.Cancelled` is unchanged and still handles any other `OperationCanceledException`

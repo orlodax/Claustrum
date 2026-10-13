@@ -143,7 +143,10 @@ public sealed class SyncRoot
                 string? placed = PlaceByOs(full);
                 canonical = placed is not null;
                 unresolved = placed is null;
-                return placed ?? IoPath.Combine([next, .. parts[(index + 1)..]]);
+
+                // A refusal line reads `path → real`: the right side must show what the link points at (its raw
+                // target), because the typed path there would claim the fence resolved it.
+                return placed ?? IoPath.Combine([link.Target ?? next, .. parts[(index + 1)..]]);
             }
 
             if (link.Target is not { } target)
