@@ -282,7 +282,8 @@ public static class DelegateEngine
             // #55: an api run's inlined AGENTS.md/CLAUDE.md are the branch's, fenced at the worktree.
             role = AppServices.RoleRenderer.WithRulesFrom(role, worktree.Path);
             RunRequest isolatedRunRequest = BuildRunRequest(bound, worktree.Path);
-            return await AppServices.Runner.RunAsync(isolatedRunRequest, role, isolatedOptions with { Worktree = worktree }, job, cancellationToken);
+            RunOptions worktreeOptions = isolatedOptions with { Worktree = worktree, PreRunWarnings = WithFreeWarning(isolatedOptions.PreRunWarnings, worktree) };
+            return await AppServices.Runner.RunAsync(isolatedRunRequest, role, worktreeOptions, job, cancellationToken);
         }
         catch (BranchRefusedException ex)
         {
@@ -319,6 +320,10 @@ public static class DelegateEngine
             throw;
         }
     }
+
+    // #106: trash a `--branch` free could not delete rides on the receipt as a warning, never a failure.
+    private static string[]? WithFreeWarning(string[]? warnings, JobWorktreeInfo worktree) =>
+        worktree.FreeWarning is { } freed ? [.. warnings ?? [], freed] : warnings;
 
     private static IEnumerable<string> LockPaths(string cwd, string key, int slots) =>
         Enumerable.Range(0, slots).Select(slot => RoleConcurrencyGate.SlotPath(cwd, key, slot));

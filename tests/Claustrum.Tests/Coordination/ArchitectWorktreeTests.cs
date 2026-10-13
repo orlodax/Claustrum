@@ -498,7 +498,8 @@ public sealed class ArchitectWorktreeTests : IDisposable
     }
 
     // A `.git` that is not a repository would fail the worktree add after the mint and leave a job nothing closes:
-    // refused now, exit 2, like a failed `gh`.
+    // refused now, exit 2, like a failed `gh`. The first git call of RequireReadyAsync is the tracked-link check's
+    // HEAD probe (`rev-parse`), since that check reads HEAD and runs before `check-ignore`.
     [Fact]
     public async Task AGitThatFailsIsRefusedAsync()
     {
@@ -508,7 +509,7 @@ public sealed class ArchitectWorktreeTests : IDisposable
         CliUsageException refusal = await Assert.ThrowsAsync<CliUsageException>(
             () => ArchitectWorktree.RequireReadyAsync(broken.Cwd, broken.Cwd, "default", Ct));
 
-        Assert.StartsWith($"coordinate runs the architect in a git worktree, and `git check-ignore` failed in {broken.Cwd}: ", refusal.Message, StringComparison.Ordinal);
+        Assert.StartsWith($"coordinate runs the architect in a git worktree, and `git rev-parse` failed in {broken.Cwd}: ", refusal.Message, StringComparison.Ordinal);
     }
 
     // ---- the stray probe `jobs clean` removes (G5) ------------------------------------------------------------

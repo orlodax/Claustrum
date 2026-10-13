@@ -38,7 +38,7 @@ public static partial class ArchitectWorktree
     /// `claustrum.json` or a role file under `.claustrum/roles/` that differs from HEAD — modified, staged, untracked,
     /// ignored, or hidden by `skip-worktree`/`assume-unchanged`; an uncommitted file holding the machinery's ignore
     /// rules; an untracked harness config `claustrum init` writes; a machinery directory no committed rule
-    /// ignores; a symlink committed under `.claustrum`; a `.claustrum` that leaves the repo (#104). Returns what
+    /// ignores; a symlink under `.claustrum` in HEAD or the index; a `.claustrum` that leaves the repo (#104). Returns what
     /// does not refuse: a tracked harness config whose local edit stays out of the worktree.
     /// </summary>
     public static async Task<string[]> RequireReadyAsync(string cwd, string gitRoot, string castName, CancellationToken cancellationToken)
@@ -141,16 +141,25 @@ public static partial class ArchitectWorktree
     }
 
     // #104: a symlink committed under `.claustrum` (`briefs/1-builder.md -> ~/.ssh/id_rsa`) is checked out into the
-    // architect's worktree, and its harness would read or write through it. Mode 120000 in the index, whatever it targets.
+    // architect's worktree, and its harness would read or write through it. Mode 120000, whatever it targets. The
+    // worktree is cut from HEAD, so HEAD is what decides (review 2026-10-13: a `git rm` left uncommitted passed the index
+    // alone); the index is read too, since the next commit would add one. Filtered here, not by pathspec, so that
+    // `.Claustrum/` on a case-insensitive checkout cannot slip past a literal one.
     private static async Task RefuseTrackedLinksAsync(string gitRoot, CancellationToken cancellationToken)
     {
-        // `-z`: `<mode> <sha> <stage>\t<path>` per entry, the path raw.
-        string output = await GitAsync(gitRoot, "ls-files", ["--literal-pathspecs", "ls-files", "-s", "-z", "--", ".claustrum"], 0, cancellationToken);
+        // `-z`: `<mode> <type|sha> <sha|stage>\t<path>` per entry, the path raw.
+        // An unborn branch has no HEAD (rev-parse exits 1): only its index can hold a link.
+        string born = await GitAsync(gitRoot, "rev-parse", ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], 1, cancellationToken);
+        string head = born.Trim().Length == 0 ? "" : await GitAsync(gitRoot, "ls-tree", ["ls-tree", "-r", "-z", "HEAD"], 0, cancellationToken);
+        string index = await GitAsync(gitRoot, "ls-files", ["ls-files", "-s", "-z"], 0, cancellationToken);
         string[] links =
         [
-            .. output.Split('\0', StringSplitOptions.RemoveEmptyEntries)
+            .. head.Split('\0', StringSplitOptions.RemoveEmptyEntries)
+                .Concat(index.Split('\0', StringSplitOptions.RemoveEmptyEntries))
                 .Where(entry => entry.StartsWith("120000 ", StringComparison.Ordinal))
-                .Select(entry => entry[(entry.IndexOf('\t') + 1)..]),
+                .Select(entry => entry[(entry.IndexOf('\t') + 1)..])
+                .Where(path => path.Equals(".claustrum", StringComparison.OrdinalIgnoreCase) || path.StartsWith(".claustrum/", StringComparison.OrdinalIgnoreCase))
+                .Distinct(StringComparer.Ordinal),
         ];
 
         if (links.Length > 0)
@@ -158,7 +167,7 @@ public static partial class ArchitectWorktree
             throw new CliUsageException(
                 $"coordinate runs the architect in a worktree that would check out {string.Join(", ", links.Take(NamedCap))}"
                 + $"{(links.Length > NamedCap ? $" (and {links.Length - NamedCap} more)" : "")}, a symlink committed under .claustrum: "
-                + "its harness would read or write through the link — `git rm` it first");
+                + "its harness would read or write through the link — `git rm` it and commit");
         }
     }
 

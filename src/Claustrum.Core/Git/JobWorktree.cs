@@ -40,10 +40,6 @@ public static class JobWorktree
     private static readonly string[] remainderArgs =
         ["--no-literal-pathspecs", "status", "--porcelain=v2", "-z", "--no-show-stash", "--untracked-files=all", "--ignore-submodules=none", .. allButMachinery];
 
-    // git checks this before its own clean check (git 2.56), and says it in the user's language: a fallback since
-    // round 5, behind HoldsPopulatedSubmoduleAsync.
-    private const string SubmoduleRefusal = "working trees containing submodules cannot be moved or removed";
-
     public static string PathFor(string cwd, string jobId) => Path.Combine(cwd, ".claustrum", "worktrees", jobId);
 
     public static string BranchFor(string jobId) => $"claustrum/{jobId}";
@@ -93,15 +89,18 @@ public static class JobWorktree
     /// removing that worktree, if it is clean; held anywhere else — the main checkout, a running job, a
     /// job this jobs root does not know, a worktree added by hand — it is left alone. Every refusal, git's
     /// own and a git past its bound included, is a <see cref="BranchRefusedException"/> naming the holder,
-    /// with no worktree left (F11, T1); a cancel still throws, once the add is undone. The caller holds
+    /// with no worktree left (F11, T1); a cancel still throws, once the add is undone. The freed worktree's
+    /// undeletable trash, if any, rides on <see cref="JobWorktreeInfo.FreeWarning"/>. The caller holds
     /// the branch's lock (<see cref="LockKeyFor"/>, R1) around the whole run.
     /// </summary>
     public static async Task<JobWorktreeInfo> CheckOutBranchAsync(string cwd, string jobId, string branch, string jobsRoot, CancellationToken cancellationToken)
     {
         string tip;
+        string? freeWarning;
         try
         {
-            if (await FreeBranchAsync(cwd, branch, jobsRoot, cancellationToken) is { } refusal)
+            (string? refusal, freeWarning) = await FreeBranchAsync(cwd, branch, jobsRoot, cancellationToken);
+            if (refusal is not null)
                 throw new BranchRefusedException(refusal);
 
             // The full ref, which show-ref just verified, read before the add: nothing holds the branch now.
@@ -119,7 +118,7 @@ public static class JobWorktree
 
         // The short name: git checks a local branch out as a branch, where `refs/heads/<name>` here
         // would be a detached HEAD.
-        JobWorktreeInfo worktree = new(PathFor(cwd, jobId), branch, cwd, tip, OwnsBranch: false);
+        JobWorktreeInfo worktree = new(PathFor(cwd, jobId), branch, cwd, tip, OwnsBranch: false, freeWarning);
         return await TryAddAsync(cwd, worktree, [branch], cancellationToken) is { } failure
             ? throw new BranchRefusedException($"--branch {branch}: {failure}")
             : worktree;
@@ -130,17 +129,15 @@ public static class JobWorktree
     /// worktree is clean, and one that is not — a commit git refused, a hard-killed run, a submodule the
     /// role populated, a new file `status.showUntrackedFiles=no` hides (R2) — is work nobody has looked
     /// at, so it throws naming the path and stays; so does one still holding job worktrees of its own
-    /// (#74, a `coordinate` architect's). The one forced remove is the finish of a remove Claustrum itself
-    /// started and was cut short (#106). The branch is untouched either way, so the architect can still rebase from it.
+    /// (#74, a `coordinate` architect's). A clean one is renamed aside and pruned (#106, <see cref="TryFreeAsync"/>).
+    /// The branch is untouched either way, so the architect can still rebase from it.
     /// </summary>
-    public static async Task RemoveAsync(string cwd, string jobId, CancellationToken cancellationToken)
+    /// <returns>A warning when the freed worktree's trash could not be deleted, else null.</returns>
+    public static async Task<string?> RemoveAsync(string cwd, string jobId, CancellationToken cancellationToken)
     {
         string path = PathFor(cwd, jobId);
-
-        // #106: a free of ours cut short earlier (its marker) is finished with --force; any other dirty worktree stays.
-        bool halfRemoved = await HasRemovingMarkerAsync(cwd, jobId, cancellationToken);
-        if (await TryRemoveAsync(cwd, path, force: halfRemoved, cancellationToken) is { } refusal)
-            throw new InvalidOperationException($"{path} left in place: {refusal}");
+        (string? refusal, string? warning) = await TryFreeAsync(cwd, path, cancellationToken);
+        return refusal is null ? warning : throw new InvalidOperationException($"{path} left in place: {refusal}");
     }
 
     /// <summary>
@@ -150,7 +147,8 @@ public static class JobWorktree
     /// be in there: on its branch, the branch still at <see cref="JobWorktreeInfo.BaseCommit"/>,
     /// nothing uncommitted. Otherwise — a run whose result.json could not be written after the runner
     /// committed — the branch is kept and the remove is plain, so a dirty worktree stays (F9).
-    /// Best-effort: this runs on a failure path whose own exception is the one worth surfacing.
+    /// Best-effort: this runs on a failure path whose own exception is the one worth surfacing, so even
+    /// a cancel (<see cref="WorktreeInterruptedException"/>) comes back as the return value, never thrown.
     /// </summary>
     /// <returns>Whatever went wrong while cleaning up, or null on success.</returns>
     public static async Task<Exception?> TryRemoveAbandonedAsync(string cwd, JobWorktreeInfo worktree, CancellationToken cancellationToken)
@@ -159,19 +157,20 @@ public static class JobWorktree
         {
             if (!await IsUntouchedAsync(worktree, cancellationToken))
             {
-                return await TryRemoveAsync(cwd, worktree.Path, force: false, cancellationToken) is { } refusal
+                // The trash warning is dropped: this runs on a failure path, and `jobs clean` sweeps what it left.
+                return (await TryFreeAsync(cwd, worktree.Path, cancellationToken)).Refusal is { } refusal
                     ? new InvalidOperationException($"{worktree.Path} left in place, branch {worktree.Branch} kept: {refusal}")
                     : null;
             }
 
-            if (await TryRemoveAsync(cwd, worktree.Path, force: true, cancellationToken) is { } failure)
+            if (await TryForceRemoveAsync(cwd, worktree.Path) is { } failure)
                 return new InvalidOperationException($"git worktree remove {worktree.Path} failed: {failure}");
 
             return await TryDeleteOwnedBranchAsync(cwd, worktree, cancellationToken) is { } branchFailure
                 ? new InvalidOperationException($"git branch -D {worktree.Branch} failed: {branchFailure}")
                 : null;
         }
-        catch (Exception ex) when (IsGitFailure(ex))
+        catch (Exception ex) when (IsGitFailure(ex) || ex is OperationCanceledException)
         {
             return ex;
         }
@@ -626,142 +625,216 @@ public static class JobWorktree
         return exitCode == 0 ? null : Reason("branch -D", exitCode, stderr, stdout);
     }
 
-    // Null when git removed it; otherwise why not. A plain remove asks git what is uncommitted first
-    // (R2): git's own check honours `status.showUntrackedFiles=no` and then deletes new files silently.
-    // #106: once `remove` has started it is finished — NOTES.md "Job machinery is fenced", "The marker".
-    private static async Task<string?> TryRemoveAsync(string cwd, string path, bool force, CancellationToken cancellationToken)
+    // Only a worktree Claustrum just made and that provably holds nothing (TryRemoveAbandonedAsync). Null when
+    // git removed it; otherwise why not.
+    private static async Task<string?> TryForceRemoveAsync(string cwd, string path)
     {
-        if (!force && (NestedWorktrees(path) ?? await UncommittedAsync(path, cancellationToken)) is { } refusal)
-            return refusal;
+        (int exitCode, string stdout, string stderr) =
+            await GitProcess.RunAsync(cwd, ["worktree", "remove", "--force", path], repoCodeTimeout, CancellationToken.None);
+        return exitCode == 0 ? null : Reason("worktree remove", exitCode, stderr, stdout);
+    }
 
-        string? marker = force ? null : await MarkRemovingAsync(path, cancellationToken);
-        (int exitCode, string stdout, string stderr, bool timedOut) = await RunRemoveAsync(cwd, path, force);
-        if (exitCode == 0)
+    // #106: frees a finished job's worktree without `git worktree remove`, whose half-done deletion a Ctrl-C leaves
+    // registered. Refuse unless it is clean (checks below, Claustrum's own: git's honours `status.showUntrackedFiles=no`
+    // and deletes new files silently, R2); rename it aside — atomic, so a kill leaves it whole or gone; prune the admin
+    // entry that now points nowhere; delete the trash. Refusal: why it stays. Warning: trash that would not delete.
+    // NOTES.md T1 "A cancel during the free" has the failure matrix, and why the earlier marker was dropped.
+    private static async Task<(string? Refusal, string? Warning)> TryFreeAsync(string cwd, string path, CancellationToken cancellationToken)
+    {
+        (string? refusal, string top) = await CheckFreeableAsync(cwd, path, cancellationToken);
+        if (refusal is not null)
+            return (refusal, null);
+
+        // The worktrees directory of #104's fence: the trash is its sibling, so it is no further out than the worktree.
+        if (Path.GetDirectoryName(Path.TrimEndingDirectorySeparator(path)) is not { } parent)
+            return ("it has no parent directory", null);
+
+        string trash = Path.Combine(parent, $"{TrashPrefix}{Path.GetFileName(path)}-{Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(4))}");
+        try
         {
-            cancellationToken.ThrowIfCancellationRequested();
+            Directory.Move(path, trash);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return ($"it could not be moved aside, so it is intact ({ex.Message})", null);
+        }
+
+        try
+        {
+            (string? stuck, bool stillListed) = await PruneAsync(cwd, top, cancellationToken);
+            if (stuck is not null)
+                return (stillListed ? RestoreAfter(stuck, path, trash) : $"{stuck} (its directory is now {trash})", null);
+        }
+        catch (OperationCanceledException ex)
+        {
+            string message = $"{ex.Message}; {path} is already moved to {trash}, which the next `--branch` run or `jobs clean` finishes";
+            throw ex is WorktreeInterruptedException
+                ? new WorktreeInterruptedException(message)
+                : new OperationCanceledException(message, ex, ex.CancellationToken);
+        }
+
+        return (null, DeleteTrash(path, trash));
+    }
+
+    // Failure null when `top` is no longer a registered worktree. The prune runs under the run's token: idempotent, and
+    // an interrupted one drops nothing it should keep. A stale entry of the operator's goes with it (T1's repo-wide caveat).
+    private static async Task<(string? Failure, bool StillListed)> PruneAsync(string cwd, string top, CancellationToken cancellationToken)
+    {
+        const string retry = "the next `--branch` run or `jobs clean` finishes it";
+        try
+        {
+            (int exitCode, _, string stderr) = await FreeGitAsync(cwd, ["worktree", "prune"], cancellationToken, repoCodeTimeout);
+            if (await ListWorktreesAsync(cwd, cancellationToken) is not { } listed)
+                return ($"git worktree list failed after the prune ({Reason("worktree prune", exitCode, stderr, "")}); {retry}", false);
+
+            return listed.Any(entry => SamePath(entry.Path, top))
+                ? ($"git still lists it after `git worktree prune` ({Reason("worktree prune", exitCode, stderr, "")})", true)
+                : (null, false);
+        }
+        catch (TimeoutException ex)
+        {
+            return ($"{ex.Message}; {retry}", false);
+        }
+    }
+
+    // The entry survived the prune: put the directory back, and the worktree is as it was.
+    private static string RestoreAfter(string stuck, string path, string trash)
+    {
+        try
+        {
+            Directory.Move(trash, path);
+            return $"{stuck}; it is intact";
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return $"{stuck}; moving it back failed ({ex.Message}), its directory is now {trash}";
+        }
+    }
+
+    // Best effort and under no token: it holds nothing (the checks proved it clean), so a failure or a kill costs only disk.
+    private static string? DeleteTrash(string path, string trash)
+    {
+        try
+        {
+            Directory.Delete(trash, recursive: true);
             return null;
         }
-
-        string reason = Reason("worktree remove", exitCode, stderr, stdout);
-        if (!timedOut && !DiedOfSignal(exitCode))
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            // A clean refusal: the remove never began, so nothing is half done and the marker would lie.
-            DeleteMarker(marker);
-            if (cancellationToken.IsCancellationRequested && Directory.Exists(path))
-                throw new OperationCanceledException($"git worktree remove was cancelled; left behind: {path} ({reason})", cancellationToken);
+            return $"{path} freed, but {trash} could not be deleted ({ex.Message}) — `claustrum jobs clean` sweeps it";
+        }
+    }
 
+    /// <summary>
+    /// #106, `jobs clean`: deletes every <c>.trash-*</c> a free left under <c>.claustrum/worktrees</c> and, only when
+    /// there was one, prunes the admin entries now pointing nowhere (a repo-wide prune on every sweep would also
+    /// unregister the operator's stale entries, T1). A failed delete is a returned message, never a throw.
+    /// </summary>
+    public static async Task<(int Swept, string[] Failures)> SweepTrashAsync(string cwd, CancellationToken cancellationToken)
+    {
+        string root = Path.Combine(cwd, ".claustrum", "worktrees");
+        if (!Directory.Exists(root))
+            return (0, []);
+
+        int swept = 0;
+        List<string> failures = [];
+        foreach (string trash in Directory.EnumerateDirectories(root, $"{TrashPrefix}*"))
+        {
             cancellationToken.ThrowIfCancellationRequested();
-            return reason;
+            try
+            {
+                Directory.Delete(trash, recursive: true);
+                swept++;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                failures.Add($"{trash}: {ex.Message}");
+            }
         }
 
-        // Killed (the terminal's SIGINT reaches git in Claustrum's process group, 2026-10-13) or past its bound: the
-        // clean check passed just before, so what is left is git's own half-done deletion and --force only finishes it.
-        (int finishExit, _, string finishError, bool finishTimedOut) = await RunRemoveAsync(cwd, path, force: true);
-        if (finishExit != 0)
-            await GitProcess.RunAsync(cwd, ["worktree", "prune"], CancellationToken.None);
+        if (swept == 0 && failures.Count == 0)
+            return (0, []);
 
-        string? left = Directory.Exists(path) ? Reason("worktree remove --force", finishExit, finishTimedOut ? reason : finishError, "") : null;
-        bool cancelled = cancellationToken.IsCancellationRequested || (DiedOfSignal(exitCode) && (exitCode is SigIntExit or SigTermExit));
-        if (cancelled)
+        try
         {
-            string message = left is null
-                ? $"git worktree remove was interrupted ({reason}); finished with --force"
-                : $"git worktree remove was cancelled; left behind: {path} ({left}) — a retry finishes it";
-            throw cancellationToken.IsCancellationRequested
-                ? new OperationCanceledException(message, cancellationToken)
-                : new WorktreeInterruptedException(message);
+            (int exitCode, _, string stderr) = await FreeGitAsync(cwd, ["worktree", "prune"], cancellationToken, repoCodeTimeout);
+            if (exitCode != 0)
+                failures.Add($"git worktree prune: {Reason("worktree prune", exitCode, stderr, "")}");
+        }
+        catch (Exception ex) when (ex is TimeoutException or Win32Exception)
+        {
+            failures.Add($"git worktree prune: {ex.Message}");
         }
 
-        return left is null ? null : $"{reason}; {path} left partly removed ({left}) — a retry finishes it";
+        return (swept, [.. failures]);
+    }
+
+    // The sibling prefix of a worktree renamed aside; `jobs clean` sweeps it and must not read one as a job.
+    private const string TrashPrefix = ".trash-";
+
+    public static bool IsTrash(string directoryName) => directoryName.StartsWith(TrashPrefix, StringComparison.Ordinal);
+
+    // Every condition under which the worktree at `path` may be renamed away; Top is git's realpath of it. All of
+    // them hold or it is today's refusal, unchanged: a dirty one is work nobody looked at (F3), a populated
+    // submodule may hold commits pushed nowhere (#74 J4), a locked one is somebody's (`git worktree lock`).
+    private static async Task<(string? Refusal, string Top)> CheckFreeableAsync(string cwd, string path, CancellationToken cancellationToken)
+    {
+        if (!Directory.Exists(path))
+            return ("it is not a directory", "");
+        if (new DirectoryInfo(path).LinkTarget is not null)
+            return ("it is a symbolic link", "");
+
+        try
+        {
+            // The prefix is empty at a working tree's top; a plain directory inside the main checkout resolves to it.
+            (int exitCode, string output, string stderr) = await FreeGitAsync(path, ["rev-parse", "--show-prefix", "--show-toplevel"], cancellationToken);
+            string[] lines = [.. output.Split('\n').Select(line => line.TrimEnd('\r'))];
+            if (exitCode != 0 || lines.Length < 2)
+                return ($"git finds no working tree there ({Reason("rev-parse", exitCode, stderr, "")})", "");
+            if (lines[0].Length > 0)
+                return ($"git resolves it to {lines[0]} inside another checkout, not a worktree of its own", "");
+
+            // Past the first entry, which is the main checkout: git lists a worktree by its realpath.
+            string top = lines[1];
+            if (await ListWorktreesAsync(cwd, cancellationToken) is not { } listed)
+                return ("git could not list the worktrees", "");
+            if (listed.Skip(1).FirstOrDefault(entry => SamePath(entry.Path, top)) is not { } entry)
+                return ($"it is not a linked worktree of {cwd}", "");
+            if (entry.Locked)
+                return ("it is locked (`git worktree lock`)", "");
+
+            string? unsafeToMove = NestedWorktrees(path) ?? await UncommittedAsync(path, cancellationToken);
+            if (unsafeToMove is null && await HoldsPopulatedSubmoduleAsync(path, cancellationToken))
+                unsafeToMove = $"it holds a populated submodule, whose commits may exist nowhere else — remove it by hand (`git worktree remove --force \"{path}\"`)";
+
+            return (unsafeToMove, top);
+        }
+        catch (Win32Exception)
+        {
+            return ("it was removed while it was being checked", "");
+        }
+    }
+
+    // On Unix git shares Claustrum's process group, so the terminal's SIGINT kills it before the token is cancelled
+    // (measured 2026-10-13): .NET reports 128 + the signal. Every git call of a free goes through here so that a
+    // Ctrl-C reads as an interrupted free (a `cancelled` receipt), never as git saying no.
+    private static async Task<(int ExitCode, string Stdout, string Stderr)> FreeGitAsync(
+        string cwd, string[] args, CancellationToken cancellationToken, TimeSpan? timeout = null)
+    {
+        (int exitCode, string stdout, string stderr) = timeout is { } bound
+            ? await GitProcess.RunAsync(cwd, args, bound, cancellationToken)
+            : await GitProcess.RunAsync(cwd, args, cancellationToken);
+        if (!OperatingSystem.IsWindows() && exitCode is SigIntExit or SigTermExit)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            throw new WorktreeInterruptedException($"git {args.First(arg => !arg.StartsWith('-'))} was interrupted (exit {exitCode}); nothing was lost");
+        }
+
+        return (exitCode, stdout, stderr);
     }
 
     private const int SigIntExit = 130;
     private const int SigTermExit = 143;
-
-    // .NET reports a signal-killed child as 128 + the signal; git's own failures are 128 and below.
-    private static bool DiedOfSignal(int exitCode) => !OperatingSystem.IsWindows() && exitCode > 128;
-
-    private static async Task<(int ExitCode, string Stdout, string Stderr, bool TimedOut)> RunRemoveAsync(string cwd, string path, bool force)
-    {
-        string[] args = force ? ["worktree", "remove", "--force", path] : ["worktree", "remove", path];
-        try
-        {
-            (int exitCode, string stdout, string stderr) = await GitProcess.RunAsync(cwd, args, repoCodeTimeout, CancellationToken.None);
-            return (exitCode, stdout, stderr, false);
-        }
-        catch (TimeoutException ex)
-        {
-            return (-1, "", ex.Message, true);
-        }
-    }
-
-    // #106: written once Claustrum's own clean check has passed, into the worktree's git admin dir, which git
-    // deletes only after the worktree is fully gone: its presence means "a remove proved safe was started".
-    private const string RemovingMarker = "claustrum-removing";
-
-    private static async Task<string?> MarkRemovingAsync(string path, CancellationToken cancellationToken)
-    {
-        if (!Directory.Exists(path))
-            return null;
-
-        try
-        {
-            (int exitCode, string output, _) = await GitProcess.RunAsync(path, ["rev-parse", "--git-dir", "--git-common-dir"], cancellationToken);
-            string[] dirs = output.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-
-            // A linked worktree's git dir differs from the common one; with no `.git` of its own left git
-            // answers for the main checkout, whose admin dir is no place for this.
-            if (exitCode != 0 || dirs.Length != 2 || Normalize(Path.GetFullPath(dirs[0], path)) == Normalize(Path.GetFullPath(dirs[1], path)))
-                return null;
-
-            string adminDir = Path.GetFullPath(dirs[0], path);
-            if (!File.Exists(Path.Combine(adminDir, "gitdir")))
-                return null;
-
-            string marker = Path.Combine(adminDir, RemovingMarker);
-            await File.WriteAllTextAsync(marker, "", CancellationToken.None);
-            return marker;
-        }
-        catch (Exception ex) when (ex is Win32Exception or IOException or UnauthorizedAccessException)
-        {
-            return null;
-        }
-    }
-
-    private static void DeleteMarker(string? marker)
-    {
-        try
-        {
-            if (marker is not null)
-                File.Delete(marker);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            // A marker that stays only makes a later free force a remove it already proved safe to finish.
-        }
-    }
-
-    // The marker of job <jobId>'s worktree, found by the admin dir's `gitdir` file (the worktree's own `.git` may
-    // be one of the files already deleted). True only when a remove Claustrum started was cut short.
-    private static async Task<bool> HasRemovingMarkerAsync(string cwd, string jobId, CancellationToken cancellationToken)
-    {
-        try
-        {
-            (int exitCode, string common, _) = await GitProcess.RunAsync(cwd, ["rev-parse", "--git-common-dir"], cancellationToken);
-            string admin = Path.Combine(Path.GetFullPath(common.Trim(), cwd), "worktrees");
-            if (exitCode != 0 || !Directory.Exists(admin))
-                return false;
-
-            string suffix = $"/.claustrum/worktrees/{jobId}/.git";
-            return Directory.EnumerateDirectories(admin)
-                .Where(dir => File.Exists(Path.Combine(dir, RemovingMarker)) && File.Exists(Path.Combine(dir, "gitdir")))
-                .Any(dir => File.ReadAllText(Path.Combine(dir, "gitdir")).Trim().Replace('\\', '/').EndsWith(suffix, StringComparison.OrdinalIgnoreCase));
-        }
-        catch (Exception ex) when (ex is Win32Exception or IOException or UnauthorizedAccessException)
-        {
-            return false;
-        }
-    }
 
     // #74: a `coordinate` architect's worktree holds its children's in its own .claustrum/worktrees,
     // which its status ignores and a plain `worktree remove` deletes anyway — a child's uncommitted file
@@ -785,11 +858,11 @@ public static class JobWorktree
 
         try
         {
-            (int prefixExit, string prefix, _) = await GitProcess.RunAsync(path, ["rev-parse", "--show-prefix"], cancellationToken);
+            (int prefixExit, string prefix, _) = await FreeGitAsync(path, ["rev-parse", "--show-prefix"], cancellationToken);
             if (prefixExit != 0 || prefix.Trim().Length > 0)
                 return null;
 
-            (int statusExit, string porcelain, string statusError) = await GitProcess.RunAsync(path, statusArgs, cancellationToken);
+            (int statusExit, string porcelain, string statusError) = await FreeGitAsync(path, statusArgs, cancellationToken);
             if (statusExit != 0)
                 return Reason("status", statusExit, statusError, "");
 
@@ -809,59 +882,49 @@ public static class JobWorktree
     }
 
     // The holder of the branch, if any, decides (#63): Claustrum frees only its own finished worktrees.
-    private static async Task<string?> FreeBranchAsync(string cwd, string branch, string jobsRoot, CancellationToken cancellationToken)
+    // Refusal null: the branch is free. Warning: the freed worktree's trash that would not delete.
+    private static async Task<(string? Refusal, string? Warning)> FreeBranchAsync(string cwd, string branch, string jobsRoot, CancellationToken cancellationToken)
     {
         if (!await BranchExistsAsync(cwd, branch, cancellationToken))
-            return NoSuchBranch(cwd, branch);
+            return (NoSuchBranch(cwd, branch), null);
 
-        // T1: a free killed mid-remove can leave the branch held by an entry whose directory, or its `.git`,
-        // is gone. prune drops exactly those — not an intact worktree, not a locked one (measured, git
-        // 2.56) — so such a holder is not refused as someone else's checkout.
-        await GitProcess.RunAsync(cwd, ["worktree", "prune"], cancellationToken);
+        // T1: a free killed after its rename leaves the branch held by an entry whose directory is gone. prune
+        // drops exactly those — not an intact worktree, not a locked one (measured, git 2.56) — so such a
+        // holder is not refused as someone else's checkout.
+        await FreeGitAsync(cwd, ["worktree", "prune"], cancellationToken);
 
         if (await FindHolderAsync(cwd, branch, cancellationToken) is not { } holder)
-            return null;
+            return (null, null);
 
         string holderJobId = Path.GetFileName(Path.TrimEndingDirectorySeparator(holder));
         string ours = PathFor(cwd, holderJobId);
         if (holderJobId.Length == 0 || !await IsSameWorktreeAsync(ours, holder, cancellationToken))
-            return $"--branch {branch}: already checked out in {holder}; a branch can be checked out in one worktree at a time — switch that checkout off it, then retry";
+            return ($"--branch {branch}: already checked out in {holder}; a branch can be checked out in one worktree at a time — switch that checkout off it, then retry", null);
 
         // R3: freed only on a receipt this jobs root holds — not `jobs clean`'s wider rule, under which a
         // job of another CLAUSTRUM_HOME, or one keep_last pruned, looks finished while it may be running.
         if (!Directory.Exists(Path.Combine(jobsRoot, holderJobId)))
         {
-            return $"--branch {branch}: checked out in {holder}, the worktree of job {holderJobId}, which is unknown under this CLAUSTRUM_HOME "
-                + $"({jobsRoot}) — if it is finished, run `claustrum jobs clean --cwd \"{cwd}\"` there first";
+            return ($"--branch {branch}: checked out in {holder}, the worktree of job {holderJobId}, which is unknown under this CLAUSTRUM_HOME "
+                + $"({jobsRoot}) — if it is finished, run `claustrum jobs clean --cwd \"{cwd}\"` there first", null);
         }
 
         if (!JobDirectory.HasResult(jobsRoot, holderJobId))
-            return $"--branch {branch}: checked out in {holder}, the worktree of job {holderJobId}, which has not finished (no result.json)";
+            return ($"--branch {branch}: checked out in {holder}, the worktree of job {holderJobId}, which has not finished (no result.json)", null);
 
-        // Not --force: a finished job whose commit failed (#61's warning) still has its work there
-        // uncommitted, and taking its branch back must not destroy it. The one exception is a free of ours that
-        // was killed halfway (#106): its marker says the clean check had passed, so --force only finishes it.
-        bool halfRemoved = await HasRemovingMarkerAsync(cwd, holderJobId, cancellationToken);
-
-        // #74 round 5 J4: git refuses a populated submodule before its own clean check, and in the user's language, so
-        // the shape is read first, git's way. The `--force` remedy is for a clean worktree only: a dirty one gets the
-        // generic text, as TryRemoveAsync's own check would give it.
-        if (!halfRemoved && await HoldsPopulatedSubmoduleAsync(ours, cancellationToken))
+        // #74 round 5 J4: a populated submodule is refused before the clean check can say "dirty", and its remedy is
+        // `--force` — for a clean worktree only: a dirty one gets the generic text, as TryFreeAsync's own check would.
+        if (await HoldsPopulatedSubmoduleAsync(ours, cancellationToken))
         {
-            return (NestedWorktrees(ours) ?? await UncommittedAsync(ours, cancellationToken)) is { } dirty
+            return ((NestedWorktrees(ours) ?? await UncommittedAsync(ours, cancellationToken)) is { } dirty
                 ? LeftInPlace(branch, holder, holderJobId, dirty)
-                : PopulatedSubmodule(branch, ours);
+                : PopulatedSubmodule(branch, ours), null);
         }
 
-        if (await TryRemoveAsync(cwd, ours, force: halfRemoved, cancellationToken) is not { } refusal)
-            return null;
-
-        // Round 4's English match, kept behind the probe as a fallback: whole at the end, never a fragment — this remedy is
-        // `--force`, and a refusal that merely quotes a path holding those words must not get it. TryRemoveAsync's status
-        // check passed, so nothing is uncommitted.
-        return refusal.EndsWith(SubmoduleRefusal, StringComparison.Ordinal)
-            ? PopulatedSubmodule(branch, ours)
-            : LeftInPlace(branch, holder, holderJobId, refusal);
+        // Not forced: a finished job whose commit failed (#61's warning) still has its work there uncommitted,
+        // and taking its branch back must not destroy it.
+        (string? refusal, string? warning) = await TryFreeAsync(cwd, ours, cancellationToken);
+        return (refusal is null ? null : LeftInPlace(branch, holder, holderJobId, refusal), warning);
     }
 
     private static string LeftInPlace(string branch, string holder, string holderJobId, string refusal)
@@ -882,42 +945,50 @@ public static class JobWorktree
     {
         try
         {
-            (int modulesExit, string modules, _) = await GitProcess.RunAsync(worktreePath, ["rev-parse", "--git-path", "modules"], cancellationToken);
+            (int modulesExit, string modules, _) = await FreeGitAsync(worktreePath, ["rev-parse", "--git-path", "modules"], cancellationToken);
             if (modulesExit == 0 && Directory.Exists(Path.Combine(worktreePath, modules.TrimEnd('\r', '\n'))))
                 return true;
 
             // `-s -z`: `<mode> <sha> <stage>\t<path>` per entry, the path raw.
-            (int filesExit, string files, _) = await GitProcess.RunAsync(worktreePath, ["ls-files", "-s", "-z"], cancellationToken);
+            (int filesExit, string files, _) = await FreeGitAsync(worktreePath, ["ls-files", "-s", "-z"], cancellationToken);
             return filesExit == 0 && files.Split('\0', StringSplitOptions.RemoveEmptyEntries)
                 .Where(entry => entry.StartsWith("160000 ", StringComparison.Ordinal))
                 .Any(entry => Path.Exists(Path.Combine(worktreePath, entry[(entry.IndexOf('\t') + 1)..], ".git")));
         }
         catch (Win32Exception)
         {
-            // Gone between the holder check and git's start: TryRemoveAsync answers for it.
+            // Gone between the holder check and git's start: TryFreeAsync answers for it.
             return false;
         }
     }
 
-    // `git worktree list --porcelain`: a `worktree <path>` line opens each entry, and the entry that has
-    // the branch checked out carries `branch refs/heads/<name>`. Line mode, not -z: -z needs git 2.36.
-    private static async Task<string?> FindHolderAsync(string cwd, string branch, CancellationToken cancellationToken)
+    private static async Task<string?> FindHolderAsync(string cwd, string branch, CancellationToken cancellationToken) =>
+        (await ListWorktreesAsync(cwd, cancellationToken))?.FirstOrDefault(entry => entry.Branch == $"refs/heads/{branch}")?.Path;
+
+    // `git worktree list --porcelain`: a `worktree <path>` line opens each entry (the main checkout first); the entry
+    // with a branch checked out carries `branch refs/heads/<name>`, a locked one a `locked` line. Line mode, not -z: -z
+    // needs git 2.36. Null when git fails.
+    private static async Task<WorktreeEntry[]?> ListWorktreesAsync(string cwd, CancellationToken cancellationToken)
     {
-        (int exitCode, string stdout, _) = await GitProcess.RunAsync(cwd, ["worktree", "list", "--porcelain"], cancellationToken);
+        (int exitCode, string stdout, _) = await FreeGitAsync(cwd, ["worktree", "list", "--porcelain"], cancellationToken);
         if (exitCode != 0)
             return null;
 
-        string? current = null;
+        List<WorktreeEntry> entries = [];
         foreach (string line in stdout.Split('\n').Select(line => line.TrimEnd('\r')))
         {
             if (line.StartsWith("worktree ", StringComparison.Ordinal))
-                current = line["worktree ".Length..];
-            else if (line == $"branch refs/heads/{branch}")
-                return current;
+                entries.Add(new WorktreeEntry(line["worktree ".Length..], Branch: null, Locked: false));
+            else if (entries.Count > 0 && line.StartsWith("branch ", StringComparison.Ordinal))
+                entries[^1] = entries[^1] with { Branch = line["branch ".Length..] };
+            else if (entries.Count > 0 && (line == "locked" || line.StartsWith("locked ", StringComparison.Ordinal)))
+                entries[^1] = entries[^1] with { Locked = true };
         }
 
-        return null;
+        return [.. entries];
     }
+
+    private sealed record WorktreeEntry(string Path, string? Branch, bool Locked);
 
     // git lists a worktree by its realpath (measured 2026-10-08: added through a symlinked cwd, it is
     // listed under the link's target), so `ours` is compared through git's own answer, never as typed.
@@ -928,9 +999,8 @@ public static class JobWorktree
 
         try
         {
-            (int exitCode, string stdout, _) = await GitProcess.RunAsync(ours, ["rev-parse", "--show-toplevel"], cancellationToken);
-            StringComparison comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
-            return exitCode == 0 && string.Equals(Normalize(stdout.Trim()), Normalize(gitListed), comparison);
+            (int exitCode, string stdout, _) = await FreeGitAsync(ours, ["rev-parse", "--show-toplevel"], cancellationToken);
+            return exitCode == 0 && SamePath(stdout.Trim(), gitListed);
         }
         catch (Win32Exception)
         {
@@ -940,6 +1010,9 @@ public static class JobWorktree
     }
 
     private static string Normalize(string path) => Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
+
+    private static bool SamePath(string left, string right) =>
+        string.Equals(Normalize(left), Normalize(right), OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
 
     private static bool IsGitFailure(Exception ex) => ex is TimeoutException or IOException or InvalidOperationException or Win32Exception;
 
@@ -995,4 +1068,5 @@ public static class JobWorktree
 // MainCheckout is the request cwd the worktree was cut from — the checkout a delegate is told never to
 // touch (#62). BaseCommit is the branch's tip when the worktree was made: what the run started from
 // (F4, F9). OwnsBranch is false for a `--branch` run, whose branch must outlive any cleanup (#63).
-public sealed record JobWorktreeInfo(string Path, string Branch, string MainCheckout, string BaseCommit, bool OwnsBranch);
+// FreeWarning: what freeing the branch's previous worktree left behind (#106), for the run's receipt.
+public sealed record JobWorktreeInfo(string Path, string Branch, string MainCheckout, string BaseCommit, bool OwnsBranch, string? FreeWarning = null);
