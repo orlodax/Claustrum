@@ -5140,6 +5140,18 @@ points inside still reaches `ReadAllText` and throws `FileNotFoundException` as 
   `Directory.EnumerateFiles` throws through a repo's link to an unreadable directory, and under `sync
   --global` the probe only feeds the "ignored local overrides" notice, so `UnauthorizedAccessException` and
   `IOException` count as "an override is present" and a repo cannot abort the global sync (#99).
+- **Two corrections from the final-branch review (2026-10-13, found by review).** (1) The #105 fence-first change
+  made `ReadLocal` throw for every role under a `.claustrum` linked outside the cwd, even with no override file
+  anywhere: #97's design is that library roles still render and only an escaping override that EXISTS is refused.
+  `SyncRoot.ProbeEscaping` (see "UNC targets are refused without opening") restores it: `Present` throws as
+  above, `Absent` is "no override" (`ReadLocal` returns null, `HasLocalOverride` counts nothing). A dangling
+  link out is `Present` (the test `ADanglingRoleMdLinkLeavingTheWorkingDirectoryIsRefused...` still holds).
+  (2) A LINKED override that stays inside is read only if its real path is a regular file with the typed name's
+  extension (`role.json` -> `.json`, `ROLE.md` and `parts/*.md` -> `.md`) and no `.git` component below the cwd; else
+  `RoleRenderException` (`... is a link to '<real>', which is not a regular .md file outside .git ...`). Reason:
+  `ROLE.md -> .git/config` carried a CI token into an api system prompt. "Linked" is `Resolve(path)` differing
+  from the typed full path, so a mid-path directory link counts too; "regular" is `File.Exists` (a FIFO named
+  `x.md` is not excluded, git cannot commit one).
 - **Out of scope in that review, all pre-existing, deferred past v0.1.0:** cast store writes through
   committed links (#103); worktrees, locks and the probe under a linked `.claustrum` (#104); UNC placement
   opens the host (#105).
@@ -5295,7 +5307,31 @@ walking inside the share. Authenticating to a host only to print where a file we
   `File.Exists`, `Directory.Exists` or `EnumerateFiles`; an escaping path answers true (an override exists, ignored
   under `--global`) and is never touched.
 - Unmeasured on Windows: that `Directory.Exists` on a local component never reaches a link target, and that
-  `ResolveLinkTarget(false)` does not open it.
+  `ResolveLinkTarget(false)` does not open it. Superseded by the reparse-first order below.
+
+**Reparse-first, and the shared probe (2026-10-13, found by the final-branch review).**
+- **The walk statted a symlink-to-UNC before reading its target.** `ReadLink` ran `Directory.Exists(next)` (via
+  `InfoOf`) and, for a null target, `Attributes` before the component's own target was known; the guards only saw
+  a target once it had been spliced into the NEXT iteration. A following stat of a link to `\\attacker\share` can
+  contact the host. Now `ReadLink` first does `new FileInfo(next).LinkTarget`: per the runtime source
+  (`FileSystem.Windows.cs`, `GetImmediateLinkTarget`) that opens the entry with `FILE_FLAG_BACKUP_SEMANTICS |
+  FILE_FLAG_OPEN_REPARSE_POINT` at desired access 0 and reads `FSCTL_GET_REPARSE_POINT`; it never traverses the
+  link, and `isDirectory` only maps an error code, so a `FileInfo` is as good as a `DirectoryInfo` for it. The
+  target, with `\??\` put back as the opaque guard does, goes through `IsForeignNetworkPath`; a foreign one makes
+  the walk unresolved (`LinkRead.Foreign`) BEFORE any `Directory.Exists`, `Attributes`, `ResolveLinkTarget` or
+  `PlaceByOs`. Only a component whose own target is not foreign, or that has none, is statted as before. The
+  opaque branch's own guard moved into `ReadLink`. Linux: same calls, same results, different order.
+  Residual unchanged: a link whose reparse data is unreadable has no readable target (`GetLinkTarget` swallows
+  the error, so null) and still reaches `Attributes` and the OS placement. Unmeasured on Windows.
+- **`SyncRoot.ProbeEscaping(path)` -> `EscapeVerdict`** (`Inside`, `Absent`, `Present`) is the one question a
+  caller asks when it must stat a path to learn whether anything is there. Inside: stat as usual. Escaping and the
+  walk unresolved, OS-placed (opaque), or a loop: `Present`, refuse, nothing statted. Escaping otherwise: stat
+  only the fully RESOLVED real path (local by construction, a foreign host was already refused on its spelling):
+  exists is `Present`, else `Absent`, unless the typed leaf is itself a link, read in the parent's resolved
+  directory with `LinkTarget` (a dangling link out is `Present`). `Escapes` is unchanged and never stats.
+  Users: `RoleLibrary.ReadLocal` and `HasLocalOverride` (#97, the regression above) and `CastStore` (#103 below).
+- **`GLOBAL??` and `??` were compared case-sensitively** in `IsNetworkName` while the rest of the predicate was
+  not: `\global??\unc\h\s` slipped through. Now `OrdinalIgnoreCase`.
 
 ## A cancel before Runner starts writes its receipt too (2026-10-13, issue #94)
 
@@ -5383,8 +5419,11 @@ directory (<real>); a cast is never <read|written|listed> through a link that le
 every cast failure already uses: exit 2 on stderr through `ExceptionBoundary`, an `McpException` through
 `McpExceptionBoundary` (`cast_list` is now guarded too, it was the one cast tool that was not). The fence root
 is the cwd the caller uses, never the git root (the #95 review: a `.git`-less project under `git init ~`).
-`Load` checks `File.Exists` first, so a missing or dangling cast is still "not found"; a cast reached through
-a link that stays inside the repo is read and written as before. Callers needing no change: `cast new`,
+A cast reached through a link that stays inside the repo is read and written as before. Fence first (2026-10-13,
+found by review): `Load` and `ListNames` used to stat (`File.Exists`, `Directory.Exists`) before the fence, and
+`Exists`/`TryLoadDefault`, the default path of every `run`, had none. All four now ask `ProbeEscaping` before
+any stat: `Present` throws the `CastException`, `Absent` (escaping, nothing at the real path) is "not found" or
+"no casts", `Inside` is the old behaviour. `Save` keeps the plain `Escapes` refusal: it must never write out. Callers needing no change: `cast new`,
 `create`, `use`, `show`, `list`, `questions` (its "existing casts" line), MCP `cast_create`, `run`/`delegate`
 (`CastApplication`) and `coordinate`, since they all go through `CastStore`. Not done: the check and the
 write are two steps (a race is out of scope, as for sync).

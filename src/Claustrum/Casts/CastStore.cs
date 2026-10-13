@@ -6,8 +6,9 @@ namespace Claustrum.Casts;
 // `.claustrum/casts/<name>.json` (docs/PLAN.md §D1). Mirrors JobDirectory/ClaudeSync: plain
 // File/Directory I/O, no IPlatform seam — casts are repo-local JSON, not the Windows/env-dependent
 // paths IPlatform exists to make testable (Claustrum.Core.Platform.IPlatform doc comment).
-// Every read, write and directory creation passes SyncRoot.Repo(cwd).Escapes on the full path, leaf
-// included: a committed link must not carry a cast out of the cwd (#103, NOTES "Casts are fenced like sync").
+// Every read, write and directory creation passes SyncRoot.Repo(cwd) on the full path, leaf included, and
+// the fence comes BEFORE any File/Directory.Exists: a committed link must not carry a cast out of the cwd, nor make
+// a stat contact a UNC host (#103, #105, NOTES "Casts are fenced like sync").
 public static class CastStore
 {
     public const string DefaultName = "default";
@@ -16,7 +17,11 @@ public static class CastStore
 
     public static string PathFor(string cwd, string name) => Path.Combine(DirectoryFor(cwd), $"{name}.json");
 
-    public static bool Exists(string cwd, string name) => File.Exists(PathFor(cwd, name));
+    public static bool Exists(string cwd, string name)
+    {
+        string path = PathFor(cwd, name);
+        return MayStat(cwd, path, "read") && File.Exists(path);
+    }
 
     // `run`/`delegate` fall back to `.claustrum/casts/default.json` when it exists and no --cast was
     // given (docs/PLAN.md §D1 "default: .claustrum/casts/default.json if present").
@@ -25,10 +30,9 @@ public static class CastStore
     public static Cast Load(string cwd, string name)
     {
         string path = PathFor(cwd, name);
-        if (!File.Exists(path))
+        if (!Exists(cwd, name))
             throw new CastException($"cast '{name}' not found at '{path}'");
 
-        RequireInside(cwd, path, "read");
         try
         {
             Cast cast = JsonSerializer.Deserialize(File.ReadAllText(path), CastJsonContext.Default.Cast)
@@ -71,10 +75,9 @@ public static class CastStore
     public static string[] ListNames(string cwd)
     {
         string directory = DirectoryFor(cwd);
-        if (!Directory.Exists(directory))
+        if (!MayStat(cwd, directory, "listed") || !Directory.Exists(directory))
             return [];
 
-        RequireInside(cwd, directory, "listed");
         return [.. Directory.EnumerateFiles(directory, "*.json")
             .Select(Path.GetFileNameWithoutExtension)
             .OfType<string>()
@@ -86,6 +89,18 @@ public static class CastStore
     private static void RequireInside(string cwd, string path, string verb)
     {
         if (SyncRoot.Repo(cwd).Escapes(path))
-            throw new CastException($"'{path}' resolves outside the working directory ({SyncRoot.Resolve(path)}); a cast is never {verb} through a link that leaves it");
+            throw Refusal(path, verb);
     }
+
+    // The fence before any stat (#105): true when the path stays inside and may be statted; false when it leaves the
+    // cwd with nothing at its real path (no such cast); an escaping path with something there throws.
+    private static bool MayStat(string cwd, string path, string verb) => SyncRoot.Repo(cwd).ProbeEscaping(path) switch
+    {
+        EscapeVerdict.Inside => true,
+        EscapeVerdict.Absent => false,
+        _ => throw Refusal(path, verb),
+    };
+
+    private static CastException Refusal(string path, string verb) =>
+        new($"'{path}' resolves outside the working directory ({SyncRoot.Resolve(path)}); a cast is never {verb} through a link that leaves it");
 }

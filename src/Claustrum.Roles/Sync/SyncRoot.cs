@@ -103,7 +103,7 @@ public sealed class SyncRoot
             }
 
             if (!(first.Equals("Global", StringComparison.OrdinalIgnoreCase) || first.Equals("GLOBAL??", StringComparison.OrdinalIgnoreCase)
-                || first.Equals("GLOBALROOT", StringComparison.OrdinalIgnoreCase) || first.Equals("??", StringComparison.Ordinal)))
+                || first.Equals("GLOBALROOT", StringComparison.OrdinalIgnoreCase) || first.Equals("??", StringComparison.OrdinalIgnoreCase)))
                 return false;
 
             name = rest;
@@ -239,20 +239,20 @@ public sealed class SyncRoot
                 return IoPath.Combine([next, .. parts[(index + 1)..]]);
             }
 
-            LinkRead link = ReadLink(next);
+            LinkRead link = ReadLink(next, ownShare);
+
+            // #105: the component's own target names a foreign network host. ReadLink saw it before any stat of the
+            // component, and the string is the answer: unresolved, shown as spelled, never statted or placed.
+            if (link.Foreign)
+            {
+                unresolved = true;
+                return IoPath.Combine([link.Target ?? next, .. parts[(index + 1)..]]);
+            }
 
             // A string walk cannot place this and Windows follows it anywhere. The OS can say where the whole
             // typed path lands, not our half-spliced one (#100); when it cannot, the path stays unresolved and refused.
             if (link.Opaque)
             {
-                // The raw target lost its first four characters (`\??\`); put them back to ask whether the OS would
-                // open a network host to place it (#105).
-                if (link.Target is { } raw && IsForeignNetworkPath(@"\??\" + raw, ownShare))
-                {
-                    unresolved = true;
-                    return IoPath.Combine([raw, .. parts[(index + 1)..]]);
-                }
-
                 string? placed = PlaceByOs(full);
                 canonical = placed is not null;
                 unresolved = placed is null;
@@ -321,9 +321,33 @@ public sealed class SyncRoot
             || (OperatingSystem.IsWindows() && EscapesUnder(path, lexicalDotDot: false));
     }
 
-    private bool EscapesUnder(string path, bool lexicalDotDot)
+    /// <summary>
+    /// <see cref="Escapes"/> for a caller that would stat the path to learn whether anything is there (#105): an
+    /// escaping path is never statted as typed, only its fully resolved real path, which is local by construction.
+    /// Present when it exists or the walk cannot say (unresolved, OS-placed, network, loop); Absent when it does not.
+    /// A leaf that is itself a link counts as present even if dangling, so a dangling link out is still refused.
+    /// </summary>
+    public EscapeVerdict ProbeEscaping(string path)
     {
-        string real = Walk(path, lexicalDotDot, out bool unresolved, out bool canonical);
+        if (!Fenced)
+            return EscapeVerdict.Inside;
+
+        EscapeVerdict verdict = ProbeUnder(path, OperatingSystem.IsWindows());
+        if (verdict == EscapeVerdict.Present || !OperatingSystem.IsWindows())
+            return verdict;
+
+        EscapeVerdict physical = ProbeUnder(path, lexicalDotDot: false);
+        return physical == EscapeVerdict.Inside ? verdict : physical;
+    }
+
+    private bool EscapesUnder(string path, bool lexicalDotDot) => Place(path, lexicalDotDot, out _, out _);
+
+    // Where the walk lands and whether that leaves the root. `opaque`: the answer is not a plain local path (the walk
+    // gave up, or the OS placed it), so nothing may be statted on it.
+    private bool Place(string path, bool lexicalDotDot, out string real, out bool opaque)
+    {
+        real = Walk(path, lexicalDotDot, out bool unresolved, out bool canonical);
+        opaque = unresolved || canonical;
         if (unresolved)
             return true;
 
@@ -332,6 +356,37 @@ public sealed class SyncRoot
         return canonical
             ? canonicalRealPath.Value is not { } root || !IsUnder(real, root)
             : !IsInside(real);
+    }
+
+    private EscapeVerdict ProbeUnder(string path, bool lexicalDotDot)
+    {
+        if (!Place(path, lexicalDotDot, out string real, out bool opaque))
+            return EscapeVerdict.Inside;
+
+        if (opaque)
+            return EscapeVerdict.Present;
+
+        try
+        {
+            return File.Exists(real) || Directory.Exists(real) || LeafIsLink(path, lexicalDotDot)
+                ? EscapeVerdict.Present
+                : EscapeVerdict.Absent;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            return EscapeVerdict.Present;
+        }
+    }
+
+    // A dangling link at the leaf leaves nothing at the real path, yet it is an entry a sync or a read would trip over.
+    // It is looked at in the parent's resolved directory (local), and its target is read, never followed.
+    private static bool LeafIsLink(string path, bool lexicalDotDot)
+    {
+        if (IoPath.GetDirectoryName(path) is not { Length: > 0 } parent)
+            return false;
+
+        string realParent = Walk(parent, lexicalDotDot, out bool unresolved, out bool canonical);
+        return unresolved || canonical || new FileInfo(IoPath.Combine(realParent, IoPath.GetFileName(path))).LinkTarget is not null;
     }
 
     private static bool IsUnder(string path, string root)
@@ -365,15 +420,24 @@ public sealed class SyncRoot
     private static FileSystemInfo InfoOf(string path) =>
         OperatingSystem.IsWindows() && Directory.Exists(path) ? new DirectoryInfo(path) : new FileInfo(path);
 
-    private static LinkRead ReadLink(string path)
+    // Reparse-first (2026-10-13, found by review): the component's own link target is read before anything stats it.
+    // FileInfo.LinkTarget opens the entry with FILE_FLAG_OPEN_REPARSE_POINT and reads the reparse buffer; it never
+    // traverses the link, whereas Directory.Exists and Attributes on a link to `\\attacker\share` may contact the host.
+    private static LinkRead ReadLink(string path, string? ownShare)
     {
         FileSystemInfo info;
         string? target;
         try
         {
+            target = new FileInfo(path).LinkTarget;
+
+            // The raw target lost its first four characters (`\??\`) when it was absolute NT-spelled: put them back.
+            if (target is not null && (IsForeignNetworkPath(target, ownShare) || IsForeignNetworkPath(@"\??\" + target, ownShare)))
+                return new(target, Opaque: false, Foreign: true);
+
+            // Only now may the component be statted: its own target, if it has one, is not a foreign host.
             // A directory link at the leaf is reported by FileInfo on Unix; Windows opens it differently.
             info = InfoOf(path);
-            target = info.LinkTarget;
             if (target is null)
             {
                 // 2026-10-13 (#101): a null LinkTarget is also a link whose reparse data is unreadable, or a reparse point that
@@ -392,6 +456,6 @@ public sealed class SyncRoot
         return new(target, OperatingSystem.IsWindows() && (IsOpaqueWindowsLinkTarget(target) || IsOpaqueWindowsLink(info)));
     }
 
-    /// <summary>One component's link state: its raw target when readable, and whether the string walk must not trust it.</summary>
-    private readonly record struct LinkRead(string? Target, bool Opaque);
+    /// <summary>One component's link state: its raw target when readable, whether the string walk must not trust it, and whether the target is a foreign network host.</summary>
+    private readonly record struct LinkRead(string? Target, bool Opaque, bool Foreign = false);
 }
