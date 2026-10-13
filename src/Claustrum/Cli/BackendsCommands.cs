@@ -322,8 +322,6 @@ public static class BackendsCommands
         {
             if (backendConfig.Path is not null)
                 PrintLine(config, $"backends.{backendName}.path", backendConfig.Path);
-            if (backendConfig.Injection is not null)
-                PrintLine(config, $"backends.{backendName}.injection", backendConfig.Injection);
         }
 
         if (config.Merged.Defaults is { } defaults)

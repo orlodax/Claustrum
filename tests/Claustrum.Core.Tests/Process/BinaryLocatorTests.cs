@@ -57,7 +57,7 @@ public sealed class BinaryLocatorTests
         platform.Files[overridePath] = "";
         platform.Files[Path.Combine(pathDir, "claude.exe")] = ""; // would also match, override must win
 
-        ResolvedBinary resolved = BinaryLocator.Locate("claude", [], new BackendConfig(overridePath, Injection: null), platform);
+        ResolvedBinary resolved = BinaryLocator.Locate("claude", [], new BackendConfig(overridePath), platform);
 
         Assert.Equal(overridePath, resolved.Executable);
     }
@@ -68,7 +68,7 @@ public sealed class BinaryLocatorTests
         FakePlatform platform = WindowsPlatform();
         platform.Files[Path.Combine(pathDir, "claude.exe")] = "";
 
-        ResolvedBinary resolved = BinaryLocator.Locate("claude", [], new BackendConfig(Path.Combine(Path.GetTempPath(), "missing.exe"), Injection: null), platform);
+        ResolvedBinary resolved = BinaryLocator.Locate("claude", [], new BackendConfig(Path.Combine(Path.GetTempPath(), "missing.exe")), platform);
 
         Assert.Equal(Path.Combine(pathDir, "claude.EXE"), resolved.Executable);
     }

@@ -68,6 +68,11 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
     private async Task<RunResult> RunCoreAsync(RunRequest request, ResolvedRole role, RunOptions options, JobPaths? jobOverride, CancellationToken cancellationToken)
     {
         string brief = ValidatedBrief(request, role, platform);
+
+        // What rendering the role could not do as asked (#55) is the receipt's first warning.
+        if (role.Warnings is { Length: > 0 } renderWarnings)
+            options = options with { PreRunWarnings = [.. renderWarnings, .. options.PreRunWarnings ?? []] };
+
         brief = AppendIsolationTrailer(brief, options.Worktree);
         brief = AppendReportTrailer(brief, role);
 

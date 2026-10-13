@@ -249,6 +249,12 @@ then the rest of `ROLE.md`, then `## House rules` ("read `AGENTS.md` and `CLAUDE
 law"). The report format sits second because a model skipped it on short tasks when it came last
 (`RoleRenderer.ComposeSystemBody`). The brief always goes in the **user** prompt.
 
+The `api` backend cannot read files, so for it alone `## House rules` carries the working directory's
+`AGENTS.md` and `CLAUDE.md` themselves, each under its own heading and capped at 32 KiB (cut at a
+character boundary and marked). A file that is absent is said so in one line. A file whose real path
+leaves the working directory (a committed `AGENTS.md -> ~/.ssh/id_rsa`) is never read; the run's
+`warnings` name the file and where it really points, and so does a truncation (#55).
+
 ## 5. The brief
 
 Markdown with fixed H2 sections; the runner reads them, the roles are told to expect them.
@@ -333,9 +339,10 @@ Layers, later wins per key, `deny` lists concatenate:
 `sync` reads the same layers (§12): `models` aliases, and `roles.<name>.model|effort|deny`, decide the synced
 agent files. `sync --global` reads only the user file, never the repo's `claustrum.json`.
 
-`backends.<name>` takes `path` and `injection`; `doctor` shows `injection`, but no backend reads it
-— `claude` always injects with `--append-system-prompt-file`. There is no JSON schema file, and a key
-Claustrum does not know (a `$schema`, say) is ignored rather than refused.
+`backends.<name>` takes `path` only. There was an `injection` key once; nothing ever read it and it was
+removed (#56), so a config that still carries it loads, the key ignored like any other unknown one — `claude`
+always injects with `--append-system-prompt-file`. There is no JSON schema file, and a key Claustrum does
+not know (a `$schema`, say) is ignored rather than refused.
 
 **Model grammar**: `[backend:]<model-id>`; a bare name is looked up as an alias (recursively,
 depth 3), then handed to the backend as an id. `claustrum init` writes only two aliases
@@ -741,7 +748,7 @@ end, call `coordinate` and relay `job_status`.
 | `opencode` | `npm i -g opencode-ai` | `OPENROUTER_API_KEY` / `DEEPSEEK_API_KEY` / `opencode auth` | inline agent in `OPENCODE_CONFIG_CONTENT`, process-scoped | from the JSONL usage events |
 | `cursor` | Cursor's `cursor-agent` installer (not the npm package of that name) | `cursor-agent login` or `CURSOR_API_KEY` | role prefixed to the prompt, fed on **stdin**; `-f` always (an untrusted workspace is a fast exit 1) | **none**; usage tokens only |
 | `copilot` | `npm i -g @github/copilot` | logged in (`~/.copilot/config.json`) or `COPILOT_GITHUB_TOKEN`/`GH_TOKEN`/`GITHUB_TOKEN` | per-job `.agent.md` via `--add-dir`, agent `claustrum-<role>` | **none** (`assistant.usage` is suppressed in JSON mode); `--reasoning-effort` is omitted for `auto` |
-| `api` | `curl` | `OPENROUTER_API_KEY` / `ANTHROPIC_API_KEY` by model prefix | system message; **no tools**, `changed_files` always empty | yes |
+| `api` | `curl` | `OPENROUTER_API_KEY` / `ANTHROPIC_API_KEY` by model prefix | system message (with `AGENTS.md`/`CLAUDE.md` inlined, §4); **no tools**, `changed_files` always empty | yes |
 
 Permission levels and what each backend does with them:
 
