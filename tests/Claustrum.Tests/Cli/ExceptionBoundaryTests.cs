@@ -10,6 +10,9 @@ namespace Claustrum.Tests.Cli;
 // docs/PLAN.md §A5's exit-code table is a contract callers script against, and two of the eleven
 // review findings were stated as "...now exits 2 naming the file" — but only the exception type was
 // ever asserted, never the code the process actually returns for it. This is that half.
+// #102: Handle prints to Console.Error, which RunCommandCancelTests redirects process-wide; outside its collection the two
+// classes ran in parallel and the other's capture caught these lines.
+[Collection("console redirect")]
 public sealed class ExceptionBoundaryTests
 {
     [Theory]
