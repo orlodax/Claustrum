@@ -654,7 +654,7 @@ override whose real path leaves the directory is never read (exit 2, with the re
 cannot reach an agent file or a `--dry-run` diff. On Windows a repo under a folder-mounted volume or a
 container bind mount is expected to resolve through the OS placement (`GetFinalPathNameByHandle`) of a link
 the string walk cannot place; if the OS can spell neither a DOS nor a GUID name for it, the repo stays refused.
-None of this is measured on Windows beyond the CI leg's link tests. Under `--global` a linked root or
+On Windows a link or target spelled as a network path (`\\server\share`, `\\?\UNC\…`, `\\?\GLOBALROOT\Device\Mup\…`, any letter case) is refused **without being opened**, so a committed link cannot make `sync` authenticate to a foreign host; a repo whose own directory is on a share keeps working for links that stay on that share (#105). None of this is measured on Windows beyond the CI leg's link tests. Under `--global` a linked root or
 agents/skills directory is your own setup and is written into; the `global root` line and the
 `(resolved → <real path>)` annotations say where the files really went. In either mode, whenever a replaced link's
 directory resolves elsewhere (a linked root, a linked agents directory, a `.claude` linked inside the repo), the

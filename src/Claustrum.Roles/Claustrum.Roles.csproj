@@ -4,6 +4,9 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
   <ItemGroup>
+    <InternalsVisibleTo Include="Claustrum.Roles.Tests" />
+  </ItemGroup>
+  <ItemGroup>
     <ProjectReference Include="..\Claustrum.Core\Claustrum.Core.csproj" />
   </ItemGroup>
   <ItemGroup>
