@@ -5,19 +5,30 @@ namespace Claustrum.Roles.Sync;
 /// <summary>
 /// The directory a sync writes under and, in repo mode, the fence that keeps it there: a target whose
 /// real path (every link on the way resolved) lies outside <see cref="RealPath"/>, or cannot be resolved
-/// (a link loop, an NT-namespace target on Windows), is refused. Under `--global` the root is the user's
-/// own and unfenced. NOTES.md "`sync` never writes outside its root through a linked directory" holds
-/// the rules and the Windows notes (issues #95, #93).
+/// (a link loop; on Windows a link the string walk cannot place and the OS cannot either), is refused.
+/// Where the string walk cannot place a Windows link (an NT-namespace target, a folder-mounted volume, an
+/// unreadable reparse point) the OS says where the path lands (<c>WindowsFinalPath</c>, issues #100, #101).
+/// Under `--global` the root is the user's own and unfenced. NOTES.md "`sync` never writes outside its
+/// root through a linked directory" holds the rules and the Windows notes (issues #95, #93).
 /// </summary>
 public sealed class SyncRoot
 {
     private const int MaxLinkHops = 40;
+
+    // What FileSystemInfo.Attributes reads for a path that does not exist or cannot be stat'ed.
+    private const FileAttributes NoSuchEntry = (FileAttributes)(-1);
+
+    private readonly Lazy<string?> canonicalRealPath;
 
     private SyncRoot(string path, bool fenced)
     {
         Path = path;
         RealPath = Resolve(path);
         Fenced = fenced;
+
+        // The root in the OS's own spelling: the only one an OS-placed candidate may be compared with,
+        // never RealPath, which may be as typed (an 8.3 `RUNNER~1` cwd).
+        canonicalRealPath = new(() => PlaceByOs(path));
     }
 
     /// <summary>The root as given: the cwd in repo mode, the global root under `--global`.</summary>
@@ -35,12 +46,13 @@ public sealed class SyncRoot
 
     /// <summary>
     /// The real path of <paramref name="path"/>: every link on the way, directories and leaf alike, is
-    /// followed; trailing components that do not exist yet stay as typed. <paramref name="unresolved"/> is
-    /// true when the walk could not be finished: the 40-hop cap was hit, or on Windows a link target is
-    /// opaque (<see cref="IsOpaqueWindowsLink(FileSystemInfo)"/>); the result is then the path as far as it was resolved.
-    /// `..` follows the OS: physical on Unix, lexical on Windows (NOTES.md, same section).
+    /// followed; trailing components that do not exist yet stay as typed. On Windows a component the string
+    /// walk cannot place (an opaque link target, an unreadable link or reparse point) is placed by the OS and
+    /// the result is the OS's path. <paramref name="unresolved"/> is true when the walk could not be finished:
+    /// the 40-hop cap was hit, or the OS could not place such a component; the result is then the path as far
+    /// as it was resolved. `..` follows the OS: physical on Unix, lexical on Windows (NOTES.md, same section).
     /// </summary>
-    public static string Resolve(string path, out bool unresolved) => Walk(path, OperatingSystem.IsWindows(), out unresolved);
+    public static string Resolve(string path, out bool unresolved) => Walk(path, OperatingSystem.IsWindows(), out unresolved, out _);
 
     /// <summary>
     /// The cheap string gate kept beside the structural <see cref="IsOpaqueWindowsLink(FileSystemInfo)"/>: a
@@ -59,8 +71,9 @@ public sealed class SyncRoot
     /// <summary>
     /// Windows: true when <paramref name="link"/> stores an absolute reparse target .NET could not turn into a
     /// Win32 path. ResolveLinkTarget(false) joins a relative target onto the link's directory and leaves an
-    /// absolute one with its first four characters dropped, and ToString() keeps that string (FullName would re-root it): a
-    /// result that is not fully qualified is an NT-namespace target, whatever its first component (#95 review).
+    /// absolute one with its first four characters dropped, and ToString() keeps that string (FullName would
+    /// re-root it): a result that is not fully qualified is an NT-namespace target, whatever its first component
+    /// (#95 review). The walk does not refuse such a link outright: it asks the OS where it lands (#100).
     /// Always false off Windows, where the walk never calls it.
     /// </summary>
     public static bool IsOpaqueWindowsLink(FileSystemInfo link)
@@ -88,9 +101,12 @@ public sealed class SyncRoot
     /// The one walker. <paramref name="lexicalDotDot"/> collapses `.`/`..` by string (Windows rule);
     /// otherwise they are components the walk applies itself, `..` popping the already-resolved
     /// <c>current</c> (Unix rule: the kernel applies `..` after the link before it is followed).
+    /// <paramref name="canonical"/> is true when the OS placed the path (Windows): the result is then in the
+    /// OS's spelling and may only be compared with <c>canonicalRealPath</c>, never with <see cref="RealPath"/>.
     /// </summary>
-    private static string Walk(string path, bool lexicalDotDot, out bool unresolved)
+    private static string Walk(string path, bool lexicalDotDot, out bool unresolved, out bool canonical)
     {
+        canonical = false;
         // Raw LinkTarget, not ResolveLinkTarget(returnFinalTarget: true) (2026-10-12): on Windows that
         // goes through GetFinalPathNameByHandle, which rewrites 8.3 names (RUNNER~1) on the resolved
         // side only, so a root and a target with no link between them would compare unequal.
@@ -118,19 +134,23 @@ public sealed class SyncRoot
             }
 
             string next = IoPath.Combine(current, part);
-            string? target = LinkTargetOf(next, out bool opaque);
-            if (target is null)
+            LinkRead link = ReadLink(next);
+
+            // A string walk cannot place this and Windows follows it anywhere. The OS can say where the whole
+            // typed path lands, not our half-spliced one (#100); when it cannot, the path stays unresolved and refused.
+            if (link.Opaque)
+            {
+                string? placed = PlaceByOs(full);
+                canonical = placed is not null;
+                unresolved = placed is null;
+                return placed ?? IoPath.Combine([next, .. parts[(index + 1)..]]);
+            }
+
+            if (link.Target is not { } target)
             {
                 current = next;
                 index++;
                 continue;
-            }
-
-            // An absolute NT-namespace target cannot be placed by a string walk, and Windows follows it anywhere: refuse.
-            if (opaque)
-            {
-                unresolved = true;
-                return IoPath.Combine([target, .. parts[(index + 1)..]]);
             }
 
             if (++hops > MaxLinkHops)
@@ -168,18 +188,12 @@ public sealed class SyncRoot
     public static bool SamePath(string left, string right) =>
         Trimmed(IoPath.GetFullPath(left)).Equals(Trimmed(IoPath.GetFullPath(right)), Comparison);
 
-    public bool IsInside(string resolvedPath)
-    {
-        string candidate = Trimmed(resolvedPath);
-        string root = Trimmed(RealPath);
-        return candidate.Equals(root, Comparison)
-            || candidate.StartsWith(root + IoPath.DirectorySeparatorChar, Comparison);
-    }
+    public bool IsInside(string resolvedPath) => IsUnder(resolvedPath, RealPath);
 
     /// <summary>
     /// True when this root is fenced and <paramref name="path"/> resolves outside it. A loop counts as
-    /// escaping, and so is an opaque Windows target: a path that cannot be proved inside the root is not
-    /// written in repo mode. On Windows the physical `..` reading is checked too, because the lexical
+    /// escaping, and so is a Windows link the OS cannot place: a path that cannot be proved inside the root
+    /// is not written in repo mode. On Windows the physical `..` reading is checked too, because the lexical
     /// one is reasoned, not measured.
     /// </summary>
     public bool Escapes(string path)
@@ -193,9 +207,27 @@ public sealed class SyncRoot
 
     private bool EscapesUnder(string path, bool lexicalDotDot)
     {
-        string real = Walk(path, lexicalDotDot, out bool unresolved);
-        return unresolved || !IsInside(real);
+        string real = Walk(path, lexicalDotDot, out bool unresolved, out bool canonical);
+        if (unresolved)
+            return true;
+
+        // Typed spellings meet RealPath and the OS's meet its own spelling of the root, never across: 8.3 vs long names.
+        // No canonical root (the OS could not place it) cannot prove anything inside.
+        return canonical
+            ? canonicalRealPath.Value is not { } root || !IsUnder(real, root)
+            : !IsInside(real);
     }
+
+    private static bool IsUnder(string path, string root)
+    {
+        string candidate = Trimmed(path);
+        string trimmedRoot = Trimmed(root);
+        return candidate.Equals(trimmedRoot, Comparison)
+            || candidate.StartsWith(trimmedRoot + IoPath.DirectorySeparatorChar, Comparison);
+    }
+
+    private static string? PlaceByOs(string path) =>
+        OperatingSystem.IsWindows() ? WindowsFinalPath.TryResolve(path) : null;
 
     private static StringComparison Comparison =>
         OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
@@ -211,9 +243,8 @@ public sealed class SyncRoot
     private static FileSystemInfo InfoOf(string path) =>
         OperatingSystem.IsWindows() && Directory.Exists(path) ? new DirectoryInfo(path) : new FileInfo(path);
 
-    private static string? LinkTargetOf(string path, out bool opaque)
+    private static LinkRead ReadLink(string path)
     {
-        opaque = false;
         FileSystemInfo info;
         string? target;
         try
@@ -221,14 +252,24 @@ public sealed class SyncRoot
             // A directory link at the leaf is reported by FileInfo on Unix; Windows opens it differently.
             info = InfoOf(path);
             target = info.LinkTarget;
+            if (target is null)
+            {
+                // 2026-10-13 (#101): a null LinkTarget is also a link whose reparse data is unreadable, or a reparse point that
+                // is no link (cloud placeholder). A missing path reads (FileAttributes)(-1), every bit set: test it before ReparsePoint.
+                FileAttributes attributes = info.Attributes;
+                return new(null, attributes is not NoSuchEntry && attributes.HasFlag(FileAttributes.ReparsePoint));
+            }
         }
-        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException)
         {
-            return null;
+            // An entry that cannot even be inspected may be a link: opaque, never "not a link".
+            return new(null, true);
         }
 
         // Outside the try above: a real link whose structural read throws is opaque, never "not a link".
-        opaque = target is not null && OperatingSystem.IsWindows() && (IsOpaqueWindowsLinkTarget(target) || IsOpaqueWindowsLink(info));
-        return target;
+        return new(target, OperatingSystem.IsWindows() && (IsOpaqueWindowsLinkTarget(target) || IsOpaqueWindowsLink(info)));
     }
+
+    /// <summary>One component's link state: its raw target when readable, and whether the string walk must not trust it.</summary>
+    private readonly record struct LinkRead(string? Target, bool Opaque);
 }
