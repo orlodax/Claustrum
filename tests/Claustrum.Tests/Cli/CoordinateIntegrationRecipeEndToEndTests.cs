@@ -56,7 +56,9 @@ public sealed class CoordinateIntegrationRecipeEndToEndTests : IDisposable
         JsonElement result = parsed ?? throw new InvalidOperationException(process.Stdout);
         string architect = Str(result, "job_id");
         string workBranch = Str(result, "branch");
-        Assert.Equal("2", File.ReadAllText(guard).Trim());
+        string receiptFile = FakeFile("builder-receipt.json");
+        Assert.True(File.ReadAllText(guard).Trim() == "2",
+            "the nested builder's backend did not run; its receipt: " + (File.Exists(receiptFile) ? File.ReadAllText(receiptFile) : "(none)") + "\n" + process.Stderr);
 
         // The builder ran for real, isolated, nested under the architect's worktree, cut from the work branch.
         using JsonDocument builder = JsonDocument.Parse(File.ReadAllText(FakeFile("builder-receipt.json")));
