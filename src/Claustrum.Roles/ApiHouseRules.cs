@@ -6,8 +6,8 @@ namespace Claustrum.Roles;
 
 // #55: the api backend has no file access, so "read AGENTS.md" cannot be obeyed there; the files ride in the
 // system prompt instead. The content goes to a third-party API, hence the fence: a file whose real path leaves
-// the cwd is never read, and the check is made on the OPENED handle, not the path (NOTES.md "The api backend gets
-// AGENTS.md and CLAUDE.md inlined").
+// the cwd is never read. Unix opens by a no-follow walk (no link can be what is read), Windows judges the OPENED
+// handle; hard-linked files are refused (NOTES.md "The api backend gets AGENTS.md and CLAUDE.md inlined").
 internal static class ApiHouseRules
 {
     public const int CapBytes = 32 * 1024;
@@ -48,18 +48,11 @@ internal static class ApiHouseRules
 
         try
         {
-            using FileStream? stream = PlainFile.OpenRead(path, out string? refusal);
+            using FileStream? stream = Open(path, fence, out string? refusal);
             if (stream is null)
             {
                 warnings.Add($"{name} not inlined: {refusal}");
-                return $"### {name} (not inlined: it is not a regular file)";
-            }
-
-            // Open first, then prove where the handle lands: a link swapped in after the check above is what this catches.
-            if (Unfit(stream, path, fence) is { } problem)
-            {
-                warnings.Add($"{name} not inlined: {problem}");
-                return $"### {name} (not inlined: its real path is not a Markdown file inside the working directory)";
+                return $"### {name} (not inlined: {Reason(refusal)})";
             }
 
             byte[] buffer = new byte[CapBytes + 1];
@@ -83,25 +76,73 @@ internal static class ApiHouseRules
         }
     }
 
-    // Why the opened file may not be inlined, or null. Inside the fence, a regular file named *.md, with no `.git`
-    // component below the root (`AGENTS.md -> .git/config` carries a CI token): the same rules for a plain file and a link.
-    private static string? Unfit(FileStream stream, string path, SyncRoot fence)
+    // The file as a handle that is proven fit to inline, or null with the reason. Unix: the fully resolved path is judged
+    // as a string, then opened by a no-follow walk from the root, so no link can be what is read and nothing is compared
+    // afterwards. Windows: opened first, then the handle's own final path is judged (GetFinalPathNameByHandle).
+    private static FileStream? Open(string path, SyncRoot fence, out string? refusal)
     {
-        string? real = OpenedFilePath.TryGet(stream.SafeFileHandle, path);
-        string? root = OpenedFilePath.RootSpelling(fence);
-        if (real is null || root is null)
-            return "the real path of the opened file could not be determined";
+        if (OperatingSystem.IsWindows())
+            return OpenAndJudge(path, fence, out refusal);
 
-        StringComparison comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
-        string trimmedRoot = Path.TrimEndingDirectorySeparator(root);
-        if (!real.StartsWith(trimmedRoot + Path.DirectorySeparatorChar, comparison))
-            return $"the opened file is {real}, outside the working directory";
+        string real = SyncRoot.Resolve(path, out bool unresolved);
+        if (unresolved)
+        {
+            refusal = "the real path of the file could not be determined";
+            return null;
+        }
 
-        bool inGit = real[(trimmedRoot.Length + 1)..].Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar).Any(PlainFile.IsGitDirName);
-        return stream.CanSeek && !inGit && real.EndsWith(".md", comparison)
-            ? null
-            : $"the opened file is {real}, which is not a regular .md file outside .git";
+        string root = Path.TrimEndingDirectorySeparator(fence.RealPath);
+        if (Misfit(real, root) is { } problem)
+        {
+            refusal = problem;
+            return null;
+        }
+
+        return PlainFile.OpenNoFollowUnder(root.Length == 0 ? "/" : root, real[(root.Length + 1)..].Split(Path.DirectorySeparatorChar), out refusal);
     }
+
+    private static FileStream? OpenAndJudge(string path, SyncRoot fence, out string? refusal)
+    {
+        FileStream? stream = PlainFile.OpenRead(path, out refusal);
+        if (stream is null)
+            return null;
+
+        string? real = OpenedFilePath.TryGet(stream.SafeFileHandle);
+        string? root = OpenedFilePath.RootSpelling(fence);
+        refusal = real is null || root is null
+            ? "the real path of the opened file could not be determined"
+            : Misfit(real, Path.TrimEndingDirectorySeparator(root));
+        if (refusal is null && !stream.CanSeek)
+            refusal = $"the opened file is {real}, which is not a regular file";
+
+        if (refusal is null && OpenedFilePath.HasOtherHardLinks(stream.SafeFileHandle) is not false)
+            refusal = PlainFile.HardLinked;
+
+        if (refusal is null)
+            return stream;
+
+        stream.Dispose();
+        return null;
+    }
+
+    // Why a resolved path may not be inlined, or null: inside the root, named *.md, with no `.git` component below the
+    // root (`AGENTS.md -> .git/config` carries a CI token). The same rules for a plain file and a link.
+    private static string? Misfit(string real, string root)
+    {
+        StringComparison comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        if (!real.StartsWith(root + Path.DirectorySeparatorChar, comparison))
+            return $"the file is {real}, outside the working directory";
+
+        bool inGit = real[(root.Length + 1)..].Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar).Any(PlainFile.IsGitDirName);
+        return !inGit && real.EndsWith(".md", comparison) ? null : $"the file is {real}, which is not a regular .md file outside .git";
+    }
+
+    private static string Reason(string? refusal) => refusal switch
+    {
+        PlainFile.NotRegular => "it is not a regular file",
+        PlainFile.HardLinked => "it has other hard links",
+        _ => "its real path is not a Markdown file inside the working directory",
+    };
 
     private static string Section(string heading, string content) =>
         content.Length == 0 ? $"{heading}\n\n(the file is empty)" : $"{heading}\n\n{content}";

@@ -1,33 +1,24 @@
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
-using Claustrum.Core.IO;
 using Microsoft.Win32.SafeHandles;
 
 namespace Claustrum.Roles.Sync;
 
-// #55 (review 2026-10-13): the real path of an already OPENED file, so a link swapped in after a path check cannot be
-// what is read. Windows asks the OS about the handle (GetFinalPathNameByHandle). Unix (Linux and macOS alike, #110,
-// 2026-10-14) proves the handle IS the file at the fully resolved path, by (device, inode) of fstat vs stat: no per-OS
-// handle-to-path call, so no struct layout to get wrong. Null when that cannot be shown; the caller fails closed
-// (NOTES.md "The api backend gets AGENTS.md and CLAUDE.md inlined").
+// #55 (review 2026-10-13): WINDOWS ONLY. The real path of an already OPENED file, so a link swapped in after a path
+// check cannot be what is read (GetFinalPathNameByHandle), and its link count. Unix does not ask a handle for its
+// path: PlainFile.OpenNoFollowUnder walks to the file without following a link (NOTES.md "How the handle is judged").
 internal static partial class OpenedFilePath
 {
     private const int MaxBuffer = 32768;
+    private const int ByHandleInfoSize = 52;
+    private const int LinksOffset = 40;
 
-    /// <summary>
-    /// The real path of the file <paramref name="handle"/> (opened through <paramref name="path"/>) is, or null when the
-    /// OS cannot say. Windows: the handle's own final path. Unix: the path <paramref name="path"/> resolves to, but only
-    /// when the handle is that file; it is resolved on both sides of the stat, so a link flipped in between is null.
-    /// </summary>
-    public static string? TryGet(SafeFileHandle handle, string path)
+    /// <summary>The real path of the file <paramref name="handle"/> is (its own final path), or null when the OS cannot say or this is not Windows.</summary>
+    public static string? TryGet(SafeFileHandle handle)
     {
         try
         {
-            if (OperatingSystem.IsWindows())
-                return WindowsPath(handle);
-
-            string real = SyncRoot.Resolve(path, out bool unresolved);
-            return !unresolved && PlainFile.IsSameFile(handle, real) && SyncRoot.Resolve(path) == real ? real : null;
+            return OperatingSystem.IsWindows() ? WindowsPath(handle) : null;
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException)
         {
@@ -36,11 +27,24 @@ internal static partial class OpenedFilePath
     }
 
     /// <summary>
-    /// The fence root spelled the way <see cref="TryGet"/> spells a path, so the two compare: on Windows the OS's own
-    /// spelling (an 8.3 or mapped-drive cwd differs from the handle's), elsewhere the resolved root. Null when the OS cannot place it.
+    /// Whether the file <paramref name="handle"/> has other hard links (nNumberOfLinks over 1). Null when the OS
+    /// cannot say; the caller fails closed.
+    /// </summary>
+    public static bool? HasOtherHardLinks(SafeFileHandle handle)
+    {
+        if (!OperatingSystem.IsWindows())
+            return null;
+
+        Span<byte> info = stackalloc byte[ByHandleInfoSize];
+        return GetFileInformationByHandle(handle, info) ? BitConverter.ToUInt32(info[LinksOffset..]) > 1 : null;
+    }
+
+    /// <summary>
+    /// The fence root spelled the way <see cref="TryGet"/> spells a path, so the two compare: the OS's own
+    /// spelling (an 8.3 or mapped-drive cwd differs from the handle's). Null when the OS cannot place it.
     /// </summary>
     public static string? RootSpelling(SyncRoot fence) =>
-        OperatingSystem.IsWindows() ? WindowsFinalPath.TryResolve(fence.Path) : fence.RealPath;
+        OperatingSystem.IsWindows() ? WindowsFinalPath.TryResolve(fence.Path) : null;
 
     [SupportedOSPlatform("windows")]
     private static unsafe string? WindowsPath(SafeFileHandle handle)
@@ -75,6 +79,10 @@ internal static partial class OpenedFilePath
         bool driveLetter = final.Length > 5 && final.StartsWith(@"\\?\", StringComparison.Ordinal) && char.IsAsciiLetter(final[4]) && final[5] == ':';
         return driveLetter ? final[4..] : final;
     }
+
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool GetFileInformationByHandle(SafeFileHandle file, Span<byte> information);
 
     [SupportedOSPlatform("windows")]
     [LibraryImport("kernel32.dll", EntryPoint = "GetFinalPathNameByHandleW", SetLastError = true)]

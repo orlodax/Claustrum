@@ -22,9 +22,10 @@ public static partial class PlainFile
     private const int WriteOnly = 1;
     private const int TypeMask = 0xF000;
     private const int TypeRegular = 0x8000;
-    private const int DevOffset = 88;
-    private const int InoOffset = 104;
-    private const string NotRegular = "not a regular file (a pipe, socket or device is never read or written)";
+
+    /// <summary>The refusal for a pipe, socket, device or directory (also the text of a not-regular walk result).</summary>
+    public const string NotRegular = "not a regular file (a pipe, socket or device is never read or written)";
+
     private const string TooLarge = "not a regular file or too large (over 8 MiB)";
 
     /// <summary>
@@ -190,13 +191,7 @@ public static partial class PlainFile
                 return null;
             }
 
-            string message = $"{path}: {Marshal.GetPInvokeErrorMessage(errno)}";
-            throw errno switch
-            {
-                ENOENT => new FileNotFoundException(message, path),
-                EACCES => new UnauthorizedAccessException(message),
-                _ => new IOException(message),
-            };
+            throw OpenFailure(path, errno);
         }
 
         if (IsRegular(handle))
@@ -207,9 +202,20 @@ public static partial class PlainFile
         return null;
     }
 
+    private static Exception OpenFailure(string path, int errno)
+    {
+        string message = $"{path}: {Marshal.GetPInvokeErrorMessage(errno)}";
+        return errno switch
+        {
+            ENOENT => new FileNotFoundException(message, path),
+            EACCES => new UnauthorizedAccessException(message),
+            _ => new IOException(message),
+        };
+    }
+
     // The .NET runtime's own shim (it is linked into a NativeAOT binary) fills a FileStatus whose layout is fixed on
-    // every OS, unlike libc's struct stat: Flags (int32) at 0 then Mode (int32) at 4, which holds st_mode; Dev (int64) at
-    // 88 and Ino (int64) at 104 (pal_io.h, release/10.0). Anything the shim cannot answer is not regular: fail closed.
+    // every OS, unlike libc's struct stat: Flags (int32) at 0 then Mode (int32) at 4, which holds st_mode (pal_io.h,
+    // release/10.0). Anything the shim cannot answer is not regular: fail closed.
     private static bool IsRegular(SafeFileHandle handle)
     {
         Span<byte> status = stackalloc byte[256];
@@ -224,33 +230,10 @@ public static partial class PlainFile
         }
     }
 
-    /// <summary>
-    /// Whether the OPENED <paramref name="handle"/> is the file <paramref name="path"/> names right now (same device and
-    /// inode, the path followed): the proof that a handle is the file a path check judged. False when either stat fails. Unix only.
-    /// </summary>
-    public static bool IsSameFile(SafeFileHandle handle, string path)
-    {
-        Span<byte> opened = stackalloc byte[256];
-        Span<byte> named = stackalloc byte[256];
-        try
-        {
-            return FStat(handle.DangerousGetHandle(), opened) == 0
-                && Stat(path, named) == 0
-                && opened.Slice(DevOffset, sizeof(long)).SequenceEqual(named.Slice(DevOffset, sizeof(long)))
-                && opened.Slice(InoOffset, sizeof(long)).SequenceEqual(named.Slice(InoOffset, sizeof(long)));
-        }
-        catch (Exception e) when (e is DllNotFoundException or EntryPointNotFoundException)
-        {
-            return false;
-        }
-    }
-
     [LibraryImport("libc", EntryPoint = "open", StringMarshalling = StringMarshalling.Utf8, SetLastError = true)]
     private static partial SafeFileHandle Open(string path, int flags);
 
     [LibraryImport("libSystem.Native", EntryPoint = "SystemNative_FStat")]
     private static partial int FStat(nint fd, Span<byte> status);
 
-    [LibraryImport("libSystem.Native", EntryPoint = "SystemNative_Stat", StringMarshalling = StringMarshalling.Utf8)]
-    private static partial int Stat(string path, Span<byte> status);
 }
