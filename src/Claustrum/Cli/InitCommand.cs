@@ -178,7 +178,16 @@ public static class InitCommand
         // Present means a regular file: a FIFO or a device there is a refusal, not "already present" (no git root loads it to notice).
         if (File.Exists(path))
         {
-            using FileStream? existing = PlainFile.OpenRead(path, out unwritable);
+            try
+            {
+                using FileStream? existing = PlainFile.OpenRead(path, out unwritable);
+            }
+            catch (Exception e) when (e is UnauthorizedAccessException or IOException)
+            {
+                // No git root loaded it first (#112): an unreadable file is a named refusal, exit 2.
+                unwritable = $"cannot be read: {e.Message}";
+            }
+
             return false;
         }
 
