@@ -1,0 +1,52 @@
+namespace Claustrum.Core.Tests.Testing;
+
+[CollectionDefinition(Name, DisableParallelization = true)]
+public sealed class FakeGitCollectionDefinition
+{
+    public const string Name = "fake git on PATH";
+}
+
+/// <summary>
+/// A script named `git` first on PATH that answers one call with a chosen exit code and hands every other call to the real git.
+/// PATH is process-wide, so the tests that use it share a collection that runs alone; Dispose puts PATH back. Unix only: the
+/// script is `sh`, and the interrupted-git handling it exercises is Unix only too.
+/// </summary>
+public sealed class FakeGit : IDisposable
+{
+    private readonly string directory = Directory.CreateTempSubdirectory("claustrum-fake-git-").FullName;
+    private readonly string originalPath = Environment.GetEnvironmentVariable("PATH") ?? "";
+
+    /// <param name="subcommand">The first argument that does not start with `-`.</param>
+    /// <param name="exitCode">What the intercepted call exits with.</param>
+    /// <param name="alsoContains">A further argument the call must carry (`--quiet`, `refs/heads`), or null.</param>
+    public FakeGit(string subcommand, int exitCode, string? alsoContains = null)
+    {
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("the fake git is an sh script and exit codes 130/131/143 are read on Unix only.");
+
+        string real = originalPath.Split(Path.PathSeparator).Select(entry => Path.Combine(entry, "git")).FirstOrDefault(File.Exists)
+            ?? throw new InvalidOperationException("no git on PATH");
+        string also = alsoContains is null ? "" : $" && case \"$*\" in *'{alsoContains}'*) true;; *) false;; esac";
+        string script = $$"""
+            #!/bin/sh
+            sub=""
+            for a in "$@"; do
+              case "$a" in -*) ;; *) sub="$a"; break;; esac
+            done
+            if [ "$sub" = "{{subcommand}}" ]{{also}}; then exit {{exitCode}}; fi
+            exec "{{real}}" "$@"
+            """;
+        string path = Path.Combine(directory, "git");
+        File.WriteAllText(path, script.Replace("\r\n", "\n", StringComparison.Ordinal));
+        if (!OperatingSystem.IsWindows())
+            File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+
+        Environment.SetEnvironmentVariable("PATH", directory + Path.PathSeparator + originalPath);
+    }
+
+    public void Dispose()
+    {
+        Environment.SetEnvironmentVariable("PATH", originalPath);
+        Directory.Delete(directory, recursive: true);
+    }
+}
