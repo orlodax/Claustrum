@@ -82,7 +82,7 @@ public sealed class CancelSigintEndToEndTests : IDisposable
 
         await cli.SendSigintAsync(TestContext.Current.CancellationToken);
         await cli.WaitUntilAsync(() => cli.Stderr.Contains(CancelScenario.CtrlCLine, StringComparison.Ordinal), "no cancelling line", CancelScenario.ExitLimit, TestContext.Current.CancellationToken);
-        await cli.WaitUntilAsync(() => CancelScenario.SleepPids(hookSleep).Length > 0, "the pre-commit hook never started", CancelScenario.StartLimit, TestContext.Current.CancellationToken);
+        await cli.WaitUntilAsync(() => CancelScenario.SleepPids(hookSleep, scenario.Repo.Repo).Length > 0, "the pre-commit hook never started", CancelScenario.StartLimit, TestContext.Current.CancellationToken);
         Assert.False(cli.HasExited, "the first SIGINT alone must wait for the hanging commit");
 
         Stopwatch stopwatch = Stopwatch.StartNew();

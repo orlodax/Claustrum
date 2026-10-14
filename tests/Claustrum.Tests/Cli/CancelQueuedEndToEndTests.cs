@@ -140,7 +140,7 @@ public sealed class CancelQueuedEndToEndTests : IDisposable
         await AssertRunningRunCancelledAsync(second, signal);
         Assert.DoesNotContain("pending", await JobsListAsync(), StringComparison.Ordinal);
         Assert.Equal(2, JobBranches().Length);
-        Assert.Empty(CancelScenario.SleepPids(sleep));
+        Assert.Empty(CancelScenario.SleepPids(sleep, scenario.Repo.Repo));
     }
 
     // In place at a cap of 1 the queued run has no job until it is refused, so the receipt is minted for the cancel itself.
@@ -172,7 +172,7 @@ public sealed class CancelQueuedEndToEndTests : IDisposable
         Assert.Equal("cancelled", Str(held, "status"));
         Assert.True(File.Exists(Path.Combine(scenario.Repo.Repo, "partial.txt")));
         Assert.DoesNotContain("pending", await JobsListAsync(), StringComparison.Ordinal);
-        Assert.Empty(CancelScenario.SleepPids(sleep));
+        Assert.Empty(CancelScenario.SleepPids(sleep, scenario.Repo.Repo));
     }
 
     // `--branch` takes a slot, then the branch's lock: a run that waits on the lock holds a slot, which its cancel must give back.
@@ -223,7 +223,7 @@ public sealed class CancelQueuedEndToEndTests : IDisposable
         scenario.PlantHangingHook("post-checkout", hookSleep);
         using RunningCli cli = scenario.Repo.StartCli(existingBranch ? [.. runArgs, "--branch", "feature"] : runArgs);
         SkipIfSignalIsIgnored(cli, SigtermNumber, "TERM");
-        await cli.WaitUntilAsync(() => CancelScenario.SleepPids(hookSleep).Length > 0, "the post-checkout hook never started", CancelScenario.StartLimit, Ct);
+        await cli.WaitUntilAsync(() => CancelScenario.SleepPids(hookSleep, scenario.Repo.Repo).Length > 0, "the post-checkout hook never started", CancelScenario.StartLimit, Ct);
 
         (string jobId, JsonElement printed, JsonElement onDisk) = await CancelAsync(cli, "TERM");
 
@@ -237,6 +237,6 @@ public sealed class CancelQueuedEndToEndTests : IDisposable
 
         Assert.Single(scenario.Repo.JobDirectories());
         Assert.DoesNotContain("pending", await JobsListAsync(), StringComparison.Ordinal);
-        Assert.Empty(CancelScenario.SleepPids(hookSleep));
+        Assert.Empty(CancelScenario.SleepPids(hookSleep, scenario.Repo.Repo));
     }
 }
