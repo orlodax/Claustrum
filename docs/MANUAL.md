@@ -70,10 +70,10 @@ millisecond (the shell's hangup, then the kernel's to the foreground group), so 
 cancel runs to its receipt. The backend shares Claustrum's process group, so a terminal's SIGHUP or Ctrl-C (or a
 `kill -- -<pgid>`) can kill it before the cancel arrives: a backend that dies by SIGHUP, SIGINT, SIGQUIT or SIGTERM
 (exit 129, 130, 131, 143) and a cancel that arrives within one second still read as `cancelled`; without one it is a failed
-backend. Once the terminal is gone, `--stream` echo and the final output are best-effort: a failed write is dropped, the
+backend. So does any `git` call Claustrum makes for the run (the snapshot, the worktree add, the commit). Once the terminal is gone, `--stream` echo and the final output are best-effort: a failed write is dropped, the
 receipt is on disk first and the exit code is unchanged. On Windows Ctrl-C and Ctrl-Break take the cancel path (both reach
 `Console.CancelKeyPress`; not measured on Windows), SIGTERM registers but cannot be cancelled there, and
-SIGHUP is the console-close event (the window closing): it starts the same cancel and holds the handler for up to 4 s, until the
+SIGHUP is the console-close event (the window closing): it starts the same cancel (or, after an earlier Ctrl-C or SIGTERM, joins it) and holds the handler for up to 4 s, until the
 receipt is written (`run`, `coordinate`) or the sweep has stopped (`jobs clean`), because Windows ends the
 process once the handler returns (not measured); the forced-exit codes above are the Unix ones.
 
@@ -299,7 +299,9 @@ Windows the opened file's own final path is judged. A file with other hard links
 system cannot check; where that cannot be shown, nothing is inlined. The run's `warnings` name the file
 and why, and so does a truncation (#55). An isolated run (`--branch`, or a cast with `max_parallel` of 2 or more) inlines the
 files of its own worktree, that is of the branch it runs on, and not those of the main checkout's working copy; if that
-worktree does not resolve to `<repository>/.claustrum/worktrees/<job>` (a link planted at or above it), nothing is inlined.
+worktree is not exactly `<repository>/.claustrum/worktrees/<job>` (a link inside the repository, such as
+`.claustrum -> .cache/claustrum`, is followed; one leaving it, or a link planted at or above the worktree, is not), nothing is
+inlined and the warning says whether the directory resolves outside the repository or is not the job's worktree.
 
 ## 5. The brief
 

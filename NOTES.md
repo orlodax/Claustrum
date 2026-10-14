@@ -5701,9 +5701,10 @@ byte-identically; `ApiHouseRulesTests` pins that against an empty cwd.
   how the open proves it: "How the handle is judged"). The same rule holds for a plain file and a link,
   so nothing depends on a "is it a link" read that could itself be raced. Where the path cannot be determined,
   nothing is inlined and the receipt says so (fail closed).
-- **How the handle is judged (reworked twice, 2026-10-14: #110, then the review of 727ff74).** Windows: unchanged,
+- **How the handle is judged (reworked twice, 2026-10-14: #110, then the review of 727ff74).** Windows:
   `GetFinalPathNameByHandleW` with the DOS name, stripped of `\\?\` like `WindowsFinalPath`; the root is spelled by
-  `WindowsFinalPath.TryResolve`, so both sides are the OS's (measured against the earlier race).
+  `WindowsFinalPath.TryResolve`, so both sides are the OS's (measured against the earlier race). An isolated run's root is fixed from the
+  main checkout, not from the worktree path ("Isolated runs inline the branch's rules" below).
   **Unix: the file is opened by a no-follow walk and nothing is compared afterwards.**
   - **What failed (measured 2026-10-14).** #110 replaced `/proc/self/fd` with an identity check: `SyncRoot.Resolve`,
     open, `stat(real)` (which follows links) compared by `(dev, ino)` with `fstat`, `Resolve` again. A blind review ran a
@@ -5770,17 +5771,31 @@ byte-identically; `ApiHouseRulesTests` pins that against an empty cwd.
 - **Isolated runs inline the branch's rules (2026-10-13, review finding 4).** `Prepare` renders with `request.Cwd`, the
   main checkout, so an isolated api run (`--branch`, or `max_parallel >= 2`) used to get the working copy's rules, not
   those of the branch it ran on. Once the worktree exists, `DelegateEngine.RunIsolatedAsync` calls
-  `RoleRenderer.WithRulesFrom(role, worktree.Path, expectedRoot)`, which keeps the rendered prompt up to `## House rules` (role
+  `RoleRenderer.WithRulesFrom(role, worktree.Path, new RulesAnchor(request.Cwd, job.Id))`, which keeps the rendered prompt up to `## House rules` (role
   overrides still from `request.Cwd`, the appendix intact) and re-composes only the rules from the worktree, fenced by
   `SyncRoot.Repo(worktree.Path)`: a link in the worktree that leaves it is refused. It also replaces the render warnings,
   all of which come from `ApiHouseRules`, so the receipt names the worktree's files. Chosen over a second
   `Render(…, rulesCwd)` because that would re-resolve the role and lose the appendix; in-place runs and the other
-  harnesses never reach it and are byte-identical. **Anchored (review 2026-10-14).** `expectedRoot` is
-  `SyncRoot.Resolve(request.Cwd)` + `/.claustrum/worktrees/<job>` (`JobWorktree.PathFor`); if `Resolve(worktree.Path)` is
-  any other string (a link planted at or above the worktree), nothing is inlined, each file gets
-  `(not inlined: the worktree resolves outside the repository's .claustrum/worktrees)` and one warning names where it
-  resolved. The walk is rooted at `expectedRoot`, not at the fence's `RealPath`, so even a swap between the check and
-  the open is a refusal from the `/` walk. Windows keeps judging the opened handle (the pre-check applies there too).
+  harnesses never reach it and are byte-identical. **Anchored (review 2026-10-14, reworked the same day).** The expected root is
+  `SyncRoot.Resolve(JobWorktree.PathFor(SyncRoot.Resolve(request.Cwd), job))`, that is resolved through links that stay inside the
+  repository (`.claustrum -> .cache/claustrum` is accepted by #104, and the first version, which demanded the literal
+  `<repo>/.claustrum/worktrees/<job>`, inlined nothing for it under the misleading "outside the repository's
+  .claustrum/worktrees": 0 of 2 files inlined, now 2 of 2). Two checks, each with its own words: the expected root must not
+  escape the repository (`SyncRoot.Repo(request.Cwd).Escapes`: a static link out is refused, `(not inlined: the job's worktree
+  directory resolves outside the repository)`), and `Resolve(worktree.Path)` must equal it (`(not inlined: the worktree path is
+  not the job's worktree)`). One warning names where each resolved. The walk from `/` runs over the expected root, a path with
+  no link in it, so a swap after the checks is a refusal from the walk, never a read. Smoke (AOT, a fake `curl` keeping the request
+  body, `run code-reviewer --backend api --branch feature/x`): a plain repo inlines both files, `.claustrum -> .cache/claustrum` inlines
+  both (baseline: neither), `.claustrum -> <outside>` is refused earlier by #104's check, and a `post-checkout` hook that swaps the job
+  directory for a link to a directory holding a `LEAK` AGENTS.md gives 0 leaks and the `outside the repository` warning.
+  **Windows (review 2026-10-14, MEDIUM, not run on Windows).** `OpenAndJudge` used to judge the handle against
+  `OpenedFilePath.RootSpelling(fence)`, `WindowsFinalPath.TryResolve` of the typed worktree path computed at judge time, which
+  follows a junction swapped in at `<job>`: the check was then the handle against itself. Now the root is
+  `TryResolve(<main checkout's real path>)` plus the expected root's relative part below it (the plain
+  `.claustrum\worktrees\<job>` where it cannot be cut), fixed in `ApiHouseRules.Anchor` before any file is opened and passed
+  down, so a junction at any name below the main checkout puts the handle's final path elsewhere: a refusal. A spelling that cannot
+  be computed is `Unverifiable` (fail closed). An in-place run keeps `RootSpelling(fence)`, now computed once before the two
+  files instead of once per file.
 - **Cap.** 32 KiB per file. One byte past the cap is read to tell "exactly at the cap" from "over"; the cut backs
   off continuation bytes so it never splits a character, the text ends `[truncated: the first N of M bytes of
   NAME are shown]`, and the receipt says `NAME inlined truncated to N of M bytes`.
@@ -5934,8 +5949,9 @@ A blind review ran the built binary in a pty under `bash -i` and with group sign
   group, so a group SIGHUP/SIGINT can kill it before the handler (on the ThreadPool) cancels the token; `WaitForExitAsync` then
   completes normally with exit 128+signal and the run was `failed` (the review: `failed`, exit 1, 4 of 4). `SignalExit`
   (`Core/Process`): on Unix an exit of 129, 130, 131 or 143 waits up to 1 s for the token (`CancelArrivesAsync`); cancelled in time,
-  `ProcessRunner` reports `Cancelled`, else it stays `Failed` (a backend someone else killed). The same check follows `git worktree
-  add` in `TryAddAsync`: with the token cancelled it is thrown as a cancel and the undo runs. ⚠ This machine did not reproduce
+  `ProcessRunner` reports `Cancelled`, else it stays `Failed` (a backend someone else killed). The same check follows every `git`/`gh`
+  call made under a run's token (since the round below it lives in `CommandProcess`, not in `TryAddAsync` alone): a cancelled
+  token throws, and `worktree add`'s undo runs. ⚠ This machine did not reproduce
   the race with `kill -HUP -- -<pgid>` on baseline (8 of 8 cancelled, the handler won), so the grace path was exercised by killing
   ONLY the backend with SIGHUP and sending the cancel 0.4 s later: baseline `failed`, now `cancelled`, exit 130; with no cancel at
   all it is `failed` after 1.04 s, as before. A backend that legitimately exits 129-131/143 pays that 1 s once.
@@ -5960,3 +5976,24 @@ A blind review ran the built binary in a pty under `bash -i` and with group sign
   with `--branch side` (3 of 3), give `cancelled`, exit 130, no directory, no branch. On Windows `Directory.Move` onto an existing
   directory fails too and git takes an empty one: **not run there**. The residual is the microseconds between .NET's exists-check
   and rename(2), which can replace a directory someone made EMPTY in that gap: it holds nothing.
+
+### Found by review, 2026-10-14 (round 4): every child under the run's token, the exception boundary, a second Windows close
+
+- **Other git calls died of the same group signal.** The reclassification above covered the backend and `worktree add` only. Forced
+  race (a `git` wrapper on PATH that `exec`s `sleep 5` inside the targeted subcommand, the wrapper killed with SIGHUP, claustrum
+  sent SIGHUP 50 ms or 400 ms later; baseline built from 5f0a14e): the before-snapshot `git status` (exit 129) fell back to
+  `FileScan`, `DiffAsync` then threw on mismatched kinds, and the run was `failed`, exit 1, 4 of 4; the isolated `-b` add's
+  `rev-parse --verify HEAD` (129) was "no commit to branch from", rethrown, **no receipt**, job pending, 4 of 4. Now the check is in
+  ONE place, `CommandProcess.RunAsync`: a child that exits 129/130/131/143 (Unix only) under a token that `CanBeCanceled` waits
+  `SignalExit.CancelArrivesAsync` (the same 1 s grace) and, when the cancel arrives, `ThrowIfCancellationRequested()`, so every git
+  or gh call under a run's token is covered and `TryAddAsync`'s own copy is gone. Same smoke after: `cancelled`, exit 130, a
+  receipt, 6 of 6 for `status` (50 and 400 ms, 3 each) and 6 of 6 for the `-b` add. With no cancel the call returns the exit code as
+  before, 1.09 s later (the grace): `FreeGitAsync` still maps it to `WorktreeInterruptedException`, and the `status` fallback is
+  unchanged (a before-snapshot that dies of a signal nobody cancelled is still `failed`, as it was). Cost: a git call that
+  exits 129 on its own (git's usage error) under a cancellable token waits that second once.
+- **The exception boundary wrote unguarded.** `ExceptionBoundary.Handle` and `Program.cs`'s parse-error lines used
+  `Console.Error.WriteLine`; an exception after the terminal was gone threw EIO inside the catch (SIGABRT). Both go through
+  `SafeConsole.Error` now.
+- **A Windows console close after an earlier signal did not wait.** `OnHangup` returned before `settled.Wait` when the
+  compare-exchange failed, so a close after a Ctrl-C or SIGTERM ended the process unreceipted. Now every SIGHUP waits on `settled`
+  (4 s) on Windows; only the first still cancels and writes the hint. **Not run on Windows.**

@@ -14,7 +14,7 @@ ParseResult parseResult = root.Parse(args);
 if (parseResult.Errors.Count > 0)
 {
     foreach (ParseError error in parseResult.Errors)
-        Console.Error.WriteLine(error.Message);
+        SafeConsole.Error(error.Message);
     return ExitCodes.Usage;
 }
 

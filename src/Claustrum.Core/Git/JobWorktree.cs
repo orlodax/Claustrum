@@ -4,7 +4,6 @@ using System.Security.Cryptography;
 using System.Text;
 using Claustrum.Core.IO;
 using Claustrum.Core.Jobs;
-using Claustrum.Core.Process;
 
 namespace Claustrum.Core.Git;
 
@@ -587,10 +586,6 @@ public static class JobWorktree
         {
             (int exitCode, string stdout, string stderr) =
                 await GitProcess.RunAsync(cwd, ["worktree", "add", "-q", worktree.Path, .. target], repoCodeTimeout, cancellationToken);
-
-            // The terminal's signal reached git first (SignalExit): with the token cancelled it is a cancel, not git saying no.
-            if (SignalExit.IsCancelSignal(exitCode) && await SignalExit.CancelArrivesAsync(cancellationToken))
-                cancellationToken.ThrowIfCancellationRequested();
 
             if (exitCode == 0)
                 return null;

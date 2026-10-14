@@ -10,7 +10,8 @@ namespace Claustrum.Cli;
 // Single top-level catch around `ParseResult.InvokeAsync()` (Program.cs) so no verb's failure path
 // prints a raw stack trace (review finding #1) — each verb used to map its own exceptions, or not at
 // all, so anything RunCommand.cs did not special-case (and everything in Roles/Backends/Jobs/Sync)
-// crashed straight through. CLAUSTRUM_DEBUG=1 opts back into the trace for diagnosis.
+// crashed straight through. CLAUSTRUM_DEBUG=1 opts back into the trace for diagnosis. Its writes are SafeConsole's: an
+// exception after the terminal is gone would otherwise die of EIO inside this catch (2026-10-14, found by review).
 public static class ExceptionBoundary
 {
     public static int Handle(Exception exception)
@@ -18,15 +19,15 @@ public static class ExceptionBoundary
         switch (exception)
         {
             case ConfigException or RoleRenderException or CliUsageException or MachineryRefusedException or BlindGateException or RunRequestException or CastException or ArgumentException:
-                Console.Error.WriteLine(exception.Message);
+                SafeConsole.Error(exception.Message);
                 return ExitCodes.Usage;
             case BackendNotFoundException:
-                Console.Error.WriteLine(exception.Message);
+                SafeConsole.Error(exception.Message);
                 return ExitCodes.BackendMissing;
             default:
-                Console.Error.WriteLine($"error: {exception.Message}");
+                SafeConsole.Error($"error: {exception.Message}");
                 if (Environment.GetEnvironmentVariable("CLAUSTRUM_DEBUG") == "1")
-                    Console.Error.WriteLine(exception.ToString());
+                    SafeConsole.Error(exception.ToString());
                 return ExitCodes.BackendFailure;
         }
     }

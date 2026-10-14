@@ -63,10 +63,10 @@ public sealed class RoleRenderer(RoleLibrary library)
     /// (an isolated run's worktree, #55) and the render warnings replaced by that re-read's; any other
     /// backend is returned as is. Only the text after `## House rules` changes, so the role overrides and any
     /// appendix stay those of the original render. Those warnings come from nowhere else today. An isolated run passes
-    /// the real path its worktree must have as <paramref name="expectedRoot"/>; a worktree resolving elsewhere
-    /// has nothing inlined (the main checkout's writers can plant a link at or above it).
+    /// its <paramref name="anchor"/>; a worktree that is not the job's directory under the main checkout has nothing
+    /// inlined (the main checkout's writers can plant a link at or above it).
     /// </summary>
-    public ResolvedRole WithRulesFrom(ResolvedRole role, string rulesCwd, string? expectedRoot = null)
+    public ResolvedRole WithRulesFrom(ResolvedRole role, string rulesCwd, RulesAnchor? anchor = null)
     {
         if (role.Backend != "api")
             return role;
@@ -77,7 +77,7 @@ public sealed class RoleRenderer(RoleLibrary library)
             throw new RoleRenderException($"role '{role.Name}': the rendered system prompt has no '## House rules' section to re-read the rules into");
 
         List<string> warnings = [];
-        string houseRules = ApiHouseRules.Compose(library.ReadShared("_shared/house-rules.md").Trim(), rulesCwd, warnings, expectedRoot);
+        string houseRules = ApiHouseRules.Compose(library.ReadShared("_shared/house-rules.md").Trim(), rulesCwd, warnings, anchor);
         return role with
         {
             SystemPrompt = string.Concat(role.SystemPrompt.AsSpan(0, index + heading.Length), houseRules),
