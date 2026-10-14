@@ -34,16 +34,49 @@ public sealed class JobWorktreeFreeReflogTests : IDisposable
         return ex.Message;
     }
 
+    // Round 3: the BRANCH's reflog lives in the shared common directory and survives the free, so what was committed while
+    // on the branch is not lost by a reset or an amend. A commit made on a detached HEAD, then left, is.
     [Fact]
-    public async Task ACommitResetAwayIsRefusedNamingTheCountAndTheShaAndFreedOnceABranchKeepsItAsync()
+    public async Task ACommitResetAwayWhileOnTheBranchIsFreedBecauseTheBranchReflogKeepsItAsync()
     {
         (string repo, JobWorktreeInfo worktree) = await StartAsync();
-        string lost = Commit(worktree.Path, "lost.txt", "only in the reflog\n");
+        string kept = Commit(worktree.Path, "kept.txt", "in the branch's reflog\n");
         GitRepo.Run(worktree.Path, "reset", "-q", "--hard", "HEAD~1");
+
+        Assert.Null(await JobWorktree.RemoveAsync(repo, "job-1", Ct));
+
+        Assert.False(Directory.Exists(worktree.Path));
+        Assert.Contains(kept, GitRepo.Run(repo, "reflog", "show", "--format=%H", "claustrum/job-1"), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task AResetOfTwoCommitsIsFreedTooAsync()
+    {
+        (string repo, JobWorktreeInfo worktree) = await StartAsync();
+        Commit(worktree.Path, "one.txt", "1\n");
+        Commit(worktree.Path, "two.txt", "2\n");
+        GitRepo.Run(worktree.Path, "reset", "-q", "--hard", "HEAD~2");
+
+        Assert.Null(await JobWorktree.RemoveAsync(repo, "job-1", Ct));
+    }
+
+    private static string DetachedCommitThenBackToTheBranch(string worktree)
+    {
+        GitRepo.Run(worktree, "checkout", "-q", "--detach");
+        string lost = Commit(worktree, "lost.txt", "made while detached\n");
+        GitRepo.Run(worktree, "checkout", "-q", "claustrum/job-1");
+        return lost;
+    }
+
+    [Fact]
+    public async Task ADetachedHeadCommitThenBackOnTheBranchIsRefusedNamingTheCountAndTheShaAndFreedOnceABranchKeepsItAsync()
+    {
+        (string repo, JobWorktreeInfo worktree) = await StartAsync();
+        string lost = DetachedCommitThenBackToTheBranch(worktree.Path);
 
         string message = await RefusalAsync(repo);
 
-        Assert.Contains("its HEAD reflog holds 1 commit that no branch, tag or other ref contains", message, StringComparison.Ordinal);
+        Assert.Contains("hold 1 commit that no branch, tag or other ref contains", message, StringComparison.Ordinal);
         Assert.Contains(lost, message, StringComparison.Ordinal);
         Assert.True(Directory.Exists(worktree.Path));
 
@@ -55,18 +88,79 @@ public sealed class JobWorktreeFreeReflogTests : IDisposable
     }
 
     [Fact]
-    public async Task AnAmendThatChangedTheContentIsRefusedBecauseTheOldCommitIsOnlyInTheReflogAsync()
+    public async Task AnAmendThatChangedTheContentWhileOnTheBranchIsFreedAsync()
     {
         (string repo, JobWorktreeInfo worktree) = await StartAsync();
-        string first = Commit(worktree.Path, "work.txt", "first version\n");
+        Commit(worktree.Path, "work.txt", "first version\n");
         File.WriteAllText(Path.Combine(worktree.Path, "work.txt"), "amended version\n");
         GitRepo.Run(worktree.Path, "add", "-A");
         GitRepo.Run(worktree.Path, "commit", "-q", "--amend", "--no-edit");
 
+        Assert.Null(await JobWorktree.RemoveAsync(repo, "job-1", Ct));
+    }
+
+    // Per-worktree refs live in the admin directory too: a commit only they reach is lost with it.
+    [Theory]
+    [InlineData("refs/worktree/x")]
+    [InlineData("refs/bisect/bad")]
+    public async Task ACommitReachableOnlyFromAPerWorktreeRefIsRefusedAsync(string reference)
+    {
+        (string repo, JobWorktreeInfo worktree) = await StartAsync();
+        GitRepo.Run(worktree.Path, "checkout", "-q", "--detach");
+        string lost = Commit(worktree.Path, "lost.txt", "only a worktree ref holds it\n");
+        GitRepo.Run(worktree.Path, "checkout", "-q", "claustrum/job-1");
+        GitRepo.Run(worktree.Path, "reflog", "expire", "--expire-unreachable=now", "HEAD");
+        GitRepo.Run(worktree.Path, "update-ref", reference, lost);
+
         string message = await RefusalAsync(repo);
 
-        Assert.Contains("its HEAD reflog holds", message, StringComparison.Ordinal);
-        Assert.Contains(first, message, StringComparison.Ordinal);
+        Assert.Contains("refs of its own hold", message, StringComparison.Ordinal);
+        Assert.Contains(lost, message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task AWorktreeRefToABlobOrToACommitTheBranchHoldsIsFreedAsync()
+    {
+        (string repo, JobWorktreeInfo worktree) = await StartAsync();
+        string blob = GitRepo.Run(worktree.Path, "rev-parse", "HEAD:seed.txt");
+        GitRepo.Run(worktree.Path, "update-ref", "refs/worktree/blob", blob);
+        GitRepo.Run(worktree.Path, "update-ref", "refs/worktree/head", GitRepo.Head(worktree.Path));
+
+        Assert.Null(await JobWorktree.RemoveAsync(repo, "job-1", Ct));
+    }
+
+    [Fact]
+    public async Task AHeadPointingOutsideRefsHeadsIsRefusedAsync()
+    {
+        (string repo, JobWorktreeInfo worktree) = await StartAsync();
+        GitRepo.Run(worktree.Path, "update-ref", "refs/other/place", GitRepo.Head(worktree.Path));
+        GitRepo.Run(worktree.Path, "symbolic-ref", "HEAD", "refs/other/place");
+
+        string message = await RefusalAsync(repo);
+
+        Assert.Contains("refs/other/place", message, StringComparison.Ordinal);
+        Assert.Contains("not a branch", message, StringComparison.Ordinal);
+        Assert.True(Directory.Exists(worktree.Path));
+    }
+
+    // `log.showSignature` puts gpg output in `git log -g`; the check reads `rev-list --walk-reflogs`, so it is not confused by it.
+    [Fact]
+    public async Task LogShowSignatureWithAFakeGpgProgramDoesNotConfuseTheCheckAsync()
+    {
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("the fake gpg program is an sh script.");
+
+        (string repo, JobWorktreeInfo worktree) = await StartAsync();
+        string gpg = Path.Combine(scratch.CreateDirectory(), "fake-gpg");
+        File.WriteAllText(gpg, "#!/bin/sh\necho 'gpg: Signature made today' >&2\necho 'gpg: Good signature from \"nobody\"' >&2\nexit 0\n");
+        if (!OperatingSystem.IsWindows())
+            File.SetUnixFileMode(gpg, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        GitRepo.Run(repo, "config", "log.showSignature", "true");
+        GitRepo.Run(repo, "config", "gpg.program", gpg);
+        Commit(worktree.Path, "work.txt", "work\n");
+
+        Assert.Null(await JobWorktree.RemoveAsync(repo, "job-1", Ct));
+        Assert.False(Directory.Exists(worktree.Path));
     }
 
     [Fact]
@@ -84,8 +178,9 @@ public sealed class JobWorktreeFreeReflogTests : IDisposable
         Assert.Equal("the job's work\n", GitRepo.Run(repo, "show", "claustrum/job-1:work.txt") + "\n");
     }
 
+    // The rebase's final commit is on the branch, and the old tip stays in the branch's reflog: nothing is lost.
     [Fact]
-    public async Task ARebaseWithAResolvedConflictIsRefusedBecauseThePatchChangedAsync()
+    public async Task ARebaseWithAResolvedConflictIsFreedBecauseTheBranchReflogKeepsTheOldTipAsync()
     {
         (string repo, JobWorktreeInfo worktree) = await StartAsync();
         Commit(worktree.Path, "seed.txt", "the job's line\n");
@@ -96,18 +191,14 @@ public sealed class JobWorktreeFreeReflogTests : IDisposable
         GitRepo.Run(worktree.Path, "add", "seed.txt");
         GitRepo.Try(worktree.Path, "-c", "core.editor=true", "rebase", "--continue");
 
-        string message = await RefusalAsync(repo);
-
-        Assert.Contains("its HEAD reflog holds", message, StringComparison.Ordinal);
-        Assert.True(Directory.Exists(worktree.Path));
+        Assert.Null(await JobWorktree.RemoveAsync(repo, "job-1", Ct));
     }
 
     [Fact]
     public async Task AfterTheReflogIsExpiredOfUnreachableCommitsTheFreeGoesThroughAsync()
     {
         (string repo, JobWorktreeInfo worktree) = await StartAsync();
-        Commit(worktree.Path, "lost.txt", "dropped on purpose\n");
-        GitRepo.Run(worktree.Path, "reset", "-q", "--hard", "HEAD~1");
+        DetachedCommitThenBackToTheBranch(worktree.Path);
         await RefusalAsync(repo);
 
         GitRepo.Run(worktree.Path, "reflog", "expire", "--expire-unreachable=now", "HEAD");
@@ -133,20 +224,21 @@ public sealed class JobWorktreeFreeReflogTests : IDisposable
     }
 
     [Fact]
-    public async Task ADanglingMergeIsRefusedAsync()
+    public async Task ADanglingMergeMadeWhileDetachedIsRefusedAsync()
     {
         (string repo, JobWorktreeInfo worktree) = await StartAsync();
         GitRepo.Run(worktree.Path, "checkout", "-q", "-b", "side");
         Commit(worktree.Path, "side.txt", "side\n");
         GitRepo.Run(worktree.Path, "checkout", "-q", "claustrum/job-1");
         Commit(worktree.Path, "mine.txt", "mine\n");
+        GitRepo.Run(worktree.Path, "checkout", "-q", "--detach");
         GitRepo.Run(worktree.Path, "merge", "-q", "--no-ff", "-m", "merge side", "side");
-        GitRepo.Run(worktree.Path, "reset", "-q", "--hard", "HEAD~1");
+        GitRepo.Run(worktree.Path, "checkout", "-q", "claustrum/job-1");
         GitRepo.Run(repo, "branch", "-q", "-D", "side");
 
         string message = await RefusalAsync(repo);
 
-        Assert.Contains("its HEAD reflog holds", message, StringComparison.Ordinal);
+        Assert.Contains("hold", message, StringComparison.Ordinal);
         Assert.True(Directory.Exists(worktree.Path));
     }
 

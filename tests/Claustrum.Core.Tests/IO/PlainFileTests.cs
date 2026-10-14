@@ -312,13 +312,19 @@ public sealed class PlainFileTests : IDisposable
         Assert.Equal("new", File.ReadAllText(path));
     }
 
-    // PRODUCT DEVIATION, skipped until decided: on Linux the CreateNew probe in TryOpenWrite throws IOException ("already
-    // exists") for a directory, because its catch filter only passes a file or a link; the contract says UnauthorizedAccess.
-    [Fact(Skip = "TryOpenWrite on a directory throws IOException, not UnauthorizedAccessException (PlainFile.cs CreateNew probe)")]
-    public void ADirectoryIsAnUnauthorizedAccessOnWrite()
+    [Theory]
+    [InlineData(FileMode.Create)]
+    [InlineData(FileMode.Append)]
+    public void ADirectoryIsRefusedAsNotARegularFileOnWrite(FileMode mode)
     {
         string directory = scratch.CreateDirectory();
 
-        Assert.Throws<UnauthorizedAccessException>(() => PlainFile.TryWriteAllText(directory, "x", FileMode.Create, out _));
+        using FileStream? stream = PlainFile.TryOpenWrite(directory, mode, out string? refusal);
+        bool ok = PlainFile.TryWriteAllText(directory, "x", mode, out string? writeRefusal);
+
+        Assert.Null(stream);
+        Assert.Contains("not a regular file", refusal, StringComparison.Ordinal);
+        Assert.False(ok);
+        Assert.Contains("not a regular file", writeRefusal, StringComparison.Ordinal);
     }
 }

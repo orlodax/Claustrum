@@ -170,16 +170,17 @@ public sealed class JobWorktreeFreeEntryTests : IDisposable
     }
 
     [Fact]
-    public async Task ATrashPointingAtAnUnmountedAbsolutePathWorktreeReleasesNothingAsync()
+    public async Task ATrashPointingAtAnUnmountedAbsolutePathWorktreeReleasesNothingAndIsKeptAndReportedAsync()
     {
         string repo = scratch.CreateSeededRepo();
         (string admin, string name) = Unmounted(repo);
         string trash = Plant(repo, ".trash-unmounted-drive-aaaaaaaa", admin);
 
-        (int swept, _) = await JobWorktree.SweepTrashAsync(repo, Ct);
+        (int swept, string[] failures) = await JobWorktree.SweepTrashAsync(repo, Ct);
 
-        Assert.Equal(1, swept);
-        Assert.False(Directory.Exists(trash));
+        Assert.Equal(0, swept);
+        Assert.Contains("was not released", Assert.Single(failures), StringComparison.Ordinal);
+        Assert.True(Directory.Exists(trash), "the trash is the only pointer to the entry it names");
         AssertKept(repo, admin, name);
     }
 
@@ -190,10 +191,13 @@ public sealed class JobWorktreeFreeEntryTests : IDisposable
         UseRelativePaths(repo);
         JobWorktreeInfo live = await JobWorktree.AddAsync(repo, "job-1", Ct);
         string admin = AdminOf(live.Path);
-        Plant(repo, ".trash-job-1-bbbbbbbb", admin);
+        string trash = Plant(repo, ".trash-job-1-bbbbbbbb", admin);
 
-        await JobWorktree.SweepTrashAsync(repo, Ct);
+        (int swept, string[] failures) = await JobWorktree.SweepTrashAsync(repo, Ct);
 
+        Assert.Equal(0, swept);
+        Assert.Contains("was not released", Assert.Single(failures), StringComparison.Ordinal);
+        Assert.True(Directory.Exists(trash));
         Assert.True(Directory.Exists(admin));
         Assert.True(File.Exists(Path.Combine(live.Path, "seed.txt")));
         Assert.Contains("job-1", RegisteredNames(repo));
@@ -262,5 +266,157 @@ public sealed class JobWorktreeFreeEntryTests : IDisposable
         Assert.Contains("needs git 2.31 or later", ex.Message, StringComparison.Ordinal);
         Assert.True(Directory.Exists(worktree.Path));
         Assert.Contains("job-1", RegisteredNames(repo));
+    }
+
+    // ---- round 3 (review 2026-10-14) ----------------------------------------------------------------------------------------
+
+    private static void WriteMarker(string jobs, string jobId)
+    {
+        Directory.CreateDirectory(Path.Combine(jobs, jobId));
+        File.WriteAllText(Path.Combine(jobs, jobId, "result.json"), "{}");
+    }
+
+    // A holder whose `.git` is gone but whose directory is not still has a staged file and a reflog in there: it is work.
+    [Fact]
+    public async Task AHolderWithItsDotGitDeletedButItsDirectoryKeptIsRefusedAndNothingIsTouchedAsync()
+    {
+        string repo = scratch.CreateSeededRepo();
+        string jobs = scratch.CreateDirectory();
+        JobWorktreeInfo first = await JobWorktree.AddAsync(repo, "job-1", Ct);
+        File.WriteAllText(Path.Combine(first.Path, "staged.txt"), "staged but never committed\n");
+        GitRepo.Run(first.Path, "add", "staged.txt");
+        string admin = AdminOf(first.Path);
+        WriteMarker(jobs, "job-1");
+        File.Delete(Path.Combine(first.Path, ".git"));
+
+        BranchRefusedException ex = await Assert.ThrowsAsync<BranchRefusedException>(() => JobWorktree.CheckOutBranchAsync(repo, "job-2", "claustrum/job-1", jobs, Ct));
+
+        Assert.Contains("its .git file is gone but its directory is not", ex.Message, StringComparison.Ordinal);
+        Assert.True(File.Exists(Path.Combine(first.Path, "staged.txt")));
+        Assert.True(Directory.Exists(admin));
+        Assert.True(File.Exists(Path.Combine(admin, "index")));
+    }
+
+    [Fact]
+    public async Task AHolderWhoseDirectoryIsGoneEntirelyIsReleasedAndTheBranchCheckedOutAsync()
+    {
+        string repo = scratch.CreateSeededRepo();
+        string jobs = scratch.CreateDirectory();
+        JobWorktreeInfo first = await JobWorktree.AddAsync(repo, "job-1", Ct);
+        string admin = AdminOf(first.Path);
+        WriteMarker(jobs, "job-1");
+        TempTree.Delete(first.Path);
+
+        JobWorktreeInfo second = await JobWorktree.CheckOutBranchAsync(repo, "job-2", "claustrum/job-1", jobs, Ct);
+
+        Assert.True(Directory.Exists(second.Path));
+        Assert.False(Directory.Exists(admin));
+        Assert.DoesNotContain("job-1", RegisteredNames(repo));
+    }
+
+    // A killed free leaves the trash beside a registration; the cwd may be reached through a link, which git resolves.
+    private async Task SweepAfterAKilledFreeThroughALinkAsync(bool relativePaths)
+    {
+        string repo = scratch.CreateSeededRepo();
+        string link = Path.Combine(scratch.CreateDirectory(), "repo-link");
+        try
+        {
+            Directory.CreateSymbolicLink(link, repo);
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
+        {
+            Assert.Skip($"symlinks cannot be created here: {ex.Message}");
+        }
+
+        if (relativePaths)
+            UseRelativePaths(repo);
+
+        JobWorktreeInfo worktree = await JobWorktree.AddAsync(link, "job-1", Ct);
+        string admin = AdminOf(worktree.Path);
+        if (relativePaths && Path.IsPathRooted(File.ReadAllText(Path.Combine(admin, "gitdir")).Trim()))
+            Assert.Skip("this git writes absolute gitdir paths even with worktree.useRelativePaths (older than 2.48).");
+
+        string trash = Path.Combine(Path.GetDirectoryName(worktree.Path) ?? link, ".trash-job-1-12345678");
+        Directory.Move(worktree.Path, trash);
+
+        (int swept, string[] failures) = await JobWorktree.SweepTrashAsync(link, Ct);
+
+        Assert.Equal(1, swept);
+        Assert.Empty(failures);
+        Assert.False(Directory.Exists(trash));
+        Assert.False(Directory.Exists(admin));
+        Assert.DoesNotContain("job-1", RegisteredNames(repo));
+    }
+
+    [Fact]
+    public async Task ATrashLeftByAKilledFreeIsSweptWithItsRegistrationWhenTheCwdIsReachedThroughALinkAsync() =>
+        await SweepAfterAKilledFreeThroughALinkAsync(relativePaths: false);
+
+    [Fact]
+    public async Task TheSameHoldsWithRelativeGitdirFilesAsync() =>
+        await SweepAfterAKilledFreeThroughALinkAsync(relativePaths: true);
+
+    [Fact]
+    public async Task ATrashNamingALockedEntryIsKeptAsync()
+    {
+        string repo = scratch.CreateSeededRepo();
+        JobWorktreeInfo worktree = await JobWorktree.AddAsync(repo, "job-1", Ct);
+        GitRepo.Run(repo, "worktree", "lock", worktree.Path, "--reason", "somebody's");
+        string admin = AdminOf(worktree.Path);
+        string trash = Path.Combine(Path.GetDirectoryName(worktree.Path) ?? repo, ".trash-job-1-aaaabbbb");
+        Directory.Move(worktree.Path, trash);
+
+        (int swept, string[] failures) = await JobWorktree.SweepTrashAsync(repo, Ct);
+
+        Assert.Equal(0, swept);
+        Assert.Contains("locked", Assert.Single(failures), StringComparison.Ordinal);
+        Assert.True(Directory.Exists(trash));
+        Assert.True(Directory.Exists(admin));
+    }
+
+    [Fact]
+    public async Task ANulInATrashDotGitIsReportedWithoutAThrowAndTheTrashIsKeptAsync()
+    {
+        string repo = scratch.CreateSeededRepo();
+        string trash = Directory.CreateDirectory(Path.Combine(repo, ".claustrum", "worktrees", ".trash-job-1-cccc0000")).FullName;
+        File.WriteAllText(Path.Combine(trash, ".git"), "gitdir: /x\0/y\n");
+
+        (int swept, string[] failures) = await JobWorktree.SweepTrashAsync(repo, Ct);
+
+        Assert.Equal(0, swept);
+        Assert.Contains("NUL", Assert.Single(failures), StringComparison.Ordinal);
+        Assert.True(Directory.Exists(trash));
+    }
+
+    [Fact]
+    public async Task ANulInAnAdminGitdirIsReportedWithoutAThrowAndTheTrashIsKeptAsync()
+    {
+        string repo = scratch.CreateSeededRepo();
+        JobWorktreeInfo worktree = await JobWorktree.AddAsync(repo, "job-1", Ct);
+        string admin = AdminOf(worktree.Path);
+        string trash = Path.Combine(Path.GetDirectoryName(worktree.Path) ?? repo, ".trash-job-1-dddd0000");
+        Directory.Move(worktree.Path, trash);
+        File.WriteAllText(Path.Combine(admin, "gitdir"), "/some\0/path/.git\n");
+
+        (int swept, string[] failures) = await JobWorktree.SweepTrashAsync(repo, Ct);
+
+        Assert.Equal(0, swept);
+        Assert.Contains("NUL", Assert.Single(failures), StringComparison.Ordinal);
+        Assert.True(Directory.Exists(trash));
+        Assert.True(Directory.Exists(admin));
+    }
+
+    [Fact]
+    public async Task AnEmptyGitdirInATrashIsDeletedAsBeforeAsync()
+    {
+        string repo = scratch.CreateSeededRepo();
+        string trash = Directory.CreateDirectory(Path.Combine(repo, ".claustrum", "worktrees", ".trash-job-1-eeee0000")).FullName;
+        File.WriteAllText(Path.Combine(trash, ".git"), "gitdir:\n");
+
+        (int swept, string[] failures) = await JobWorktree.SweepTrashAsync(repo, Ct);
+
+        Assert.Equal(1, swept);
+        Assert.Empty(failures);
+        Assert.False(Directory.Exists(trash));
     }
 }
