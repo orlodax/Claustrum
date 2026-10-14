@@ -20,6 +20,19 @@ public static class TempTree
                 File.SetAttributes(file, attributes & ~FileAttributes.ReadOnly);
         }
 
-        Directory.Delete(path, recursive: true);
+        // Windows can keep a directory busy for a moment after a child process in it has exited (PR #109 CI,
+        // 2026-10-14: "being used by another process" right after a cancelled git), so a busy delete is retried.
+        for (int attempt = 1; ; attempt++)
+        {
+            try
+            {
+                Directory.Delete(path, recursive: true);
+                return;
+            }
+            catch (IOException) when (OperatingSystem.IsWindows() && attempt < 10)
+            {
+                Thread.Sleep(200);
+            }
+        }
     }
 }
