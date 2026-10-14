@@ -18,11 +18,12 @@ public sealed class RunningCli : IDisposable
     private readonly TaskCompletionSource<bool> stdoutClosed = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly TaskCompletionSource<bool> stderrClosed = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-    public RunningCli(string binary, string workingDirectory, string home, string path, IEnumerable<string> args, bool keepStdinOpen = false)
+    public RunningCli(string binary, string workingDirectory, string home, string path, IEnumerable<string> args, bool keepStdinOpen = false, bool newSession = false)
     {
+        (string File, string[] Arguments)? launcher = newSession ? SessionLauncher() : null;
         ProcessStartInfo startInfo = new()
         {
-            FileName = binary,
+            FileName = launcher?.File ?? binary,
             WorkingDirectory = workingDirectory,
             UseShellExecute = false,
             RedirectStandardInput = true,
@@ -32,6 +33,14 @@ public sealed class RunningCli : IDisposable
             StandardOutputEncoding = Encoding.UTF8,
             StandardErrorEncoding = Encoding.UTF8,
         };
+        if (launcher is { } session)
+        {
+            foreach (string launcherArgument in session.Arguments)
+                startInfo.ArgumentList.Add(launcherArgument);
+
+            startInfo.ArgumentList.Add(binary);
+        }
+
         foreach (string arg in args)
             startInfo.ArgumentList.Add(arg);
         startInfo.Environment["CLAUSTRUM_HOME"] = home;
@@ -51,6 +60,32 @@ public sealed class RunningCli : IDisposable
         process.BeginOutputReadLine();
         process.BeginErrorReadLine();
     }
+
+    /// <summary>
+    /// What makes a child the leader of a session and process group of its own (`setsid`, so its pid is its pgid) and then
+    /// becomes the binary: util-linux `setsid` where there is one, else perl or python3 (macOS has none of the three
+    /// guaranteed but ships perl and python3). The host is not a group leader, so `setsid` does not fork and the pid is the binary's.
+    /// </summary>
+    private static (string File, string[] Arguments) SessionLauncher()
+    {
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("process groups and sessions are POSIX.");
+
+        if (OnPath("setsid"))
+            return ("setsid", []);
+
+        if (OnPath("perl"))
+            return ("perl", ["-e", "use POSIX (); POSIX::setsid(); exec @ARGV or die $!;", "--"]);
+
+        if (OnPath("python3"))
+            return ("python3", ["-I", "-c", "import os, sys; os.setsid(); os.execv(sys.argv[1], sys.argv[1:])"]);
+
+        Assert.Skip("none of setsid, perl or python3 is available to start the child in a session of its own.");
+        return ("", []);
+    }
+
+    private static bool OnPath(string name) =>
+        (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator).Any(directory => directory.Length > 0 && File.Exists(Path.Combine(directory, name)));
 
     public int Id => process.Id;
 
@@ -122,6 +157,21 @@ public sealed class RunningCli : IDisposable
         ProcessStartInfo startInfo = new() { FileName = "/bin/sh", UseShellExecute = false, CreateNoWindow = true };
         startInfo.ArgumentList.Add("-c");
         startInfo.ArgumentList.Add($"kill -{signal} {process.Id}");
+        using Process kill = Process.Start(startInfo) ?? throw new InvalidOperationException("sh failed to start");
+        await kill.WaitForExitAsync(cancellationToken);
+        Assert.Equal(0, kill.ExitCode);
+    }
+
+    /// <summary>
+    /// `kill -s &lt;signal&gt; -- -&lt;pgid&gt;` <paramref name="times"/> times in one shell, back to back: the way a terminal or
+    /// `kill -- -pgid` reaches the backend, git and hooks as well as claustrum. The child must have been started with
+    /// <c>newSession</c>, so that its pid is its process group.
+    /// </summary>
+    public async Task SendGroupSignalAsync(string signal, CancellationToken cancellationToken, int times = 1)
+    {
+        ProcessStartInfo startInfo = new() { FileName = "/bin/sh", UseShellExecute = false, CreateNoWindow = true };
+        startInfo.ArgumentList.Add("-c");
+        startInfo.ArgumentList.Add(string.Join("; ", Enumerable.Repeat($"kill -s {signal} -- -{process.Id}", times)));
         using Process kill = Process.Start(startInfo) ?? throw new InvalidOperationException("sh failed to start");
         await kill.WaitForExitAsync(cancellationToken);
         Assert.Equal(0, kill.ExitCode);

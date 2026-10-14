@@ -133,7 +133,7 @@ public sealed class JobsCleanTrashEndToEndTests : IDisposable
 
     // A fake git that sits in `worktree list` (the sweep's first call) until the signal arrives; every other call is the real git.
     [UnsupportedOSPlatform("windows")]
-    private async Task<RunningCli> StartSweepHeldInGitAsync(string sleep, int signalNumber, string signalName)
+    private async Task<RunningCli> StartSweepHeldInGitAsync(string sleep, int signalNumber, string signalName, bool ownSession = false)
     {
         sleeps.Add(sleep);
         string bin = Directory.CreateDirectory(Path.Combine(repo.Home, "slow-git")).FullName;
@@ -142,7 +142,7 @@ public sealed class JobsCleanTrashEndToEndTests : IDisposable
         File.WriteAllText(script, $"#!/bin/sh\ncase \"$1 $2\" in\n  'worktree list') sleep {sleep} ;;\n  *) exec '{real}' \"$@\" ;;\nesac\n");
         File.SetUnixFileMode(script, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
         string binary = Path.Combine(AppContext.BaseDirectory, "claustrum");
-        RunningCli cli = new(binary, repo.Repo, repo.Home, bin + Path.PathSeparator + IsolatedRepo.ChildPath(), ["jobs", "clean"]);
+        RunningCli cli = new(binary, repo.Repo, repo.Home, bin + Path.PathSeparator + IsolatedRepo.ChildPath(), ["jobs", "clean"], newSession: ownSession);
         if (cli.IgnoresSignal(signalNumber))
         {
             cli.Kill();
@@ -172,26 +172,29 @@ public sealed class JobsCleanTrashEndToEndTests : IDisposable
     }
 
     // #113: `jobs clean` writes no receipt, so the second-signal hint says what a forced exit abandons, not "without a receipt";
-    // #111: a closed terminal's SIGHUP cancels the sweep like the other two.
+    // #111: a closed terminal's SIGHUP cancels the sweep like the other two. The signal goes to the whole process group, as a
+    // terminal's does: the fake git's sleep dies with claustrum, and the sweep must still read that as a cancel (exit 130), not as
+    // a free that failed.
     [Theory]
     [InlineData("INT", 2, "32.01", "cancelling… press Ctrl-C again to stop now; a free in flight is left for the next jobs clean")]
     [InlineData("TERM", 15, "32.02", "cancelling… send SIGTERM again to stop now; a free in flight is left for the next jobs clean")]
-    [InlineData("HUP", 1, "32.03", "cancelling… send SIGHUP again to stop now; a free in flight is left for the next jobs clean")]
+    [InlineData("HUP", 1, "32.03", "cancelling… send SIGTERM or press Ctrl-C again to stop now; a free in flight is left for the next jobs clean")]
     [UnsupportedOSPlatform("windows")]
-    public async Task TheFirstSignalDuringTheSweepPrintsTheStopNowHintAndExits130Async(string signal, int number, string sleep, string line)
+    public async Task TheFirstGroupSignalDuringTheSweepPrintsTheStopNowHintAndExits130Async(string signal, int number, string sleep, string line)
     {
         if (OperatingSystem.IsWindows())
             Assert.Skip("these are POSIX signals; the fake git is sh.");
 
         string trash = MakeTrash(".trash-job-1-ffffffff");
-        using RunningCli cli = await StartSweepHeldInGitAsync(sleep, number, signal);
+        using RunningCli cli = await StartSweepHeldInGitAsync(sleep, number, signal, ownSession: true);
 
-        await cli.SendSignalAsync(signal, TestContext.Current.CancellationToken);
+        await cli.SendGroupSignalAsync(signal, TestContext.Current.CancellationToken);
         int exit = await cli.WaitForExitAsync(CancelScenario.ExitLimit, TestContext.Current.CancellationToken);
 
         Assert.Equal(ExitCodes.Cancelled, exit);
         Assert.Equal(1, CancelScenario.Count(cli.Stderr, line));
         Assert.DoesNotContain("without a receipt", cli.Stderr, StringComparison.Ordinal);
+        Assert.DoesNotContain("could not remove", cli.Stderr, StringComparison.Ordinal);
         Assert.True(Directory.Exists(trash));
     }
 
