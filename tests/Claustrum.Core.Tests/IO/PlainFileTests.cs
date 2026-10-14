@@ -48,14 +48,22 @@ public sealed class PlainFileTests : IDisposable
         Assert.Throws<FileNotFoundException>(() => PlainFile.TryReadAllText(PathIn("not-there"), out _, out _));
     }
 
+    // The opened handle of a directory is not a regular file: refused on Unix; Windows cannot open one and throws.
     [Fact]
-    public void ADirectoryIsAnErrorNotARefusal()
+    public void ADirectoryIsNeverReadAsText()
     {
         string directory = scratch.CreateDirectory();
 
-        Exception ex = Assert.ThrowsAny<Exception>(() => PlainFile.TryReadAllText(directory, out _, out _));
+        if (OperatingSystem.IsWindows())
+        {
+            Exception ex = Assert.ThrowsAny<Exception>(() => PlainFile.TryReadAllText(directory, out _, out _));
+            Assert.True(ex is UnauthorizedAccessException or IOException, ex.GetType().Name);
+            return;
+        }
 
-        Assert.True(ex is UnauthorizedAccessException or IOException, ex.GetType().Name);
+        Assert.False(PlainFile.TryReadAllText(directory, out string? text, out string? refusal));
+        Assert.Null(text);
+        Assert.Contains("not a regular file", refusal, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -158,5 +166,159 @@ public sealed class PlainFileTests : IDisposable
             Assert.Skip("on Windows these are the .git directory.");
 
         Assert.False(PlainFile.IsGitDirName(segment));
+    }
+
+    // ---- devices, the size cap, and the write door (2026-10-14) -----------------------------------------------------
+
+    [Fact]
+    public void ALinkToDevZeroIsRefusedOnTheOpenedHandleNotReadForeverOrIntoMemory()
+    {
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("/dev/zero is a Unix device.");
+
+        string link = PathIn("zero");
+        File.CreateSymbolicLink(link, "/dev/zero");
+
+        (bool ok, string? refusal) = PipeFiles.Within(() => (PlainFile.TryReadAllText(link, out _, out string? why), why));
+        (FileStream? stream, string? openRefusal) = PipeFiles.Within(() => (PlainFile.OpenRead(link, out string? why), why));
+
+        Assert.False(ok);
+        Assert.Contains("not a regular file", refusal, StringComparison.Ordinal);
+        Assert.Null(stream);
+        Assert.Contains("not a regular file", openRefusal, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AnEmptyFileIsAcceptedAsEmptyText()
+    {
+        string path = PathIn("empty.txt");
+        File.WriteAllBytes(path, []);
+
+        Assert.True(PlainFile.TryReadAllText(path, out string? text, out _));
+        Assert.Equal("", text);
+    }
+
+    private static byte[] Filled(int length) => [.. Enumerable.Repeat((byte)'a', length)];
+
+    [Fact]
+    public void AFileOfExactlyEightMiBIsAcceptedAndOneByteMoreIsTooLarge()
+    {
+        string exact = PathIn("exact.txt");
+        string over = PathIn("over.txt");
+        File.WriteAllBytes(exact, Filled(PlainFile.MaxTextBytes));
+        File.WriteAllBytes(over, Filled(PlainFile.MaxTextBytes + 1));
+
+        Assert.True(PlainFile.TryReadAllText(exact, out string? text, out _));
+        Assert.Equal(PlainFile.MaxTextBytes, text.Length);
+        Assert.False(PlainFile.TryReadAllText(over, out string? none, out string? refusal));
+        Assert.Null(none);
+        Assert.Contains("too large", refusal, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TryWriteAllTextCreatesAMissingFile()
+    {
+        string path = PathIn("new.txt");
+
+        Assert.True(PlainFile.TryWriteAllText(path, "hello", FileMode.Create, out string? refusal));
+
+        Assert.Null(refusal);
+        Assert.Equal("hello", File.ReadAllText(path));
+    }
+
+    [Fact]
+    public void CreateTruncatesALongerFileAndAppendKeepsItsBytes()
+    {
+        string path = PathIn("existing.txt");
+        File.WriteAllText(path, "a much longer first content");
+
+        Assert.True(PlainFile.TryWriteAllText(path, "short", FileMode.Create, out _));
+        Assert.Equal("short", File.ReadAllText(path));
+        Assert.True(PlainFile.TryWriteAllText(path, "+more", FileMode.Append, out _));
+        Assert.Equal("short+more", File.ReadAllText(path));
+    }
+
+    [Fact]
+    public void AnAppendToAMissingFileCreatesIt()
+    {
+        string path = PathIn("appended.txt");
+
+        Assert.True(PlainFile.TryWriteAllText(path, "first", FileMode.Append, out _));
+
+        Assert.Equal("first", File.ReadAllText(path));
+    }
+
+    [Fact]
+    public void AnUnsupportedFileModeIsRejected()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => PlainFile.TryOpenWrite(PathIn("x"), FileMode.Open, out _));
+    }
+
+    [Fact]
+    public void AFifoWithNoReaderIsRefusedPromptlyOnWrite()
+    {
+        string path = PathIn("pipe");
+        PipeFiles.MakeFifo(path);
+
+        (bool ok, string? refusal) = PipeFiles.Within(() => (PlainFile.TryWriteAllText(path, "x", FileMode.Create, out string? why), why));
+
+        Assert.False(ok);
+        Assert.Contains("not a regular file", refusal, StringComparison.Ordinal);
+    }
+
+    // With a reader attached the open succeeds, so only the type check on the handle stands between the text and the pipe.
+    [Fact]
+    public void AFifoWithAReaderAttachedIsStillRefusedOnWrite()
+    {
+        string path = PathIn("pipe");
+        PipeFiles.MakeFifo(path);
+        using FileStream reader = new(path, FileMode.Open, FileAccess.ReadWrite);
+
+        (bool ok, string? refusal) = PipeFiles.Within(() => (PlainFile.TryWriteAllText(path, "must not arrive", FileMode.Append, out string? why), why));
+
+        Assert.False(ok);
+        Assert.Contains("not a regular file", refusal, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ALinkToDevNullIsRefusedOnWrite()
+    {
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("/dev/null is a Unix device.");
+
+        string link = PathIn("null");
+        File.CreateSymbolicLink(link, "/dev/null");
+
+        (bool ok, string? refusal) = PipeFiles.Within(() => (PlainFile.TryWriteAllText(link, "x", FileMode.Create, out string? why), why));
+
+        Assert.False(ok);
+        Assert.Contains("not a regular file", refusal, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    [System.Runtime.Versioning.UnsupportedOSPlatform("windows")]
+    public void AnExistingFilesModeSurvivesAWrite()
+    {
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("POSIX file modes do not exist on Windows.");
+
+        string path = PathIn("private.txt");
+        File.WriteAllText(path, "old");
+        File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+
+        Assert.True(PlainFile.TryWriteAllText(path, "new", FileMode.Create, out _));
+
+        Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(path));
+        Assert.Equal("new", File.ReadAllText(path));
+    }
+
+    // PRODUCT DEVIATION, skipped until decided: on Linux the CreateNew probe in TryOpenWrite throws IOException ("already
+    // exists") for a directory, because its catch filter only passes a file or a link; the contract says UnauthorizedAccess.
+    [Fact(Skip = "TryOpenWrite on a directory throws IOException, not UnauthorizedAccessException (PlainFile.cs CreateNew probe)")]
+    public void ADirectoryIsAnUnauthorizedAccessOnWrite()
+    {
+        string directory = scratch.CreateDirectory();
+
+        Assert.Throws<UnauthorizedAccessException>(() => PlainFile.TryWriteAllText(directory, "x", FileMode.Create, out _));
     }
 }

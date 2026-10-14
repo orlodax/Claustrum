@@ -110,10 +110,9 @@ public sealed class SyncPipeTargetTests : IDisposable
         Assert.Contains("not a regular file", into.Refused[manifest], StringComparison.Ordinal);
     }
 
-    // The sequence every sync runs: the MCP merge reads the manifest (recording the refusal), then Update. Update on its own,
-    // with no earlier Read, would open the pipe for writing: reported to the architect, not pinned here.
+    // Update on its own, with no earlier Read: the write handle is checked too (2026-10-14), so it never blocks on the pipe.
     [Fact]
-    public void UpdateAfterTheReadWritesNothingThroughAFifoManifest()
+    public void UpdateOnItsOwnWritesNothingThroughAFifoManifest()
     {
         string manifest = Path.Combine(cwd, ".claustrum", "sync-manifest.json");
         Directory.CreateDirectory(Path.GetDirectoryName(manifest) ?? cwd);
@@ -123,7 +122,6 @@ public sealed class SyncPipeTargetTests : IDisposable
 
         PipeFiles.Within(() =>
         {
-            _ = SyncManifestStore.Read(cwd, into);
             SyncManifestStore.Update(cwd, "1.0.0", into);
             return 0;
         });
