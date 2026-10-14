@@ -63,6 +63,10 @@ public sealed class JobWorktreeUnregisteredDirectoryTests : IDisposable
     // The shell's own realpath: what git prints for a worktree (`pwd -P` is POSIX, `realpath` is not on every macOS).
     private static string RealPath(string directory)
     {
+        // Windows has no /bin/sh; its temp directory carries no link, so the full path is already the real one.
+        if (OperatingSystem.IsWindows())
+            return Path.GetFullPath(directory);
+
         ProcessStartInfo start = new("/bin/sh") { UseShellExecute = false, RedirectStandardOutput = true, CreateNoWindow = true };
         start.ArgumentList.Add("-c");
         start.ArgumentList.Add("cd \"$1\" && pwd -P");
