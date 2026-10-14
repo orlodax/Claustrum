@@ -100,16 +100,29 @@ public sealed class IsolatedRepo : IDisposable
         Directory.Exists(JobsRoot) ? [.. Directory.GetDirectories(JobsRoot).Select(Path.GetFileName).OfType<string>()] : [];
 
     /// <summary>The built binary started with these arguments in the repository and left running, for a test that signals it.</summary>
-    public RunningCli StartCli(params string[] args) => Start(keepStdinOpen: false, args);
+    public RunningCli StartCli(params string[] args) => Start(keepStdinOpen: false, newSession: false, args);
+
+    /// <summary>
+    /// As <see cref="StartCli(string[])"/>, as a session and process-group leader of its own (RunningCli's `newSession`), so a
+    /// test can signal the whole group the way a terminal does: the backend and git die with it, which is the case
+    /// a single-pid signal never reaches (#111, NOTES.md "A cancel during `worktree add` and a closed terminal").
+    /// </summary>
+    public RunningCli StartCliInOwnSession(params string[] args) => Start(keepStdinOpen: false, newSession: true, args);
 
     /// <summary>As <see cref="StartCli(string[])"/>, with the child's stdin left open: `--brief-file -` blocks on it until the test ends the run.</summary>
-    public RunningCli StartCliHoldingStdin(params string[] args) => Start(keepStdinOpen: true, args);
+    public RunningCli StartCliHoldingStdin(params string[] args) => Start(keepStdinOpen: true, newSession: false, args);
 
-    private RunningCli Start(bool keepStdinOpen, string[] args)
+    /// <summary>As <see cref="StartCliHoldingStdin(string[])"/>, in a session of its own.</summary>
+    public RunningCli StartCliHoldingStdinInOwnSession(params string[] args) => Start(keepStdinOpen: true, newSession: true, args);
+
+    /// <summary>A directory put in front of PATH for the children that <see cref="StartCli(string[])"/> and its siblings start, or null.</summary>
+    public string? PathPrefix { get; set; }
+
+    private RunningCli Start(bool keepStdinOpen, bool newSession, string[] args)
     {
         string binary = Path.Combine(AppContext.BaseDirectory, OperatingSystem.IsWindows() ? "claustrum.exe" : "claustrum");
         Assert.True(File.Exists(binary), $"built claustrum binary not found at '{binary}'");
-        return new RunningCli(binary, Repo, Home, ChildPath(), args, keepStdinOpen);
+        return new RunningCli(binary, Repo, Home, PathPrefix is null ? ChildPath() : PathPrefix + Path.PathSeparator + ChildPath(), args, keepStdinOpen, newSession);
     }
 
     /// <summary>A `claustrum mcp` server over real stdio in this repository, with the same environment the CLI runs get.</summary>

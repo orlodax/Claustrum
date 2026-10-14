@@ -15,7 +15,8 @@ public sealed class CancelScenario : IDisposable
 {
     public const string CtrlCLine = "cancelling… press Ctrl-C again to exit without a receipt";
     public const string SigtermLine = "cancelling… send SIGTERM again to exit without a receipt";
-    public const string SighupLine = "cancelling… send SIGHUP again to exit without a receipt";
+    // A SIGHUP never forces the exit (a closing terminal sends two), so the hint names the signals that do.
+    public const string SighupLine = "cancelling… send SIGTERM or press Ctrl-C again to exit without a receipt";
 
     public static readonly TimeSpan StartLimit = TimeSpan.FromSeconds(30);
     public static readonly TimeSpan ExitLimit = TimeSpan.FromSeconds(10);
@@ -63,14 +64,31 @@ public sealed class CancelScenario : IDisposable
     /// A git hook named <paramref name="hookName"/> that sleeps. `post-checkout` is the one git runs inside `worktree add`, so a
     /// sleeping one holds the add open for a cancel to land on (#94).
     /// </summary>
-    public void PlantHangingHook(string hookName, string hookSleep)
+    public void PlantHangingHook(string hookName, string hookSleep, bool ignoreSignals = true)
     {
         sleeps.Add(hookSleep);
         string hooks = Directory.CreateDirectory(Path.Combine(Repo.Repo, ".git", "hooks")).FullName;
         string hook = Path.Combine(hooks, hookName);
-        File.WriteAllText(hook, $"#!/bin/sh\nsleep {hookSleep}\n");
+        // The hook ignores the group signals too (its `sleep` inherits that): git resets the dispositions it passes on to hooks.
+        File.WriteAllText(hook, $"#!/bin/sh\n{(ignoreSignals ? "trap '' HUP INT QUIT TERM\n" : "")}sleep {hookSleep}\n");
         if (!OperatingSystem.IsWindows())
             File.SetUnixFileMode(hook, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+    }
+
+    /// <summary>
+    /// A `git` first on the children's PATH that ignores HUP, INT, QUIT and TERM before it runs the real one (ignored signals are
+    /// inherited, so its hooks are immune too). A group signal kills git like every other member of the group, which would end a
+    /// hanging pre-commit hook at once; with this a cancel path can really hang after the signal, the way an operator would find it.
+    /// </summary>
+    [System.Runtime.Versioning.UnsupportedOSPlatform("windows")]
+    public void PlantSignalImmuneGit()
+    {
+        string real = Path.Combine(IsolatedRepo.ChildPath().Split(Path.PathSeparator)[0], "git");
+        string directory = Directory.CreateDirectory(Path.Combine(Repo.Home, "immune-git")).FullName;
+        string script = Path.Combine(directory, "git");
+        File.WriteAllText(script, $"#!/bin/sh\ntrap '' HUP INT QUIT TERM\nexec '{real}' \"$@\"\n");
+        File.SetUnixFileMode(script, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        Repo.PathPrefix = directory;
     }
 
     public static string? FindPartial(string root, bool isolated)
@@ -128,6 +146,13 @@ public sealed class CancelScenario : IDisposable
         }
     }
 
+    /// <summary>Kills every `sleep &lt;duration&gt;` of this scenario's repository (SIGKILL, which the immune git and hooks cannot ignore).</summary>
+    public void KillSleeps(string duration)
+    {
+        foreach (string pid in SleepPids(duration, repo?.Repo))
+            KillQuietly(pid);
+    }
+
     private static void KillQuietly(string pid)
     {
         try
@@ -145,9 +170,9 @@ public sealed class CancelScenario : IDisposable
     /// Starts the binary and waits until the fake backend has written `partial.txt`, so the signal lands on a running backend.
     /// A host that started with the signal ignored (<see cref="RunningCli.IgnoresSignal"/>) could not deliver it: skip.
     /// </summary>
-    public async Task<RunningCli> StartAndWaitForPartialAsync(string[] args, bool isolated, int signalNumber, string signalName)
+    public async Task<RunningCli> StartAndWaitForPartialAsync(string[] args, bool isolated, int signalNumber, string signalName, bool ownSession = false)
     {
-        RunningCli cli = Repo.StartCli(args);
+        RunningCli cli = ownSession ? Repo.StartCliInOwnSession(args) : Repo.StartCli(args);
         if (cli.IgnoresSignal(signalNumber))
         {
             cli.Kill();
@@ -170,10 +195,14 @@ public sealed class CancelScenario : IDisposable
     /// (by default under the 2 s the old handler waited), the stderr <paramref name="cancellingLine"/> exactly once, a `cancelled`
     /// receipt on stdout and on disk, the isolated run's commit holding `partial.txt`, and the backend's own `sleep` gone.
     /// </summary>
-    public async Task AssertCancelledAsync(RunningCli cli, string signal, string cancellingLine, string role, string sleep, bool isolated, int withinMilliseconds = 2000)
+    public async Task AssertCancelledAsync(RunningCli cli, string signal, string cancellingLine, string role, string sleep, bool isolated, int withinMilliseconds = 2000, bool group = false, int times = 1)
     {
         Stopwatch stopwatch = Stopwatch.StartNew();
-        await cli.SendSignalAsync(signal, TestContext.Current.CancellationToken);
+        if (group)
+            await cli.SendGroupSignalAsync(signal, TestContext.Current.CancellationToken, times);
+        else
+            await cli.SendSignalAsync(signal, TestContext.Current.CancellationToken);
+
         int exit = await cli.WaitForExitAsync(ExitLimit, TestContext.Current.CancellationToken);
         stopwatch.Stop();
 
