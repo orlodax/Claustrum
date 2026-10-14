@@ -19,7 +19,8 @@ public sealed class FakeGit : IDisposable
     /// <param name="subcommand">The first argument that does not start with `-`.</param>
     /// <param name="exitCode">What the intercepted call exits with.</param>
     /// <param name="alsoContains">A further argument the call must carry (`--quiet`, `refs/heads`), or null.</param>
-    public FakeGit(string subcommand, int exitCode, string? alsoContains = null)
+    /// <param name="echoArgs">Instead of exiting with a code, prints the arguments one per line and exits 0: what a git too old to know a flag does with it.</param>
+    public FakeGit(string subcommand, int exitCode, string? alsoContains = null, bool echoArgs = false)
     {
         if (OperatingSystem.IsWindows())
             Assert.Skip("the fake git is an sh script and exit codes 130/131/143 are read on Unix only.");
@@ -33,7 +34,7 @@ public sealed class FakeGit : IDisposable
             for a in "$@"; do
               case "$a" in -*) ;; *) sub="$a"; break;; esac
             done
-            if [ "$sub" = "{{subcommand}}" ]{{also}}; then exit {{exitCode}}; fi
+            if [ "$sub" = "{{subcommand}}" ]{{also}}; then {{(echoArgs ? "printf '%s\\n' \"$@\"; exit 0" : $"exit {exitCode}")}}; fi
             exec "{{real}}" "$@"
             """;
         string path = Path.Combine(directory, "git");
@@ -48,5 +49,20 @@ public sealed class FakeGit : IDisposable
     {
         Environment.SetEnvironmentVariable("PATH", originalPath);
         Directory.Delete(directory, recursive: true);
+    }
+}
+
+/// <summary>PATH replaced by an empty directory for the scope: no `git` can be started, which is a Win32Exception from Process.Start.</summary>
+public sealed class NoGitOnPath : IDisposable
+{
+    private readonly string directory = Directory.CreateTempSubdirectory("claustrum-no-git-").FullName;
+    private readonly string originalPath = Environment.GetEnvironmentVariable("PATH") ?? "";
+
+    public NoGitOnPath() => Environment.SetEnvironmentVariable("PATH", directory);
+
+    public void Dispose()
+    {
+        Environment.SetEnvironmentVariable("PATH", originalPath);
+        Directory.Delete(directory);
     }
 }

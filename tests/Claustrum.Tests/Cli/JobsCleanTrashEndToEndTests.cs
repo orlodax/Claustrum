@@ -162,4 +162,45 @@ public sealed class JobsCleanTrashEndToEndTests : IDisposable
         Assert.Equal(ExitCodes.Cancelled, exit);
         Assert.True(Directory.Exists(trash));
     }
+
+    // ---- round 2 (review 2026-10-14) ---------------------------------------------------------------------------------------
+
+    [Fact]
+    public async Task ABranchJobWithoutAReceiptBranchIsFreedAndTheOutputNamesTheBranchItKeptAsync()
+    {
+        repo.Git("branch", "feature/x");
+        string worktree = Path.Combine(Worktrees, "20261014-000000-branchjob");
+        repo.Git("worktree", "add", "-q", worktree, "feature/x");
+        Directory.CreateDirectory(Path.Combine(repo.JobsRoot, "20261014-000000-branchjob"));
+        File.WriteAllText(Path.Combine(repo.JobsRoot, "20261014-000000-branchjob", "result.json"), "{}");
+
+        CliResult result = await repo.RunAsync("jobs", "clean");
+
+        Assert.Equal(ExitCodes.Ok, result.ExitCode);
+        Assert.Contains("removed 20261014-000000-branchjob (branch feature/x kept)", Lf(result.Stdout), StringComparison.Ordinal);
+        Assert.False(Directory.Exists(worktree));
+        Assert.Contains("feature/x", TestGit.Branches(repo.Repo));
+    }
+
+    [Fact]
+    public async Task AnUnmountedOperatorWorktreeKeepsItsEntryThroughAJobsCleanAsync()
+    {
+        string finished = Path.Combine(Worktrees, "20261014-000000-donejob");
+        repo.Git("worktree", "add", "-q", "-b", "claustrum/20261014-000000-donejob", finished);
+        Directory.CreateDirectory(Path.Combine(repo.JobsRoot, "20261014-000000-donejob"));
+        File.WriteAllText(Path.Combine(repo.JobsRoot, "20261014-000000-donejob", "result.json"), "{}");
+        string unmounted = Path.Combine(Directory.CreateTempSubdirectory("claustrum-unmounted-").FullName, "drive");
+        repo.Git("worktree", "add", "-q", "--detach", unmounted);
+        File.WriteAllText(Path.Combine(unmounted, "staged.txt"), "staged\n");
+        TestGit.Run(unmounted, "add", "staged.txt");
+        string admin = TestGit.Run(unmounted, "rev-parse", "--path-format=absolute", "--git-dir");
+        TempTree.Delete(Path.GetDirectoryName(unmounted) ?? unmounted);
+
+        CliResult result = await repo.RunAsync("jobs", "clean");
+
+        Assert.Equal(ExitCodes.Ok, result.ExitCode);
+        Assert.False(Directory.Exists(finished));
+        Assert.True(File.Exists(Path.Combine(admin, "index")), "the unmounted worktree's entry and staged index must survive");
+        Assert.Contains("drive", TestGit.WorktreePaths(repo.Repo).Select(Path.GetFileName));
+    }
 }
