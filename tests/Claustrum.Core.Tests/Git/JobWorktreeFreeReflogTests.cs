@@ -152,12 +152,32 @@ public sealed class JobWorktreeFreeReflogTests : IDisposable
 
         (string repo, JobWorktreeInfo worktree) = await StartAsync();
         string gpg = Path.Combine(scratch.CreateDirectory(), "fake-gpg");
-        File.WriteAllText(gpg, "#!/bin/sh\necho 'gpg: Signature made today' >&2\necho 'gpg: Good signature from \"nobody\"' >&2\nexit 0\n");
+        // Signs (a fake signature) and verifies (a good one, with gpg's usual line on stderr), so `log -g` prints gpg lines.
+        File.WriteAllText(gpg, """
+            #!/bin/sh
+            case "$*" in
+              *--verify*)
+                echo '[GNUPG:] NEWSIG'
+                echo '[GNUPG:] GOODSIG 0123456789ABCDEF nobody'
+                echo '[GNUPG:] VALIDSIG 0123456789ABCDEF 2026-10-14 1 0 4 0 1 8 00 0123456789ABCDEF'
+                echo '[GNUPG:] TRUST_ULTIMATE'
+                echo 'gpg: Good signature from "nobody"' >&2
+                exit 0 ;;
+              *)
+                cat >/dev/null
+                echo '[GNUPG:] SIG_CREATED D 1 8 00 1 0123456789ABCDEF' >&2
+                printf -- '-----BEGIN PGP SIGNATURE-----\n\nZmFrZQ==\n-----END PGP SIGNATURE-----\n'
+                exit 0 ;;
+            esac
+            """.Replace("\r\n", "\n", StringComparison.Ordinal) + "\n");
         if (!OperatingSystem.IsWindows())
             File.SetUnixFileMode(gpg, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
         GitRepo.Run(repo, "config", "log.showSignature", "true");
         GitRepo.Run(repo, "config", "gpg.program", gpg);
+        GitRepo.Run(repo, "config", "user.signingkey", "FAKEKEY");
+        GitRepo.Run(repo, "config", "commit.gpgsign", "true");
         Commit(worktree.Path, "work.txt", "work\n");
+        Assert.Contains("Good signature", GitRepo.Try(worktree.Path, "log", "-g", "--format=%H", "HEAD").Stdout + GitRepo.Try(worktree.Path, "log", "-g", "--format=%H", "HEAD").Stderr, StringComparison.Ordinal);
 
         Assert.Null(await JobWorktree.RemoveAsync(repo, "job-1", Ct));
         Assert.False(Directory.Exists(worktree.Path));
