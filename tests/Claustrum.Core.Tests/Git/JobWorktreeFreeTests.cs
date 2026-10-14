@@ -316,7 +316,7 @@ public sealed class JobWorktreeFreeTests : IDisposable
 
     // An operator's worktree on a drive that is not mounted: its entry, with the staged index and the detached commit inside
     // the admin directory, is the only record of that work. A free drops its own entry and nothing else.
-    private async Task<(string Admin, string Name)> UnmountedWorktreeAsync(string repo)
+    private (string Admin, string Name) UnmountedWorktree(string repo)
     {
         string path = Path.Combine(scratch.CreateDirectory(), "unmounted-drive");
         GitRepo.Run(repo, "worktree", "add", "-q", "--detach", path);
@@ -340,7 +340,7 @@ public sealed class JobWorktreeFreeTests : IDisposable
     public async Task AnUnrelatedWorktreeWhoseDirectoryIsMissingKeepsItsEntryWhenAnotherIsFreedAsync()
     {
         (string repo, JobWorktreeInfo worktree) = await FinishedAsync();
-        (string admin, string name) = await UnmountedWorktreeAsync(repo);
+        (string admin, string name) = UnmountedWorktree(repo);
 
         string? warning = await JobWorktree.RemoveAsync(repo, "job-1", Ct);
 
@@ -357,7 +357,7 @@ public sealed class JobWorktreeFreeTests : IDisposable
         string jobs = scratch.CreateDirectory();
         Directory.CreateDirectory(Path.Combine(jobs, "job-1"));
         File.WriteAllText(Path.Combine(jobs, "job-1", "result.json"), "{}");
-        (string admin, string name) = await UnmountedWorktreeAsync(repo);
+        (string admin, string name) = UnmountedWorktree(repo);
 
         JobWorktreeInfo second = await JobWorktree.CheckOutBranchAsync(repo, "job-2", "claustrum/job-1", jobs, Ct);
 
