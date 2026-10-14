@@ -2,6 +2,7 @@ using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization.Metadata;
+using Claustrum.Core.IO;
 using Claustrum.Roles.Json;
 using Claustrum.Roles.Model;
 using Claustrum.Roles.Sync;

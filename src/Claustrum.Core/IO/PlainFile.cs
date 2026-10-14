@@ -1,23 +1,26 @@
 using System.Runtime.InteropServices;
 using Microsoft.Win32.SafeHandles;
 
-namespace Claustrum.Roles.Sync;
+namespace Claustrum.Core.IO;
 
 // 2026-10-13 (found by review, #55/#97): `File.Exists` is true for a FIFO and `File.OpenRead` then blocks in
-// open(O_RDONLY) until a writer appears, so a committed `mkfifo AGENTS.md` hung the process. On Unix the file is
-// opened O_NONBLOCK (a regular file ignores it), and the OPENED handle is asked whether it seeks: no path is
-// stat-ed first, which would reopen the swap race the handle-based checks close (NOTES.md "The api backend gets
-// AGENTS.md and CLAUDE.md inlined"). Windows has no FIFO in the filesystem, so the plain open stays.
+// open(O_RDONLY) until a writer appears, so a `mkfifo AGENTS.md` hung the process. On Unix the file is opened
+// O_NONBLOCK (a regular file ignores it), and the OPENED handle is asked whether it seeks: no path is stat-ed
+// first, which would reopen the swap race the handle-based checks close. Windows has no FIFO in the filesystem,
+// so the plain open stays. Lives in Core since the second review (NOTES.md "A FIFO in place of a tracked file").
 public static partial class PlainFile
 {
     private const int ENOENT = 2;
     private const int EACCES = 13;
     private const int EISDIR = 21;
+    private const int ENXIO = 6;
     private const int ReadOnly = 0;
+    private const string NotRegular = "not a regular file (a pipe or a socket is never read)";
 
     /// <summary>
     /// The file opened for reading, or null with the reason in <paramref name="refusal"/> when it is not a regular
-    /// file (a FIFO, a socket); an unreadable file throws the usual <see cref="IOException"/>.
+    /// file: a FIFO (the handle does not seek) or a socket (open fails with ENXIO, or EOPNOTSUPP on macOS and
+    /// FreeBSD); an unreadable file throws the usual <see cref="IOException"/>.
     /// </summary>
     public static FileStream? OpenRead(string path, out string? refusal)
     {
@@ -30,6 +33,12 @@ public static partial class PlainFile
         {
             int errno = Marshal.GetLastPInvokeError();
             handle.Dispose();
+            if (IsSocketErrno(errno))
+            {
+                refusal = NotRegular;
+                return null;
+            }
+
             string message = $"{path}: {Marshal.GetPInvokeErrorMessage(errno)}";
             throw errno switch
             {
@@ -44,7 +53,7 @@ public static partial class PlainFile
             return stream;
 
         stream.Dispose();
-        refusal = "not a regular file (a pipe or a socket is never read)";
+        refusal = NotRegular;
         return null;
     }
 
@@ -57,10 +66,17 @@ public static partial class PlainFile
         if (!OperatingSystem.IsWindows())
             return segment.Equals(".git", StringComparison.OrdinalIgnoreCase);
 
-        string name = segment.TrimEnd('.', ' ');
+        // `.git::$INDEX_ALLOCATION` names the directory itself (CVE-2019-1352): the stream suffix goes first (review 2026-10-13).
+        int colon = segment.IndexOf(':');
+        string name = (colon < 0 ? segment : segment[..colon]).TrimEnd('.', ' ');
         return name.Equals(".git", StringComparison.OrdinalIgnoreCase)
             || (name.Length > 4 && name.StartsWith("git~", StringComparison.OrdinalIgnoreCase) && name[4..].All(char.IsAsciiDigit));
     }
+
+    // open(2) on a Unix socket: ENXIO on Linux, macOS and FreeBSD; EOPNOTSUPP (102 / 45) on macOS and FreeBSD as well.
+    private static bool IsSocketErrno(int errno) => errno == ENXIO
+        || (OperatingSystem.IsMacOS() && errno == 102)
+        || (OperatingSystem.IsFreeBSD() && errno == 45);
 
     // O_RDONLY | O_NONBLOCK | O_CLOEXEC; the values differ per OS. Null: Windows, or a Unix whose values are not known here.
     private static int? UnixFlags()

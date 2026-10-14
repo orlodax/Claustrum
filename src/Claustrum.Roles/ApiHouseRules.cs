@@ -1,4 +1,5 @@
 using System.Text;
+using Claustrum.Core.IO;
 using Claustrum.Roles.Sync;
 
 namespace Claustrum.Roles;
