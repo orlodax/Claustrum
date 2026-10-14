@@ -4,7 +4,7 @@ using Claustrum.Core.Tests.Testing;
 namespace Claustrum.Core.Tests.Git;
 
 // On Unix git shares Claustrum's process group, so the terminal's Ctrl-C kills it before the token is cancelled and .NET reports
-// 128 + the signal (measured 2026-10-13). Every git call of a free reads 130, 131 and 143 as an interrupted free: a cancelled
+// 128 + the signal (measured 2026-10-13). Every git call of a free reads 129 (SIGHUP, #111), 130, 131 and 143 as an interrupted free: a cancelled
 // receipt, the worktree intact, never "no such branch" or git saying no. Exit 1 and 128 are ordinary answers.
 // A script named `git` first on PATH plays the interrupted git for one call and hands the rest to the real one, so the
 // collection runs alone (PATH is process-wide).
@@ -22,7 +22,7 @@ public sealed class JobWorktreeInterruptedTests : IDisposable
         TheoryData<string, int> data = [];
         foreach (string subcommand in new[] { "status", "symbolic-ref" })
         {
-            foreach (int code in new[] { 130, 131, 143 })
+            foreach (int code in new[] { 129, 130, 131, 143 })
                 data.Add(subcommand, code);
         }
 
@@ -67,6 +67,7 @@ public sealed class JobWorktreeInterruptedTests : IDisposable
 
     // The --branch door's pre-gate check: BranchExistsAsync is `show-ref`, and an interrupted one is not "no such branch".
     [Theory]
+    [InlineData(129)]
     [InlineData(130)]
     [InlineData(131)]
     [InlineData(143)]
@@ -93,6 +94,7 @@ public sealed class JobWorktreeInterruptedTests : IDisposable
 
     // The same door, the free itself: the tip read after the free, and the free's own checks, both interrupted.
     [Theory]
+    [InlineData(129)]
     [InlineData(130)]
     [InlineData(131)]
     [InlineData(143)]
@@ -110,6 +112,7 @@ public sealed class JobWorktreeInterruptedTests : IDisposable
     [Theory]
     [InlineData("status", 130)]
     [InlineData("symbolic-ref", 143)]
+    [InlineData("status", 129)]
     public async Task AnInterruptedFreeInsideCheckOutBranchLeavesTheFinishedWorktreeIntactAsync(string subcommand, int code)
     {
         (string repo, JobWorktreeInfo worktree) = await FinishedAsync();

@@ -76,23 +76,47 @@ public sealed class RunningCli : IDisposable
 
     /// <summary>
     /// True when the child started with signal <paramref name="number"/> ignored, so sending it would do nothing: the test
-    /// host itself was launched from a background job of a non-interactive shell (SIGINT and SIGQUIT; 2 and 3).
-    /// Linux only (`SigIgn` in /proc); elsewhere it is not checked.
+    /// host itself was launched from a background job of a non-interactive shell (SIGINT and SIGQUIT; 2 and 3) or under
+    /// `nohup` (SIGHUP; 1). Linux reads `SigIgn` in /proc; where there is none (macOS) `ps -o ignored=` answers the same
+    /// hex mask, and a host where neither can be read is taken as not ignoring.
     /// </summary>
     public bool IgnoresSignal(int number)
     {
-        string status = $"/proc/{process.Id}/status";
-        if (!File.Exists(status))
-            return false;
+        ulong? mask = IgnoredMask(process.Id);
+        return mask is { } ignored && (ignored & (1UL << (number - 1))) != 0;
+    }
 
-        string? line = File.ReadLines(status).FirstOrDefault(l => l.StartsWith("SigIgn:", StringComparison.Ordinal));
-        return line is not null && (Convert.ToUInt64(line["SigIgn:".Length..].Trim(), 16) & (1UL << (number - 1))) != 0;
+    private static ulong? IgnoredMask(int pid)
+    {
+        string status = $"/proc/{pid}/status";
+        if (File.Exists(status))
+        {
+            string? line = File.ReadLines(status).FirstOrDefault(l => l.StartsWith("SigIgn:", StringComparison.Ordinal));
+            return line is null ? null : Convert.ToUInt64(line["SigIgn:".Length..].Trim(), 16);
+        }
+
+        try
+        {
+            ProcessStartInfo startInfo = new() { FileName = "ps", UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true };
+            startInfo.ArgumentList.Add("-o");
+            startInfo.ArgumentList.Add("ignored=");
+            startInfo.ArgumentList.Add("-p");
+            startInfo.ArgumentList.Add(pid.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            using Process ps = Process.Start(startInfo) ?? throw new InvalidOperationException("ps failed to start");
+            string output = ps.StandardOutput.ReadToEnd().Trim();
+            ps.WaitForExit();
+            return ps.ExitCode == 0 && ulong.TryParse(output, System.Globalization.NumberStyles.HexNumber, System.Globalization.CultureInfo.InvariantCulture, out ulong mask) ? mask : null;
+        }
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException)
+        {
+            return null;
+        }
     }
 
     /// <summary>`kill -INT` through the shell builtin: what a terminal's Ctrl-C delivers to the process.</summary>
     public Task SendSigintAsync(CancellationToken cancellationToken) => SendSignalAsync("INT", cancellationToken);
 
-    /// <summary>`kill -&lt;signal&gt; &lt;pid&gt;` through the shell builtin; <paramref name="signal"/> is a name without the `SIG` prefix (INT, TERM, QUIT).</summary>
+    /// <summary>`kill -&lt;signal&gt; &lt;pid&gt;` through the shell builtin; <paramref name="signal"/> is a name without the `SIG` prefix (INT, TERM, QUIT, HUP).</summary>
     public async Task SendSignalAsync(string signal, CancellationToken cancellationToken)
     {
         ProcessStartInfo startInfo = new() { FileName = "/bin/sh", UseShellExecute = false, CreateNoWindow = true };

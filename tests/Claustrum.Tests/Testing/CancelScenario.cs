@@ -6,7 +6,7 @@ using Claustrum.Cli;
 namespace Claustrum.Tests.Testing;
 
 /// <summary>
-/// What the signal end-to-end classes share (SIGINT #88, SIGTERM/SIGQUIT #92): a repository whose fake backend writes
+/// What the signal end-to-end classes share (SIGINT #88, SIGTERM/SIGQUIT #92, SIGHUP #111): a repository whose fake backend writes
 /// `partial.txt` and then sleeps a length no other case uses, the wait for that file, and the receipt checks a cancelled
 /// run owes. A leftover `sleep &lt;length&gt;` is told from another case's, and from the machine's, by that length; every
 /// length a case registers is killed again on <see cref="Dispose"/>, because a forced exit may orphan the backend.
@@ -15,6 +15,7 @@ public sealed class CancelScenario : IDisposable
 {
     public const string CtrlCLine = "cancelling… press Ctrl-C again to exit without a receipt";
     public const string SigtermLine = "cancelling… send SIGTERM again to exit without a receipt";
+    public const string SighupLine = "cancelling… send SIGHUP again to exit without a receipt";
 
     public static readonly TimeSpan StartLimit = TimeSpan.FromSeconds(30);
     public static readonly TimeSpan ExitLimit = TimeSpan.FromSeconds(10);
