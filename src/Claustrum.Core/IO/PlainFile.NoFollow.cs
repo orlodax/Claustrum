@@ -3,13 +3,20 @@ using Microsoft.Win32.SafeHandles;
 
 namespace Claustrum.Core.IO;
 
-// #55 (review 2026-10-14, #110): the file is reached by a no-follow walk from the fence root, so a link swapped in
-// at any moment is ELOOP/ENOTDIR, never a read. Nothing is compared after the fact. The flag values differ per OS
-// and per Linux arch, and the nlink read has its own struct per OS: NOTES.md "How the handle is judged".
+// #55 (review 2026-10-14, #110): the file is reached by a no-follow walk from `/` down through every component of the
+// fence root and below, so a link swapped in at any moment is ELOOP/ENOTDIR, never a read. Nothing is compared after
+// the fact. The flag values differ per OS and per Linux arch, and the nlink read has its own struct per OS:
+// NOTES.md "How the handle is judged".
 public static partial class PlainFile
 {
     /// <summary>The refusal for a file with more than one name: another name may be outside the fence or under `.git`.</summary>
     public const string HardLinked = "the file has other hard links (one may be a file outside the working directory or inside .git)";
+
+    /// <summary>
+    /// The start of a refusal for a file this system could not check (no no-follow open, no hard-link count): not a
+    /// verdict on the file, so it is not <see cref="HardLinked"/> and not a path problem.
+    /// </summary>
+    public const string Unverifiable = "it could not be checked on this system";
 
     private const int ENOTDIR = 20;
     private const int EMLINK = 31;
@@ -17,17 +24,19 @@ public static partial class PlainFile
     private const uint StatxNlink = 0x4;
 
     /// <summary>
-    /// The regular file at <paramref name="components"/> below <paramref name="rootRealPath"/> (a fully resolved
-    /// directory), opened for reading by walking it one component at a time with O_NOFOLLOW: a link anywhere on the way
-    /// is a refusal, so the handle is by construction the file a link-free path names, however another process
-    /// swaps the names meanwhile. Null with the reason in <paramref name="refusal"/> for a link, a non-regular file
-    /// (<see cref="NotRegular"/>), a file with other hard links (<see cref="HardLinked"/>), or a platform whose flag
-    /// values are not known here; a missing or unreadable component throws the usual <see cref="IOException"/>. Unix only.
+    /// The regular file at <paramref name="components"/> below <paramref name="rootRealPath"/> (a fully resolved absolute
+    /// directory), opened for reading by walking from `/` through every name of the root and then the components, one
+    /// O_NOFOLLOW openat at a time: a link anywhere on the way, the root's own ancestors included, is a refusal, so the
+    /// handle is by construction the file a link-free path names, however another process swaps the names meanwhile.
+    /// Null with the reason in <paramref name="refusal"/> for a link, a non-regular file (<see cref="NotRegular"/>), a
+    /// file with other hard links (<see cref="HardLinked"/>), or a file this system cannot check
+    /// (<see cref="Unverifiable"/>); a missing or unreadable component throws the usual <see cref="IOException"/>. Unix only.
     /// </summary>
     public static FileStream? OpenNoFollowUnder(string rootRealPath, IReadOnlyList<string> components, out string? refusal)
     {
         refusal = null;
-        if (components.Count == 0 || components.Any(c => c.Length == 0 || c is "." or ".." || c.AsSpan().IndexOfAny('/', '\0') >= 0))
+        string[] names = [.. rootRealPath.Split('/', StringSplitOptions.RemoveEmptyEntries), .. components];
+        if (components.Count == 0 || !rootRealPath.StartsWith('/') || names.Any(c => c.Length == 0 || c is "." or ".." || c.AsSpan().IndexOfAny('/', '\0') >= 0))
         {
             refusal = "the path below the working directory is not a plain list of names";
             return null;
@@ -35,32 +44,35 @@ public static partial class PlainFile
 
         if (WalkFlags() is not WalkFlagSet flags)
         {
-            refusal = "no-follow open is not available on this platform";
+            refusal = $"{Unverifiable} (no-follow open is not available on this platform)";
             return null;
         }
 
-        SafeFileHandle? current = Open(rootRealPath, ReadOnly | flags.Directory | flags.CloseOnExec);
+        // The one plain open: "/" has no link to be swapped. Directories are opened search-only where the OS has it,
+        // so a mode 0311 directory is walked as a path open was.
+        int directory = ReadOnly | flags.Search | flags.Directory | flags.CloseOnExec;
+        SafeFileHandle? current = Open("/", directory);
         if (current.IsInvalid)
         {
             int errno = Marshal.GetLastPInvokeError();
             current.Dispose();
-            throw OpenFailure(rootRealPath, errno);
+            throw OpenFailure("/", errno);
         }
 
         try
         {
-            for (int i = 0; i < components.Count; i++)
+            for (int i = 0; i < names.Length; i++)
             {
-                bool leaf = i == components.Count - 1;
-                int open = ReadOnly | flags.NoFollow | flags.CloseOnExec | (leaf ? flags.NonBlock : flags.Directory);
-                SafeFileHandle next = OpenAt(current, components[i], open);
+                bool leaf = i == names.Length - 1;
+                int open = leaf ? ReadOnly | flags.NoFollow | flags.CloseOnExec | flags.NonBlock : directory | flags.NoFollow;
+                SafeFileHandle next = OpenAt(current, names[i], open);
                 if (next.IsInvalid)
                 {
                     int errno = Marshal.GetLastPInvokeError();
                     next.Dispose();
                     if (IsLinkErrno(errno))
                     {
-                        refusal = $"{components[i]} is a link (or not the directory expected) on the way";
+                        refusal = $"{names[i]} is a link (or not the directory expected) on the way";
                         return null;
                     }
 
@@ -70,7 +82,7 @@ public static partial class PlainFile
                         return null;
                     }
 
-                    throw OpenFailure(components[i], errno);
+                    throw OpenFailure(names[i], errno);
                 }
 
                 current.Dispose();
@@ -83,9 +95,10 @@ public static partial class PlainFile
                 return null;
             }
 
-            if (LinkCount(current) is not (>= 0 and <= 1))
+            long links = LinkCount(current);
+            if (links is not (>= 0 and <= 1))
             {
-                refusal = HardLinked;
+                refusal = links < 0 ? $"{Unverifiable} (the hard-link count could not be read)" : HardLinked;
                 return null;
             }
 
@@ -104,23 +117,26 @@ public static partial class PlainFile
 
     // The values differ per OS and, on Linux, per arch (arm64 keeps the 32-bit ARM O_DIRECTORY and O_NOFOLLOW):
     // linux x64 asm-generic/fcntl.h, linux arm64 arch/arm64/include/uapi/asm/fcntl.h, macOS xnu bsd/sys/fcntl.h,
-    // FreeBSD sys/sys/fcntl.h. Null where they are not known: no walk, nothing inlined.
+    // FreeBSD sys/sys/fcntl.h. Search is the directory's search-only flag: O_PATH (1 << 21 in asm-generic, which arm64
+    // does not override) on Linux, O_SEARCH = O_EXEC on FreeBSD; macOS has O_SEARCH (O_EXEC | O_DIRECTORY, 0x40000000)
+    // but is left at O_RDONLY: its openat on such a fd is not verified on a real host. Null where the values are not
+    // known: no walk, nothing inlined.
     private static WalkFlagSet? WalkFlags()
     {
         if (OperatingSystem.IsLinux())
         {
             return RuntimeInformation.ProcessArchitecture switch
             {
-                Architecture.X64 => new(0x10000, 0x20000, 0x80000, 0x800),
-                Architecture.Arm64 => new(0x4000, 0x8000, 0x80000, 0x800),
+                Architecture.X64 => new(0x10000, 0x20000, 0x80000, 0x800, 0x200000),
+                Architecture.Arm64 => new(0x4000, 0x8000, 0x80000, 0x800, 0x200000),
                 _ => null,
             };
         }
 
         if (OperatingSystem.IsMacOS())
-            return new(0x100000, 0x100, 0x1000000, 0x4);
+            return new(0x100000, 0x100, 0x1000000, 0x4, 0);
 
-        return OperatingSystem.IsFreeBSD() ? new(0x20000, 0x100, 0x100000, 0x4) : null;
+        return OperatingSystem.IsFreeBSD() ? new(0x20000, 0x100, 0x100000, 0x4, 0x40000) : null;
     }
 
     // st_nlink of the open handle through libc (the runtime's FileStatus has none), or -1 when it cannot be read or the
@@ -167,7 +183,7 @@ public static partial class PlainFile
         }
     }
 
-    private readonly record struct WalkFlagSet(int Directory, int NoFollow, int CloseOnExec, int NonBlock);
+    private readonly record struct WalkFlagSet(int Directory, int NoFollow, int CloseOnExec, int NonBlock, int Search);
 
     // openat(2) is variadic in its mode; like `open` above it is called without one (no O_CREAT is ever passed).
     [LibraryImport("libc", EntryPoint = "openat", StringMarshalling = StringMarshalling.Utf8, SetLastError = true)]

@@ -293,11 +293,13 @@ The `api` backend cannot read files, so for it alone `## House rules` carries th
 character boundary and marked). A file that is absent is said so in one line. A file whose real path
 leaves the working directory (a committed `AGENTS.md -> ~/.ssh/id_rsa`) is never read, and neither is a
 linked one that does not land on a regular `*.md` file outside any `.git` directory (`AGENTS.md -> .git/config`
-holds the CI token). The check is made on the file as opened, not on its path (on Linux and macOS the opened file
-must be the very file, by device and inode, that the resolved path names), so a link swapped in meanwhile
-is not read; where that cannot be shown, nothing is inlined. The run's `warnings` name the file
+holds the CI token). On Linux, macOS and FreeBSD the file is opened by walking down from `/` one name at a time without
+following any link, so a link swapped in anywhere on the way, above the working directory included, is not read; on
+Windows the opened file's own final path is judged. A file with other hard links is not inlined either, nor is one this
+system cannot check; where that cannot be shown, nothing is inlined. The run's `warnings` name the file
 and why, and so does a truncation (#55). An isolated run (`--branch`, or a cast with `max_parallel` of 2 or more) inlines the
-files of its own worktree, that is of the branch it runs on, and not those of the main checkout's working copy.
+files of its own worktree, that is of the branch it runs on, and not those of the main checkout's working copy; if that
+worktree does not resolve to `<repository>/.claustrum/worktrees/<job>` (a link planted at or above it), nothing is inlined.
 
 ## 5. The brief
 
