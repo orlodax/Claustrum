@@ -6,15 +6,17 @@ using Claustrum.Roles.Tests.Sync;
 
 namespace Claustrum.Roles.Tests;
 
-// #55 / #110 (review 2026-10-14): an isolated api run inlines the rules of its worktree, and that worktree must be exactly where
-// the main checkout's real path says (`<main>/.claustrum/worktrees/<job>`). A link at the job directory, at `.claustrum` or at
-// `worktrees` (planted by anyone who can write the main checkout) would otherwise make the fence the outside directory itself.
-// Compose is told the real path it was promised (WithRulesFrom's expectedRoot); anything else inlines nothing, and the open walks
-// from `/` without following a link, so even a link swapped in while it runs is a refusal.
+// #55 / #110 (review 2026-10-14): an isolated api run inlines the rules of its worktree, and that worktree must be exactly the
+// job's directory under the main checkout's `.claustrum/worktrees` (a RulesAnchor: main checkout + job id), links that stay
+// inside the repository followed (#104 accepts `.claustrum -> .cache/claustrum`). A link that leaves the repository, or a worktree
+// path that is not that directory, inlines nothing; the open walks from `/` without following a link, so even a link swapped in
+// while it runs is a refusal.
 public sealed partial class ApiHouseRulesAnchorTests : IDisposable
 {
     private const string Marker = "OUTSIDE-MARKER-TEXT";
-    private const string Refused = "(not inlined: the worktree resolves outside the repository's .claustrum/worktrees)";
+    private const string OutsideHeading = "(not inlined: the job's worktree directory resolves outside the repository)";
+    private const string NotTheJobHeading = "(not inlined: the worktree path is not the job's worktree)";
+    private const string JobId = "job";
 
     private readonly RoleLibrary library = new();
     private readonly string main = Directory.CreateTempSubdirectory("claustrum-anchor-main-").FullName;
@@ -26,10 +28,9 @@ public sealed partial class ApiHouseRulesAnchorTests : IDisposable
         LinkFixtures.DeleteTree(outside);
     }
 
-    private string TypedJob => Path.Combine(main, ".claustrum", "worktrees", "job");
+    private string TypedJob => Path.Combine(main, ".claustrum", "worktrees", JobId);
 
-    // What the engine promises Compose: the main checkout's REAL path plus the job's place under it.
-    private string Expected => Path.Combine(SyncRoot.Resolve(main), ".claustrum", "worktrees", "job");
+    private RulesAnchor Anchor => new(main, JobId);
 
     private ResolvedRole Resolved()
     {
@@ -37,7 +38,7 @@ public sealed partial class ApiHouseRulesAnchorTests : IDisposable
         return new ResolvedRole(rendered.Name, rendered.SystemBody, "api", "some-model", rendered.Effort, new PermissionPolicy(PermissionLevel.ReadOnly, []), rendered.Blind, HasReport: true, rendered.Warnings);
     }
 
-    private ResolvedRole Reread(string? expectedRoot) => new RoleRenderer(library).WithRulesFrom(Resolved(), TypedJob, expectedRoot);
+    private ResolvedRole Reread(RulesAnchor? anchor, string? rulesCwd = null) => new RoleRenderer(library).WithRulesFrom(Resolved(), rulesCwd ?? TypedJob, anchor);
 
     private static void WriteRules(string jobDirectory, string agents, string? claude = null)
     {
@@ -47,25 +48,25 @@ public sealed partial class ApiHouseRulesAnchorTests : IDisposable
             File.WriteAllText(Path.Combine(jobDirectory, "CLAUDE.md"), claude);
     }
 
-    // The three places a link can stand above the files: the job directory, `.claustrum`, `worktrees`. Each leads to a directory
-    // that has the same shape below it and the marker in its rules files.
-    private void PlantLinkAt(string place)
+    // The three places a link can stand above the files: the job directory, `.claustrum`, `worktrees`. `target` is the directory
+    // the link leads to for the place: a twin of the same shape below it, holding the marker in its rules files.
+    private void PlantLinkAt(string place, string targetRoot)
     {
         switch (place)
         {
             case "job":
                 Directory.CreateDirectory(Path.Combine(main, ".claustrum", "worktrees"));
-                WriteRules(Path.Combine(outside, "job"), Marker, Marker);
-                LinkFixtures.DirectoryLink(TypedJob, Path.Combine(outside, "job"));
+                WriteRules(Path.Combine(targetRoot, "job"), Marker, Marker);
+                LinkFixtures.DirectoryLink(TypedJob, Path.Combine(targetRoot, "job"));
                 break;
             case "worktrees":
                 Directory.CreateDirectory(Path.Combine(main, ".claustrum"));
-                WriteRules(Path.Combine(outside, "worktrees", "job"), Marker, Marker);
-                LinkFixtures.DirectoryLink(Path.Combine(main, ".claustrum", "worktrees"), Path.Combine(outside, "worktrees"));
+                WriteRules(Path.Combine(targetRoot, "worktrees", "job"), Marker, Marker);
+                LinkFixtures.DirectoryLink(Path.Combine(main, ".claustrum", "worktrees"), Path.Combine(targetRoot, "worktrees"));
                 break;
             default:
-                WriteRules(Path.Combine(outside, "dot", "worktrees", "job"), Marker, Marker);
-                LinkFixtures.DirectoryLink(Path.Combine(main, ".claustrum"), Path.Combine(outside, "dot"));
+                WriteRules(Path.Combine(targetRoot, "dot", "worktrees", "job"), Marker, Marker);
+                LinkFixtures.DirectoryLink(Path.Combine(main, ".claustrum"), Path.Combine(targetRoot, "dot"));
                 break;
         }
     }
@@ -74,28 +75,45 @@ public sealed partial class ApiHouseRulesAnchorTests : IDisposable
     [InlineData("job")]
     [InlineData("worktrees")]
     [InlineData(".claustrum")]
-    public void ALinkAtOrAboveTheWorktreeInlinesNothingAndNamesTheAnchorTwiceWithOneWarning(string place)
+    public void ALinkThatLeavesTheRepositoryInlinesNothingAndNamesItTwiceWithOneWarning(string place)
     {
-        PlantLinkAt(place);
+        PlantLinkAt(place, outside);
 
-        ResolvedRole rewritten = Reread(Expected);
+        ResolvedRole rewritten = Reread(Anchor);
 
         Assert.DoesNotContain(Marker, rewritten.SystemPrompt, StringComparison.Ordinal);
-        Assert.Equal(2, CountOf(rewritten.SystemPrompt, Refused));
+        Assert.Equal(2, CountOf(rewritten.SystemPrompt, OutsideHeading));
         string warning = Assert.Single(rewritten.Warnings ?? []);
-        Assert.Contains("resolves to", warning, StringComparison.Ordinal);
-        Assert.Contains(Expected, warning, StringComparison.Ordinal);
+        Assert.Contains("outside the repository", warning, StringComparison.Ordinal);
+    }
+
+    // #104: a dotfiles-style `.claustrum -> .cache/claustrum` stays inside the repository, so the run's own worktree is inlined.
+    [Theory]
+    [InlineData("job")]
+    [InlineData("worktrees")]
+    [InlineData(".claustrum")]
+    public void ALinkThatStaysInsideTheRepositoryIsFollowedAndTheRulesAreInlined(string place)
+    {
+        string cache = Path.Combine(main, ".cache", "claustrum");
+        Directory.CreateDirectory(cache);
+        PlantLinkAt(place, cache);
+
+        ResolvedRole rewritten = Reread(Anchor);
+
+        Assert.Contains(Marker, rewritten.SystemPrompt, StringComparison.Ordinal);
+        Assert.DoesNotContain(OutsideHeading, rewritten.SystemPrompt, StringComparison.Ordinal);
+        Assert.True(rewritten.Warnings is null or { Length: 0 });
     }
 
     [Theory]
     [InlineData("job")]
     [InlineData("worktrees")]
     [InlineData(".claustrum")]
-    public void WithoutAnExpectedRootALinkedWorktreeIsFencedAtItselfAsBefore(string place)
+    public void WithoutAnAnchorALinkedWorktreeIsFencedAtItselfAsBefore(string place)
     {
-        PlantLinkAt(place);
+        PlantLinkAt(place, outside);
 
-        ResolvedRole rewritten = Reread(expectedRoot: null);
+        ResolvedRole rewritten = Reread(anchor: null);
 
         // The old behaviour the anchor exists to close: the outside directory is its own fence, so its rules are inlined.
         Assert.Contains(Marker, rewritten.SystemPrompt, StringComparison.Ordinal);
@@ -106,26 +124,41 @@ public sealed partial class ApiHouseRulesAnchorTests : IDisposable
     {
         WriteRules(TypedJob, "AGENTS-HAPPY\n", "CLAUDE-HAPPY\n");
 
-        ResolvedRole rewritten = Reread(Expected);
+        ResolvedRole rewritten = Reread(Anchor);
 
         Assert.Contains("AGENTS-HAPPY", rewritten.SystemPrompt, StringComparison.Ordinal);
         Assert.Contains("CLAUDE-HAPPY", rewritten.SystemPrompt, StringComparison.Ordinal);
-        Assert.DoesNotContain(Refused, rewritten.SystemPrompt, StringComparison.Ordinal);
+        Assert.DoesNotContain("not inlined", rewritten.SystemPrompt, StringComparison.Ordinal);
         Assert.True(rewritten.Warnings is null or { Length: 0 });
     }
 
+    // A worktree path that resolves to another place in the repository (a planted directory, a swapped path) is not the job's.
     [Fact]
-    public void AnAnchorThatIsNotWhereTheWorktreeResolvesRefusesEvenWithoutAnyLink()
+    public void AWorktreePathThatResolvesToAnotherPlaceInTheRepositoryIsNotTheJobsWorktree()
     {
-        WriteRules(TypedJob, "AGENTS-HAPPY\n");
+        WriteRules(TypedJob, "THE-JOBS\n");
+        string other = Path.Combine(main, "somewhere-else");
+        WriteRules(other, "ELSEWHERE\n", "ELSEWHERE\n");
 
-        ResolvedRole rewritten = Reread(Path.Combine(outside, ".claustrum", "worktrees", "job"));
+        ResolvedRole rewritten = Reread(Anchor, other);
 
-        Assert.DoesNotContain("AGENTS-HAPPY", rewritten.SystemPrompt, StringComparison.Ordinal);
-        Assert.Equal(2, CountOf(rewritten.SystemPrompt, Refused));
+        Assert.DoesNotContain("ELSEWHERE", rewritten.SystemPrompt, StringComparison.Ordinal);
+        Assert.DoesNotContain("THE-JOBS", rewritten.SystemPrompt, StringComparison.Ordinal);
+        Assert.Equal(2, CountOf(rewritten.SystemPrompt, NotTheJobHeading));
+        Assert.Contains("not the job's worktree", Assert.Single(rewritten.Warnings ?? []), StringComparison.Ordinal);
     }
 
-    // The anchored root is the root of the walk, not wherever the typed path resolves at that moment.
+    [Fact]
+    public void AnotherJobsAnchorOnThisWorktreeIsNotTheJobsWorktree()
+    {
+        WriteRules(TypedJob, "THE-JOBS\n");
+
+        ResolvedRole rewritten = Reread(new RulesAnchor(main, "another-job"));
+
+        Assert.DoesNotContain("THE-JOBS", rewritten.SystemPrompt, StringComparison.Ordinal);
+        Assert.Equal(2, CountOf(rewritten.SystemPrompt, NotTheJobHeading));
+    }
+
     [Fact]
     public void ALinkedRulesFileInsideTheAnchoredWorktreeStillInlinesAsTheFileItNames()
     {
@@ -134,7 +167,7 @@ public sealed partial class ApiHouseRulesAnchorTests : IDisposable
         File.Delete(Path.Combine(TypedJob, "AGENTS.md"));
         LinkFixtures.FileLink(Path.Combine(TypedJob, "AGENTS.md"), Path.Combine(TypedJob, "shared.md"));
 
-        ResolvedRole rewritten = Reread(Expected);
+        ResolvedRole rewritten = Reread(Anchor);
 
         Assert.Contains("SHARED-RULES", rewritten.SystemPrompt, StringComparison.Ordinal);
     }
@@ -167,7 +200,7 @@ public sealed partial class ApiHouseRulesAnchorTests : IDisposable
                 // The point of the case.
             }
 
-            ResolvedRole rewritten = Reread(Expected);
+            ResolvedRole rewritten = Reread(Anchor);
 
             Assert.Contains("DOCS-RULES", rewritten.SystemPrompt, StringComparison.Ordinal);
         }
@@ -175,6 +208,39 @@ public sealed partial class ApiHouseRulesAnchorTests : IDisposable
         {
             File.SetUnixFileMode(docs, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
         }
+    }
+
+    // Windows: the root a handle's final path is judged against is the MAIN checkout's final spelling plus the job's own relative
+    // part, never one recomputed from the worktree path; a missing directory cannot be placed.
+    [Fact]
+    public void OnWindowsTheRootSpellingIsTheFinalPathJoinedWithWhatIsBelowItAndNullWhenMissing()
+    {
+        if (!OperatingSystem.IsWindows())
+            Assert.Skip("RootSpelling asks the Windows final-path API; elsewhere it answers null.");
+
+        string below = Path.Combine(".claustrum", "worktrees", JobId);
+        string? spelling = OpenedFilePath.RootSpelling(main, below);
+
+        Assert.NotNull(spelling);
+        Assert.EndsWith(below, spelling, StringComparison.OrdinalIgnoreCase);
+        Assert.Null(OpenedFilePath.RootSpelling(Path.Combine(main, "no-such-directory"), below));
+    }
+
+    // Windows: the job directory swapped for a junction to a directory that holds rules files inlines nothing (the path check or
+    // the handle's final path catches it).
+    [Fact]
+    public void OnWindowsAJobDirectoryThatIsAJunctionToAnOutsideDirectoryInlinesNothing()
+    {
+        if (!OperatingSystem.IsWindows())
+            Assert.Skip("a junction is a Windows directory-link kind.");
+
+        Directory.CreateDirectory(Path.Combine(main, ".claustrum", "worktrees"));
+        WriteRules(Path.Combine(outside, "job"), Marker, Marker);
+        LinkFixtures.Junction(TypedJob, Path.Combine(outside, "job"));
+
+        ResolvedRole rewritten = Reread(Anchor);
+
+        Assert.DoesNotContain(Marker, rewritten.SystemPrompt, StringComparison.Ordinal);
     }
 
     // The anchor holds while the names are swapped as fast as a writer can: renameat2(RENAME_EXCHANGE) exchanges the real
@@ -189,8 +255,7 @@ public sealed partial class ApiHouseRulesAnchorTests : IDisposable
         if (!OperatingSystem.IsLinux())
             Assert.Skip("renameat2(RENAME_EXCHANGE) is Linux only.");
 
-        string realRules = Path.Combine(TypedJob);
-        WriteRules(realRules, "REGULAR-RULES\n", "REGULAR-CLAUDE\n");
+        WriteRules(TypedJob, "REGULAR-RULES\n", "REGULAR-CLAUDE\n");
         (string swapped, string staging, string twin) = place switch
         {
             "job" => (TypedJob, Path.Combine(main, ".claustrum", "worktrees", "stage"), Path.Combine(outside, "job")),
@@ -206,7 +271,6 @@ public sealed partial class ApiHouseRulesAnchorTests : IDisposable
         WriteRules(twinJob, Marker, Marker);
         LinkFixtures.DirectoryLink(staging, twin);
         string houseRules = library.ReadShared("_shared/house-rules.md");
-        string expected = Expected;
 
         bool stop = false;
         int exchanges = 0;
@@ -231,7 +295,7 @@ public sealed partial class ApiHouseRulesAnchorTests : IDisposable
         {
             while (clock.Elapsed < TimeSpan.FromSeconds(3) || iterations < 500)
             {
-                string composed = ApiHouseRules.Compose(houseRules, TypedJob, [], expected);
+                string composed = ApiHouseRules.Compose(houseRules, TypedJob, [], Anchor);
                 Assert.DoesNotContain(Marker, composed, StringComparison.Ordinal);
                 if (composed.Contains("REGULAR-RULES", StringComparison.Ordinal))
                     inlined++;
