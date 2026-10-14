@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Text.Json;
 using Claustrum.Core.Backends;
 using Claustrum.Core.Config;
+using Claustrum.Core.IO;
 using Claustrum.Core.Process;
 
 namespace Claustrum.Cli;
@@ -285,10 +286,14 @@ public static class BackendsCommands
         if (!File.Exists(path))
             return "not present";
 
+        // A FIFO here would hang the read, a device would never end it (2026-10-14, found by review).
+        if (!PlainFile.TryReadAllText(path, out string? text, out _))
+            return "present, not a regular file";
+
         JsonDocumentOptions options = new() { CommentHandling = JsonCommentHandling.Skip, AllowTrailingCommas = true };
         try
         {
-            using JsonDocument document = JsonDocument.Parse(File.ReadAllText(path), options);
+            using JsonDocument document = JsonDocument.Parse(text, options);
             bool registersClaustrum = document.RootElement.TryGetProperty(sectionKey, out JsonElement section)
                 && section.ValueKind == JsonValueKind.Object
                 && section.TryGetProperty("claustrum", out _);

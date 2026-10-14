@@ -1,3 +1,4 @@
+using Claustrum.Core.IO;
 using Claustrum.Core.Platform;
 
 namespace Claustrum.Tests.Testing;
@@ -31,4 +32,6 @@ public sealed class FakePlatform : IPlatform
     public bool PathExists(string path) => Directory.Exists(path) || File.Exists(path);
 
     public string ReadAllText(string path) => File.ReadAllText(path);
+
+    public string? ReadRegularFileText(string path, out string? refusal) => PlainFile.TryReadAllText(path, out string? text, out refusal) ? text : null;
 }

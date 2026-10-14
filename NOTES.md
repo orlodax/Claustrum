@@ -5039,7 +5039,7 @@ with its real path printed: run sync from the directory that owns `.claude`. A t
 **landing directory** (the leaf's parent) resolves outside the root is refused: `SyncWriter.Write` puts it
 in `SyncAccumulator.Refused` (path → real path) and returns, recording nothing else (not foreign, not
 written, no manifest entry). `--force` does not override and every `SyncMode` behaves the same. The CLI
-lists them under `refused (sync never writes through a link that leaves the repo, nor into a pipe or socket):`
+lists them under `refused (sync never writes through a link that leaves the repo, nor into a pipe, socket or device):`
 (the wording since 2026-10-14, when a pipe or socket target joined the same list)
 and exits 2 in write, `--dry-run` and `--check` alike (`init` finishes, then exits 2). `Directory.CreateDirectory`
 is fenced with the same check, and so are the JSON targets and `.claustrum/sync-manifest.json`: in `sync`
@@ -5208,7 +5208,7 @@ points inside still reaches `ReadAllText` and throws `FileNotFoundException` as 
   from the typed full path, so a mid-path directory link counts too; "regular" is `File.Exists` (a FIFO named
   `x.md` is not excluded, git cannot commit one).
 - **A FIFO and the Windows spellings of `.git` (2026-10-13, found by review).** A FIFO named `ROLE.md` (or a cast
-  file) passed `File.Exists` and blocked `File.ReadAllText` forever in open(2); `PlainFile.OpenRead` (now in `Claustrum.Core/IO`, see "A FIFO in place of a tracked file") opens
+  file) passed `File.Exists` and blocked `File.ReadAllText` forever in open(2); `PlainFile.OpenRead` (now in `Claustrum.Core/IO`, see "A pipe, socket or device in place of a repo file") opens
   O_NONBLOCK and refuses a handle that does not seek (`RoleRenderException` / `CastException`), no path stat first.
   The `.git` test is `PlainFile.IsGitDirName`, shared with `ApiHouseRules`: on Windows `.git.`, `.git ` and `GIT~1` count too.
 - **Out of scope in that review, all pre-existing, deferred past v0.1.0:** cast store writes through
@@ -5654,22 +5654,21 @@ byte-identically; `ApiHouseRulesTests` pins that against an empty cwd.
 - **Not done.** The `{{house_rules}}` template token still expands the plain shared text for every harness; no
   role uses it today, and `ComposeSystemBody` is the one place the section is placed.
 - **A FIFO named `AGENTS.md`, and the Windows spellings of `.git` (2026-10-13, found by review).** `File.Exists` is
-  true for a FIFO, so `File.OpenRead` blocked in open(2) before the handle checks ran. `PlainFile.OpenRead` (now in `Claustrum.Core/IO`, see "A FIFO in place of a tracked file") opens
+  true for a FIFO, so `File.OpenRead` blocked in open(2) before the handle checks ran. `PlainFile.OpenRead` (now in `Claustrum.Core/IO`, see "A pipe, socket or device in place of a repo file") opens
   `O_RDONLY|O_NONBLOCK|O_CLOEXEC` (Linux `0x800|0x80000`, macOS `0x4|0x1000000`, FreeBSD `0x4|0x100000`; Windows keeps
   `File.OpenRead`, a pipe cannot sit in its filesystem), then refuses a handle that does not seek: the heading says
   `not a regular file` and the receipt names it. `Unfit` treats a segment as `.git` via `PlainFile.IsGitDirName`
   (Windows: `.git.`, `.git `, `GIT~N`). Case is ignored on every OS, a deviation toward strict: macOS volumes are
   usually case-insensitive. macOS flag values are from the headers, **not run on a Mac**.
 
-## A FIFO in place of a tracked file (2026-10-13, second blind review of #55/#97)
+## A pipe, socket or device in place of a repo file (2026-10-13 and 2026-10-14, blind reviews of #55/#97)
 - **The hang.** `PlainFile` first guarded only AGENTS.md, role overrides and casts. The review found every `run`
   still hung, for every backend, when a TRACKED file was replaced by a FIFO: `git status` reports it ` M` and
   `WorktreeSnapshot.HashWorktreeFile` (`File.Exists`, `File.OpenRead`) blocked in open(2), called from `Runner`
   before each run. `PlainFile` therefore moved to `src/Claustrum.Core/IO/` (Core is below Roles; `Core.csproj` now
   sets `AllowUnsafeBlocks` for its `LibraryImport`). `HashWorktreeFile` uses it, and a refusal is *unhashable*
   (null), the same outcome as a locked file (NOTES "Worktree snapshot: an unreadable file is unhashable").
-- **`claustrum.json` too.** `IPlatform.ReadRegularFileText` (a default interface method, so fakes keep compiling;
-  `RealPlatform` overrides it with `PlainFile`) is what `Config.ReadDocument` calls for both layers; a refusal is a
+- **`claustrum.json` too.** `IPlatform.ReadRegularFileText` (`RealPlatform` calls `PlainFile`; no default body since 2026-10-14) is what `Config.ReadDocument` calls for both layers; a refusal is a
   `ConfigException`. `IPlatform.ReadAllText` is unchanged.
 - **Left alone on purpose.** `--brief-file`, `--file` and `cast create --answers` take a path the user typed on
   the command line, and `<(cmd)` / `/dev/stdin` are pipes: refusing non-seekable input there would break a
@@ -5687,3 +5686,42 @@ byte-identically; `ApiHouseRulesTests` pins that against an empty cwd.
   FreeBSD 45) before `CanSeek` is reached; both now take the same `not a regular file` refusal as a FIFO.
 - **`.git` on Windows.** `IsGitDirName` cuts a segment at the first `:` before trimming dots and spaces, so
   `.git::$INDEX_ALLOCATION` (CVE-2019-1352) counts. Plausible on NTFS, **not run on Windows**.
+
+### Third pass, 2026-10-14 (found by review; every item reproduced)
+- **A device passed `CanSeek`.** A tracked link to `/dev/zero` hung the snapshot hash, and `claustrum.json ->
+  /dev/zero` made `sync` throw OOM. `PlainFile` now asks the OPENED handle for its type, never a path. .NET 10 has
+  no public API for it (measured: `File.GetAttributes(SafeFileHandle)` answers `Normal` for /dev/zero, a FIFO and a
+  file alike; `GetUnixFileMode` is permissions only; libc's `struct stat` differs per OS and arch). So
+  `PlainFile.IsRegular` calls the runtime's own shim `SystemNative_FStat` in `libSystem.Native` (statically linked into
+  a NativeAOT binary, found next to the runtime under JIT), whose `FileStatus` is the same on every OS: `Mode` is the
+  int32 at offset 4 and `(Mode & 0xF000) == 0x8000` is a regular file. Only that field is read, from a 256-byte
+  buffer, so a later field added to the struct cannot matter. A missing library or entry point, or a non-zero return,
+  is "not regular": it fails closed. Measured on Linux x64 (JIT and AOT); macOS and FreeBSD use the same shim, **not run
+  on a Mac**.
+- **Defence in depth: `TryReadAllText` stops at 8 MiB** (`PlainFile.MaxTextBytes`) with `not a regular file or too
+  large (over 8 MiB)`, so a device the type check misses cannot exhaust memory. Windows has no fstat here and relies
+  on the cap alone.
+- **A tracked link is hashed as its target string** (what git stores), never followed: `HashWorktreeFile` checks
+  `FileInfo.LinkTarget` first. A dangling link is hashable that way too.
+- **Writes get the same door.** `PlainFile.TryOpenWrite` (and `TryWriteAllText` over it) opens
+  `O_WRONLY|O_NONBLOCK|O_CLOEXEC` with no `O_CREAT`: a FIFO with no reader fails ENXIO and one with a reader, a socket
+  or a device fails the fstat, all refused before a byte is written; then `SetLength(0)` (create) or a seek to the end
+  (append). In place, so the mode is kept and a read-only directory with a writable file still works (#84): temp +
+  rename was rejected for that reason. A missing file is created first by .NET with `FileMode.CreateNew` (O_EXCL, so a
+  FIFO or a link is never opened by it), because `open(2)`'s creation mode is variadic and Apple arm64 passes
+  variadics on the stack (see the `proc_pidfdinfo` note): umask applies as for `File.WriteAllText`. Used by
+  `CastStore.Save`, `SyncWriter`, `McpConfigSync`, `SyncManifestStore.Update` (which also re-checks `Refused` after
+  its re-read) and init's `claustrum.json`, `.gitignore` and `AGENTS.md` writes (all `Append`, so a file that appeared
+  since the check is never truncated). The check-then-write gap closes because the check is on the write handle. A
+  dangling link at a write target now throws instead of creating its target (the CreateNew EEXIST is followed by an
+  ENOENT open); every such path is fenced by `SyncRoot` first.
+- **`backends doctor --probe`** reads the repo MCP configs through `TryReadAllText` and prints `present, not a
+  regular file`. `init`'s summary line says `refused (outside the repo, or a pipe, socket or device)`.
+- **MCP `files`** are read through `ReadRegularFileText` (`RunRequest.AttachmentsMustBeRegular`, set by
+  `ClaustrumTools.BuildRequest`); `run --file` keeps the plain read.
+- **One FIFO no longer blanks the diff.** `git diff HEAD -- <fifo>` exits 128 `cannot hash` for the whole command (the
+  name list still works). `BuildDiffAsync` leaves out entries whose file exists but cannot be hashed (a locked file
+  too: its diff is lost, its `changed_files` entry stays) and falls back to path by path if git still fails;
+  `BranchDeltaAsync` retries the diff with `:(exclude,literal)<path>` for those paths and keeps the names it had.
+- **Left alone:** job-directory files and the `.git` file of Claustrum's own worktrees (written by Claustrum, never
+  by a repo), the copilot login file under the home directory, and the command-line paths above.

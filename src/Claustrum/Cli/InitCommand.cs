@@ -69,7 +69,8 @@ public static class InitCommand
 
         string configPath = Path.Combine(cwd, "claustrum.json");
         string? configEscape = Refusal(root, configPath);
-        bool wroteConfig = configEscape is null && WriteConfigIfAbsent(configPath);
+        string? configUnwritable = null;
+        bool wroteConfig = configEscape is null && WriteConfigIfAbsent(configPath, out configUnwritable);
         if (wroteConfig)
             config = LoadConfig(cwd);
 
@@ -84,9 +85,9 @@ public static class InitCommand
         // are harmless even in a repo that has not adopted Claude Code.
         string[] harnesses = all ? ["claude", "opencode", "copilot", "cursor"] : DetectHarnesses(cwd);
 
-        Console.WriteLine($"claustrum.json: {Status(configEscape, wroteConfig ? "written" : "already present, left unchanged")}");
+        Console.WriteLine($"claustrum.json: {Status(configEscape, configUnwritable, wroteConfig ? "written" : "already present, left unchanged")}");
         Console.WriteLine($".gitignore: {Status(gitignoreEscape, gitignoreUnreadable, updatedGitignore ? "updated" : "already up to date")}");
-        bool refused = scaffoldEscape is not null || configEscape is not null || gitignoreEscape is not null || gitignoreUnreadable is not null;
+        bool refused = scaffoldEscape is not null || configEscape is not null || configUnwritable is not null || gitignoreEscape is not null || gitignoreUnreadable is not null;
         foreach (string harness in harnesses)
             refused |= SyncHarness(harness, cwd, config);
 
@@ -123,7 +124,7 @@ public static class InitCommand
 
     private static string Status(string? escapesTo, string outcome) => escapesTo is null ? outcome : RefusedStatus(escapesTo);
 
-    // `unreadable` is PlainFile's reason for a file that is not a regular one (a FIFO there would block the read).
+    // `unreadable` is PlainFile's reason for a file that is not a regular one (a FIFO there would block the read or the write).
     private static string Status(string? escapesTo, string? unreadable, string outcome) =>
         unreadable is null ? Status(escapesTo, outcome) : $"refused ({unreadable})";
 
@@ -162,7 +163,7 @@ public static class InitCommand
         };
 
         IReadOnlyDictionary<string, string> refused = result.Refused ?? new Dictionary<string, string>();
-        string refusedNote = refused.Count > 0 ? $", {refused.Count} refused (outside the repo)" : "";
+        string refusedNote = refused.Count > 0 ? $", {refused.Count} refused (outside the repo, or a pipe, socket or device)" : "";
         Console.WriteLine($"{harness}: {result.Written.Count} written, {result.Skipped.Count} skipped, {result.Foreign.Count} foreign{refusedNote}");
         foreach (KeyValuePair<string, string> entry in refused)
             Console.WriteLine($"  {entry.Key} → {entry.Value}");
@@ -170,8 +171,9 @@ public static class InitCommand
         return refused.Count > 0;
     }
 
-    private static bool WriteConfigIfAbsent(string path)
+    private static bool WriteConfigIfAbsent(string path, out string? unwritable)
     {
+        unwritable = null;
         if (File.Exists(path))
             return false;
 
@@ -198,8 +200,8 @@ public static class InitCommand
             writer.WriteEndObject();
         }
 
-        File.WriteAllText(path, Encoding.UTF8.GetString(buffer.ToArray()) + "\n");
-        return true;
+        // Append, not Create: a file that appeared since the check above is never truncated.
+        return PlainFile.TryWriteAllText(path, Encoding.UTF8.GetString(buffer.ToArray()) + "\n", FileMode.Append, out unwritable);
     }
 
     private static bool EnsureGitignoreEntries(string path, out string? unreadable)
@@ -207,8 +209,7 @@ public static class InitCommand
         unreadable = null;
         if (!File.Exists(path))
         {
-            File.WriteAllText(path, GitignoreBlock + "\n");
-            return true;
+            return PlainFile.TryWriteAllText(path, GitignoreBlock + "\n", FileMode.Append, out unreadable);
         }
 
         if (!PlainFile.TryReadAllText(path, out string? existing, out unreadable))
@@ -224,8 +225,7 @@ public static class InitCommand
             ? GitignoreBlock
             : "# Claustrum (added by `claustrum init`).\n" + string.Join('\n', missing);
 
-        File.AppendAllText(path, (existing.EndsWith('\n') ? "" : "\n") + "\n" + block + "\n");
-        return true;
+        return PlainFile.TryWriteAllText(path, (existing.EndsWith('\n') ? "" : "\n") + "\n" + block + "\n", FileMode.Append, out unreadable);
     }
 
     private static bool AppendAgentsMdPointer(string path, out string? unreadable)
@@ -240,7 +240,6 @@ public static class InitCommand
         if (existing.Contains(AgentsMdMarker, StringComparison.Ordinal))
             return false;
 
-        File.AppendAllText(path, (existing.EndsWith('\n') ? "" : "\n") + AgentsMdBlock + "\n");
-        return true;
+        return PlainFile.TryWriteAllText(path, (existing.EndsWith('\n') ? "" : "\n") + AgentsMdBlock + "\n", FileMode.Append, out unreadable);
     }
 }

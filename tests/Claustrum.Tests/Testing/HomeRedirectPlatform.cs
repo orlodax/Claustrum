@@ -36,6 +36,7 @@ public sealed class HomeRedirectPlatform(string homeDirectory, IReadOnlyDictiona
     public bool FileExists(string path) => real.FileExists(path);
     public bool PathExists(string path) => real.PathExists(path);
     public string ReadAllText(string path) => real.ReadAllText(path);
+    public string? ReadRegularFileText(string path, out string? refusal) => real.ReadRegularFileText(path, out refusal);
 
     private static Dictionary<string, string?> BuildEnvironment(IReadOnlyDictionary<string, string?>? extra)
     {

@@ -34,7 +34,9 @@ public sealed record DelegateRequest(
     string? Branch = null,
     // #74: isolated in a new `claustrum/<job id>` worktree cut from HEAD even with no MaxParallel,
     // which alone still decides a cap — `coordinate`'s architect, which takes no slot.
-    bool Isolate = false)
+    bool Isolate = false,
+    // Set by the MCP tools: their `files` are read as regular files only (RunRequest.AttachmentsMustBeRegular).
+    bool AttachmentsMustBeRegular = false)
 {
     /// <summary>
     /// The exact token <see cref="SystemAppendix"/> and <see cref="Env"/> values may carry in place of

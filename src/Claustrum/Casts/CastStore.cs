@@ -75,7 +75,10 @@ public static class CastStore
         string path = PathFor(cwd, cast.Name);
         RequireInside(cwd, path, "written");
         Directory.CreateDirectory(DirectoryFor(cwd));
-        File.WriteAllText(path, JsonSerializer.Serialize(cast, CastJsonContext.Default.Cast));
+
+        // A FIFO at the cast path would block File.WriteAllText in open(2) (2026-10-14, found by review).
+        if (!PlainFile.TryWriteAllText(path, JsonSerializer.Serialize(cast, CastJsonContext.Default.Cast), FileMode.Create, out string? refusal))
+            throw new CastException($"'{path}': {refusal}");
     }
 
     public static string[] ListNames(string cwd)

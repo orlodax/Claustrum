@@ -217,7 +217,7 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
     private static string ValidatedBrief(RunRequest request, ResolvedRole role, IPlatform platform)
     {
         ValidateTimeout(request);
-        string brief = AppendAttachments(ResolveBrief(request, platform), request.AttachFiles, platform);
+        string brief = AppendAttachments(ResolveBrief(request, platform), request.AttachFiles, request.AttachmentsMustBeRegular, platform);
         EnsureBlindGate(role, brief);
         return brief;
     }
@@ -240,7 +240,7 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
 
     // Harness-neutral (docs/PLAN.md A2): every backend gets attachments the same way, appended to
     // the prompt text rather than passed as a native "file" concept most backends don't have.
-    private static string AppendAttachments(string brief, string[] attachFiles, IPlatform platform)
+    private static string AppendAttachments(string brief, string[] attachFiles, bool mustBeRegular, IPlatform platform)
     {
         if (attachFiles.Length == 0)
             return brief;
@@ -251,7 +251,13 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
 
         StringBuilder builder = new(brief);
         foreach (string path in attachFiles)
-            builder.Append("\n\n## Attached: ").Append(path).Append('\n').Append(platform.ReadAllText(path));
+        {
+            string text = mustBeRegular
+                ? platform.ReadRegularFileText(path, out string? refusal) ?? throw new RunRequestException($"attachment {path}: {refusal}")
+                : platform.ReadAllText(path);
+
+            builder.Append("\n\n## Attached: ").Append(path).Append('\n').Append(text);
+        }
 
         return builder.ToString();
     }

@@ -192,7 +192,8 @@ public sealed class ClaustrumTools
             CastBudget: castBudget,
             MaxParallel: maxParallel,
             CastName: resolvedCastName,
-            Branch: branch is { Length: > 0 } ? branch : null);
+            Branch: branch is { Length: > 0 } ? branch : null,
+            AttachmentsMustBeRegular: true);
     }
 
     [McpServerTool(Name = "list_roles")]

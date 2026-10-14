@@ -15,11 +15,9 @@ public interface IPlatform
     bool PathExists(string path);
     string ReadAllText(string path);
 
-    // The text of a path inside the repo, or null with the reason when it is not a regular file: a FIFO there blocks
-    // ReadAllText forever (NOTES.md "A FIFO in place of a tracked file"). The default is for fakes that hold no real files.
-    string? ReadRegularFileText(string path, out string? refusal)
-    {
-        refusal = null;
-        return ReadAllText(path);
-    }
+    // The text of a path inside the repo, or null with the reason when it is not a regular file (or is over
+    // PlainFile.MaxTextBytes): a FIFO there blocks ReadAllText forever and /dev/zero never ends (NOTES.md
+    // "A pipe, socket or device in place of a repo file"). No default body: a wrapper that forgot to forward it
+    // silently fell back to ReadAllText (review 2026-10-14).
+    string? ReadRegularFileText(string path, out string? refusal);
 }

@@ -36,4 +36,11 @@ public sealed class FakePlatform : IPlatform
 
     public string ReadAllText(string path) =>
         Files.TryGetValue(path, out string? content) ? content : throw new FileNotFoundException(path);
+
+    // The in-memory files are all "regular": the same text as ReadAllText, nothing to refuse.
+    public string? ReadRegularFileText(string path, out string? refusal)
+    {
+        refusal = null;
+        return ReadAllText(path);
+    }
 }

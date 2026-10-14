@@ -61,9 +61,20 @@ public static class WorktreeSnapshot
     /// </summary>
     public static async Task<SnapshotDiff?> BranchDeltaAsync(string worktree, string baseCommit, SnapshotDiff snapshot, int diffByteCapBytes, CancellationToken cancellationToken = default)
     {
-        // --no-renames: git itself reports a rename as the A + D pair the snapshot splits R into.
-        (int namesExit, string names, _) = await GitProcess.RunAsync(worktree, ["diff", "--name-status", "--no-renames", "-z", baseCommit, "--"], cancellationToken);
-        (int diffExit, string trackedDiff, _) = await GitProcess.RunAsync(worktree, ["diff", baseCommit, "--"], cancellationToken);
+        (int namesExit, string names, int diffExit, string trackedDiff) = await DeltaGitAsync(worktree, baseCommit, [], cancellationToken);
+        if (namesExit != 0 || diffExit != 0)
+        {
+            // A FIFO among the tracked files makes the content diff fail with 128 "cannot hash" while the name list
+            // still names it: ask again without the unhashable paths, and keep the names that already came back.
+            string[] unhashable = await UnhashablePathsAsync(worktree, cancellationToken);
+            if (unhashable.Length > 0)
+            {
+                (int retriedNamesExit, string retriedNames, diffExit, trackedDiff) = await DeltaGitAsync(worktree, baseCommit, ExcludeSpecs(unhashable), cancellationToken);
+                if (namesExit != 0)
+                    (namesExit, names) = (retriedNamesExit, retriedNames);
+            }
+        }
+
         (int untrackedExit, string untrackedNow, _) = await GitProcess.RunAsync(worktree, ["ls-files", "--others", "--exclude-standard", "-z"], cancellationToken);
         if (namesExit != 0 || diffExit != 0 || untrackedExit != 0)
             return null;
@@ -84,20 +95,58 @@ public static class WorktreeSnapshot
         return Capped(changedFiles, diffBuilder.ToString(), diffByteCapBytes);
     }
 
+    // --no-renames: git itself reports a rename as the A + D pair the snapshot splits R into.
+    private static async Task<(int NamesExit, string Names, int DiffExit, string Diff)> DeltaGitAsync(string worktree, string baseCommit, string[] pathspec, CancellationToken cancellationToken)
+    {
+        (int namesExit, string names, _) = await GitProcess.RunAsync(worktree, ["diff", "--name-status", "--no-renames", "-z", baseCommit, "--", .. pathspec], cancellationToken);
+        (int diffExit, string diff, _) = await GitProcess.RunAsync(worktree, ["diff", baseCommit, "--", .. pathspec], cancellationToken);
+        return (namesExit, names, diffExit, diff);
+    }
+
+    // Everything but the given paths; `literal` keeps a name with a glob character from matching its neighbours.
+    private static string[] ExcludeSpecs(IEnumerable<string> paths) => [".", .. paths.Select(path => $":(exclude,literal){path}")];
+
+    // A file that exists but cannot be hashed (a FIFO, a device, a socket; a locked file too) makes git itself fail
+    // with 128 "cannot hash" for the whole command, which used to blank every diff beside it (review 2026-10-14).
+    private static bool IsUnhashable(string cwd, GitStatusEntry entry) =>
+        File.Exists(Path.Combine(cwd, entry.Path)) && (entry.ContentHash ?? HashWorktreeFile(cwd, entry)) is null;
+
+    private static async Task<string[]> UnhashablePathsAsync(string cwd, CancellationToken cancellationToken)
+    {
+        (int exitCode, string stdout, _) = await GitProcess.RunAsync(cwd, ["status", "--porcelain=v1", "-z", "--untracked-files=all"], cancellationToken);
+        return exitCode != 0 ? [] : [.. ParseStatusZ(stdout).Where(entry => IsUnhashable(cwd, entry)).Select(entry => entry.Path)];
+    }
+
     private static async Task<string> BuildDiffAsync(string cwd, List<GitStatusEntry> changedEntries, CancellationToken cancellationToken)
     {
-        string[] trackedPaths = [.. changedEntries.Where(entry => !IsUntracked(entry)).Select(entry => entry.Path)];
-        string[] untrackedPaths = [.. changedEntries.Where(IsUntracked).Select(entry => entry.Path)];
+        List<GitStatusEntry> hashable = [.. changedEntries.Where(entry => !IsUnhashable(cwd, entry))];
+        string[] trackedPaths = [.. hashable.Where(entry => !IsUntracked(entry)).Select(entry => entry.Path)];
+        string[] untrackedPaths = [.. hashable.Where(IsUntracked).Select(entry => entry.Path)];
 
         StringBuilder diffBuilder = new();
         if (trackedPaths.Length > 0)
-        {
-            (_, string trackedDiff, _) = await GitProcess.RunAsync(cwd, ["diff", "HEAD", "--", .. trackedPaths], cancellationToken);
-            diffBuilder.Append(trackedDiff);
-        }
+            diffBuilder.Append(await DiffTrackedAsync(cwd, trackedPaths, cancellationToken));
 
         await AppendUntrackedDiffsAsync(cwd, untrackedPaths, diffBuilder, cancellationToken);
         return diffBuilder.ToString();
+    }
+
+    // One failing path (git exits 128 for the whole command) must not blank the others: ask path by path then.
+    private static async Task<string> DiffTrackedAsync(string cwd, string[] paths, CancellationToken cancellationToken)
+    {
+        (int exitCode, string diff, _) = await GitProcess.RunAsync(cwd, ["diff", "HEAD", "--", .. paths], cancellationToken);
+        if (exitCode == 0)
+            return diff;
+
+        StringBuilder each = new();
+        foreach (string path in paths)
+        {
+            (int pathExit, string pathDiff, _) = await GitProcess.RunAsync(cwd, ["diff", "HEAD", "--", path], cancellationToken);
+            if (pathExit == 0)
+                each.Append(pathDiff);
+        }
+
+        return each.ToString();
     }
 
     // Untracked files have no HEAD blob, so `git diff HEAD` silently ignores them; git treats
@@ -189,12 +238,17 @@ public static class WorktreeSnapshot
     private static string? HashWorktreeFile(string cwd, GitStatusEntry entry)
     {
         string fullPath = Path.Combine(cwd, entry.Path);
-        if (!File.Exists(fullPath))
-            return null;
-
         try
         {
-            // A FIFO in place of a tracked file passes File.Exists and blocks open(2); a refusal is unhashable too (review 2026-10-13).
+            // A tracked link is hashed as its target string, the way git stores it, and never followed: a link to
+            // /dev/zero would otherwise hang the hash (review 2026-10-14).
+            if (new FileInfo(fullPath).LinkTarget is { } target)
+                return Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(target)));
+
+            if (!File.Exists(fullPath))
+                return null;
+
+            // A FIFO, a device or a socket in place of a tracked file is refused here, and a refusal is unhashable (reviews 2026-10-13, 2026-10-14).
             using FileStream? stream = PlainFile.OpenRead(fullPath, out _);
             return stream is null ? null : Convert.ToHexStringLower(SHA256.HashData(stream));
         }
