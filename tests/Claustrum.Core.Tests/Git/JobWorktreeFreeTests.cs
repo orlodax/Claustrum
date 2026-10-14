@@ -209,18 +209,32 @@ public sealed class JobWorktreeFreeTests : IDisposable
         Assert.Equal(commit, GitRepo.Head(worktree.Path));
     }
 
+    // Review 2026-10-14, round 2: commits on any existing branch live in the shared refs, so a HEAD on another branch frees.
     [Fact]
-    public async Task AHeadOnAnotherBranchIsRefusedAndIntactAsync()
+    public async Task AHeadOnAnotherExistingBranchIsFreedAndThatBranchKeepsItsCommitAsync()
     {
         (string repo, JobWorktreeInfo worktree) = await FinishedAsync();
         GitRepo.Run(worktree.Path, "checkout", "-q", "-b", "other");
         Commit(worktree.Path, "elsewhere.txt", "on other\n");
 
+        string? warning = await JobWorktree.RemoveAsync(repo, "job-1", Ct);
+
+        Assert.Null(warning);
+        Assert.False(Directory.Exists(worktree.Path));
+        Assert.Equal("elsewhere.txt", GitRepo.Run(repo, "show", "--name-only", "--format=", "other"));
+    }
+
+    [Fact]
+    public async Task AHeadNamingABranchThatDoesNotExistIsRefusedAndIntactAsync()
+    {
+        (string repo, JobWorktreeInfo worktree) = await FinishedAsync();
+        GitRepo.Run(worktree.Path, "checkout", "-q", "--orphan", "unborn");
+
         string message = await RefusalAsync(repo);
 
-        Assert.Contains("refs/heads/other", message, StringComparison.Ordinal);
-        Assert.Contains("not claustrum/job-1", message, StringComparison.Ordinal);
-        Assert.True(File.Exists(Path.Combine(worktree.Path, "elsewhere.txt")));
+        Assert.Contains("refs/heads/unborn", message, StringComparison.Ordinal);
+        Assert.Contains("does not exist", message, StringComparison.Ordinal);
+        Assert.True(Directory.Exists(worktree.Path));
     }
 
     [Theory]
@@ -335,10 +349,7 @@ public sealed class JobWorktreeFreeTests : IDisposable
         AssertUnmountedEntryKept(repo, admin, name);
     }
 
-    // PRODUCT BUG, skipped until fixed: FreeBranchAsync runs a repo-wide `git worktree prune` before it looks for the holder
-    // (JobWorktree.cs, "T1: a free killed after its rename ..."), which also drops the operator's unmounted worktree's entry and
-    // its staged index. The fix is to drop only the holder's own entry, as ReleaseTrashEntryAsync does; this case then passes.
-    [Fact(Skip = "product bug: --branch's repo-wide `git worktree prune` deletes an unrelated unmounted worktree's entry (JobWorktree.FreeBranchAsync)")]
+    [Fact]
     public async Task AnUnrelatedWorktreeWhoseDirectoryIsMissingKeepsItsEntryWhenBranchFreesAFinishedOneAsync()
     {
         (string repo, JobWorktreeInfo worktree) = await FinishedAsync();
@@ -410,20 +421,30 @@ public sealed class JobWorktreeFreeTests : IDisposable
     }
 
     [Fact]
-    public async Task RemoveWithTheBranchFreesABranchJobsWorktreeWhichTheOldOverloadRefusesAsync()
+    public async Task ABranchJobsWorktreeIsFreedWhateverBranchItIsOnAndHeadBranchNamesItAsync()
     {
         string repo = scratch.CreateSeededRepo();
         string jobs = scratch.CreateDirectory();
         GitRepo.Run(repo, "branch", "feature/x");
         JobWorktreeInfo info = await JobWorktree.CheckOutBranchAsync(repo, "job-2", "feature/x", jobs, Ct);
 
-        string old = await RefusalAsync(repo, "job-2");
-        string? warning = await JobWorktree.RemoveAsync(repo, "job-2", "feature/x", Ct);
+        string? head = await JobWorktree.HeadBranchAsync(repo, "job-2", Ct);
+        string? warning = await JobWorktree.RemoveAsync(repo, "job-2", Ct);
 
-        Assert.Contains("refs/heads/feature/x", old, StringComparison.Ordinal);
+        Assert.Equal("feature/x", head);
         Assert.Null(warning);
         Assert.False(Directory.Exists(info.Path));
         Assert.Contains("feature/x", GitRepo.Branches(repo));
+    }
+
+    [Fact]
+    public async Task HeadBranchIsNullForADetachedHeadAndForAMissingDirectoryAsync()
+    {
+        (string repo, JobWorktreeInfo worktree) = await FinishedAsync();
+        GitRepo.Run(worktree.Path, "checkout", "-q", "--detach");
+
+        Assert.Null(await JobWorktree.HeadBranchAsync(repo, "job-1", Ct));
+        Assert.Null(await JobWorktree.HeadBranchAsync(repo, "no-such-job", Ct));
     }
 
     [Fact]
@@ -435,18 +456,19 @@ public sealed class JobWorktreeFreeTests : IDisposable
         Assert.False(JobWorktree.IsTrash("trash-x"));
     }
 
-    // TryRemoveAbandonedAsync: an abandoned worktree that moved off its branch is not force-removed; that was the
-    // renamed existing test. Here the refusal text of the free rides on the returned exception, never thrown.
+    // TryRemoveAbandonedAsync: an abandoned worktree on a detached HEAD is not force-removed; the free's refusal rides on
+    // the returned exception, never thrown.
     [Fact]
-    public async Task AnAbandonedWorktreeOffItsBranchComesBackAsAReturnedExceptionNamingTheRefusalAsync()
+    public async Task AnAbandonedWorktreeOnADetachedHeadComesBackAsAReturnedExceptionNamingTheRefusalAsync()
     {
         (string repo, JobWorktreeInfo worktree) = await FinishedAsync();
-        GitRepo.Run(worktree.Path, "checkout", "-q", "-b", "other");
+        GitRepo.Run(worktree.Path, "checkout", "-q", "--detach");
 
         Exception? failure = await JobWorktree.TryRemoveAbandonedAsync(repo, worktree, CancellationToken.None);
 
         Assert.NotNull(failure);
         Assert.Contains("left in place", failure.Message, StringComparison.Ordinal);
+        Assert.Contains("detached HEAD", failure.Message, StringComparison.Ordinal);
         Assert.True(Directory.Exists(worktree.Path));
         Assert.Contains("claustrum/job-1", GitRepo.Branches(repo));
     }

@@ -48,4 +48,20 @@ public sealed class ConfigPipeTests : IDisposable
 
         Assert.Equal("claude:sonnet", config.Merged.Models?["mine"]);
     }
+
+    // #56: `backends.<name>.injection` was inert and is gone from the schema; a claustrum.json that still names it must load.
+    [Fact]
+    public void AClaustrumJsonStillNamingBackendsInjectionLoadsAndKeepsTheRest()
+    {
+        FakePlatform platform = new() { HomeDirectory = Path.Combine(scratch.CreateDirectory(), "home") };
+        string repo = scratch.CreateDirectory();
+        platform.ExtraExistingPaths.Add(Path.Combine(repo, ".git"));
+        platform.Files[Path.Combine(repo, "claustrum.json")] =
+            /*lang=json,strict*/ """{"backends":{"claude":{"path":"/opt/claude","injection":"claude-md"}},"models":{"mine":"claude:sonnet"}}""";
+
+        CoreConfig config = CoreConfig.Load(platform, repo);
+
+        Assert.Equal("claude:sonnet", config.Merged.Models?["mine"]);
+        Assert.Equal("/opt/claude", config.Merged.Backends?["claude"].Path);
+    }
 }

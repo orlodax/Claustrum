@@ -160,4 +160,15 @@ public sealed class SyncConfigEndToEndTests : IDisposable
         Assert.Contains("primary:     True", Lf(architect.Stdout), StringComparison.Ordinal);
         Assert.DoesNotContain("primary:", Lf(builder.Stdout), StringComparison.Ordinal);
     }
+
+    [Fact]
+    public async Task ADoctorRunOverAConfigNamingInjectionLoadsAndPrintsNoInjectionAsync()
+    {
+        WriteConfig(/*lang=json,strict*/ """{"backends":{"claude":{"injection":"claude-md"}}}""");
+
+        CliResult result = await RunAsync("backends", "doctor");
+
+        Assert.Equal(ExitCodes.Ok, result.ExitCode);
+        Assert.DoesNotContain("injection", Lf(result.Stdout), StringComparison.OrdinalIgnoreCase);
+    }
 }
