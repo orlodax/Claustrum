@@ -83,14 +83,15 @@ public sealed class CancelPtyEndToEndTests : IDisposable
 
     // Types `<prefix> sh -c 'echo $$ > pidfile; exec claustrum …'` into bash in a pty, closes the pty master once the trigger exists,
     // and returns the exit code the driver reaped (negative: the signal that killed it).
-    private async Task<int> ClosedTerminalExitAsync(string[] claustrumArgs, string glob, string prefix = "", string suffix = "")
+    private async Task<int> ClosedTerminalExitAsync(string[] claustrumArgs, string glob, string prefix = "", string suffix = "", int delaySeconds = 0)
     {
         string driver = Path.Combine(scenario.Repo.Home, "pty-driver.py");
         string pidFile = Path.Combine(scenario.Repo.Home, "claustrum.pid");
         File.WriteAllText(driver, Driver);
         string binary = Path.Combine(AppContext.BaseDirectory, "claustrum");
         string quoted = string.Join(' ', claustrumArgs.Select(arg => $"'{arg}'"));
-        string command = $"{prefix} sh -c 'echo $$ > {pidFile}; exec {binary} {quoted}' {suffix}".Trim();
+        string wait = delaySeconds > 0 ? $"sleep {delaySeconds}; " : "";
+        string command = $"{prefix} sh -c 'echo $$ > {pidFile}; {wait}exec {binary} {quoted}' {suffix}".Trim();
 
         try
         {
@@ -179,5 +180,22 @@ public sealed class CancelPtyEndToEndTests : IDisposable
         Assert.Equal(expectedExit, exit);
         string jobId = Assert.Single(scenario.Repo.JobDirectories());
         Assert.Equal(expectedStatus, CancelScenario.Str(scenario.Repo.ReadResult(jobId), "status"));
+    }
+
+    // The error paths report to stderr too: the parse-error loop in Program.cs and the ExceptionBoundary. Detached from the
+    // terminal, the process waits until the pty is closed (the driver closes it as soon as the process has started) and only then
+    // meets its failure, so the report itself is what throws EIO. The exit code must still be the failure's own: 2, not a crash.
+    [Theory]
+    [InlineData("run builder --bogus-flag")]
+    [InlineData("cast show no-such-cast")]
+    public async Task AFailureReportedToAGoneTerminalStillExitsWithItsOwnUsageCodeAsync(string commandLine)
+    {
+        RequireLinux();
+        scenario.Adopt(new IsolatedRepo());
+        string pidFile = Path.Combine(scenario.Repo.Home, "claustrum.pid");
+
+        int exit = await ClosedTerminalExitAsync(commandLine.Split(' '), pidFile, prefix: "setsid -w", delaySeconds: 2);
+
+        Assert.Equal(ExitCodes.Usage, exit);
     }
 }

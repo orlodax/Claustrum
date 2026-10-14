@@ -210,4 +210,45 @@ public sealed class CancelSighupEndToEndTests : IDisposable
         Assert.Contains("feature/x", scenario.Repo.Git("branch", "--format=%(refname:short)"), StringComparison.Ordinal);
         Assert.DoesNotContain("failed", cli.Stdout, StringComparison.OrdinalIgnoreCase);
     }
+
+    // The race the signal-exit mapping exists for, made deterministic: git (the snapshot's `status` of an in-place run, or the
+    // `rev-parse --verify HEAD` that starts an isolated one) dies of SIGHUP on its own, and claustrum itself hears the SIGHUP 50 ms
+    // later. The run must read git's death as the cancel it is: exit 130 and a cancelled receipt, not a failed one or exit 2/1.
+    [Theory]
+    [InlineData("status --porcelain", false, "32.31")]
+    [InlineData("rev-parse --verify HEAD", true, "32.32")]
+    [System.Runtime.Versioning.UnsupportedOSPlatform("windows")]
+    public async Task AGitThatDiesOfSighupJustBeforeClaustrumHearsItIsACancelWithAReceiptAsync(string call, bool isolated, string gitSleep)
+    {
+        RequirePosixSignals();
+        scenario.Adopt(new IsolatedRepo()).WriteCast(maxParallel: 2);
+        string pidFile = Path.Combine(scenario.Repo.Home, "git.pid");
+        scenario.PlantGitSleepingOn(call, gitSleep, pidFile);
+        using RunningCli cli = scenario.Repo.StartCli("run", "builder", "--brief", "do the task", "--json");
+        if (cli.IgnoresSignal(SighupNumber))
+            Assert.Skip("this test host was started with SIGHUP ignored, so it cannot reach the child.");
+
+        await cli.WaitUntilAsync(() => File.Exists(pidFile) && File.ReadAllText(pidFile).Trim().Length > 0, "git never reached the call", CancelScenario.StartLimit, TestContext.Current.CancellationToken);
+        string gitPid = File.ReadAllText(pidFile).Trim();
+        await RunShellAsync($"kill -s HUP {gitPid}");
+        await Task.Delay(50, TestContext.Current.CancellationToken);
+        await cli.SendSignalAsync("HUP", TestContext.Current.CancellationToken);
+        int exit = await cli.WaitForExitAsync(CancelScenario.ExitLimit, TestContext.Current.CancellationToken);
+
+        Assert.Equal(130, exit);
+        (_, JsonElement onDisk) = scenario.OnlyReceipt();
+        Assert.Equal("cancelled", CancelScenario.Str(onDisk, "status"));
+        string worktrees = Path.Combine(scenario.Repo.Repo, ".claustrum", "worktrees");
+        if (isolated)
+            Assert.True(!Directory.Exists(worktrees) || Directory.GetFileSystemEntries(worktrees).Length == 0, "no job directory is left");
+    }
+
+    private static async Task RunShellAsync(string command)
+    {
+        ProcessStartInfo startInfo = new() { FileName = "/bin/sh", UseShellExecute = false, CreateNoWindow = true };
+        startInfo.ArgumentList.Add("-c");
+        startInfo.ArgumentList.Add(command);
+        using Process shell = Process.Start(startInfo) ?? throw new InvalidOperationException("sh failed to start");
+        await shell.WaitForExitAsync(TestContext.Current.CancellationToken);
+    }
 }

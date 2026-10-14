@@ -91,6 +91,23 @@ public sealed class CancelScenario : IDisposable
         Repo.PathPrefix = directory;
     }
 
+    /// <summary>
+    /// A `git` first on the children's PATH that, for the one call whose arguments contain <paramref name="argumentsContain"/>,
+    /// writes its pid to <paramref name="pidFile"/> and becomes `sleep <paramref name="sleep"/>`; every other call is the real git.
+    /// Killing that pid is git dying of a signal at exactly that point of a run.
+    /// </summary>
+    [System.Runtime.Versioning.UnsupportedOSPlatform("windows")]
+    public void PlantGitSleepingOn(string argumentsContain, string sleep, string pidFile)
+    {
+        sleeps.Add(sleep);
+        string real = Path.Combine(IsolatedRepo.ChildPath().Split(Path.PathSeparator)[0], "git");
+        string directory = Directory.CreateDirectory(Path.Combine(Repo.Home, "sleeping-git")).FullName;
+        string script = Path.Combine(directory, "git");
+        File.WriteAllText(script, $"#!/bin/sh\ncase \"$*\" in\n  *'{argumentsContain}'*) echo $$ > '{pidFile}'; exec sleep {sleep} ;;\nesac\nexec '{real}' \"$@\"\n");
+        File.SetUnixFileMode(script, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        Repo.PathPrefix = directory;
+    }
+
     public static string? FindPartial(string root, bool isolated)
     {
         if (!isolated)
