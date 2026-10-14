@@ -432,9 +432,9 @@ public sealed class JobWorktreeLeftOutTests : IDisposable
 
         Assert.NotNull(receipt.Commit);
         Assert.Equal("version one", GitRepo.Run(repo, "show", $"{receipt.Commit}:seed.txt"));
-        Assert.Equal(LeftOutPointer("seed.txt"), receipt.Warnings[0]);
-        Assert.StartsWith("receipt delta unavailable, snapshot kept: ", receipt.Warnings[1], StringComparison.Ordinal);
-        Assert.Equal(2, receipt.Warnings.Length);
+        // 2026-10-14: the delta is asked again without the unhashable path (WorktreeSnapshot.BranchDeltaAsync), so there is no
+        // "receipt delta unavailable" second warning any more; the file is still named as left out.
+        Assert.Equal([LeftOutPointer("seed.txt")], receipt.Warnings);
     }
 
     [Fact]

@@ -97,6 +97,18 @@ public sealed class CastStoreFenceTests : IDisposable
     }
 
     [Fact]
+    public void SavingOntoAFifoIsACastExceptionNotAHang()
+    {
+        Directory.CreateDirectory(CastStore.DirectoryFor(cwd));
+        PipeFiles.MakeFifo(CastStore.PathFor(cwd, "default"));
+
+        CastException ex = PipeFiles.Within(() => Assert.Throws<CastException>(() =>
+            CastStore.Save(cwd, new Cast("default", "1.0.0", new CastArchitect(CastArchitect.Host), [], BudgetUsd: null))));
+
+        Assert.Contains("not a regular file", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void AFifoDefaultCastIsRefusedByTryLoadDefaultWithoutHanging()
     {
         Directory.CreateDirectory(CastStore.DirectoryFor(cwd));
