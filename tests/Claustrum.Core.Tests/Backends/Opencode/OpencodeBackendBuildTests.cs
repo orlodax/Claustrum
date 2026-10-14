@@ -39,7 +39,7 @@ public sealed class OpencodeBackendBuildTests
         Assert.Equal(
         [
             "run", "--standalone", "--agent", "claustrum-builder",
-            "--model", "openrouter/deepseek/deepseek-v4-pro#high",
+            "--model", "openrouter/deepseek/deepseek-v4-pro",
             "--format", "json", "--auto",
             "do the thing",
         ], spec.Args);
@@ -150,16 +150,16 @@ public sealed class OpencodeBackendBuildTests
     }
 
     [Fact]
-    public void EffortIsAppendedToTheModelAsAHashSuffix()
+    public void TheTiersEffortNeverRidesTheModelAsAHashSuffix()
     {
         ProcessSpec spec = backend.Build(MakeRun(new PermissionPolicy(PermissionLevel.Full, []), effort: "xhigh", model: "openrouter/deepseek/deepseek-v4-flash"));
 
         int index = Array.IndexOf(spec.Args, "--model");
-        Assert.Equal("openrouter/deepseek/deepseek-v4-flash#xhigh", spec.Args[index + 1]);
+        Assert.Equal("openrouter/deepseek/deepseek-v4-flash", spec.Args[index + 1]);
     }
 
     [Fact]
-    public void EmptyEffortOmitsTheHashSuffix()
+    public void EmptyEffortLeavesTheModelAsIs()
     {
         ProcessSpec spec = backend.Build(MakeRun(new PermissionPolicy(PermissionLevel.Full, []), effort: ""));
 
