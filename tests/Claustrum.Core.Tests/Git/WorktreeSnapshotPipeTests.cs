@@ -50,7 +50,7 @@ public sealed class WorktreeSnapshotPipeTests : IDisposable
     // ---- a tracked link is hashed as text, a FIFO beside a modified sibling costs only its own diff (2026-10-14) ------------
 
     [Fact]
-    public async Task ATrackedFileReplacedByALinkToDevZeroIsCapturedPromptlyAndHashedAsItsTargetTextAsync()
+    public async Task ATrackedFileReplacedByALinkToDevZeroIsCapturedPromptlyAndHashedStablyAsync()
     {
         if (OperatingSystem.IsWindows())
             Assert.Skip("/dev/zero is a Unix device.");
@@ -61,10 +61,13 @@ public sealed class WorktreeSnapshotPipeTests : IDisposable
         File.Delete(Path.Combine(dir, "tracked.txt"));
         File.CreateSymbolicLink(Path.Combine(dir, "tracked.txt"), "/dev/zero");
 
-        WorktreeState state = await PipeFiles.WithinAsync(() => WorktreeSnapshot.CaptureAsync(dir, ct));
+        WorktreeState first = await PipeFiles.WithinAsync(() => WorktreeSnapshot.CaptureAsync(dir, ct));
+        WorktreeState second = await PipeFiles.WithinAsync(() => WorktreeSnapshot.CaptureAsync(dir, ct));
 
-        GitStatusEntry entry = Assert.Single(Assert.IsType<WorktreeState.Git>(state).StatusEntries, e => e.Path == "tracked.txt");
-        Assert.Equal(Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData("/dev/zero"u8)), entry.ContentHash);
+        string? before = Assert.Single(Assert.IsType<WorktreeState.Git>(first).StatusEntries, e => e.Path == "tracked.txt").ContentHash;
+        string? after = Assert.Single(Assert.IsType<WorktreeState.Git>(second).StatusEntries, e => e.Path == "tracked.txt").ContentHash;
+        Assert.NotNull(before);
+        Assert.Equal(before, after);
     }
 
     [Fact]
@@ -148,5 +151,31 @@ public sealed class WorktreeSnapshotPipeTests : IDisposable
         Assert.DoesNotContain(Assert.IsType<WorktreeState.Git>(state).StatusEntries, e => e.Path == "stray-pipe");
         Assert.NotNull(delta);
         Assert.Empty(delta.ChangedFiles);
+    }
+
+    // Second review 2026-10-14: a link hashed as its bare target text equalled a file holding that text, so swapping one for the
+    // other went unnoticed in changed_files.
+    [Fact]
+    public async Task AnUntrackedFileReplacedByALinkWhoseTargetIsItsTextIsAChangeAsync()
+    {
+        CancellationToken ct = TestContext.Current.CancellationToken;
+        string dir = scratch.CreateRepo();
+        GitRepo.Commit(dir, "seed.txt", "seed\n");
+        File.WriteAllText(Path.Combine(dir, "notes"), "docs/x");
+        WorktreeState before = await WorktreeSnapshot.CaptureAsync(dir, ct);
+        File.Delete(Path.Combine(dir, "notes"));
+        try
+        {
+            File.CreateSymbolicLink(Path.Combine(dir, "notes"), "docs/x");
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
+        {
+            Assert.Skip($"symlinks cannot be created here: {ex.Message}");
+        }
+
+        WorktreeState after = await WorktreeSnapshot.CaptureAsync(dir, ct);
+        SnapshotDiff diff = await WorktreeSnapshot.DiffAsync(dir, before, after, 1_000_000, ct);
+
+        Assert.Contains("notes", diff.ChangedFiles.Select(file => file.Path));
     }
 }
