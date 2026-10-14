@@ -280,8 +280,8 @@ public static class DelegateEngine
                 : await JobWorktree.AddAsync(request.Cwd, job.Id, cancellationToken);
 
             // #55: an api run's inlined AGENTS.md/CLAUDE.md are the branch's, fenced at the worktree, which must be
-            // exactly where the main checkout's real path says (a link planted at or above it inlines nothing).
-            role = AppServices.RoleRenderer.WithRulesFrom(role, worktree.Path, JobWorktree.PathFor(SyncRoot.Resolve(request.Cwd), job.Id));
+            // exactly the job's directory under the main checkout (a link planted at or above it inlines nothing).
+            role = AppServices.RoleRenderer.WithRulesFrom(role, worktree.Path, new RulesAnchor(request.Cwd, job.Id));
             RunRequest isolatedRunRequest = BuildRunRequest(bound, worktree.Path);
             RunOptions worktreeOptions = isolatedOptions with { Worktree = worktree, PreRunWarnings = WithFreeWarning(isolatedOptions.PreRunWarnings, worktree) };
             return await AppServices.Runner.RunAsync(isolatedRunRequest, role, worktreeOptions, job, cancellationToken);

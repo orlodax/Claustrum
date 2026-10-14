@@ -46,6 +46,13 @@ internal static partial class OpenedFilePath
     public static string? RootSpelling(SyncRoot fence) =>
         OperatingSystem.IsWindows() ? WindowsFinalPath.TryResolve(fence.Path) : null;
 
+    /// <summary>
+    /// The OS's final spelling of <paramref name="realPath"/> with <paramref name="below"/> appended: a root derived from a
+    /// directory no one inside the repository can relink, never from the path a run was handed. Null when the OS cannot place it.
+    /// </summary>
+    public static string? RootSpelling(string realPath, string below) =>
+        OperatingSystem.IsWindows() && WindowsFinalPath.TryResolve(realPath) is { } final ? Path.Combine(final, below) : null;
+
     [SupportedOSPlatform("windows")]
     private static unsafe string? WindowsPath(SafeFileHandle handle)
     {

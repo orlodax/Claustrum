@@ -3,6 +3,7 @@ namespace Claustrum.Core.Process;
 // On Unix a child shares Claustrum's process group, so a terminal's SIGHUP/SIGINT (or `kill -- -<pgid>`) can kill it
 // before CancelSignalHandler, which runs on the ThreadPool, has cancelled the token (measured 2026-10-14: `failed`, 4 of 4).
 // .NET reports such a death as 128 + the signal; whether it was a cancel is only known once the token says so.
+// Applied in ProcessRunner (the backend) and CommandProcess (every git/gh child under a run's token).
 internal static class SignalExit
 {
     private static readonly TimeSpan grace = TimeSpan.FromSeconds(1);

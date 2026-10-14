@@ -53,6 +53,14 @@ public static class CommandProcess
             throw;
         }
 
-        return (process.ExitCode, await stdoutTask, await stderrTask);
+        string stdout = await stdoutTask;
+        string stderr = await stderrTask;
+
+        // The terminal's signal reached this child through the shared process group before the token was cancelled
+        // (SignalExit): a cancel, not the tool saying no, for every git/gh call made under a run's token.
+        if (cancellationToken.CanBeCanceled && SignalExit.IsCancelSignal(process.ExitCode) && await SignalExit.CancelArrivesAsync(cancellationToken))
+            cancellationToken.ThrowIfCancellationRequested();
+
+        return (process.ExitCode, stdout, stderr);
     }
 }

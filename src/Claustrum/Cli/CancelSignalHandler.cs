@@ -70,13 +70,14 @@ internal sealed class CancelSignalHandler : IDisposable
     private void OnHangup(PosixSignalContext context)
     {
         context.Cancel = true;
-        if (Interlocked.CompareExchange(ref signals, 1, 0) != 0)
-            return;
+        if (Interlocked.CompareExchange(ref signals, 1, 0) == 0)
+        {
+            cts.Cancel();
+            Hint("send SIGTERM or press Ctrl-C again");
+        }
 
-        cts.Cancel();
-        Hint("send SIGTERM or press Ctrl-C again");
-
-        // The console is closing and the OS ends the process when this returns: hold it for the receipt.
+        // The console is closing and the OS ends the process when this returns: hold it for the receipt. Every close waits,
+        // not just the first signal, or a close after an earlier Ctrl-C or SIGTERM ended the run unreceipted (2026-10-14).
         if (OperatingSystem.IsWindows())
             settled.Wait(closeWait);
     }
