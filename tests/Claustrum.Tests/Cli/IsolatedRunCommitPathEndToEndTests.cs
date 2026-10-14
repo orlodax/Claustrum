@@ -113,6 +113,10 @@ public sealed class IsolatedRunCommitPathEndToEndTests : IDisposable
             Assert.Skip("an unreadable file needs a user that does not bypass permissions (not root).");
 
         RequireLocale(locale);
+        // "Permesso negato" is libc's strerror, which macOS never translates (PR #116, first macOS CI run).
+        if (locale == Italian && OperatingSystem.IsMacOS())
+            Assert.Skip("macOS libc does not localize strerror, so git's error line stays English.");
+
         repo.WriteCast(maxParallel: 2);
         repo.Script(new FakeClaudeScript { Commands = ["printf 'secret\\n' > secret.txt", "chmod 000 secret.txt"] });
 

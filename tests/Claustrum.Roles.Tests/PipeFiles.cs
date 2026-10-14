@@ -41,12 +41,17 @@ public static class PipeFiles
         if (OperatingSystem.IsWindows())
             Assert.Skip("a filesystem socket node is Unix only here.");
 
+        // macOS caps a socket path at 104 bytes and its real temp paths are long: bind at a short name, then rename the
+        // node into place (a rename keeps the socket) (PR #116, first macOS CI run).
+        string bindAt = path.Length < 100 ? path : Path.Combine("/tmp", $"clsk-{Guid.NewGuid():N}"[..13]);
         Socket socket = new(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
         try
         {
-            socket.Bind(new UnixDomainSocketEndPoint(path));
+            socket.Bind(new UnixDomainSocketEndPoint(bindAt));
+            if (bindAt != path)
+                File.Move(bindAt, path);
         }
-        catch (SocketException ex)
+        catch (Exception ex) when (ex is SocketException or IOException or ArgumentOutOfRangeException)
         {
             socket.Dispose();
             Assert.Skip($"a Unix socket cannot be bound at '{path}': {ex.Message}");
