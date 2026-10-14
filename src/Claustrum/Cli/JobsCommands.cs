@@ -157,9 +157,10 @@ public static class JobsCommands
 
         string jobsRoot = JobDirectory.ResolveRoot(AppServices.Platform);
 
-        // #106: the first Ctrl-C or SIGTERM lets the remove in flight finish (it runs to its end under no token) and
+        // #106: the first Ctrl-C, SIGTERM or SIGHUP lets the remove in flight finish (it runs to its end under no token) and
         // stops the sweep; a second one exits. Same handler as `run`; git shares our process group, so it hears the signal too.
-        using CancelSignalHandler cancel = new();
+        // #113: clean writes no receipt, so its second-signal hint says what is abandoned instead.
+        using CancelSignalHandler cancel = new("stop now; a free in flight is left for the next jobs clean");
         int removed = 0;
         OperationCanceledException? cancelled = null;
         List<string> failures = [];
