@@ -4,6 +4,7 @@
     <IsPackable>false</IsPackable>
     <PublishAot>false</PublishAot>
     <IsAotCompatible>false</IsAotCompatible>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <EnableTrimAnalyzer>false</EnableTrimAnalyzer>
     <JsonSerializerIsReflectionEnabledByDefault>true</JsonSerializerIsReflectionEnabledByDefault>
   </PropertyGroup>
