@@ -5713,25 +5713,43 @@ byte-identically; `ApiHouseRulesTests` pins that against an empty cwd.
     "Residual, theoretical: win four timed swaps" was wrong: an exchange is one atomic rename, so the window needs no luck.
   - **The walk.** `ApiHouseRules.Open` takes `SyncRoot.Resolve(path)` once, applies the string rules to it (inside
     the root, ends in `.md`, no `.git` component via `PlainFile.IsGitDirName`), then `PlainFile.OpenNoFollowUnder`
-    opens the root's real path as a directory and, per component below it, `openat(dirfd, name, O_RDONLY | O_NOFOLLOW |
-    O_CLOEXEC | O_DIRECTORY)`, the leaf with `O_NONBLOCK` instead of `O_DIRECTORY` (a FIFO must not block). A link at ANY
-    component is ELOOP (FreeBSD: EMLINK) or ENOTDIR: a refusal. The leaf fd is `fstat`-ed regular
+    opens `/` and walks every name of the root's real path and then of the components below it, each with
+    `openat(dirfd, name, <search-only> | O_NOFOLLOW | O_CLOEXEC | O_DIRECTORY)`, the leaf `O_RDONLY | O_NOFOLLOW |
+    O_CLOEXEC | O_NONBLOCK` instead (a FIFO must not block). A link at ANY component is ELOOP (FreeBSD: EMLINK) or
+    ENOTDIR: a refusal. The leaf fd is `fstat`-ed regular
     (`SystemNative_FStat`, as before) and the bytes are read from that fd. By construction the fd is the file a
     link-free walk from the root reaches; what `Resolve` said only decides which names to walk, so a stale or raced
-    `Resolve` can make the walk refuse but cannot make it follow a link. The root itself is the cwd's real path,
-    outside the attacker's write scope by assumption, so it is opened plainly. No second `Resolve`, no identity
+    `Resolve` can make the walk refuse but cannot make it follow a link. **The root is walked too (review
+    2026-10-14, HIGH).** 0c8c914 opened the root by path (`open(rootRealPath)`) on the premise that it is the cwd's real
+    path, outside the attacker's write scope. False for an isolated run: its root is `<cwd>/.claustrum/worktrees/<job>`,
+    INSIDE the directory a coordinate run's sandboxed writer can modify. Measured: a `RENAME_EXCHANGE` flipper swapping
+    `job` (or `.claustrum`, or `worktrees`) with a link to the outside leaked in **33,272 of 116,173 renders (29%)**; with the
+    link already in place `Resolve` returned the outside directory as the root and it was inlined without a word. Now
+    only `/` is opened plainly and every ancestor is `O_NOFOLLOW`; after the fix 0 leaks in 10 s per variant (about
+    62k, 76k and 59k renders) and the static link inlines nothing. No second `Resolve`, no identity
     compare, so `IsSameFile` and the `SystemNative_Stat` import are gone. Not `fcntl(F_GETPATH)` (variadic, and on
     Apple arm64 variadic arguments go on the stack where a `LibraryImport` cannot put them); `openat` is variadic
     too but is called with no mode, like `open` (no `O_CREAT`), which is safe.
+  - **Search-only directory opens (review 2026-10-14, LOW).** Ancestors and intermediates were `O_RDONLY | O_DIRECTORY`,
+    so a directory with mode 0311 (search, no read) failed where a path open worked. They are now opened search-only:
+    Linux `O_PATH` = `1 << 21` = `0x200000` (`asm-generic/fcntl.h`; `arch/arm64/include/uapi/asm/fcntl.h` defines only
+    `O_DIRECTORY`/`O_NOFOLLOW`/`O_DIRECT`/`O_LARGEFILE` and includes the generic one, so x64 and arm64 agree; an `O_PATH`
+    dirfd is a valid `openat` base, and `O_PATH | O_NOFOLLOW | O_DIRECTORY` on a link is refused, seen in the flipper runs below); FreeBSD
+    `O_SEARCH` = `O_EXEC` = `0x00040000` (`sys/sys/fcntl.h`; **not run**). macOS defines `O_SEARCH` = `O_EXEC | O_DIRECTORY`,
+    `O_EXEC` = `0x40000000` (xnu `bsd/sys/fcntl.h`), but it is **left at `O_RDONLY`**: gnulib documents that macOS's
+    O_SEARCH may demand read permission anyway, and no macOS host was available to see that `openat` accepts such a fd; a
+    0311 directory still fails there. The leaf stays `O_RDONLY`.
   - **Flag values (from the headers, per OS; Linux per arch).** `O_DIRECTORY`, `O_NOFOLLOW`, `O_CLOEXEC`, `O_NONBLOCK`:
     Linux x64 `0x10000 / 0x20000 / 0x80000 / 0x800` (`asm-generic/fcntl.h`); **Linux arm64 `0x4000 / 0x8000 /
     0x80000 / 0x800`: arm64 keeps the 32-bit ARM `O_DIRECTORY` and `O_NOFOLLOW` (`arch/arm64/include/uapi/asm/fcntl.h`), they are NOT the
     generic ones**; macOS `0x100000 / 0x100 / 0x1000000 / 0x4` (xnu `bsd/sys/fcntl.h`); FreeBSD `0x20000 / 0x100 /
-    0x100000 / 0x4` (`sys/sys/fcntl.h`). Any other Linux arch: no walk, nothing inlined (fail closed).
+    0x100000 / 0x4` (`sys/sys/fcntl.h`). Any other Linux arch: no walk, nothing inlined (fail closed, `Unverifiable`).
   - **Hard links (same review).** A hard link is a regular `*.md` inside the cwd with the inode of `.git/config` (or
-    of any file the user owns on that filesystem), and no path check can see it. A file with `st_nlink > 1`, or whose
-    count cannot be read, is not inlined: the receipt says `has other hard links` and the heading `(not inlined: it has
-    other hard links)`. The cost is that a deliberately hard-linked rules file is not inlined either (fails closed;
+    of any file the user owns on that filesystem), and no path check can see it. A file with `st_nlink > 1` is not inlined: the receipt says `has other hard links` and the heading `(not inlined: it has
+    other hard links)`. A count that cannot be read (no `statx`, seccomp EPERM, the mode cross-check failed), a Linux arch
+    whose flags are unknown, and a path whose real path could not be determined are a different refusal,
+    `PlainFile.Unverifiable`, heading `(not inlined: it could not be checked on this system)` (they used to be reported as
+    hard links, or as "not a Markdown file inside the working directory", about a plain file; review 2026-10-14). The cost is that a deliberately hard-linked rules file is not inlined either (fails closed;
     symlinks to an inside `.md` still are). The runtime's `FileStatus` has no nlink, so per OS, read off the opened fd and
     cross-checked (the type bits at the struct's own `st_mode` offset must say regular, else the layout is wrong: refuse):
     Linux `statx(fd, "", AT_EMPTY_PATH 0x1000, STATX_NLINK 0x4, buf)`, glibc 2.28+, layout arch-independent
@@ -5746,16 +5764,23 @@ byte-identically; `ApiHouseRulesTests` pins that against an empty cwd.
     `Compose` for 30 s (432129 renders, 14.3M exchanges, 17837 inlined the regular file) and against
     `OpenNoFollowUnder` alone for 30 s (1.68M opens, 2.01M link refusals): **0 leaks**. The macOS and FreeBSD values are from the
     headers, **not run** (CI has a macOS leg for build and tests, but nothing there exercises a hostile swap).
+    After the root walk (same day): reviewer's layout, three flippers, 10 s each, 0 leaks in ~197k renders; leaf and
+    intermediate flippers 10 s each, 0 leaks in ~139k; a mode 0311 `docs` behind `AGENTS.md -> docs/rules.md` inlined.
     The P/Invokes are AOT-clean (`LibraryImport`; the linux-x64 publish has no IL2026/IL3050).
 - **Isolated runs inline the branch's rules (2026-10-13, review finding 4).** `Prepare` renders with `request.Cwd`, the
   main checkout, so an isolated api run (`--branch`, or `max_parallel >= 2`) used to get the working copy's rules, not
   those of the branch it ran on. Once the worktree exists, `DelegateEngine.RunIsolatedAsync` calls
-  `RoleRenderer.WithRulesFrom(role, worktree.Path)`, which keeps the rendered prompt up to `## House rules` (role
+  `RoleRenderer.WithRulesFrom(role, worktree.Path, expectedRoot)`, which keeps the rendered prompt up to `## House rules` (role
   overrides still from `request.Cwd`, the appendix intact) and re-composes only the rules from the worktree, fenced by
   `SyncRoot.Repo(worktree.Path)`: a link in the worktree that leaves it is refused. It also replaces the render warnings,
   all of which come from `ApiHouseRules`, so the receipt names the worktree's files. Chosen over a second
   `Render(…, rulesCwd)` because that would re-resolve the role and lose the appendix; in-place runs and the other
-  harnesses never reach it and are byte-identical.
+  harnesses never reach it and are byte-identical. **Anchored (review 2026-10-14).** `expectedRoot` is
+  `SyncRoot.Resolve(request.Cwd)` + `/.claustrum/worktrees/<job>` (`JobWorktree.PathFor`); if `Resolve(worktree.Path)` is
+  any other string (a link planted at or above the worktree), nothing is inlined, each file gets
+  `(not inlined: the worktree resolves outside the repository's .claustrum/worktrees)` and one warning names where it
+  resolved. The walk is rooted at `expectedRoot`, not at the fence's `RealPath`, so even a swap between the check and
+  the open is a refusal from the `/` walk. Windows keeps judging the opened handle (the pre-check applies there too).
 - **Cap.** 32 KiB per file. One byte past the cap is read to tell "exactly at the cap" from "over"; the cut backs
   off continuation bytes so it never splits a character, the text ends `[truncated: the first N of M bytes of
   NAME are shown]`, and the receipt says `NAME inlined truncated to N of M bytes`.
