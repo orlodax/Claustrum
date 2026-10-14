@@ -28,7 +28,7 @@ public sealed class CancelScenario : IDisposable
     {
         foreach (string sleep in sleeps)
         {
-            foreach (string pid in SleepPids(sleep))
+            foreach (string pid in SleepPids(sleep, repo?.Repo))
                 KillQuietly(pid);
         }
 
@@ -86,7 +86,14 @@ public sealed class CancelScenario : IDisposable
             : null;
     }
 
-    public static string[] SleepPids(string duration)
+    /// <summary>
+    /// The pids of `sleep N` processes (N = <paramref name="duration"/>). The scan is global (`ps -A`), so two test runs on one machine (two worktrees
+    /// gated at once, a build beside a run) that use the same odd length each see, and each kill, the other's backend: that
+    /// was the CancelQueued/CancelSigint flake under load (2026-10-14). <paramref name="underDirectory"/> keeps only the sleeps
+    /// whose working directory lies under it, which the scenario's own repository and worktrees guarantee for its own;
+    /// where /proc does not exist the scan stays global.
+    /// </summary>
+    public static string[] SleepPids(string duration, string? underDirectory = null)
     {
         ProcessStartInfo startInfo = new() { FileName = "ps", UseShellExecute = false, RedirectStandardOutput = true, CreateNoWindow = true };
         startInfo.ArgumentList.Add("-A");
@@ -98,7 +105,26 @@ public sealed class CancelScenario : IDisposable
         return [.. output.Split('\n', StringSplitOptions.RemoveEmptyEntries)
             .Select(line => line.Trim())
             .Where(line => line.EndsWith($" sleep {duration}", StringComparison.Ordinal))
-            .Select(line => line[..line.IndexOf(' ', StringComparison.Ordinal)])];
+            .Select(line => line[..line.IndexOf(' ', StringComparison.Ordinal)])
+            .Where(pid => underDirectory is null || IsUnder(pid, underDirectory))];
+    }
+
+    private static bool IsUnder(string pid, string directory)
+    {
+        if (!Directory.Exists("/proc/self"))
+            return true;
+
+        try
+        {
+            string? cwd = new FileInfo($"/proc/{pid}/cwd").LinkTarget;
+            string full = Path.GetFullPath(directory);
+            string real = new DirectoryInfo(full).ResolveLinkTarget(returnFinalTarget: true)?.FullName ?? full;
+            return cwd is not null && (cwd.StartsWith(full, StringComparison.Ordinal) || cwd.StartsWith(real, StringComparison.Ordinal));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
     }
 
     private static void KillQuietly(string pid)
@@ -180,6 +206,6 @@ public sealed class CancelScenario : IDisposable
         }
 
         // The backend's own tree is gone, not orphaned under init still spending.
-        Assert.Empty(SleepPids(sleep));
+        Assert.Empty(SleepPids(sleep, Repo.Repo));
     }
 }

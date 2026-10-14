@@ -73,7 +73,7 @@ public sealed class CancelSigtermEndToEndTests : IDisposable
 
         await cli.SendSignalAsync("TERM", TestContext.Current.CancellationToken);
         await cli.WaitUntilAsync(() => cli.Stderr.Contains(CancelScenario.SigtermLine, StringComparison.Ordinal), "no cancelling line", CancelScenario.ExitLimit, TestContext.Current.CancellationToken);
-        await cli.WaitUntilAsync(() => CancelScenario.SleepPids(hookSleep).Length > 0, "the pre-commit hook never started", CancelScenario.StartLimit, TestContext.Current.CancellationToken);
+        await cli.WaitUntilAsync(() => CancelScenario.SleepPids(hookSleep, scenario.Repo.Repo).Length > 0, "the pre-commit hook never started", CancelScenario.StartLimit, TestContext.Current.CancellationToken);
         Assert.False(cli.HasExited, "the first SIGTERM alone must wait for the hanging commit");
 
         Stopwatch stopwatch = Stopwatch.StartNew();
@@ -104,7 +104,7 @@ public sealed class CancelSigtermEndToEndTests : IDisposable
 
         await cli.SendSignalAsync(first, TestContext.Current.CancellationToken);
         await cli.WaitUntilAsync(() => cli.Stderr.Contains(firstLine, StringComparison.Ordinal), "no cancelling line", CancelScenario.ExitLimit, TestContext.Current.CancellationToken);
-        await cli.WaitUntilAsync(() => CancelScenario.SleepPids(hookSleep).Length > 0, "the pre-commit hook never started", CancelScenario.StartLimit, TestContext.Current.CancellationToken);
+        await cli.WaitUntilAsync(() => CancelScenario.SleepPids(hookSleep, scenario.Repo.Repo).Length > 0, "the pre-commit hook never started", CancelScenario.StartLimit, TestContext.Current.CancellationToken);
         Assert.False(cli.HasExited, $"the first SIG{first} alone must wait for the hanging commit");
 
         Stopwatch stopwatch = Stopwatch.StartNew();

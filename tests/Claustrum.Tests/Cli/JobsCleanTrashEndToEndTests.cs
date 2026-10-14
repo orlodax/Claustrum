@@ -24,7 +24,7 @@ public sealed class JobsCleanTrashEndToEndTests : IDisposable
 
         foreach (string sleep in sleeps)
         {
-            foreach (string pid in CancelScenario.SleepPids(sleep))
+            foreach (string pid in CancelScenario.SleepPids(sleep, repo.Repo))
                 System.Diagnostics.Process.GetProcessById(int.Parse(pid, System.Globalization.CultureInfo.InvariantCulture)).Kill();
         }
 
@@ -139,7 +139,7 @@ public sealed class JobsCleanTrashEndToEndTests : IDisposable
         if (OperatingSystem.IsWindows())
             Assert.Skip("SIGINT is a POSIX signal; the fake git is sh.");
 
-        const string sleep = "31.83";
+        const string sleep = "31.95";
         sleeps.Add(sleep);
         string trash = MakeTrash(".trash-job-1-eeeeeeee");
         string bin = Directory.CreateDirectory(Path.Combine(repo.Home, "slow-git")).FullName;
@@ -155,7 +155,7 @@ public sealed class JobsCleanTrashEndToEndTests : IDisposable
             Assert.Skip("this test host was started with SIGINT ignored, so no SIGINT can reach the child.");
         }
 
-        await cli.WaitUntilAsync(() => CancelScenario.SleepPids(sleep).Length > 0, "the sweep never reached git", CancelScenario.StartLimit, TestContext.Current.CancellationToken);
+        await cli.WaitUntilAsync(() => CancelScenario.SleepPids(sleep, repo.Repo).Length > 0, "the sweep never reached git", CancelScenario.StartLimit, TestContext.Current.CancellationToken);
         await cli.SendSigintAsync(TestContext.Current.CancellationToken);
         int exit = await cli.WaitForExitAsync(CancelScenario.ExitLimit, TestContext.Current.CancellationToken);
 
