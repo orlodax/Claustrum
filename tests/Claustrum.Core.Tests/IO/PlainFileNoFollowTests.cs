@@ -231,6 +231,95 @@ public sealed partial class PlainFileNoFollowTests : IDisposable
         Assert.NotNull(last);
     }
 
+    // The walk starts at `/` and follows no link, the root's own ancestors included (review 2026-10-14): the root is a fully
+    // resolved absolute path, and one that is not is refused, never opened.
+    [Theory]
+    [InlineData("relative/root")]
+    [InlineData("")]
+    [InlineData("./here")]
+    public void ARootThatIsNotAbsoluteIsRefused(string root)
+    {
+        RequireUnix();
+
+        Assert.Null(PlainFile.OpenNoFollowUnder(root, ["AGENTS.md"], out string? refusal));
+        Assert.Contains("not a plain list of names", refusal, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("/tmp/../etc")]
+    [InlineData("/tmp/./x")]
+    public void ARootWithDotOrDotDotNamesIsRefusedBeforeAnythingIsOpened(string root)
+    {
+        RequireUnix();
+
+        Assert.Null(PlainFile.OpenNoFollowUnder(root, ["passwd"], out string? refusal));
+        Assert.Contains("not a plain list of names", refusal, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ARootPassedThroughASymlinkedParentIsRefusedAndTheFileIsNotRead()
+    {
+        RequireUnix();
+        string real = NewRoot();
+        Write(real, "SECRET", "sub", "AGENTS.md");
+        string holder = NewRoot();
+        string linkedParent = Path.Combine(holder, "linked");
+        Directory.CreateSymbolicLink(linkedParent, real);
+
+        FileStream? stream = PlainFile.OpenNoFollowUnder(Path.Combine(linkedParent, "sub"), ["AGENTS.md"], out string? refusal);
+
+        Assert.Null(stream);
+        Assert.Contains("link", refusal, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ARootThatIsItselfALinkIsRefused()
+    {
+        RequireUnix();
+        string real = NewRoot();
+        Write(real, "SECRET", "AGENTS.md");
+        string link = Path.Combine(NewRoot(), "root-link");
+        Directory.CreateSymbolicLink(link, real);
+
+        Assert.Null(PlainFile.OpenNoFollowUnder(link, ["AGENTS.md"], out string? refusal));
+        Assert.NotNull(refusal);
+    }
+
+    // A directory that can be searched but not read (mode 0311) is walked: the OS's path-only open does not need read permission.
+    [Fact]
+    [System.Runtime.Versioning.UnsupportedOSPlatform("windows")]
+    public void ASearchOnlyDirectoryOnTheWayIsWalkedOnLinux()
+    {
+        if (!OperatingSystem.IsLinux())
+            Assert.Skip("the search-only open (O_PATH) is Linux's; macOS opens directories for reading and refuses by design.");
+
+        string root = NewRoot();
+        string file = Write(root, "x", "docs", "rules.md");
+        string docs = Path.GetDirectoryName(file) ?? root;
+        File.SetUnixFileMode(docs, UnixFileMode.UserWrite | UnixFileMode.UserExecute | UnixFileMode.GroupExecute | UnixFileMode.OtherExecute);
+        try
+        {
+            try
+            {
+                _ = Directory.GetFileSystemEntries(docs);
+                Assert.Skip("this account lists a mode-0311 directory (root, or a capability that bypasses modes).");
+            }
+            catch (UnauthorizedAccessException)
+            {
+                // The point of the case.
+            }
+
+            using FileStream? stream = PlainFile.OpenNoFollowUnder(root, ["docs", "rules.md"], out string? refusal);
+
+            Assert.NotNull(stream);
+            Assert.Null(refusal);
+        }
+        finally
+        {
+            File.SetUnixFileMode(docs, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
+    }
+
     [Fact]
     public void AnEmptyComponentListIsRefused()
     {
