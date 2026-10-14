@@ -53,20 +53,22 @@ Exit codes are fixed: `0` ok · `1` backend failure · `2` usage or config error
 refused brief, a missing cast, a role sent to a harness it does not list, a `gh` failure, a
 `coordinate` whose cast is not committed, a `.claustrum` link that leaves the repo) · `3` backend not found · `4` timeout · `5` budget · `130`
 cancelled. Once the job directory exists (queued for a `max_parallel` slot, waiting for a `--branch`
-lock, adding its worktree, or running), the first Ctrl-C (SIGINT), SIGQUIT or SIGTERM ends the run
+lock, adding its worktree, or running), the first Ctrl-C (SIGINT), SIGQUIT, SIGTERM or SIGHUP (the terminal closing) ends the run
 with a `cancelled` receipt: exit 130, the document on stdout under `--json`, `result.json` on disk
-(#94). A cancel while queued or adding leaves no worktree or branch; one just after the add, before
+(#94). A cancel while queued or adding leaves no worktree, directory or branch (#108: a directory git had not yet registered is deleted too); one just after the add, before
 the backend starts, leaves the registered worktree and its branch at the starting commit (`jobs
 clean` removes the worktree later, never the branch); one while running keeps both with a commit of
 any work so far (§9). Before the job directory exists nothing is minted: a signal while
 `run`/`coordinate` is still reading its brief from stdin gets the runtime's default exit (130 for
-Ctrl-C, 143 for SIGTERM, no handler yet); one during `coordinate`'s planning (while `gh` runs) is
+Ctrl-C, 143 for SIGTERM, 129 for SIGHUP, no handler yet); one during `coordinate`'s planning (while `gh` runs) is
 exit 130 with no receipt. A second signal ends the
 process at once with the runtime's own code (130 after a second Ctrl-C, 143 after a second SIGTERM,
-131 after a second SIGQUIT), no receipt, and the backend may keep running (it received no signal of
+129 after a second SIGHUP, 131 after a second SIGQUIT), no receipt, and the backend may keep running (it received no signal of
 its own when the sender was `kill`). On Windows Ctrl-C and Ctrl-Break take the cancel path (both reach
 `Console.CancelKeyPress`; not measured on Windows), SIGTERM registers but cannot be cancelled there,
-and the forced-exit codes above are the Unix ones.
+SIGHUP is the console-close event (the window closing): it registers and starts the same cancel, but Windows ends the
+process within seconds of the handler returning, so the receipt is best-effort (not measured), and the forced-exit
+codes above are the Unix ones.
 
 ### `claustrum run <role>`
 
@@ -103,7 +105,7 @@ claustrum run <role> [--brief <text> | --brief-file <path|->]
   `.claustrum/worktrees/.trash-<job>-<random>` and its own registration (`.git/worktrees/<id>`, never a repo-wide
   `git worktree prune`: a worktree of yours on an unmounted drive keeps its registration) is deleted; the trash is then
   deleted. It needs git 2.31 or later, and reads `worktree.useRelativePaths` registrations. A branch held by a registration whose `.git` file is gone is released only if the
-  directory is gone too; a directory that still exists is left, and the branch refused. A Ctrl-C or SIGTERM before the rename leaves the worktree
+  directory is gone too; a directory that still exists is left, and the branch refused. A Ctrl-C, SIGTERM or SIGHUP before the rename leaves the worktree
   intact and the run ends `cancelled`; after it, only trash and perhaps a registration the next `--branch` run or
   `jobs clean` drops. A SIGKILL is the same. A worktree that fails a check is a refusal naming it, with `--branch`
   failing as the holder's `left in place (…)`; resolve what it names (commit, switch back, finish or abort the
@@ -173,7 +175,7 @@ backend, or it skips with "no model alias … resolves to this backend".
   that git still lists as a worktree, or whose registration was not released — locked, another repository's, its
   worktree directory still there, a NUL in the file — is a `warning:` line, not a failure, and is kept). If `.claustrum`
   is a link that leaves the working directory, `jobs clean` refuses before touching anything (exit 2).
-  The first Ctrl-C or SIGTERM stops the sweep (exit 130); a worktree not yet renamed stays intact, and
+  The first Ctrl-C, SIGTERM or SIGHUP stops the sweep (exit 130); a worktree not yet renamed stays intact, and
   the next `jobs clean` finishes any trash. A worktree with anything uncommitted — new files included,
   whatever `status.showUntrackedFiles` says (a commit the runner could not make, a hard-killed run)
   — or one Claustrum will not remove (a populated submodule, a `git worktree lock`-ed one, one on a detached HEAD, one
@@ -559,7 +561,7 @@ job, a job this `CLAUSTRUM_HOME` has no directory for (one run under another hom
 refused with the holder named. Runs on one branch never overlap: a second `--branch` run on it waits
 for the first one's receipt (up to its `--timeout`), then takes the branch over from the finished
 worktree. `claustrum jobs clean` removes the worktrees of finished jobs, never with `--force` (it renames a
-clean one aside and deletes its registration, as `--branch` does), and keeps the branches. Its first Ctrl-C or SIGTERM
+clean one aside and deletes its registration, as `--branch` does), and keeps the branches. Its first Ctrl-C, SIGTERM or SIGHUP
 stops the sweep (exit 130); a second one exits at once.
 
 ## 10. Budget

@@ -575,6 +575,9 @@ public static class JobWorktree
     private static async Task<string?> TryAddAsync(string cwd, JobWorktreeInfo worktree, string[] target, CancellationToken cancellationToken)
     {
         Directory.CreateDirectory(Path.Combine(cwd, ".claustrum", "worktrees"));
+
+        // #108: only a directory this add created may be deleted by its undo.
+        bool madeByThisAdd = !Path.Exists(worktree.Path) && new FileInfo(worktree.Path).LinkTarget is null;
         string reason;
         try
         {
@@ -589,19 +592,19 @@ public static class JobWorktree
         {
             // Still a cancel, so `run` exits 130; what the undo could not remove rides on the message. Since
             // #94 (2026-10-13) that message is the cancelled receipt's `error`, not a RunCommand.Cancelled line.
-            if (await UndoAddAsync(cwd, worktree) is { } left)
+            if (await UndoAddAsync(cwd, worktree, madeByThisAdd) is { } left)
                 throw new OperationCanceledException($"git worktree add was cancelled; left behind: {left}", ex, ex.CancellationToken);
             throw;
         }
         catch (TimeoutException)
         {
             string timedOut = $"git worktree add did not finish within {repoCodeTimeout.TotalMinutes} minutes";
-            return await UndoAddAsync(cwd, worktree) is { } left
+            return await UndoAddAsync(cwd, worktree, madeByThisAdd) is { } left
                 ? $"{timedOut}; left behind: {left}"
                 : $"{timedOut}; nothing left behind";
         }
 
-        return await UndoAddAsync(cwd, worktree) is { } leftover ? $"{reason}; left behind: {leftover}" : reason;
+        return await UndoAddAsync(cwd, worktree, madeByThisAdd) is { } leftover ? $"{reason}; left behind: {leftover}" : reason;
     }
 
     // T1: the role never ran, so nothing in the worktree is anyone's. `-f -f`, because git killed
@@ -609,7 +612,8 @@ public static class JobWorktree
     // Only after a failed remove, the run's own entry is released (ReleaseDeadEntryAsync): one whose `.git` file is
     // gone fails the remove and stays registered (both measured, git 2.56). Never a repo-wide prune (review 2026-10-14).
     // The bound is the checkout's: deleting a large tree is as slow as writing it. Null when nothing is left.
-    private static async Task<string?> UndoAddAsync(string cwd, JobWorktreeInfo worktree)
+    // #108: a directory git left unregistered (killed before it wrote the entry) is deleted too, see TryDeleteUnregisteredAsync.
+    private static async Task<string?> UndoAddAsync(string cwd, JobWorktreeInfo worktree, bool madeByThisAdd)
     {
         try
         {
@@ -619,7 +623,12 @@ public static class JobWorktree
 
             List<string> left = [];
             if (Directory.Exists(worktree.Path))
-                left.Add($"{worktree.Path} ({Reason("worktree remove", exitCode, stderr, stdout)})");
+            {
+                string? stays = madeByThisAdd ? await TryDeleteUnregisteredAsync(cwd, worktree.Path) : "it existed before the add";
+                if (stays is not null)
+                    left.Add($"{worktree.Path} ({Reason("worktree remove", exitCode, stderr, stdout)}; not deleted: {stays})");
+            }
+
             if (entryFailure is not null)
                 left.Add($"the registration of {worktree.Path} ({entryFailure})");
             if (await TryDeleteOwnedBranchAsync(cwd, worktree, CancellationToken.None) is { } branchFailure)
@@ -631,6 +640,37 @@ public static class JobWorktree
         {
             string branch = worktree.OwnsBranch ? $" and branch {worktree.Branch}" : "";
             return $"possibly {worktree.Path}{branch} (undoing stopped: {ex.Message})";
+        }
+    }
+
+    // #108: git killed before it registered the worktree leaves a directory `remove` calls "not a working tree". The role
+    // never ran in it, so it holds nothing of anyone's: deleted when it is a job directory of this repository, no link
+    // itself, and git (asked for the typed and the realpath spelling, as ReleaseDeadEntryAsync does) lists no worktree
+    // there. Directory.Delete does not follow links inside it, junctions included. Null when deleted, else why not.
+    private static async Task<string?> TryDeleteUnregisteredAsync(string cwd, string path)
+    {
+        string trimmed = Path.TrimEndingDirectorySeparator(path);
+        string name = Path.GetFileName(trimmed);
+        string[] jobsDirectories = await JobsDirectoriesAsync(cwd, CancellationToken.None);
+        if (name.Length == 0 || Path.GetDirectoryName(trimmed) is not { } parent || !jobsDirectories.Any(directory => SamePath(directory, parent)))
+            return "it is not a job directory of this repository's .claustrum/worktrees";
+        if (new DirectoryInfo(path).LinkTarget is not null)
+            return "it is a link";
+        if (await ListWorktreesAsync(cwd, CancellationToken.None) is not { } listed)
+            return "git could not list the worktrees";
+
+        string[] spellings = [.. jobsDirectories.Select(directory => Path.Combine(directory, name))];
+        if (listed.Any(entry => spellings.Any(spelling => SamePath(spelling, entry.Path))))
+            return "git lists it as a worktree";
+
+        try
+        {
+            Directory.Delete(path, recursive: true);
+            return null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return ex.Message;
         }
     }
 
@@ -1212,15 +1252,15 @@ public static class JobWorktree
 
     // On Unix git shares Claustrum's process group, so the terminal's SIGINT kills it before the token is cancelled
     // (measured 2026-10-13): .NET reports 128 + the signal. Every git call of a free goes through here so that a
-    // Ctrl-C reads as an interrupted free (a `cancelled` receipt), never as git saying no. 131 is SIGQUIT, which
-    // CancelSignalHandler treats as a cancel too. The `--branch` door's reads before the free go through here as well.
+    // Ctrl-C reads as an interrupted free (a `cancelled` receipt), never as git saying no. 131 is SIGQUIT, 129 SIGHUP
+    // (#111): CancelSignalHandler treats both as a cancel too. The `--branch` door's reads before the free go through here as well.
     private static async Task<(int ExitCode, string Stdout, string Stderr)> FreeGitAsync(
         string cwd, string[] args, CancellationToken cancellationToken, TimeSpan? timeout = null)
     {
         (int exitCode, string stdout, string stderr) = timeout is { } bound
             ? await GitProcess.RunAsync(cwd, args, bound, cancellationToken)
             : await GitProcess.RunAsync(cwd, args, cancellationToken);
-        if (!OperatingSystem.IsWindows() && exitCode is SigIntExit or SigQuitExit or SigTermExit)
+        if (!OperatingSystem.IsWindows() && exitCode is SigHupExit or SigIntExit or SigQuitExit or SigTermExit)
         {
             cancellationToken.ThrowIfCancellationRequested();
             throw new WorktreeInterruptedException($"git {args.First(arg => !arg.StartsWith('-'))} was interrupted (exit {exitCode}); nothing was lost");
@@ -1229,6 +1269,7 @@ public static class JobWorktree
         return (exitCode, stdout, stderr);
     }
 
+    private const int SigHupExit = 129;
     private const int SigIntExit = 130;
     private const int SigQuitExit = 131;
     private const int SigTermExit = 143;

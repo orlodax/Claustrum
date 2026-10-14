@@ -4891,8 +4891,8 @@ stdout and on disk, the isolated cases' `commit` holding `partial.txt`, and no `
   already knows which signal it sent. A second signal of either kind forces the exit, no receipt.
   SIGQUIT needs no registration: on Unix `Console.CancelKeyPress` fires for SIGINT **and SIGQUIT**, so
   `kill -QUIT` has taken the first-Ctrl-C path since #88 (measured 2026-10-12: exit 130 with a `cancelled`
-  receipt; a second SIGQUIT is the runtime's default, core dump, exit 131). SIGHUP alone is unregistered,
-  out of #92's scope. On Windows SIGTERM registers but cannot be cancelled, so the process ends once the
+  receipt; a second SIGQUIT is the runtime's default, core dump, exit 131). SIGHUP was unregistered until
+  2026-10-14 (#111, "A cancel during `worktree add` and a closed terminal" below). On Windows SIGTERM registers but cannot be cancelled, so the process ends once the
   handler returns.
 - ⚠ **A test that sends SIGINT must start the binary with SIGINT not ignored.** A non-interactive
   shell starts `&` jobs with SIGINT set to ignore and .NET keeps an inherited ignore: the first
@@ -5811,3 +5811,41 @@ byte-identically; `ApiHouseRulesTests` pins that against an empty cwd.
   `BranchDeltaAsync` retries the diff with `:(exclude,literal)<path>` for those paths and keeps the names it had.
 - **Left alone:** job-directory files and the `.git` file of Claustrum's own worktrees (written by Claustrum, never
   by a repo), the copilot login file under the home directory, and the command-line paths above.
+
+## A cancel during `worktree add` and a closed terminal (2026-10-14, issues #108, #111, #113)
+
+- **#108: the add's undo deletes the directory git never registered.** A SIGINT 1.0-1.2 s into `git worktree add` on a 50k-file
+  repo (T1 above, found by the #106 smoke test) left an empty `.claustrum/worktrees/<job>` that `worktree remove -f -f` calls
+  "not a working tree", so `UndoAddAsync` reported it and left it. After the remove (and `ReleaseDeadEntryAsync`) it now calls
+  `TryDeleteUnregisteredAsync`, which `Directory.Delete(recursive)`s the path when ALL hold: this add created it (`TryAddAsync`
+  checks `Path.Exists`/`LinkTarget` before running git, so a directory already there is never ours to delete); its parent is
+  this repository's jobs directory (typed spelling or git's realpath, `JobsDirectoriesAsync`) and it has a name; it is not a
+  link itself; `git worktree list --porcelain` has no entry at either spelling (a list that fails keeps it). The role never ran
+  there, so it holds nothing. The delete never follows a link inside it: `Directory.Delete` removes a symlink, and on Windows a
+  junction, as the entry itself (by .NET's source; **not run on Windows**). A failed delete, or a listed one, is named in the
+  `left behind:` text with git's reason and `not deleted: <why>`.
+  - **Two existing tests moved.** `JobWorktreeUndoTests` had a post-checkout hook delete `.git` and exit 1, which made
+    `remove -f -f` fail and (after the entry's release) left the directory, asserted as "left behind". It is now deleted, so
+    both cases assert the directory gone and no `left behind`.
+  - **`jobs clean` gets nothing new, on purpose.** Cancel, timeout and failure all reach the undo. What is left is a hard
+    kill (SIGKILL, power loss) of the add, and there `jobs clean` could not act anyway: that job has a directory and no
+    `result.json`, so `IsFinished` is false and it is skipped (R3's gate, which exists so a live worktree is never taken for
+    a finished one). Loosening it for an empty directory would put a running add at risk; the by-hand fix is `rmdir`.
+  - **Known gap: an admin entry without a `gitdir` file.** git creates `.git/worktrees/<name>` (locked `initializing`)
+    before it writes `gitdir`; killed in between, the entry is not listed and `FindAdmin` cannot name it. The directory is
+    deleted now, the stray entry stays until `git worktree prune`. Not reproduced (no way to time the kill).
+- **#111: SIGHUP takes the first-signal cancel path.** `CancelSignalHandler` registers `PosixSignal.SIGHUP` beside SIGTERM, so
+  a closed terminal gives the `cancelled` receipt, the backend's tree killed and exit 130 (a function of the status, as for
+  SIGTERM). A second SIGHUP of any kind is the runtime's default, exit 129 = 128+1, no receipt. The first signal's stderr
+  line is now written in a `try/catch IOException`: with the terminal gone the write fails, and an exception on that thread
+  would end the process before the receipt. `FreeGitAsync` treats a git exit 129 as an interrupted free like 130/131/143
+  (git shares the process group, so the terminal's SIGHUP kills it too). ⚠ A shell that exits sends SIGHUP to its jobs as the
+  kernel does to the foreground group, so a run can see two: the second forces the exit. `nohup` ignores SIGHUP, and .NET keeps
+  an inherited ignore (the `&` job note under #88), so a run under `nohup` never sees one.
+  - **Windows.** .NET's `PosixSignalRegistration` maps `SIGHUP` to `CTRL_CLOSE_EVENT` (runtime source,
+    `PosixSignalRegistration.Windows.cs`), so the registration is made there too, unguarded. As with SIGTERM, the process ends
+    once the handler returns (Windows allows the close handler a few seconds), so the cancel has only that window to kill the
+    backend and write the receipt: best-effort, **not run on Windows**.
+- **#113: the second-signal hint is the caller's.** `CancelSignalHandler(forcedExit)` completes "press Ctrl-C again to …"
+  (and "send SIGxxx again to …", now naming the signal it received). `run` and `coordinate` keep `exit without a receipt`;
+  `jobs clean` says `stop now; a free in flight is left for the next jobs clean`: it writes no receipt.
