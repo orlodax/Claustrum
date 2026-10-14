@@ -11,7 +11,8 @@ jobs:
       # One OS failing must not cancel the other: PR #75's Windows leg was cancelled and reported nothing.
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        # macOS since 2026-10-14: v0.1.0 ships two osx binaries and #110 needs a real Mac run.
+        os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     env:
       # backends doctor --probe now makes a real paid call per installed backend (issue #12); no
