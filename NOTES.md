@@ -4057,12 +4057,51 @@ git drops the lock before it runs the hook.
        and the refusal as decided broke `CoordinateIntegrationRecipeEndToEndTests`. A commit the branch carries again
        under another sha is not lost: `git cherry HEAD <tip>` per dangling tip (a chain's newest commit; at most 20
        tips, the rest count as lost) marks `- <sha>` the ones whose patch the branch already holds, and a merge is never
-       listed so stays lost. A rebase with conflict resolution, or an amend that changed content, changes the patch
-       and is refused: `git branch <name> <sha>` keeps the commit, `git reflog expire --expire-unreachable=now HEAD`
+       listed so stays lost. A rebase with conflict resolution changes the patch and is refused (an amend or reset made
+       while on the branch is not: its old commit is in the branch's own reflog, round 3 item 6): `git branch <name> <sha>` keeps the commit, `git reflog expire --expire-unreachable=now HEAD`
        (run in the worktree) discards the dangling ones. Not covered: a repository with `core.logAllRefUpdates=false`
        has no reflog to read.
     Pinned by the existing `JobWorktreeUndoTests` (the failed-forced-remove case now keeps the stale entry),
     `JobWorktreeRemoveTests` (a detached HEAD refuses; another existing branch no longer does).
+  - **Remediation, round 3 (found by review, 2026-10-14; a third blind review reproduced each).**
+    1. **MEDIUM, a directory with work was unregistered.** `ReleaseDeadEntryAsync` on the `--branch` path released an entry
+       whose `<top>/.git` was gone before any ownership, result.json or clean check: an unfinished job's staged index,
+       reflog and detached commit went with it. The predicate is split by caller (`directoryGone`): `FreeBranchAsync`
+       releases only when the holder's directory itself is gone (`!Path.Exists(top)` and not a link, so a dangling link
+       is kept); `UndoAddAsync` keeps the `.git`-missing rule, since the role never ran there. A kept holder is refused
+       "already checked out" with `its .git file is gone but its directory is not, so its registration was kept`.
+    2. **MEDIUM, `log.showSignature=true`** put gpg lines into `log -g --format=%H HEAD`, which reached `rev-list` as
+       revisions (`bad revision 'No signature'`): every free refused. `DanglingReflogAsync` reads the reflog with
+       `rev-list --walk-reflogs HEAD` (rev-list ignores `log.*`) and keeps only lines that are hex object ids (40 or 64).
+       Measured with a fake `gpg.program` on git 2.56: stdout stayed clean there, the gpg text went to stderr; the id
+       filter is defence in depth, not reproduced as a failure here.
+    3. **LOW-MEDIUM, per-worktree refs counted as safe.** `--not --all` run in the worktree included its own
+       `refs/worktree/*`, `refs/bisect/*`, `refs/rewritten/*`, which die with the admin dir. The `--not` side is now
+       `--exclude=refs/worktree/* --exclude=refs/bisect/* --exclude=refs/rewritten/* --all` (excludes before `--all`;
+       the glob matches deeper names too, measured), and the targets of `for-each-ref --format=%(objectname)` over
+       those namespaces join the HEAD reflog's commits as candidates (a blob or a tag in one is no error, measured).
+       `OffBranchAsync` also requires HEAD under `refs/heads/`.
+    4. **LOW, a regression of round 2.** The trash-parent check and the relative-mode common-dir comparison compared
+       git's realpath with the typed path: through a symlinked cwd the trash was deleted and the registration left
+       (`git switch`: "already used by worktree"). Now the jobs directory is compared as typed and as git spells it
+       (`JobsDirectoriesAsync`), and both common dirs come from git (`git --git-dir=<admin> rev-parse
+       --path-format=absolute --git-common-dir` against the cwd's). A trash whose `.git` names an existing admin entry
+       that was not released (worktree directory still there, another jobs directory, another trash's name, locked,
+       another repository, git unable to say) is KEPT and reported, never deleted: it is the only pointer. The `locked`
+       check is in `ReleaseTrashEntryAsync` as in `ReleaseDeadEntryAsync`. Measured through a symlinked cwd, also with
+       `worktree.useRelativePaths`: registration and trash both go.
+    5. **LOW, a NUL byte** in a planted trash's `.git` or an admin `gitdir` made `Path.GetFullPath` throw, aborting
+       `jobs clean` on every run. `TryRead` (the one read of both) refuses text holding `'\0'`: not read, reported, the
+       trash kept; an entry with a NUL `gitdir` is "not this repository's worktree" to the free.
+    6. **LOW, the branch's own reflog.** Round 2 refused an amend or reset made while on the branch, though those
+       commits stay in the BRANCH's reflog (`logs/refs/heads/<b>`, in the common dir, so it survives the free).
+       `BranchReflogReachesAsync` lists it (`rev-list --walk-reflogs <HEAD's ref>`) and takes what it reaches outside
+       every ref out of the dangling set (the shas in chunks of 100; a `--not` list cannot be chunked, so it is the
+       reflog that is: reachability of a union is the union of reachabilities). `git cherry` stays for the truly
+       HEAD-only ones. **Corrects round 2:** "an amend that changed content is refused" is true only of one made on a
+       detached HEAD. Git's patch-id ignores whitespace, so `cherry` also counts a rebased commit that differs only in
+       whitespace as carried; a changed non-whitespace line is not. ⚠ A reflog entry expires (30 days for an
+       unreachable commit, 90 for a reachable one), so "kept" means kept until then, as for any reflog.
 
 ### The job's own worktree off its branch keeps its snapshot (review T3, 2026-10-08)
 
@@ -5755,6 +5794,13 @@ byte-identically; `ApiHouseRulesTests` pins that against an empty cwd.
   since the check is never truncated). The check-then-write gap closes because the check is on the write handle. A
   dangling link at a write target now throws instead of creating its target (the CreateNew EEXIST is followed by an
   ENOENT open); every such path is fenced by `SyncRoot` first.
+- **A directory at a write target (2026-10-14, tester).** `TryOpenWrite` threw `IOException` ("already exists": the
+  CreateNew probe's catch filter passed only a file or a link) or, once past it, `UnauthorizedAccessException` (EISDIR).
+  A directory is now a refusal (`not a regular file …`, ordinary path through `OpenRegular`; on Windows a `Directory.Exists`
+  check before the `FileStream`): `mkdir .gitignore && claustrum init` prints `.gitignore: refused (…)`, exit 2.
+  `init`'s `claustrum.json` presence check reads the existing file through `PlainFile.OpenRead`, so a FIFO there is
+  `claustrum.json: refused (…)` (exit 2) with or without a git root, not `already present` (a git root loaded it, and
+  refused it, earlier).
 - **`backends doctor --probe`** reads the repo MCP configs through `TryReadAllText` and prints `present, not a
   regular file`. `init`'s summary line says `refused (outside the repo, or a pipe, socket or device)`.
 - **MCP `files`** are read through `ReadRegularFileText` (`RunRequest.AttachmentsMustBeRegular`, set by

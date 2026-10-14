@@ -95,13 +95,15 @@ claustrum run <role> [--brief <text> | --brief-file <path|->]
   any other) with the reason — and the holder, if any — in `error`, and no worktree left behind
   (`error` names anything the undo could not remove). The free of the previous job's worktree never
   uses `git worktree remove`: once Claustrum's own checks pass (clean, new files included; no submodule
-  populated; not `git worktree lock`-ed; on an existing branch — not a detached HEAD — with no rebase, merge,
-  cherry-pick, revert or bisect under way; no commit only its own HEAD reflog holds; no `skip-worktree`/`assume-unchanged`
+  populated; not `git worktree lock`-ed; on an existing branch (`refs/heads/…`, not a detached HEAD) with no rebase, merge,
+  cherry-pick, revert or bisect under way; no commit only its own HEAD reflog or its own `refs/worktree`, `refs/bisect` or
+  `refs/rewritten` refs hold (the branch's reflog counts as kept); no `skip-worktree`/`assume-unchanged`
   file present on disk; and really this repository's worktree, not a directory the role re-initialised with its own
   `.git`), the directory is renamed to
   `.claustrum/worktrees/.trash-<job>-<random>` and its own registration (`.git/worktrees/<id>`, never a repo-wide
   `git worktree prune`: a worktree of yours on an unmounted drive keeps its registration) is deleted; the trash is then
-  deleted. It needs git 2.31 or later, and reads `worktree.useRelativePaths` registrations. A Ctrl-C or SIGTERM before the rename leaves the worktree
+  deleted. It needs git 2.31 or later, and reads `worktree.useRelativePaths` registrations. A branch held by a registration whose `.git` file is gone is released only if the
+  directory is gone too; a directory that still exists is left, and the branch refused. A Ctrl-C or SIGTERM before the rename leaves the worktree
   intact and the run ends `cancelled`; after it, only trash and perhaps a registration the next `--branch` run or
   `jobs clean` drops. A SIGKILL is the same. A worktree that fails a check is a refusal naming it, with `--branch`
   failing as the holder's `left in place (…)`; resolve what it names (commit, switch back, finish or abort the
@@ -168,14 +170,15 @@ backend, or it skips with "no model alias … resolves to this backend".
   committed on them. It never forces: a clean worktree is renamed to a `.trash-*` sibling, its own registration
   deleted and the trash deleted, and the sweep first deletes any `.trash-*` an earlier interrupted free left,
   with the one registration each may still have (`swept N leftover trash directories`; a trash that will not delete,
-  or that git still lists as a worktree, is a `warning:` line, not a failure and not deleted). If `.claustrum`
+  that git still lists as a worktree, or whose registration was not released — locked, another repository's, its
+  worktree directory still there, a NUL in the file — is a `warning:` line, not a failure, and is kept). If `.claustrum`
   is a link that leaves the working directory, `jobs clean` refuses before touching anything (exit 2).
   The first Ctrl-C or SIGTERM stops the sweep (exit 130); a worktree not yet renamed stays intact, and
   the next `jobs clean` finishes any trash. A worktree with anything uncommitted — new files included,
   whatever `status.showUntrackedFiles` says (a commit the runner could not make, a hard-killed run)
   — or one Claustrum will not remove (a populated submodule, a `git worktree lock`-ed one, one on a detached HEAD, one
-  mid-rebase/merge/cherry-pick, one whose HEAD reflog holds commits no ref contains (an amend or reset; a rebase whose
-  commits the branch carries again passes), one with a `skip-worktree`/`assume-unchanged` file on disk, or a directory
+  mid-rebase/merge/cherry-pick, one whose HEAD reflog holds commits no ref and not the branch's reflog contains (commits made on a detached HEAD; a rebase whose
+  commits the branch carries again passes, and so does an amend or reset made while on the branch), one with a `skip-worktree`/`assume-unchanged` file on disk, or a directory
   that is no longer this repository's worktree) — is printed as `could not
   remove <job>: <path> left in place: <reason>` and exits 1. Commit or discard what is in it, then
   rerun. Only `<cwd>/.claustrum/worktrees` is swept: a `coordinate` architect's worktree holds its
