@@ -38,8 +38,16 @@ public sealed class TierStubBodyTests : IDisposable
         List<(string Key, string Value)> fields = [];
         foreach (string line in lines[1..close])
         {
-            int colon = line.IndexOf(": ", StringComparison.Ordinal);
-            fields.Add((line[..colon], line[(colon + 2)..]));
+            // A nested block (opencode's `permission:`/`bash:` deny list) is folded into its parent key's value.
+            if (line.StartsWith(' '))
+            {
+                (string key, string value) = fields[^1];
+                fields[^1] = (key, $"{value}\n{line}");
+                continue;
+            }
+
+            int colon = line.IndexOf(':', StringComparison.Ordinal);
+            fields.Add((line[..colon], line[(colon + 1)..].TrimStart(' ')));
         }
 
         return (fields, string.Join('\n', lines[(close + 1)..]));
@@ -102,20 +110,31 @@ public sealed class TierStubBodyTests : IDisposable
         Assert.DoesNotContain("subagent_type", opencode, StringComparison.Ordinal);
     }
 
+    // opencode has no effort key: `variant:` is opt-in and rides only a model spec that names one (#35), so the
+    // default-alias stub is the base agent's frontmatter unchanged.
     [Theory]
     [InlineData("claude", "effort", "xhigh")]
-    [InlineData("opencode", "variant", "xhigh")]
+    [InlineData("opencode", null, "xhigh")]
     [InlineData("claude", "effort", "max")]
-    [InlineData("opencode", "variant", "max")]
-    public void TheStubFrontmatterIsTheBaseAgentsWithOnlyTheNameAndTheEffortMoved(string harness, string effortKey, string tier)
+    [InlineData("opencode", null, "max")]
+    public void TheStubFrontmatterIsTheBaseAgentsWithOnlyTheNameAndTheEffortMoved(string harness, string? effortKey, string tier)
     {
         string role = "builder";
         (List<(string Key, string Value)> baseFields, _) = SplitFrontmatter(SyncedFile(harness, role, role));
         (List<(string Key, string Value)> stubFields, string rest) = SplitFrontmatter(SyncedFile(harness, role, $"{role}-{tier}"));
 
         Assert.Equal(baseFields.Select(field => field.Key), stubFields.Select(field => field.Key));
-        Assert.Equal("high", Field(baseFields, effortKey));
-        Assert.Equal(tier, Field(stubFields, effortKey));
+        if (effortKey is not null)
+        {
+            Assert.Equal("high", Field(baseFields, effortKey));
+            Assert.Equal(tier, Field(stubFields, effortKey));
+        }
+        else
+        {
+            Assert.DoesNotContain(baseFields, field => field.Key == "variant");
+            Assert.DoesNotContain(stubFields, field => field.Key == "variant");
+        }
+
         Assert.Equal(Field(baseFields, "model"), Field(stubFields, "model"));
         if (harness == "claude")
         {
