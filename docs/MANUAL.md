@@ -95,11 +95,13 @@ claustrum run <role> [--brief <text> | --brief-file <path|->]
   any other) with the reason — and the holder, if any — in `error`, and no worktree left behind
   (`error` names anything the undo could not remove). The free of the previous job's worktree never
   uses `git worktree remove`: once Claustrum's own checks pass (clean, new files included; no submodule
-  populated; not `git worktree lock`-ed; on its own branch with no rebase, merge, cherry-pick, revert or bisect
-  under way; no `skip-worktree`/`assume-unchanged` file present on disk; and really this repository's worktree, not a
-  directory the role re-initialised with its own `.git`), the directory is renamed to
+  populated; not `git worktree lock`-ed; on an existing branch — not a detached HEAD — with no rebase, merge,
+  cherry-pick, revert or bisect under way; no commit only its own HEAD reflog holds; no `skip-worktree`/`assume-unchanged`
+  file present on disk; and really this repository's worktree, not a directory the role re-initialised with its own
+  `.git`), the directory is renamed to
   `.claustrum/worktrees/.trash-<job>-<random>` and its own registration (`.git/worktrees/<id>`, never a repo-wide
-  `git worktree prune`) is deleted; the trash is then deleted. A Ctrl-C or SIGTERM before the rename leaves the worktree
+  `git worktree prune`: a worktree of yours on an unmounted drive keeps its registration) is deleted; the trash is then
+  deleted. It needs git 2.31 or later, and reads `worktree.useRelativePaths` registrations. A Ctrl-C or SIGTERM before the rename leaves the worktree
   intact and the run ends `cancelled`; after it, only trash and perhaps a registration the next `--branch` run or
   `jobs clean` drops. A SIGKILL is the same. A worktree that fails a check is a refusal naming it, with `--branch`
   failing as the holder's `left in place (…)`; resolve what it names (commit, switch back, finish or abort the
@@ -171,9 +173,10 @@ backend, or it skips with "no model alias … resolves to this backend".
   The first Ctrl-C or SIGTERM stops the sweep (exit 130); a worktree not yet renamed stays intact, and
   the next `jobs clean` finishes any trash. A worktree with anything uncommitted — new files included,
   whatever `status.showUntrackedFiles` says (a commit the runner could not make, a hard-killed run)
-  — or one Claustrum will not remove (a populated submodule, a `git worktree lock`-ed one, one on a detached HEAD or
-  another branch than its job's, one mid-rebase/merge/cherry-pick, one with a `skip-worktree`/`assume-unchanged` file
-  on disk, or a directory that is no longer this repository's worktree) — is printed as `could not
+  — or one Claustrum will not remove (a populated submodule, a `git worktree lock`-ed one, one on a detached HEAD, one
+  mid-rebase/merge/cherry-pick, one whose HEAD reflog holds commits no ref contains (an amend or reset; a rebase whose
+  commits the branch carries again passes), one with a `skip-worktree`/`assume-unchanged` file on disk, or a directory
+  that is no longer this repository's worktree) — is printed as `could not
   remove <job>: <path> left in place: <reason>` and exits 1. Commit or discard what is in it, then
   rerun. Only `<cwd>/.claustrum/worktrees` is swept: a `coordinate` architect's worktree holds its
   builders' under its own, and is left in place (`it holds job worktrees of its own …`) until
@@ -853,7 +856,8 @@ created. Budget ledgers live beside them under `budget/<tree>/`.
 | `warnings[]`: "work left uncommitted: <path> has unresolved conflicts on <branch> — resolve or abort the operation inside the worktree, then commit there yourself" | the role left conflicted paths on its own branch — a cherry-pick, revert, `stash pop`/`apply`, `merge --squash` or `apply --3way` stopped on a conflict — and `git add -A` would have committed their conflict markers as the resolution | nothing was committed; `changed_files`/`diff` are what changed in that worktree. In `<path>`, `git status` names the paths: fix them and `git add` them, or abort what made them (`git cherry-pick --abort`, `git revert --abort`, `git reset --merge` for the others — a conflicted `stash pop` keeps its stash); then commit inside it |
 | `warnings[]`: "receipt delta unavailable, snapshot kept: …" | after the runner's commit, git could not read the branch's tip or diff it against the run's starting commit (a git past its 30 s bound) | `commit`, when set, is right and nothing is left to commit; `changed_files`/`diff` are the snapshot from before the commit, which can miss what the role committed itself — read the branch (`git log -p <branch>`) |
 | `jobs clean`: "could not remove <job>: <path> left in place: …" | that worktree has uncommitted changes (new files included), or a populated submodule | commit or discard them (`git -C <path> status --untracked-files=all`), then rerun; `git worktree remove --force <path>` only once you know what it drops |
-| `jobs clean`: "… left in place: it is on a detached HEAD / on refs/heads/<other> / has a rebase in progress / is marked skip-worktree or assume-unchanged / is not this repository's worktree" (and `--branch`'s "which was left in place (…)" for the same) | the finished worktree holds something a delete would lose: commits on a detached HEAD or another branch, an operation in progress, edits git is told to hide, or a `.git` the role replaced with its own repository | open the worktree and resolve it (put the commits on a branch, switch back, finish or abort the operation, `git update-index --no-skip-worktree`/`--no-assume-unchanged` then look at the file; for a re-initialised directory move its repository out), then rerun; nothing was moved or deleted |
+| `jobs clean`: "… left in place: it is on a detached HEAD / its HEAD names … which does not exist / has a rebase in progress / its HEAD reflog holds N commits that no branch, tag or other ref contains / is marked skip-worktree or assume-unchanged / is not this repository's worktree" (and `--branch`'s "which was left in place (…)" for the same) | the finished worktree holds something a delete would lose: commits on a detached HEAD or a branch that is not there, an operation in progress, commits only its reflog remembers (the pre-amend or pre-reset ones), edits git is told to hide, or a `.git` the role replaced with its own repository | open the worktree and resolve it (put the commits on a branch, switch to one, finish or abort the operation; for reflog-only commits `git -C <path> branch <name> <sha>` keeps one, `git -C <path> reflog expire --expire-unreachable=now HEAD` drops them; `git update-index --no-skip-worktree`/`--no-assume-unchanged` then look at the file; for a re-initialised directory move its repository out), then rerun; nothing was moved or deleted |
+| `jobs clean` / `--branch`: "… left in place: it needs git 2.31 or later" | the installed git predates `git rev-parse --path-format=absolute`, which the ownership check of a free reads | upgrade git to 2.31 or later; nothing was moved or deleted |
 | `jobs clean`: "`.claustrum/worktrees` resolves outside the working directory …" (exit 2) | `.claustrum` is a symlink leaving the repo | replace the link with a real directory; `jobs clean` touches nothing through one |
 | `jobs clean`: "`<path>` freed, but … (trash at …; `claustrum jobs clean` removes it)" / `--branch` warning | the worktree directory was moved aside and is safe, but deleting its registration or the trash failed | rerun `claustrum jobs clean`; it finishes the trash and the registration |
 | `jobs clean`: "… left in place: it holds job worktrees of its own under …" | a `coordinate` architect's worktree still holds its builders' worktrees | `claustrum jobs clean --cwd <that worktree>` first (the message names it), then rerun |

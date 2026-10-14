@@ -33,8 +33,8 @@ public static class JobsCommands
         Command clean = new(
             "clean",
             "Remove finished isolated jobs' worktrees (docs/PLAN.md §D4); their branches, which carry the work, are kept. "
-                + "A worktree with uncommitted changes, off its branch, mid-rebase/merge/cherry-pick, with edits hidden by skip-worktree or "
-                + "assume-unchanged, or that is not this repository's worktree is reported and left in place, and so is one holding job worktrees "
+                + "A worktree with uncommitted changes, on a detached HEAD, mid-rebase/merge/cherry-pick, holding commits only its own reflog has, "
+                + "with edits hidden by skip-worktree or assume-unchanged, or that is not this repository's worktree is reported and left in place, and so is one holding job worktrees "
                 + "of its own (a coordinate architect's: clean it with --cwd <that worktree> first). The first Ctrl-C or SIGTERM lets the remove in "
                 + "flight finish and stops the sweep (exit 130); a second one exits at once.") { cleanCwd };
         clean.SetAction(async parseResult => await CleanAsync(parseResult.GetValue(cleanCwd)));
@@ -203,8 +203,8 @@ public static class JobsCommands
             // finding). Report it and keep going.
             try
             {
-                string branch = RecordedBranch(jobsRoot, jobId) ?? JobWorktree.BranchFor(jobId);
-                string? warning = await JobWorktree.RemoveAsync(cwd, jobId, branch, cancel.Token);
+                string branch = await JobWorktree.HeadBranchAsync(cwd, jobId, cancel.Token) ?? JobWorktree.BranchFor(jobId);
+                string? warning = await JobWorktree.RemoveAsync(cwd, jobId, cancel.Token);
                 Console.WriteLine($"removed {jobId} (branch {branch} kept)");
                 if (warning is not null)
                     Console.Error.WriteLine($"warning: {warning}");
@@ -233,29 +233,6 @@ public static class JobsCommands
         // Exit 1 when anything was left behind so a script does not read a partial sweep as a full
         // one; the worktrees that did come off are still gone.
         return failures.Count == 0 ? ExitCodes.Ok : ExitCodes.BackendFailure;
-    }
-
-    // A `--branch` job's worktree is on the branch it was given, not claustrum/<its id> (#63); its
-    // receipt says which. Null for a job with no readable result.json, or one written before #60.
-    private static string? RecordedBranch(string jobsRoot, string jobId)
-    {
-        string resultPath = Path.Combine(jobsRoot, jobId, "result.json");
-        if (!File.Exists(resultPath))
-            return null;
-
-        try
-        {
-            using JsonDocument document = JsonDocument.Parse(File.ReadAllText(resultPath));
-            return document.RootElement.ValueKind == JsonValueKind.Object
-                && document.RootElement.TryGetProperty("branch", out JsonElement branch)
-                && branch.ValueKind == JsonValueKind.String
-                    ? branch.GetString()
-                    : null;
-        }
-        catch (Exception ex) when (ex is JsonException or IOException)
-        {
-            return null;
-        }
     }
 
     // Exporting a tree id makes docs/PLAN.md §D4's ledger permanent: spend accumulates across
