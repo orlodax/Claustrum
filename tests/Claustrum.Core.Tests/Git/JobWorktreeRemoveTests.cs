@@ -183,21 +183,21 @@ public sealed class JobWorktreeRemoveTests : IDisposable
     }
 
     // A worktree that is no longer on its branch cannot be proved untouched, and since the 2026-10-14 review a free
-    // refuses it too (its commits on the other branch are not the job's to judge): left in place, nothing deleted.
+    // refuses a detached HEAD (its commits belong to no branch): left in place, nothing deleted. A switch to another
+    // existing branch no longer refuses (that branch keeps the commits).
     [Fact]
-    public async Task AnAbandonedWorktreeOffItsBranchIsLeftInPlaceAndNoBranchIsDeletedAsync()
+    public async Task AnAbandonedWorktreeOnADetachedHeadIsLeftInPlaceAndNoBranchIsDeletedAsync()
     {
         string repo = scratch.CreateSeededRepo();
         JobWorktreeInfo worktree = await JobWorktree.AddAsync(repo, "job-1", Ct);
-        GitRepo.Run(worktree.Path, "switch", "-q", "-c", "other");
+        GitRepo.Run(worktree.Path, "switch", "-q", "--detach");
 
         Exception? failure = await JobWorktree.TryRemoveAbandonedAsync(repo, worktree, Ct);
 
         Assert.IsType<InvalidOperationException>(failure);
-        Assert.Contains("refs/heads/other, not claustrum/job-1", failure.Message, StringComparison.Ordinal);
+        Assert.Contains("detached HEAD", failure.Message, StringComparison.Ordinal);
         Assert.True(Directory.Exists(worktree.Path));
         Assert.Contains("claustrum/job-1", GitRepo.Branches(repo));
-        Assert.Contains("other", GitRepo.Branches(repo));
     }
 
     // #63: a `--branch` run was handed its branch; whatever happens to the run, the branch outlives it.

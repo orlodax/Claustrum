@@ -3926,10 +3926,9 @@ git drops the lock before it runs the hook.
   was gone. A concurrent run's add in progress is safe: git locks an incomplete worktree
   `initializing` so that prune skips it.
   - ⚠ prune is repository-wide. An unlocked worktree of the operator's whose directory is missing —
-    on an unmounted drive, say — is unregistered by any `--branch` run or an add whose undo's remove
-    failed, not three months later by `git gc`. `git worktree lock` keeps it, as git's documentation
-    advises for removable media. Not narrowed to Claustrum's own entries: telling one from a stale
-    foreign entry would need the realpath of a directory that no longer exists.
+    on an unmounted drive, say — was unregistered by any `--branch` run or an add whose undo's remove
+    failed. **Gone since 2026-10-14 (found by review, T1 "Remediation, round 2" below):** both now release
+    only the one admin entry of a Claustrum job worktree path, never a repo-wide prune.
   - ⚠ A remove killed while the `.git` file still exists stayed registered with part of its files gone, and
     prune leaves that. Since #106 (redone 2026-10-13) Claustrum no longer runs `git worktree remove` on a
     finished job's worktree, so it cannot make one; see "A cancel during the free" below. Left over from before:
@@ -3968,7 +3967,7 @@ git drops the lock before it runs the hook.
     the terminal's SIGINT/SIGTERM before the token is cancelled, throws `WorktreeInterruptedException` (an
     `OperationCanceledException`, so the engine's catch makes a `cancelled` receipt). Before the rename the
     worktree is intact; after it, there is trash and possibly a dangling admin entry, which the next
-    `--branch` free (it prunes first) or `jobs clean` finishes. SIGKILL is the same two states. Nothing is
+    `--branch` free (it releases that one entry first) or `jobs clean` finishes. SIGKILL is the same two states. Nothing is
     left both registered and half-deleted.
   - **`jobs clean`** installs `CancelSignalHandler` like `run` and sweeps `.trash-*` first (each trash's own
     leftover entry is dropped, never a repo-wide prune, which would also unregister an operator's stale entry,
@@ -3994,17 +3993,14 @@ git drops the lock before it runs the hook.
        scoped prune, so the free deletes only the admin dir it recorded before the rename, then confirms with
        `worktree list`. The sweep drops a trash's own leftover entry the same way (`ReleaseTrashEntryAsync`: the
        trash's `.git` names it, it is deleted only when it is this repo's, names a top that no longer exists and
-       whose name the trash was made from). `FreeBranchAsync`'s initial `worktree prune` **predates 2caa5e8**
-       (post-kill recovery of an earlier, interrupted remove) and is kept as the decision said: ⚠ it is still
-       repo-wide, so the unmounted-worktree hazard above remains on the `--branch` door; `git worktree lock` is the
-       operator's protection.
+       whose name the trash was made from). `FreeBranchAsync`'s initial `worktree prune` was first kept as decided
+       and went in round 2 (below), as did `UndoAddAsync`'s fallback prune.
     3. **MEDIUM, commits and operations.** A worktree on a detached HEAD or another branch than its job's, or with
        a `rebase-merge`, `rebase-apply`, `MERGE_HEAD`, `CHERRY_PICK_HEAD`, `REVERT_HEAD`, `BISECT_LOG` (or
        `sequencer`, a multi-pick's) in its admin dir, is refused. Read from the admin dir and `symbolic-ref -q HEAD`
        through `FreeGitAsync`, not `VerifyAsync`, whose git calls do not map 130/143 and which does not know
-       cherry-pick, revert or bisect. The expected branch is the caller's: `BranchFor(jobId)`, the receipt's `branch`
-       for `jobs clean` (`RemoveAsync(cwd, jobId, branch, ct)`: a `--branch` job's worktree is on its given branch), the
-       holder's branch for `--branch`, `worktree.Branch` for the abandoned undo.
+       cherry-pick, revert or bisect. (The first cut also required the expected branch, the caller's; round 2 below
+       dropped that: any existing branch passes.)
     4. **MEDIUM, hidden edits.** `ls-files -v -z`: any entry tagged lower case (assume-unchanged) or `S`
        (skip-worktree) that exists on disk refuses; absent `S` files (a sparse checkout) pass. Mirrors
        `ArchitectWorktree.HiddenAsync`.
@@ -4023,6 +4019,50 @@ git drops the lock before it runs the hook.
        under the 30 s bound. HEAD: `ls-tree -z HEAD` (top level) for the names that case-fold to `.claustrum`, then
        `ls-tree -r -z HEAD -- <those names>`. Index: one `ls-files -s -z -- ':(icase).claustrum'`, which lists only what
        is under it (measured: matches `.Claustrum/briefs/l`), rather than a names pass then a second call.
+
+  - **Remediation, round 2 (found by review, 2026-10-14; a second blind review reproduced each).**
+    1. **MEDIUM, a repo-wide prune survived** in `FreeBranchAsync` (every `--branch` run) and `UndoAddAsync` (after a
+       failed add) and dropped an unmounted operator worktree, its detached commit and staged index with it. Neither
+       prunes now: `ReleaseDeadEntryAsync` deletes the one `<common>/worktrees/<id>` whose `gitdir` names the
+       holder's `.git`, and only when that `.git` is gone, the entry is not `locked` (as prune), and the holder's
+       parent is this cwd's `.claustrum/worktrees` (compared as typed and as git spells it: `JobsDirectoriesAsync`).
+       A holder in any other place, or an operator's unmounted worktree anywhere, is left registered and the branch
+       refused as someone else's (the refusal carries the release's failure when there was one).
+    2. **MEDIUM, `worktree.useRelativePaths=true`** (git 2.48) writes the admin `gitdir` relative
+       (`../../../.claustrum/worktrees/job-2/.git`); read against the process directory, every free was refused.
+       Every read of it (`TryReadGitdir`) now resolves with `Path.GetFullPath(content, adminDir)`, and the trash's
+       `.git` against the trash. `--path-format=absolute` is git 2.31's; an older git echoes the flag back as an
+       answer, which is detected in the output (no `git --version` process) and refused with `it needs git 2.31 or
+       later`. Simulated with a `git` wrapper that echoes the flag; no real 2.30 was run.
+    3. **LOW-MEDIUM, `jobs clean` refused `--branch` jobs without a readable receipt**: it fell back to
+       `claustrum/<id>`, and the remedy named a branch that did not exist. The rule is now: refuse only a detached HEAD
+       or a HEAD naming a ref that does not exist (`show-ref --verify`); any existing branch's commits are in the
+       shared refs. `RemoveAsync` lost its branch parameter, and `RecordedBranch` (the receipt parse) is gone:
+       `jobs clean` says which branch it kept by reading HEAD (`HeadBranchAsync`).
+    4. **LOW, a planted `.trash-*`** unregistered another worktree (an unmounted absolute-path one, or a live
+       relative-path one) and a FIFO `.trash-q/.git` hung `jobs clean`. `ReleaseTrashEntryAsync` now also requires
+       that the entry's top lived in the trash's own directory, resolves relative paths (item 2), and reads `.git`
+       and `gitdir` through `PlainFile.TryReadAllText`: a refusal skips the entry and is reported (`could not
+       sweep …/.trash-q: …/.git was not read`); the trash with the FIFO stays. Same for the `gitdir` read in the
+       ownership proof.
+    5. **LOW, `SweepTrashAsync`'s `worktree list` was outside the try**: a `TimeoutException` or `Win32Exception`
+       aborted `jobs clean`. It is a returned failure now ("never a throw").
+    6. **LOW, commits only in the worktree's HEAD reflog were lost** with its admin dir (`logs/HEAD` is per
+       worktree: a `commit --amend`, `reset` or `rebase` leaves them). `DanglingReflogAsync` refuses: `log -g
+       --format=%H HEAD` lists the reflog's commits, `rev-list --parents <shas> --not --all --` keeps those outside
+       every ref (from the worktree itself: `--all` includes its own HEAD, which the branch check has just proved
+       names an existing branch, so it adds nothing the branch ref does not). Bounded: the shas go in chunks of 100
+       (Windows' 32 KB command line), and the output is the dangling commits only. ⚠ **The documented recipe
+       (rebase inside the builder's worktree, fast-forward, `jobs clean`) leaves the pre-rebase commits dangling**,
+       and the refusal as decided broke `CoordinateIntegrationRecipeEndToEndTests`. A commit the branch carries again
+       under another sha is not lost: `git cherry HEAD <tip>` per dangling tip (a chain's newest commit; at most 20
+       tips, the rest count as lost) marks `- <sha>` the ones whose patch the branch already holds, and a merge is never
+       listed so stays lost. A rebase with conflict resolution, or an amend that changed content, changes the patch
+       and is refused: `git branch <name> <sha>` keeps the commit, `git reflog expire --expire-unreachable=now HEAD`
+       (run in the worktree) discards the dangling ones. Not covered: a repository with `core.logAllRefUpdates=false`
+       has no reflog to read.
+    Pinned by the existing `JobWorktreeUndoTests` (the failed-forced-remove case now keeps the stale entry),
+    `JobWorktreeRemoveTests` (a detached HEAD refuses; another existing branch no longer does).
 
 ### The job's own worktree off its branch keeps its snapshot (review T3, 2026-10-08)
 

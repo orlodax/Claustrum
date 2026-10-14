@@ -87,11 +87,11 @@ public sealed class JobWorktreeUndoTests : IDisposable
 
     // The failing remove: a hook that deletes the new worktree's `.git` file makes `worktree remove -f -f`
     // exit 128 ("validation failed … '.git' does not exist", measured), which leaves the entry registered
-    // `prunable`. Only then does the undo prune — and the prune, being repository-wide, takes the unrelated
-    // stale entry with it. The directory git could not remove is reported as left behind, the branch is
+    // `prunable`. Only then does the undo release it — its own entry alone (review 2026-10-14: the repo-wide prune took
+    // the unrelated stale entry with it). The directory git could not remove is reported as left behind, the branch is
     // deleted once nothing holds it.
     [Fact]
-    public async Task APruneRunsWhenTheForcedRemoveFailedAndTheDirectoryItCouldNotRemoveIsReportedAsync()
+    public async Task TheFailedForcedRemoveReleasesOnlyTheRunsOwnEntryAndTheDirectoryItCouldNotRemoveIsReportedAsync()
     {
         string repo = scratch.CreateSeededRepo();
         string stale = Path.Combine(scratch.CreateDirectory(), "stale");
@@ -102,7 +102,9 @@ public sealed class JobWorktreeUndoTests : IDisposable
         InvalidOperationException ex = await Assert.ThrowsAsync<InvalidOperationException>(() => JobWorktree.AddAsync(repo, "job-1", Ct));
 
         Assert.Contains($"left behind: {JobWorktree.PathFor(repo, "job-1")}", ex.Message, StringComparison.Ordinal);
-        Assert.Single(GitRepo.WorktreePaths(repo));
+        string[] names = [.. GitRepo.WorktreePaths(repo).Select(path => Path.GetFileName(path))];
+        Assert.Contains("stale", names);
+        Assert.DoesNotContain("job-1", names);
         Assert.DoesNotContain("claustrum/job-1", GitRepo.Branches(repo));
         Assert.True(Directory.Exists(JobWorktree.PathFor(repo, "job-1")));
     }
