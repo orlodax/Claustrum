@@ -186,7 +186,9 @@ public sealed class JobWorktreeFreeTests : IDisposable
     {
         (string repo, JobWorktreeInfo first) = await FinishedAsync();
         JobWorktreeInfo second = await JobWorktree.AddAsync(repo, "job-2", Ct);
-        File.WriteAllText(Path.Combine(first.Path, ".git"), $"gitdir: {AdminOf(second.Path)}\n");
+        string dotGit = Path.Combine(first.Path, ".git");
+        File.SetAttributes(dotGit, FileAttributes.Normal); // git for Windows marks the .git file hidden, which refuses a write
+        File.WriteAllText(dotGit, $"gitdir: {AdminOf(second.Path)}\n");
 
         string message = await RefusalAsync(repo);
 

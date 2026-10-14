@@ -126,6 +126,13 @@ public sealed class ArchitectWorktreeFenceTests : IDisposable
     [Fact]
     public async Task ADifferentlyCasedClaustrumDirectoryIsStillFoundAsync()
     {
+        // A differently cased .claustrum is a separate directory only on a case-sensitive filesystem; elsewhere it is .claustrum.
+        if (OperatingSystem.IsWindows() || OperatingSystem.IsMacOS())
+        {
+            Assert.Skip("on a case-insensitive filesystem .Claustrum is .claustrum, which the lowercase cases cover.");
+            return;
+        }
+
         CommitLink(".Claustrum/notes/link");
 
         Assert.Contains(".Claustrum/notes/link", await RefusalAsync(), StringComparison.Ordinal);
@@ -183,6 +190,13 @@ public sealed class ArchitectWorktreeFenceTests : IDisposable
     [Fact]
     public async Task GitLiteralPathspecsInTheEnvironmentGivesTheSameAnswerAsync()
     {
+        // A differently cased .claustrum is a separate directory only on a case-sensitive filesystem; elsewhere it is .claustrum.
+        if (OperatingSystem.IsWindows() || OperatingSystem.IsMacOS())
+        {
+            Assert.Skip("on a case-insensitive filesystem .Claustrum is .claustrum, which the lowercase cases cover.");
+            return;
+        }
+
         CommitLink(".Claustrum/notes/link");
         string? previous = Environment.GetEnvironmentVariable("GIT_LITERAL_PATHSPECS");
         Environment.SetEnvironmentVariable("GIT_LITERAL_PATHSPECS", "1");

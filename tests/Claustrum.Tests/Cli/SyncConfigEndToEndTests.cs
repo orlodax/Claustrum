@@ -67,10 +67,14 @@ public sealed class SyncConfigEndToEndTests : IDisposable
     {
         WriteConfig(/*lang=json,strict*/ """{"models":{"frontier-coding":"claude:repo-only-model"}}""");
 
-        CliResult result = await RunAsync("sync", "--global", "--only", "claude", "--roles", "builder");
+        // On Windows the home folder comes from the shell API, not HOME: without CLAUDE_CONFIG_DIR this wrote to the
+        // runner's real ~/.claude (PR #109 CI, 2026-10-14).
+        string claudeDir = Path.Combine(cli.Home, ".claude");
+        CliResult result = await cli.RunAsync(["sync", "--global", "--only", "claude", "--roles", "builder"], "", emptyPath,
+            new Dictionary<string, string?> { ["CLAUDE_CONFIG_DIR"] = claudeDir, ["OPENCODE_CONFIG_DIR"] = null, ["XDG_CONFIG_HOME"] = null });
 
         Assert.Equal(ExitCodes.Ok, result.ExitCode);
-        string agent = Path.Combine(cli.Home, ".claude", "agents", "builder.md");
+        string agent = Path.Combine(claudeDir, "agents", "builder.md");
         Assert.True(File.Exists(agent), result.Stdout + result.Stderr);
         Assert.Equal("opus", ModelOf(agent));
     }
