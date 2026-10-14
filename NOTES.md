@@ -4998,7 +4998,8 @@ with its real path printed: run sync from the directory that owns `.claude`. A t
 **landing directory** (the leaf's parent) resolves outside the root is refused: `SyncWriter.Write` puts it
 in `SyncAccumulator.Refused` (path → real path) and returns, recording nothing else (not foreign, not
 written, no manifest entry). `--force` does not override and every `SyncMode` behaves the same. The CLI
-lists them under `refused (resolves outside the repo; sync never writes through a link that leaves it):`
+lists them under `refused (sync never writes through a link that leaves the repo, nor into a pipe or socket):`
+(the wording since 2026-10-14, when a pipe or socket target joined the same list)
 and exits 2 in write, `--dry-run` and `--check` alike (`init` finishes, then exits 2). `Directory.CreateDirectory`
 is fenced with the same check, and so are the JSON targets and `.claustrum/sync-manifest.json`: in `sync`
 an escaping `.claustrum` is refused in every mode, before the directory or the file exists
@@ -5631,11 +5632,16 @@ byte-identically; `ApiHouseRulesTests` pins that against an empty cwd.
   `ConfigException`. `IPlatform.ReadAllText` is unchanged.
 - **Left alone on purpose.** `--brief-file`, `--file` and `cast create --answers` take a path the user typed on
   the command line, and `<(cmd)` / `/dev/stdin` are pipes: refusing non-seekable input there would break a
-  legitimate way to feed them. They block only if the user names a FIFO nobody writes to. Also `sync`'s own reads
-  of generated files (`SyncWriter`, `SyncCommand.ExistingContent`, `McpConfigSync`, `SyncManifestStore`) and
-  `InitCommand`: not touched by this slice, so a FIFO at a generated path still blocks them (open, not done).
+  legitimate way to feed them. They block only if the user names a FIFO nobody writes to.
   Job-directory files are Claustrum's own. `git status`/`git diff HEAD` returned promptly with a tracked FIFO
   (smoke on Linux, git 2.x); the snapshot's mtime/size scan only stats.
+- **`sync` and `init`.** `PlainFile.TryReadAllText` is the read for every in-repo file they open. `SyncWriter` and
+  `McpConfigSync` put a non-regular target in `Refused` (value = the reason; `--force` does not change it, a write
+  to a FIFO would block as well), `SyncManifestStore.Read` does the same for the manifest (so `Update` skips it),
+  and `SyncCommand.ExistingContent` just has no old text to diff. `init` prints `refused (<reason>)` for
+  `.gitignore` and `AGENTS.md` and exits 2; `claustrum.json` is covered by `Config` above. The `refused` header of
+  `sync` still says "resolves outside the repo": the listed `path → not a regular file ...` line carries the real
+  reason, and the header is pinned by `SyncLinkedDirectoryEndToEndTests`.
 - **A socket.** open(2) on a Unix socket fails with ENXIO (Linux, macOS, FreeBSD) or EOPNOTSUPP (macOS 102,
   FreeBSD 45) before `CanSeek` is reached; both now take the same `not a regular file` refusal as a FIFO.
 - **`.git` on Windows.** `IsGitDirName` cuts a segment at the first `:` before trimming dots and spaces, so

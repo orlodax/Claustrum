@@ -2,6 +2,7 @@ using System.CommandLine;
 using System.Text;
 using System.Text.Json;
 using Claustrum.Core.Config;
+using Claustrum.Core.IO;
 using Claustrum.Roles.Sync;
 
 namespace Claustrum.Cli;
@@ -74,7 +75,8 @@ public static class InitCommand
 
         string gitignorePath = Path.Combine(cwd, ".gitignore");
         string? gitignoreEscape = Refusal(root, gitignorePath);
-        bool updatedGitignore = gitignoreEscape is null && EnsureGitignoreEntries(gitignorePath);
+        string? gitignoreUnreadable = null;
+        bool updatedGitignore = gitignoreEscape is null && EnsureGitignoreEntries(gitignorePath, out gitignoreUnreadable);
 
         // "claude" is always synced, --all or not: its Sync is the one that merges the claustrum MCP
         // server into .mcp.json/.vscode/mcp.json, which every host that reads those two files picks
@@ -83,16 +85,17 @@ public static class InitCommand
         string[] harnesses = all ? ["claude", "opencode", "copilot", "cursor"] : DetectHarnesses(cwd);
 
         Console.WriteLine($"claustrum.json: {Status(configEscape, wroteConfig ? "written" : "already present, left unchanged")}");
-        Console.WriteLine($".gitignore: {Status(gitignoreEscape, updatedGitignore ? "updated" : "already up to date")}");
-        bool refused = scaffoldEscape is not null || configEscape is not null || gitignoreEscape is not null;
+        Console.WriteLine($".gitignore: {Status(gitignoreEscape, gitignoreUnreadable, updatedGitignore ? "updated" : "already up to date")}");
+        bool refused = scaffoldEscape is not null || configEscape is not null || gitignoreEscape is not null || gitignoreUnreadable is not null;
         foreach (string harness in harnesses)
             refused |= SyncHarness(harness, cwd, config);
 
         string agentsPath = Path.Combine(cwd, "AGENTS.md");
         string? agentsEscape = Refusal(root, agentsPath);
-        bool appendedAgentsMd = agentsEscape is null && AppendAgentsMdPointer(agentsPath);
-        Console.WriteLine($"AGENTS.md: {Status(agentsEscape, appendedAgentsMd ? "pointer appended" : "unchanged")}");
-        refused |= agentsEscape is not null;
+        string? agentsUnreadable = null;
+        bool appendedAgentsMd = agentsEscape is null && AppendAgentsMdPointer(agentsPath, out agentsUnreadable);
+        Console.WriteLine($"AGENTS.md: {Status(agentsEscape, agentsUnreadable, appendedAgentsMd ? "pointer appended" : "unchanged")}");
+        refused |= agentsEscape is not null || agentsUnreadable is not null;
 
         return refused ? ExitCodes.Usage : ExitCodes.Ok;
     }
@@ -119,6 +122,10 @@ public static class InitCommand
     private static string RefusedStatus(string escapesTo) => $"refused (resolves outside the repo → {escapesTo})";
 
     private static string Status(string? escapesTo, string outcome) => escapesTo is null ? outcome : RefusedStatus(escapesTo);
+
+    // `unreadable` is PlainFile's reason for a file that is not a regular one (a FIFO there would block the read).
+    private static string Status(string? escapesTo, string? unreadable, string outcome) =>
+        unreadable is null ? Status(escapesTo, outcome) : $"refused ({unreadable})";
 
     private static string[] DetectHarnesses(string cwd)
     {
@@ -195,15 +202,18 @@ public static class InitCommand
         return true;
     }
 
-    private static bool EnsureGitignoreEntries(string path)
+    private static bool EnsureGitignoreEntries(string path, out string? unreadable)
     {
+        unreadable = null;
         if (!File.Exists(path))
         {
             File.WriteAllText(path, GitignoreBlock + "\n");
             return true;
         }
 
-        string existing = File.ReadAllText(path);
+        if (!PlainFile.TryReadAllText(path, out string? existing, out unreadable))
+            return false;
+
         string[] missing = [.. gitignoreEntries.Where(entry => !existing.Contains(entry, StringComparison.Ordinal))];
         if (missing.Length == 0)
             return false;
@@ -218,12 +228,15 @@ public static class InitCommand
         return true;
     }
 
-    private static bool AppendAgentsMdPointer(string path)
+    private static bool AppendAgentsMdPointer(string path, out string? unreadable)
     {
+        unreadable = null;
         if (!File.Exists(path))
             return false;
 
-        string existing = File.ReadAllText(path);
+        if (!PlainFile.TryReadAllText(path, out string? existing, out unreadable))
+            return false;
+
         if (existing.Contains(AgentsMdMarker, StringComparison.Ordinal))
             return false;
 

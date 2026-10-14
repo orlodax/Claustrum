@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Claustrum.Core.IO;
 using Claustrum.Roles.Model;
 
 namespace Claustrum.Roles.Sync;
@@ -38,7 +39,19 @@ internal static class McpConfigSync
             return;
         }
 
-        JsonObject root = File.Exists(path) ? ParseExisting(path) : target.RootOnCreate?.DeepClone().AsObject() ?? [];
+        JsonObject root;
+        if (File.Exists(path))
+        {
+            if (!PlainFile.TryReadAllText(path, out string? text, out string? refusal))
+            {
+                into.Refused[path] = refusal;
+                return;
+            }
+
+            root = ParseExisting(path, text);
+        }
+        else
+            root = target.RootOnCreate?.DeepClone().AsObject() ?? [];
 
         JsonObject section = root[target.SectionKey] as JsonObject ?? [];
         JsonNode? existingEntry = section["claustrum"];
@@ -96,12 +109,12 @@ internal static class McpConfigSync
     // default, strict JsonDocumentOptions threw an uncaught JsonException here (review finding #1)
     // that named neither the file nor the cause, and — because the JSON merge runs after every
     // Markdown target — left the sync half-applied with the manifest never updated.
-    private static JsonObject ParseExisting(string path)
+    private static JsonObject ParseExisting(string path, string text)
     {
         JsonDocumentOptions options = new() { CommentHandling = JsonCommentHandling.Skip, AllowTrailingCommas = true };
         try
         {
-            return JsonNode.Parse(File.ReadAllText(path), documentOptions: options) as JsonObject
+            return JsonNode.Parse(text, documentOptions: options) as JsonObject
                 ?? throw new RoleRenderException($"'{path}' does not contain a JSON object");
         }
         catch (JsonException exception)

@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Runtime.InteropServices;
 using Microsoft.Win32.SafeHandles;
 
@@ -55,6 +56,25 @@ public static partial class PlainFile
         stream.Dispose();
         refusal = NotRegular;
         return null;
+    }
+
+    /// <summary>
+    /// The whole file as text (UTF-8, BOM honoured, like <see cref="File.ReadAllText(string)"/>), or false with the
+    /// reason in <paramref name="refusal"/> when <see cref="OpenRead"/> refuses it.
+    /// </summary>
+    public static bool TryReadAllText(string path, [NotNullWhen(true)] out string? text, [NotNullWhen(false)] out string? refusal)
+    {
+        using FileStream? stream = OpenRead(path, out refusal);
+        if (stream is null)
+        {
+            text = null;
+            refusal ??= NotRegular;
+            return false;
+        }
+
+        using StreamReader reader = new(stream);
+        text = reader.ReadToEnd();
+        return true;
     }
 
     /// <summary>
