@@ -194,7 +194,7 @@ public static class DelegateEngine
             {
                 exists = await JobWorktree.BranchExistsAsync(request.Cwd, branch, cancellationToken);
             }
-            catch (OperationCanceledException ex) when (cancellationToken.IsCancellationRequested)
+            catch (OperationCanceledException ex) when (cancellationToken.IsCancellationRequested || ex is WorktreeInterruptedException)
             {
                 return await Runner.RefuseAsync(job, role, RunStatus.Cancelled, ex.Message);
             }

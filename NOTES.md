@@ -3958,9 +3958,9 @@ git drops the lock before it runs the hook.
     `Directory.Move`. Refused with the reason, worktree intact, if it throws (Windows open handles,
     permissions). The sibling needs no fence of its own: the engine fenced that directory for the worktree
     itself (#104) and the trash is no further out.
-  - **`git worktree prune`** (five-minute repo-code bound, under the run's token): the admin entry's gitdir now
-    points nowhere, so it is dropped. `worktree list --porcelain` then must not show the worktree; if it still
-    does, the directory is moved back and the free is refused with the reason.
+  - **Drop the admin entry.** Written as a `git worktree prune`; since the 2026-10-14 review (below) it is that
+    one entry's directory (`<common>/worktrees/<id>`) deleted directly. `worktree list --porcelain` then must
+    not show the worktree; if it still does, the free is *completed with a warning*, not refused.
   - **Delete the trash** recursively under no token. A failure or kill leaves trash, which can never hold
     work (the checks proved the tree clean and nobody works in a `.trash-*`); a failed delete is a **warning**
     (`JobWorktreeInfo.FreeWarning` into the receipt for `--branch`; a `warning:` line for `jobs clean`).
@@ -3970,9 +3970,9 @@ git drops the lock before it runs the hook.
     worktree is intact; after it, there is trash and possibly a dangling admin entry, which the next
     `--branch` free (it prunes first) or `jobs clean` finishes. SIGKILL is the same two states. Nothing is
     left both registered and half-deleted.
-  - **`jobs clean`** installs `CancelSignalHandler` like `run` and sweeps `.trash-*` first (then prunes, only if it
-    found some: a repo-wide prune on every sweep would also unregister an operator's stale entry, and
-    `ARegisteredWorktreeNamedLikeAProbe…` pins that one stays).
+  - **`jobs clean`** installs `CancelSignalHandler` like `run` and sweeps `.trash-*` first (each trash's own
+    leftover entry is dropped, never a repo-wide prune, which would also unregister an operator's stale entry,
+    and `ARegisteredWorktreeNamedLikeAProbe…` pins that one stays).
   - **Residual.** A user deleting files in a worktree is irrelevant now: nothing is ever forced, so the
     checks re-run on every attempt. `TryRemoveAbandonedAsync` (a worktree Claustrum just made and which
     provably holds nothing) alone keeps `git worktree remove --force`, and returns a cancel as its failure value
@@ -3982,6 +3982,47 @@ git drops the lock before it runs the hook.
     only trash (SIGKILL: 45,552 / 37,693 / 19,174 / 5,334 files of 50,004 left in the trash) plus, once
     (SIGINT in the prune), a registered entry whose directory was gone; each retry succeeded and `jobs clean`
     swept the trash. Never a half-deleted registered worktree.
+  - **Remediation, found by review (2026-10-14; a blind review reproduced every item below).** The rule stays
+    "nothing lost": a finished worktree holding any work is never destroyed.
+    1. **HIGH, a replaced `.git`.** A role that ran `mv .git x; git init; …commit` left a directory the admin
+       entry still listed, so the checks passed and the free deleted the role's only repository. git's own
+       `validate_worktree` would have refused. `CheckFreeableAsync` now requires that `rev-parse --path-format=absolute
+       --git-common-dir` there is the cwd repo's (same real path), `--git-dir` is `<common>/worktrees/<id>`, and that
+       admin dir's `gitdir` file names `<top>/.git`; else "not this repository's worktree", left in place.
+    2. **MEDIUM, the repo-wide prune.** Every free ran `git worktree prune`, which dropped an unrelated user
+       worktree whose directory was merely unmounted (its staged index and detached commit gone). git has no
+       scoped prune, so the free deletes only the admin dir it recorded before the rename, then confirms with
+       `worktree list`. The sweep drops a trash's own leftover entry the same way (`ReleaseTrashEntryAsync`: the
+       trash's `.git` names it, it is deleted only when it is this repo's, names a top that no longer exists and
+       whose name the trash was made from). `FreeBranchAsync`'s initial `worktree prune` **predates 2caa5e8**
+       (post-kill recovery of an earlier, interrupted remove) and is kept as the decision said: ⚠ it is still
+       repo-wide, so the unmounted-worktree hazard above remains on the `--branch` door; `git worktree lock` is the
+       operator's protection.
+    3. **MEDIUM, commits and operations.** A worktree on a detached HEAD or another branch than its job's, or with
+       a `rebase-merge`, `rebase-apply`, `MERGE_HEAD`, `CHERRY_PICK_HEAD`, `REVERT_HEAD`, `BISECT_LOG` (or
+       `sequencer`, a multi-pick's) in its admin dir, is refused. Read from the admin dir and `symbolic-ref -q HEAD`
+       through `FreeGitAsync`, not `VerifyAsync`, whose git calls do not map 130/143 and which does not know
+       cherry-pick, revert or bisect. The expected branch is the caller's: `BranchFor(jobId)`, the receipt's `branch`
+       for `jobs clean` (`RemoveAsync(cwd, jobId, branch, ct)`: a `--branch` job's worktree is on its given branch), the
+       holder's branch for `--branch`, `worktree.Branch` for the abandoned undo.
+    4. **MEDIUM, hidden edits.** `ls-files -v -z`: any entry tagged lower case (assume-unchanged) or `S`
+       (skip-worktree) that exists on disk refuses; absent `S` files (a sparse checkout) pass. Mirrors
+       `ArchitectWorktree.HiddenAsync`.
+    5. **MEDIUM-LOW, Ctrl-C before the free.** `BranchExistsAsync` and the tip read after the free went through plain
+       `GitProcess`, so a terminal SIGINT read as "no such branch" (`failed`, exit 1). Both use `FreeGitAsync` now;
+       the engine's pre-gate `BranchExists` catch also accepts `WorktreeInterruptedException`. `FreeGitAsync` maps 131
+       (SIGQUIT) too, as `CancelSignalHandler` treats it as a cancel.
+    6. **LOW, a false "left in place".** Once the directory is moved, a failure to drop the entry or confirm it
+       is not a refusal and the directory is not moved back (its admin dir may be half deleted): `TryFreeAsync` returns
+       the warning `<path> freed, but … (trash at …; `claustrum jobs clean` removes it)` and the trash stays for the
+       sweep. `--branch` goes on to the add, which reports git's own refusal if the branch is still held.
+    7. **LOW, the sweep.** `SweepTrashAsync` skips (and reports) any `.trash-*` that `worktree list` lists, matched by
+       tail, and sweeps nothing if the list fails. `jobs clean` asks `SyncRoot.Repo(cwd).Escapes(.claustrum/worktrees)`
+       first and exits 2 if so (Core cannot see `SyncRoot`).
+    8. **LOW, `coordinate`'s tracked-link read.** `ls-tree -r HEAD` and `ls-files -s` walked the whole repository
+       under the 30 s bound. HEAD: `ls-tree -z HEAD` (top level) for the names that case-fold to `.claustrum`, then
+       `ls-tree -r -z HEAD -- <those names>`. Index: one `ls-files -s -z -- ':(icase).claustrum'`, which lists only what
+       is under it (measured: matches `.Claustrum/briefs/l`), rather than a names pass then a second call.
 
 ### The job's own worktree off its branch keeps its snapshot (review T3, 2026-10-08)
 

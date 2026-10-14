@@ -95,11 +95,17 @@ claustrum run <role> [--brief <text> | --brief-file <path|->]
   any other) with the reason — and the holder, if any — in `error`, and no worktree left behind
   (`error` names anything the undo could not remove). The free of the previous job's worktree never
   uses `git worktree remove`: once Claustrum's own checks pass (clean, new files included; no submodule
-  populated; not `git worktree lock`-ed), the directory is renamed to `.claustrum/worktrees/.trash-<job>-<random>`
-  and `git worktree prune` drops its registration; the trash is then deleted. A Ctrl-C or SIGTERM before the
-  rename leaves the worktree intact and the run ends `cancelled`; after it, only trash and a registration the
-  next `--branch` run or `jobs clean` prunes. A SIGKILL is the same. A trash directory that would not delete
-  is a `warnings` entry on the receipt, never a failure; nothing is ever forced.
+  populated; not `git worktree lock`-ed; on its own branch with no rebase, merge, cherry-pick, revert or bisect
+  under way; no `skip-worktree`/`assume-unchanged` file present on disk; and really this repository's worktree, not a
+  directory the role re-initialised with its own `.git`), the directory is renamed to
+  `.claustrum/worktrees/.trash-<job>-<random>` and its own registration (`.git/worktrees/<id>`, never a repo-wide
+  `git worktree prune`) is deleted; the trash is then deleted. A Ctrl-C or SIGTERM before the rename leaves the worktree
+  intact and the run ends `cancelled`; after it, only trash and perhaps a registration the next `--branch` run or
+  `jobs clean` drops. A SIGKILL is the same. A worktree that fails a check is a refusal naming it, with `--branch`
+  failing as the holder's `left in place (…)`; resolve what it names (commit, switch back, finish or abort the
+  operation, clear the mark) and retry. A trash directory that would not delete, or a registration git still lists
+  after the rename (`<path> freed, but … (trash at …; `claustrum jobs clean` removes it)`), is a `warnings` entry on
+  the receipt, never a failure: the free completed. Nothing is ever forced.
 - `--stream` echoes the backend's output to **stderr** while it runs; stdout still carries only
   the final document. `--raw` adds the backend's untouched response under `raw`.
 - Without `--json`, stdout gets `status:`, then `branch:`/`worktree:`/`commit:` when the run was
@@ -156,13 +162,17 @@ backend, or it skips with "no model alias … resolves to this backend".
 - `show`: the receipt (`result.json`), or the request if it has not finished.
 - `logs`: the captured stdout (readable while the job runs); `--stderr` for the other stream.
 - `clean`: removes the **worktrees** of finished isolated jobs; their branches stay, with the work
-  committed on them. It never forces: a clean worktree is renamed to a `.trash-*` sibling, its registration
-  pruned and the trash deleted, and the sweep first deletes any `.trash-*` an earlier interrupted free left
-  (`swept N leftover trash directories`; a trash that will not delete is a `warning:` line, not a failure).
+  committed on them. It never forces: a clean worktree is renamed to a `.trash-*` sibling, its own registration
+  deleted and the trash deleted, and the sweep first deletes any `.trash-*` an earlier interrupted free left,
+  with the one registration each may still have (`swept N leftover trash directories`; a trash that will not delete,
+  or that git still lists as a worktree, is a `warning:` line, not a failure and not deleted). If `.claustrum`
+  is a link that leaves the working directory, `jobs clean` refuses before touching anything (exit 2).
   The first Ctrl-C or SIGTERM stops the sweep (exit 130); a worktree not yet renamed stays intact, and
   the next `jobs clean` finishes any trash. A worktree with anything uncommitted — new files included,
   whatever `status.showUntrackedFiles` says (a commit the runner could not make, a hard-killed run)
-  — or one Claustrum will not remove (a populated submodule, a `git worktree lock`-ed one) — is printed as `could not
+  — or one Claustrum will not remove (a populated submodule, a `git worktree lock`-ed one, one on a detached HEAD or
+  another branch than its job's, one mid-rebase/merge/cherry-pick, one with a `skip-worktree`/`assume-unchanged` file
+  on disk, or a directory that is no longer this repository's worktree) — is printed as `could not
   remove <job>: <path> left in place: <reason>` and exits 1. Commit or discard what is in it, then
   rerun. Only `<cwd>/.claustrum/worktrees` is swept: a `coordinate` architect's worktree holds its
   builders' under its own, and is left in place (`it holds job worktrees of its own …`) until
@@ -537,7 +547,7 @@ job, a job this `CLAUSTRUM_HOME` has no directory for (one run under another hom
 refused with the holder named. Runs on one branch never overlap: a second `--branch` run on it waits
 for the first one's receipt (up to its `--timeout`), then takes the branch over from the finished
 worktree. `claustrum jobs clean` removes the worktrees of finished jobs, never with `--force` (it renames a
-clean one aside and prunes it, as `--branch` does), and keeps the branches. Its first Ctrl-C or SIGTERM
+clean one aside and deletes its registration, as `--branch` does), and keeps the branches. Its first Ctrl-C or SIGTERM
 stops the sweep (exit 130); a second one exits at once.
 
 ## 10. Budget
@@ -837,6 +847,9 @@ created. Budget ledgers live beside them under `budget/<tree>/`.
 | `warnings[]`: "work left uncommitted: <path> has unresolved conflicts on <branch> — resolve or abort the operation inside the worktree, then commit there yourself" | the role left conflicted paths on its own branch — a cherry-pick, revert, `stash pop`/`apply`, `merge --squash` or `apply --3way` stopped on a conflict — and `git add -A` would have committed their conflict markers as the resolution | nothing was committed; `changed_files`/`diff` are what changed in that worktree. In `<path>`, `git status` names the paths: fix them and `git add` them, or abort what made them (`git cherry-pick --abort`, `git revert --abort`, `git reset --merge` for the others — a conflicted `stash pop` keeps its stash); then commit inside it |
 | `warnings[]`: "receipt delta unavailable, snapshot kept: …" | after the runner's commit, git could not read the branch's tip or diff it against the run's starting commit (a git past its 30 s bound) | `commit`, when set, is right and nothing is left to commit; `changed_files`/`diff` are the snapshot from before the commit, which can miss what the role committed itself — read the branch (`git log -p <branch>`) |
 | `jobs clean`: "could not remove <job>: <path> left in place: …" | that worktree has uncommitted changes (new files included), or a populated submodule | commit or discard them (`git -C <path> status --untracked-files=all`), then rerun; `git worktree remove --force <path>` only once you know what it drops |
+| `jobs clean`: "… left in place: it is on a detached HEAD / on refs/heads/<other> / has a rebase in progress / is marked skip-worktree or assume-unchanged / is not this repository's worktree" (and `--branch`'s "which was left in place (…)" for the same) | the finished worktree holds something a delete would lose: commits on a detached HEAD or another branch, an operation in progress, edits git is told to hide, or a `.git` the role replaced with its own repository | open the worktree and resolve it (put the commits on a branch, switch back, finish or abort the operation, `git update-index --no-skip-worktree`/`--no-assume-unchanged` then look at the file; for a re-initialised directory move its repository out), then rerun; nothing was moved or deleted |
+| `jobs clean`: "`.claustrum/worktrees` resolves outside the working directory …" (exit 2) | `.claustrum` is a symlink leaving the repo | replace the link with a real directory; `jobs clean` touches nothing through one |
+| `jobs clean`: "`<path>` freed, but … (trash at …; `claustrum jobs clean` removes it)" / `--branch` warning | the worktree directory was moved aside and is safe, but deleting its registration or the trash failed | rerun `claustrum jobs clean`; it finishes the trash and the registration |
 | `jobs clean`: "… left in place: it holds job worktrees of its own under …" | a `coordinate` architect's worktree still holds its builders' worktrees | `claustrum jobs clean --cwd <that worktree>` first (the message names it), then rerun |
 | `fatal: '<branch>' is already used by worktree at '…'` on `git rebase` | a builder's branch is still checked out in its worktree | `git -C <worktree> rebase <work branch>`, then `git merge --ff-only <branch>` on the work branch (§9) |
 | `status: budget_exceeded` in milliseconds | admission refused it, nothing spent | read `error` — the four routes in §10 |
