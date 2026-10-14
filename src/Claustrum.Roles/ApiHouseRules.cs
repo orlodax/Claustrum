@@ -1,5 +1,4 @@
 using System.Text;
-using Claustrum.Core.Git;
 using Claustrum.Core.IO;
 using Claustrum.Roles.Sync;
 
@@ -32,8 +31,12 @@ internal static class ApiHouseRules
         string root = Path.GetFullPath(cwd);
         SyncRoot fence = SyncRoot.Repo(root);
         StringBuilder builder = new(houseRules.Replace(ReadInstruction, InlineInstruction, StringComparison.Ordinal));
-        RuleRoot rules = new(fence.RealPath, OpenedFilePath.RootSpelling(fence));
-        if (anchor is not null)
+        // The worktree's own spelling is computed only without an anchor: on Windows it opens the path and follows links,
+        // which for an isolated run would reach a share before the anchor refuses it (#105; review 2026-10-14).
+        RuleRoot rules;
+        if (anchor is null)
+            rules = new(fence.RealPath, OpenedFilePath.RootSpelling(fence));
+        else
         {
             (RuleRoot? anchored, string warning, string reason) = Anchor(anchor, root);
             if (anchored is null)
@@ -54,30 +57,29 @@ internal static class ApiHouseRules
         return builder.ToString();
     }
 
-    // The root a run was promised (#55, review 2026-10-14): the job's directory under the main checkout, resolved through
-    // links that stay inside the repository (#104 accepts `.claustrum -> .cache/claustrum`). The walk from `/` over this
-    // already link-free path then proves there is no link at open time. A link that leaves the repository is refused here;
-    // a worktree path that does not resolve to it was swapped or planted.
+    // The root a run was promised (#55, review 2026-10-14): `.claustrum/worktrees` under the main checkout, resolved through
+    // links that stay inside the repository (#104 accepts `.claustrum -> .cache/claustrum`), plus the job id NOT resolved,
+    // so a linked job directory (to the repo root, another job, `.git`) is "not the job's worktree" (second review). The
+    // walk from `/` over this link-free path then proves there is no link at open time.
     private static (RuleRoot? Root, string Warning, string Reason) Anchor(RulesAnchor anchor, string worktree)
     {
         SyncRoot main = SyncRoot.Repo(anchor.MainCheckout);
-        string expected = SyncRoot.Resolve(JobWorktree.PathFor(main.RealPath, anchor.JobId), out bool unplaced);
-        if (unplaced || main.Escapes(expected))
-            return (null, $"the job's worktree directory resolves to {expected}, outside the repository {main.RealPath}", "the job's worktree directory resolves outside the repository");
-
-        string resolved = SyncRoot.Resolve(worktree, out bool unresolved);
         StringComparison comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        string trimmed = Path.TrimEndingDirectorySeparator(main.RealPath);
+        string worktrees = SyncRoot.Resolve(Path.Combine(main.RealPath, ".claustrum", "worktrees"), out bool unplaced);
+        string? below = worktrees.StartsWith(trimmed + Path.DirectorySeparatorChar, comparison) ? worktrees[(trimmed.Length + 1)..] : null;
+        if (unplaced || main.Escapes(worktrees) || below is null
+            || below.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar).Any(PlainFile.IsGitDirName))
+            return (null, $"the job's worktrees directory resolves to {worktrees}, outside the repository {main.RealPath}", "the job's worktree directory resolves outside the repository");
+
+        string expected = Path.Combine(worktrees, anchor.JobId);
+        string resolved = SyncRoot.Resolve(worktree, out bool unresolved);
         if (unresolved || !resolved.Equals(expected, comparison))
             return (null, $"the worktree {worktree} resolves to {resolved}, not the job's worktree {expected}", "the worktree path is not the job's worktree");
 
-        // Windows judges the handle's final path against the MAIN checkout's, never a spelling recomputed from the
-        // worktree path (a junction swapped in at the job's directory would be followed). Below the main checkout is
-        // `expected`'s own relative part, or the plain `.claustrum\worktrees\<job>` where it cannot be cut.
-        string trimmed = Path.TrimEndingDirectorySeparator(main.RealPath);
-        string below = expected.StartsWith(trimmed + Path.DirectorySeparatorChar, comparison)
-            ? expected[(trimmed.Length + 1)..]
-            : Path.Combine(".claustrum", "worktrees", anchor.JobId);
-        return (new(expected, OpenedFilePath.RootSpelling(main.RealPath, below)), "", "");
+        // Windows judges the handle's final path against the MAIN checkout's spelling plus this relative part, never a
+        // spelling recomputed from the worktree path (a junction swapped in at the job's directory would be followed).
+        return (new(expected, OpenedFilePath.RootSpelling(main.RealPath, Path.Combine(below, anchor.JobId))), "", "");
     }
 
     private static string Inline(string name, string path, SyncRoot fence, RuleRoot rules, List<string> warnings)
