@@ -55,8 +55,8 @@ internal static class ApiHouseRules
                 return $"### {name} (not inlined: it is not a regular file)";
             }
 
-            // Open first, then ask the OS where the handle lands: a link swapped in after the check above is what this catches.
-            if (Unfit(stream, fence) is { } problem)
+            // Open first, then prove where the handle lands: a link swapped in after the check above is what this catches.
+            if (Unfit(stream, path, fence) is { } problem)
             {
                 warnings.Add($"{name} not inlined: {problem}");
                 return $"### {name} (not inlined: its real path is not a Markdown file inside the working directory)";
@@ -85,9 +85,9 @@ internal static class ApiHouseRules
 
     // Why the opened file may not be inlined, or null. Inside the fence, a regular file named *.md, with no `.git`
     // component below the root (`AGENTS.md -> .git/config` carries a CI token): the same rules for a plain file and a link.
-    private static string? Unfit(FileStream stream, SyncRoot fence)
+    private static string? Unfit(FileStream stream, string path, SyncRoot fence)
     {
-        string? real = OpenedFilePath.TryGet(stream.SafeFileHandle);
+        string? real = OpenedFilePath.TryGet(stream.SafeFileHandle, path);
         string? root = OpenedFilePath.RootSpelling(fence);
         if (real is null || root is null)
             return "the real path of the opened file could not be determined";

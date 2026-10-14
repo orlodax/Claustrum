@@ -5696,18 +5696,30 @@ byte-identically; `ApiHouseRulesTests` pins that against an empty cwd.
   path fence: a fork PR commits `AGENTS.md -> .git/config`, which holds `GITHUB_TOKEN` under `actions/checkout`, and
   it went to OpenRouter in the system prompt. (2) The path check and `File.OpenRead` were two steps; measured, 230
   of 3000 renders read a secret swapped in between. Now the string fence stays as a cheap pre-filter (it keeps a
-  clearly outside or network path from being opened at all), the file is opened, and `OpenedFilePath.TryGet` asks the
-  OS for the handle's real path, which must lie under the fence root and be a seekable file named `*.md` with no
+  clearly outside or network path from being opened at all), the file is opened, and `OpenedFilePath.TryGet` yields
+  the opened file's real path, which must lie under the fence root and be a seekable file named `*.md` with no
   `.git` component below the root (case-insensitive on Windows). The same rule holds for a plain file and a link,
   so nothing depends on a "is it a link" read that could itself be raced. Where the path cannot be determined,
   nothing is inlined and the receipt says so (fail closed).
-- **How the handle is asked.** Linux: `readlink /proc/self/fd/<fd>` (`FileInfo.LinkTarget`). Windows:
-  `GetFinalPathNameByHandleW` with the DOS name, stripped of `\\?\` like `WindowsFinalPath`; the root is spelled by
-  `WindowsFinalPath.TryResolve`, so both sides are the OS's. macOS: **not `fcntl(F_GETPATH)`, a deviation**: `fcntl` is
-  variadic and on Apple arm64 variadic arguments go on the stack, which a `[LibraryImport]` cannot do, so the buffer
-  pointer would be read from the wrong place. `proc_pidfdinfo(PROC_PIDFDVNODEPATHINFO)` is not variadic; its
-  struct is 24 + 152 + 1024 bytes with the path at offset 176, and anything but a full fill is "cannot say". The
-  macOS layout is from `<sys/proc_info.h>` and **not run on a Mac**; other Unixes cannot say and so inline nothing.
+- **How the handle is judged (reworked 2026-10-14, #110).** Windows: `GetFinalPathNameByHandleW` with the DOS name,
+  stripped of `\\?\` like `WindowsFinalPath`; the root is spelled by `WindowsFinalPath.TryResolve`, so both sides are the
+  OS's. **Unix, Linux and macOS alike: not "ask the OS for the handle's path" but "prove the handle IS the file at
+  the expected path".** `SyncRoot.Resolve(path)` gives the fully resolved path, the rules above are applied to that
+  string, and `PlainFile.IsSameFile` compares `(device, inode)` of `fstat` on the opened handle with `stat` on the
+  resolved path, both through the runtime's shim (`SystemNative_FStat` / `SystemNative_Stat`, `libSystem.Native`,
+  linked into the AOT binary). `FileStatus` is the same on every OS: `Dev` (int64) at offset 88 and `Ino` (int64) at 104,
+  read off `FileStatus` in dotnet/runtime `src/native/libs/System.Native/pal_io.h` (release/10.0: Flags 0, Mode 4,
+  Uid 8, Gid 12, Size 16, five time pairs to 88) and checked on Linux (same file, hard link and link to it true; another file,
+  a missing path, `/dev/null` false). Anything that fails, or differs, is "cannot say", so nothing is inlined. This
+  replaced `/proc/self/fd` (Linux) and a `proc_pidfdinfo(PROC_PIDFDVNODEPATHINFO)` struct of 1200 bytes with the
+  path at offset 176 that had been written from memory and never run on a Mac (it failed closed, so api inlining
+  could never have worked there: #110, closed). Still not `fcntl(F_GETPATH)`: it is variadic and on Apple arm64
+  variadic arguments go on the stack, which a `[LibraryImport]` cannot do. The swap race stays closed: a swap before
+  the open makes the resolved path (computed after the open) and the handle name different files, or a path outside
+  the fence; a swap after the open cannot change what the handle reads. `Resolve` runs on both sides of the stat
+  and must agree, so a link flipped in between is "cannot say". Residual, theoretical: an attacker who can already
+  write links in the repo and win four timed swaps in microseconds. Not run on a Mac (CI has no macOS leg); the
+  shim's layout is the same there by construction. Other Unixes use the same shim.
   The P/Invokes are AOT-clean (`LibraryImport`; the linux-x64 publish has no IL2026/IL3050).
 - **Isolated runs inline the branch's rules (2026-10-13, review finding 4).** `Prepare` renders with `request.Cwd`, the
   main checkout, so an isolated api run (`--branch`, or `max_parallel >= 2`) used to get the working copy's rules, not
@@ -5788,7 +5800,7 @@ byte-identically; `ApiHouseRulesTests` pins that against an empty cwd.
   (append). In place, so the mode is kept and a read-only directory with a writable file still works (#84): temp +
   rename was rejected for that reason. A missing file is created first by .NET with `FileMode.CreateNew` (O_EXCL, so a
   FIFO or a link is never opened by it), because `open(2)`'s creation mode is variadic and Apple arm64 passes
-  variadics on the stack (see the `proc_pidfdinfo` note): umask applies as for `File.WriteAllText`. Used by
+  variadics on the stack (see "How the handle is judged"): umask applies as for `File.WriteAllText`. Used by
   `CastStore.Save`, `SyncWriter`, `McpConfigSync`, `SyncManifestStore.Update` (which also re-checks `Refused` after
   its re-read) and init's `claustrum.json`, `.gitignore` and `AGENTS.md` writes (all `Append`, so a file that appeared
   since the check is never truncated). The check-then-write gap closes because the check is on the write handle. A
@@ -5800,7 +5812,10 @@ byte-identically; `ApiHouseRulesTests` pins that against an empty cwd.
   check before the `FileStream`): `mkdir .gitignore && claustrum init` prints `.gitignore: refused (…)`, exit 2.
   `init`'s `claustrum.json` presence check reads the existing file through `PlainFile.OpenRead`, so a FIFO there is
   `claustrum.json: refused (…)` (exit 2) with or without a git root, not `already present` (a git root loaded it, and
-  refused it, earlier).
+  refused it, earlier). An unreadable one (`chmod 000`, 2026-10-14, #112) is the same refusal: `PlainFile` throws
+  `UnauthorizedAccessException`, which `init`'s presence check turns into `claustrum.json: refused (cannot be read: <reason>)`
+  (exit 2) when no git root loaded it, and `Config.ReadDocument` into a `ConfigException` `'<path>': cannot be read: <reason>`
+  (exit 2, names the file) when one did; before, the git-root case fell through to the generic `error:` (exit 1) too.
 - **`backends doctor --probe`** reads the repo MCP configs through `TryReadAllText` and prints `present, not a
   regular file`. `init`'s summary line says `refused (outside the repo, or a pipe, socket or device)`.
 - **MCP `files`** are read through `ReadRegularFileText` (`RunRequest.AttachmentsMustBeRegular`, set by

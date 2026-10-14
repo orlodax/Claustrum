@@ -249,8 +249,21 @@ public sealed class Config
     private static ConfigDocument ReadDocument(IPlatform platform, string path)
     {
         // A repo's claustrum.json swapped for a FIFO would block here forever (review 2026-10-13).
-        string json = platform.ReadRegularFileText(path, out string? refusal)
-            ?? throw new ConfigException($"'{path}': {refusal}");
+        string? json;
+        string? refusal;
+        try
+        {
+            json = platform.ReadRegularFileText(path, out refusal);
+        }
+        catch (Exception e) when (e is UnauthorizedAccessException or IOException)
+        {
+            // An unreadable file (chmod 000) is a named refusal, exit 2, not a generic error (#112).
+            throw new ConfigException($"'{path}': cannot be read: {e.Message}", e);
+        }
+
+        if (json is null)
+            throw new ConfigException($"'{path}': {refusal}");
+
         try
         {
             ConfigDocument? document = JsonSerializer.Deserialize(json, ClaustrumJsonContext.Default.ConfigDocument);

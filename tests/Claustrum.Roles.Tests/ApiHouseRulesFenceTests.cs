@@ -146,7 +146,7 @@ public sealed class ApiHouseRulesFenceTests : IDisposable
         Assert.Contains("### AGENTS.md (not inlined: it is not a regular file)", rendered.SystemBody, StringComparison.Ordinal);
     }
 
-    // OpenedFilePath asks the OS about the handle: an opened symlink answers with the target's real path, never the link's own.
+    // OpenedFilePath proves where the handle lands: an opened symlink answers with the target's real path, never the link's own.
     [Fact]
     public void TheOpenedPathOfASymlinkIsTheTargetsRealPath()
     {
@@ -155,7 +155,7 @@ public sealed class ApiHouseRulesFenceTests : IDisposable
         LinkFixtures.FileLink(link, target);
 
         using FileStream stream = new(link, FileMode.Open, FileAccess.Read);
-        string? opened = OpenedFilePath.TryGet(stream.SafeFileHandle);
+        string? opened = OpenedFilePath.TryGet(stream.SafeFileHandle, link);
 
         Assert.NotNull(opened);
         Assert.EndsWith(Path.Combine("real", "target.md"), opened, OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
