@@ -203,4 +203,24 @@ public sealed class JobsCleanTrashEndToEndTests : IDisposable
         Assert.True(File.Exists(Path.Combine(admin, "index")), "the unmounted worktree's entry and staged index must survive");
         Assert.Contains("drive", TestGit.WorktreePaths(repo.Repo).Select(Path.GetFileName));
     }
+
+    [Fact]
+    public async Task ATrashLeftByAKilledFreeIsSweptWithItsRegistrationWhenCleanIsGivenALinkedCwdAsync()
+    {
+        string link = Path.Combine(Directory.CreateTempSubdirectory("claustrum-clean-link-").FullName, "repo-link");
+        TestLinks.CreateDirectoryLink(link, repo.Repo);
+        string worktree = Path.Combine(Worktrees, "20261014-000000-killedfree");
+        repo.Git("worktree", "add", "-q", "-b", "claustrum/20261014-000000-killedfree", worktree);
+        string admin = TestGit.Run(worktree, "rev-parse", "--path-format=absolute", "--git-dir");
+        string trash = Path.Combine(Worktrees, ".trash-20261014-000000-killedfree-12345678");
+        Directory.Move(worktree, trash);
+
+        CliResult result = await repo.RunAsync("jobs", "clean", "--cwd", link);
+
+        Assert.Equal(ExitCodes.Ok, result.ExitCode);
+        Assert.Contains("swept 1 leftover trash directory", Lf(result.Stdout), StringComparison.Ordinal);
+        Assert.False(Directory.Exists(trash));
+        Assert.False(Directory.Exists(admin));
+        Assert.DoesNotContain("killedfree", string.Join('\n', TestGit.WorktreePaths(repo.Repo)), StringComparison.Ordinal);
+    }
 }

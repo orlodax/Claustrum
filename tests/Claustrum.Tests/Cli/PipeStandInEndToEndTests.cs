@@ -166,6 +166,45 @@ public sealed class PipeStandInEndToEndTests : IDisposable
     }
 
     [Fact]
+    public async Task InitWithAFifoClaustrumJsonAndNoGitRootRefusesItExitingTwoAndTheFifoStaysAsync()
+    {
+        string path = Path.Combine(cli.Cwd, "claustrum.json");
+        PipeFiles.MakeFifo(path);
+
+        CliResult result = await cli.RunAsync(["init"], "", null);
+
+        Assert.Equal(ExitCodes.Usage, result.ExitCode);
+        Assert.Contains("claustrum.json: refused (", Lf(result.Stdout), StringComparison.Ordinal);
+        Assert.Contains("not a regular file", Lf(result.Stdout), StringComparison.Ordinal);
+        Assert.True(File.Exists(Path.Combine(cli.Cwd, ".gitignore")), "the other steps still complete");
+        Assert.NotNull(StillAPipe(path));
+    }
+
+    [Fact]
+    public async Task InitWithARegularClaustrumJsonStillSaysAlreadyPresentAsync()
+    {
+        File.WriteAllText(Path.Combine(cli.Cwd, "claustrum.json"), /*lang=json,strict*/ """{"models":{}}""");
+
+        CliResult result = await cli.RunAsync(["init"], "", null);
+
+        Assert.Equal(ExitCodes.Ok, result.ExitCode);
+        Assert.Contains("claustrum.json: already present, left unchanged", Lf(result.Stdout), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task InitWithADirectoryNamedGitignoreRefusesItExitingTwoAsync()
+    {
+        Directory.CreateDirectory(Path.Combine(cli.Cwd, ".gitignore"));
+
+        CliResult result = await cli.RunAsync(["init"], "", null);
+
+        Assert.Equal(ExitCodes.Usage, result.ExitCode);
+        Assert.Contains(".gitignore: refused (", Lf(result.Stdout), StringComparison.Ordinal);
+        Assert.True(Directory.Exists(Path.Combine(cli.Cwd, ".gitignore")));
+        Assert.DoesNotContain("Unhandled", result.Stderr, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task InitInARepositoryWithAFifoClaustrumJsonExitsTwoAndTheFifoStaysAsync()
     {
         cli.MarkAsGitRoot();
