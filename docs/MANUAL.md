@@ -153,7 +153,8 @@ merged configuration with the layer each value came from (`[Builtin]`, `[User]`,
 `[Env]`, `[Flag]`). `--probe` adds auth presence (never a value), MCP registration, OS/path
 checks, and **one paid request per installed backend**, capped at $0.50 each, run through the
 cheapest configured alias that resolves to that backend; `CLAUSTRUM_SKIP_PROBE=1` turns the paid
-part into a named skip. The probe needs a `claustrum.json` at the git root whose aliases reach the
+part into a named skip. A repo MCP config that is not a regular file is reported `present, not a regular
+file` and never read. The probe needs a `claustrum.json` at the git root whose aliases reach the
 backend, or it skips with "no model alias … resolves to this backend".
 
 ### `claustrum jobs list | show <id> | logs <id> [--stderr] | clean [--cwd] | budget <tree> [--reset]`
@@ -210,7 +211,12 @@ generate; a rerun reports "already present, left unchanged".
 Every write is fenced to the current directory, as in `sync` (§12): a `.claustrum`, `claustrum.json`,
 `.gitignore` or `AGENTS.md` that resolves outside it through a committed link is reported
 `refused (resolves outside the repo → <real path>)`, nothing is read or written there, and `init` exits 2
-at the end. The harness syncs still run.
+at the end. The harness syncs still run. A file there that is a pipe, a socket or a device (a FIFO from
+`mkfifo`, a committed link to `/dev/zero`) is never opened for reading or writing: it is reported
+`refused (<reason>)` and `init` exits 2. The same holds for every repo file Claustrum reads or writes in
+place (§12 sync targets, casts, `claustrum.json`): the type is checked on the opened file, and a read stops
+at 8 MiB (`not a regular file or too large`). Paths you type on the command line (`--file`, `--brief-file`,
+`--answers`) stay readable as pipes; the MCP `files` argument does not.
 
 ### `claustrum mcp [--cwd <dir>]`
 
@@ -686,7 +692,7 @@ its target. Hard links are not detected: a hard-linked marked file is written in
 
 In repo mode a target whose directory resolves outside the directory sync runs in (the current directory;
 a committed `.claude -> ../../.claude`, say, or a monorepo subdirectory whose `.claude` links upward) is **refused**: it is listed under `refused
-(sync never writes through a link that leaves the repo, nor into a pipe or socket):` with its real path, nothing
+(sync never writes through a link that leaves the repo, nor into a pipe, socket or device):` with its real path, nothing
 is written or created there, and the command exits 2 in write, `--dry-run` and `--check`; `--force` does
 not override. The `.claustrum` manifest and the JSON MCP targets follow the same rule, and a JSON target
 that is a link resolving inside that directory is merged through. The fence covers reads too: a local role

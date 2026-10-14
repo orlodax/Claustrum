@@ -93,7 +93,13 @@ internal static class McpConfigSync
             string? directory = Path.GetDirectoryName(path);
             if (directory is { Length: > 0 })
                 Directory.CreateDirectory(directory);
-            File.WriteAllText(path, content);
+
+            // Checked on the write handle: a FIFO swapped in since the read above must not block this write.
+            if (!PlainFile.TryWriteAllText(path, content, FileMode.Create, out string? writeRefusal))
+            {
+                into.Refused[path] = writeRefusal;
+                return;
+            }
         }
         else
         {

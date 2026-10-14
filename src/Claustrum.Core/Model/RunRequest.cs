@@ -14,4 +14,7 @@ public sealed record RunRequest(
     string? ResumeSession,
     string[] AttachFiles,
     Dictionary<string, string> Env,
-    bool Stream);
+    bool Stream,
+    // MCP-originated attachments are read as regular files only: a FIFO or a device among them would block a
+    // server call (2026-10-14, found by review). The CLI's --file stays a plain read, so `<(cmd)` works there.
+    bool AttachmentsMustBeRegular = false);

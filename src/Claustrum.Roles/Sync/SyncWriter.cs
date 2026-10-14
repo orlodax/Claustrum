@@ -100,7 +100,12 @@ public sealed class SyncWriter(string harness, string libraryVersion)
                 // In place keeps the file's mode and works in a read-only directory; the marker (or
                 // --force) already proves the file is ours. A hard link is therefore written through:
                 // LinkTarget cannot see one, and that is the accepted limit (NOTES.md, issue #84).
-                File.WriteAllText(path, content);
+                // The type is checked on the write handle, so a FIFO swapped in since the read above is refused too.
+                if (!PlainFile.TryWriteAllText(path, content, FileMode.Create, out string? writeRefusal))
+                {
+                    into.Refused[path] = writeRefusal;
+                    return;
+                }
             }
             else
                 ReplaceLink(path, content);

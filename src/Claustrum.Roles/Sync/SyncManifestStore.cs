@@ -70,6 +70,11 @@ internal static class SyncManifestStore
         // Merging by path (rather than replacing the file) is what lets two harnesses in one
         // `sync --only claude,opencode` run both call this without erasing each other's entries.
         Dictionary<string, SyncManifestFile> merged = Read(cwd, into);
+
+        // The re-read may refuse the manifest (a FIFO swapped in since RefuseIfEscaping): nothing is written then.
+        if (into.Refused.ContainsKey(ManifestPath(cwd)))
+            return;
+
         foreach (SyncManifestFile file in into.ManifestFiles)
             merged[file.Path] = file;
 
@@ -83,7 +88,8 @@ internal static class SyncManifestStore
             .OrderBy(f => f.Path, StringComparer.Ordinal)
             .Select(f => f with { Path = Path.GetRelativePath(cwd, f.Path).Replace('\\', '/') })];
         SyncManifest manifest = new(libraryVersion, portable);
-        File.WriteAllText(ManifestPath(cwd), JsonSerializer.Serialize(manifest, RolesJsonContext.Default.SyncManifest));
+        if (!PlainFile.TryWriteAllText(ManifestPath(cwd), JsonSerializer.Serialize(manifest, RolesJsonContext.Default.SyncManifest), FileMode.Create, out string? writeRefusal))
+            into.Refused[ManifestPath(cwd)] = writeRefusal;
     }
 
     private static string ManifestPath(string cwd) => Path.Combine(cwd, ".claustrum", "sync-manifest.json");

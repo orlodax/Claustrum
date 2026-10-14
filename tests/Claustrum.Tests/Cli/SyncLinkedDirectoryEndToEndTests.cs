@@ -11,7 +11,7 @@ namespace Claustrum.Tests.Cli;
 // spelling) and stdout has `\r\n` folded to `\n`. The dotfiles layout is built under scratch directories, never `~`.
 public sealed partial class SyncLinkedDirectoryEndToEndTests : IDisposable
 {
-    private const string RefusedHeader = "refused (sync never writes through a link that leaves the repo, nor into a pipe or socket):";
+    private const string RefusedHeader = "refused (sync never writes through a link that leaves the repo, nor into a pipe, socket or device):";
 
     private static readonly string agentTail = Path.Combine(".claude", "agents", "builder.md");
     private static readonly string[] resolverVariables =
@@ -244,6 +244,6 @@ public sealed partial class SyncLinkedDirectoryEndToEndTests : IDisposable
         AssertNoCrash(result);
     }
 
-    [GeneratedRegex(@", \d+ refused \(outside the repo\)$")]
+    [GeneratedRegex(@", \d+ refused \(outside the repo, or a pipe, socket or device\)$")]
     private static partial Regex RefusedCount();
 }

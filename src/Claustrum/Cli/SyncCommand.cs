@@ -259,7 +259,7 @@ public static class SyncCommand
             return false;
 
         PrintPaths(
-            "refused (sync never writes through a link that leaves the repo, nor into a pipe or socket)",
+            "refused (sync never writes through a link that leaves the repo, nor into a pipe, socket or device)",
             [.. refused.Select(entry => $"{entry.Key} → {entry.Value}")]);
         return true;
     }

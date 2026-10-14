@@ -455,7 +455,8 @@ public static class DelegateEngine
         ResumeSession: prepared.Request.ResumeSession,
         AttachFiles: prepared.Request.AttachFiles,
         Env: prepared.Request.Env,
-        Stream: prepared.Request.Stream);
+        Stream: prepared.Request.Stream,
+        AttachmentsMustBeRegular: prepared.Request.AttachmentsMustBeRegular);
 
     // The CLI's --permission option already validates against the known set (AcceptOnlyFromAmong)
     // before this ever runs; an MCP caller sending an invalid string is exactly the case this should
