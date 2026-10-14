@@ -23,6 +23,34 @@ public sealed class EnvAllowListTests
         Assert.False(result.ContainsKey("SOME_SECRET_TOKEN"));
     }
 
+    // A nested framework-dependent `claustrum` needs the runtime's location; macOS's TMPDIR is its per-user temp (PR #116).
+    [Theory]
+    [InlineData("DOTNET_ROOT")]
+    [InlineData("DOTNET_ROOT_ARM64")]
+    [InlineData("DOTNET_ROOT_X64")]
+    [InlineData("DOTNET_ROOT(x86)")]
+    [InlineData("TMPDIR")]
+    public void TheRuntimeLocationAndTheTempDirectoryPass(string name)
+    {
+        FakePlatform platform = PlatformWithHostEnv();
+        platform.EnvironmentVariables[name] = "/some/where";
+
+        Dictionary<string, string> result = EnvAllowList.Build(platform, callerEnv: new Dictionary<string, string>(), passthroughAll: false);
+
+        Assert.Equal("/some/where", result[name]);
+    }
+
+    [Fact]
+    public void OtherDotnetVariablesAreStillFilteredOut()
+    {
+        FakePlatform platform = PlatformWithHostEnv();
+        platform.EnvironmentVariables["DOTNET_CLI_TELEMETRY_OPTOUT"] = "1";
+
+        Dictionary<string, string> result = EnvAllowList.Build(platform, callerEnv: new Dictionary<string, string>(), passthroughAll: false);
+
+        Assert.False(result.ContainsKey("DOTNET_CLI_TELEMETRY_OPTOUT"));
+    }
+
     [Fact]
     public void CallerEnvEntryAlwaysPassesEvenIfNotAllowListed()
     {
