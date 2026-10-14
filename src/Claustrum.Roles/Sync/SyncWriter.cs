@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using Claustrum.Core.IO;
 using Claustrum.Roles.Model;
 
 namespace Claustrum.Roles.Sync;
@@ -66,7 +67,12 @@ public sealed class SyncWriter(string harness, string libraryVersion)
         }
         else if (File.Exists(path))
         {
-            string existing = File.ReadAllText(path);
+            // A FIFO would block this read, and a --force write to it too: refused either way, nothing opened for writing.
+            if (!PlainFile.TryReadAllText(path, out string? existing, out string? refusal))
+            {
+                into.Refused[path] = refusal;
+                return;
+            }
 
             // Compare with line endings normalized: a CRLF checkout (core.autocrlf) makes
             // File.ReadAllText return `\r\n` while `content` above is built with plain `\n`, so a

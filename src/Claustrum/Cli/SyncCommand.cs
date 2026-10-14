@@ -1,5 +1,6 @@
 using System.CommandLine;
 using Claustrum.Core.Config;
+using Claustrum.Core.IO;
 using Claustrum.Roles.Sync;
 
 namespace Claustrum.Cli;
@@ -211,7 +212,7 @@ public static class SyncCommand
 
         try
         {
-            return File.Exists(path) ? File.ReadAllText(path) : null;
+            return File.Exists(path) && PlainFile.TryReadAllText(path, out string? text, out _) ? text : null;
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {
@@ -258,7 +259,7 @@ public static class SyncCommand
             return false;
 
         PrintPaths(
-            "refused (resolves outside the repo; sync never writes through a link that leaves it)",
+            "refused (sync never writes through a link that leaves the repo, nor into a pipe or socket)",
             [.. refused.Select(entry => $"{entry.Key} → {entry.Value}")]);
         return true;
     }

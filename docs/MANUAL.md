@@ -676,7 +676,7 @@ its target. Hard links are not detected: a hard-linked marked file is written in
 
 In repo mode a target whose directory resolves outside the directory sync runs in (the current directory;
 a committed `.claude -> ../../.claude`, say, or a monorepo subdirectory whose `.claude` links upward) is **refused**: it is listed under `refused
-(resolves outside the repo; sync never writes through a link that leaves it):` with its real path, nothing
+(sync never writes through a link that leaves the repo, nor into a pipe or socket):` with its real path, nothing
 is written or created there, and the command exits 2 in write, `--dry-run` and `--check`; `--force` does
 not override. The `.claustrum` manifest and the JSON MCP targets follow the same rule, and a JSON target
 that is a link resolving inside that directory is merged through. The fence covers reads too: a local role

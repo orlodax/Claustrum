@@ -33,12 +33,7 @@ public sealed class RealPlatform : IPlatform
 
     public string? ReadRegularFileText(string path, out string? refusal)
     {
-        using FileStream? stream = PlainFile.OpenRead(path, out refusal);
-        if (stream is null)
-            return null;
-
-        using StreamReader reader = new(stream);
-        return reader.ReadToEnd();
+        return PlainFile.TryReadAllText(path, out string? text, out refusal) ? text : null;
     }
 
     private static ClaustrumOs DetectOs()

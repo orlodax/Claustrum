@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Claustrum.Core.IO;
 using Claustrum.Roles.Json;
 using Claustrum.Roles.Model;
 
@@ -23,7 +24,14 @@ internal static class SyncManifestStore
         if (into.Refused.ContainsKey(manifestPath) || !File.Exists(manifestPath))
             return [];
 
-        SyncManifest? existing = JsonSerializer.Deserialize(File.ReadAllText(manifestPath), RolesJsonContext.Default.SyncManifest);
+        // Refused like a manifest that leaves the root: Update skips a refused manifest, so nothing is written through it.
+        if (!PlainFile.TryReadAllText(manifestPath, out string? text, out string? refusal))
+        {
+            into.Refused[manifestPath] = refusal;
+            return [];
+        }
+
+        SyncManifest? existing = JsonSerializer.Deserialize(text, RolesJsonContext.Default.SyncManifest);
         Dictionary<string, SyncManifestFile> byPath = [];
         foreach (SyncManifestFile file in existing?.Files ?? [])
         {
