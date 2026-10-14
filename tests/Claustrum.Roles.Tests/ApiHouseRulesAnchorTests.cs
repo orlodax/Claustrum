@@ -72,7 +72,6 @@ public sealed partial class ApiHouseRulesAnchorTests : IDisposable
     }
 
     [Theory]
-    [InlineData("job")]
     [InlineData("worktrees")]
     [InlineData(".claustrum")]
     public void ALinkThatLeavesTheRepositoryInlinesNothingAndNamesItTwiceWithOneWarning(string place)
@@ -87,9 +86,31 @@ public sealed partial class ApiHouseRulesAnchorTests : IDisposable
         Assert.Contains("outside the repository", warning, StringComparison.Ordinal);
     }
 
+    // The job directory itself is never resolved (second review, 2026-10-14): linked anywhere, in or out of the repository
+    // (the main checkout, another job, .git), it is not the job's worktree and nothing is inlined.
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ALinkedJobDirectoryIsNotTheJobsWorktreeWhereverItPoints(bool inside)
+    {
+        string target = outside;
+        if (inside)
+        {
+            target = Path.Combine(main, ".cache", "claustrum");
+            Directory.CreateDirectory(target);
+        }
+
+        PlantLinkAt("job", target);
+
+        ResolvedRole rewritten = Reread(Anchor);
+
+        Assert.DoesNotContain(Marker, rewritten.SystemPrompt, StringComparison.Ordinal);
+        Assert.Equal(2, CountOf(rewritten.SystemPrompt, NotTheJobHeading));
+        Assert.Contains("not the job's worktree", Assert.Single(rewritten.Warnings ?? []), StringComparison.Ordinal);
+    }
+
     // #104: a dotfiles-style `.claustrum -> .cache/claustrum` stays inside the repository, so the run's own worktree is inlined.
     [Theory]
-    [InlineData("job")]
     [InlineData("worktrees")]
     [InlineData(".claustrum")]
     public void ALinkThatStaysInsideTheRepositoryIsFollowedAndTheRulesAreInlined(string place)
