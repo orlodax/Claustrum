@@ -174,8 +174,13 @@ public static class InitCommand
     private static bool WriteConfigIfAbsent(string path, out string? unwritable)
     {
         unwritable = null;
+
+        // Present means a regular file: a FIFO or a device there is a refusal, not "already present" (no git root loads it to notice).
         if (File.Exists(path))
+        {
+            using FileStream? existing = PlainFile.OpenRead(path, out unwritable);
             return false;
+        }
 
         // docs/PLAN.md §A5: "default model aliases incl. cheap-coding -> opencode:openrouter/
         // deepseek/deepseek-v4-flash, frontier-coding -> claude:opus" — frontier-coding already

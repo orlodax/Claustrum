@@ -53,7 +53,13 @@ public static partial class PlainFile
 
         refusal = null;
         if (UnixFlags(WriteOnly) is not int flags)
-            return new(path, mode, FileAccess.Write);
+        {
+            if (!Directory.Exists(path))
+                return new(path, mode, FileAccess.Write);
+
+            refusal = NotRegular;
+            return null;
+        }
 
         // open(2) takes the creation mode as a variadic, which Apple arm64 passes on the stack where a LibraryImport
         // cannot put it: a missing file is created by .NET (O_EXCL, never through a FIFO) and then opened without O_CREAT.
@@ -61,7 +67,7 @@ public static partial class PlainFile
         {
             new FileStream(path, FileMode.CreateNew, FileAccess.Write).Dispose();
         }
-        catch (IOException) when (File.Exists(path) || new FileInfo(path).LinkTarget is not null)
+        catch (IOException) when (File.Exists(path) || Directory.Exists(path) || new FileInfo(path).LinkTarget is not null)
         {
         }
 
@@ -174,7 +180,9 @@ public static partial class PlainFile
         {
             int errno = Marshal.GetLastPInvokeError();
             handle.Dispose();
-            if (IsSocketErrno(errno))
+
+            // Only a write open of a directory fails with EISDIR (a read open succeeds and fstat refuses it below): a refusal, not an exception.
+            if (IsSocketErrno(errno) || errno == EISDIR)
             {
                 refusal = NotRegular;
                 return null;
@@ -184,7 +192,7 @@ public static partial class PlainFile
             throw errno switch
             {
                 ENOENT => new FileNotFoundException(message, path),
-                EACCES or EISDIR => new UnauthorizedAccessException(message),
+                EACCES => new UnauthorizedAccessException(message),
                 _ => new IOException(message),
             };
         }
