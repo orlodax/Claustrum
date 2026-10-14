@@ -18,6 +18,8 @@ public static class EnvAllowList
         // #57: Claude Code's home (login, CLAUDE.md, agents), so a delegated claude reads the caller's.
         // By exact name: a CLAUDE_ prefix would also forward a parent session's CLAUDE_CODE_* markers.
         "CLAUDE_CONFIG_DIR",
+        // macOS's per-user temp directory; without it a child falls back to the shared /tmp (2026-10-14).
+        "TMPDIR",
     ];
 
     // ⚠ Deliberately no CLAUSTRUM_ prefix (2026-09-21), and `passthroughAll` drops the tree variable
@@ -27,8 +29,11 @@ public static class EnvAllowList
     // (measured: `$0.00 remaining`). `coordinate` hands it down deliberately, on its architect's
     // request env, where caller-supplied values win over both rules (NOTES.md "Tree budget
     // accounting is a file ledger", "coordinate: a spawned architect…").
+    // DOTNET_ROOT (and DOTNET_ROOT_ARM64, _X64, (x86)): a framework-dependent `claustrum` (the dotnet tool) that an agent
+    // runs from inside a backend cannot find a runtime outside the default location without it, and exits printing only an
+    // error (PR #116, first macOS CI run, 2026-10-14: a nested `run builder` under a coordinate architect).
     private static readonly string[] prefixes =
-        ["XDG_", "ANTHROPIC_", "OPENROUTER_", "OPENCODE_", "CURSOR_", "COPILOT_", "NODE_"];
+        ["XDG_", "ANTHROPIC_", "OPENROUTER_", "OPENCODE_", "CURSOR_", "COPILOT_", "NODE_", "DOTNET_ROOT"];
 
     private const string ApiKeySuffix = "_API_KEY";
 
