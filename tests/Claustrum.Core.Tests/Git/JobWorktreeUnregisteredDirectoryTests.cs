@@ -7,9 +7,9 @@ using SystemProcess = System.Diagnostics.Process;
 namespace Claustrum.Core.Tests.Git;
 
 // #108: a `git worktree add` that is killed or fails before git registers the worktree leaves a directory `worktree remove`
-// calls "not a working tree". The undo deletes it, but only when this add made it, it is a job directory of this repository,
-// no link itself, and git lists no worktree there. A script named `git` first on PATH plays the half-done add (it only makes
-// the directory, or sleeps in it) and the listing, and hands everything else to the real git, so the collection runs alone.
+// calls "not a working tree". The add makes the job directory itself, exclusively (a taken path is refused before git runs), and
+// its undo deletes it only when it is a job directory of this repository, no link itself, and git lists no worktree there.
+// A script named `git` first on PATH plays the half-done add (it only makes the directory, or sleeps in it) and the listing, and hands everything else to the real git, so the collection runs alone.
 // Unix only: the fake is sh. Paths git prints are realpaths (macOS: /var is /private/var), so the listing cases print both spellings.
 [Collection(FakeGitCollectionDefinition.Name)]
 public sealed class JobWorktreeUnregisteredDirectoryTests : IDisposable
@@ -185,58 +185,85 @@ public sealed class JobWorktreeUnregisteredDirectoryTests : IDisposable
         Assert.Equal([keep], Directory.GetFiles(outside));
     }
 
-    // ---- the directory stays ------------------------------------------------------------------------------------------
+    // ---- the directory stays / is never taken -----------------------------------------------------------------------------
 
+    // Review 2026-10-14: the job directory is made by the add itself (CreateExclusively), so an add can never delete what was
+    // there before it. Whatever stands at the job path - an empty directory, a full one, a file, a link, a dangling link - the add
+    // is refused before git runs at all (the fake git leaves a marker if it is called), and what stood there is untouched.
+    [Theory]
+    [InlineData("empty", false)]
+    [InlineData("full", false)]
+    [InlineData("file", false)]
+    [InlineData("link", false)]
+    [InlineData("dangling", false)]
+    [InlineData("empty", true)]
+    [InlineData("full", true)]
+    [InlineData("file", true)]
+    [InlineData("link", true)]
+    [InlineData("dangling", true)]
+    public async Task APathThatIsAlreadyThereRefusesTheAddBeforeGitRunsAndIsLeftUntouchedAsync(string kind, bool existingBranch)
+    {
+        string repo = SeededRepo(existingBranch);
+        string outside = OutsideDirectory();
+        string job = JobWorktree.PathFor(repo, JobId);
+        string jobs = Directory.CreateDirectory(Path.GetDirectoryName(job) ?? repo).FullName;
+        switch (kind)
+        {
+            case "empty":
+                Directory.CreateDirectory(job);
+                break;
+            case "full":
+                Directory.CreateDirectory(job);
+                File.WriteAllText(Path.Combine(job, "mine.txt"), "mine\n");
+                break;
+            case "file":
+                File.WriteAllText(job, "mine\n");
+                break;
+            case "link":
+                Directory.CreateSymbolicLink(job, outside);
+                break;
+            default:
+                Directory.CreateSymbolicLink(job, Path.Combine(outside, "gone"));
+                break;
+        }
+
+        string marker = Path.Combine(scratch.CreateDirectory(), "git-was-called");
+        Exception ex;
+        using (FakeGit.Scripted($$"""case "$*" in *'worktree add'*) : > '{{marker}}'; exit 1;; esac"""))
+            ex = await FailedAddAsync(repo, existingBranch);
+
+        Assert.Contains("could not be created exclusively", ex.Message, StringComparison.Ordinal);
+        Assert.False(File.Exists(marker), "git worktree add must not run for a job path that is taken");
+        Assert.DoesNotContain("left behind", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(kind is "full" ? "mine\n" : null, kind is "full" ? File.ReadAllText(Path.Combine(job, "mine.txt")) : null);
+        Assert.Equal(kind is "file" ? "mine\n" : null, kind is "file" ? File.ReadAllText(job) : null);
+        Assert.Equal(kind is "link" or "dangling", new FileInfo(job).LinkTarget is not null);
+        Assert.Equal("mine\n", File.ReadAllText(Path.Combine(outside, "keep.txt")));
+        Assert.Empty(Directory.EnumerateFileSystemEntries(jobs, ".trash-*"));
+        if (existingBranch)
+            Assert.Contains(Existing, GitRepo.Branches(repo));
+        else
+            Assert.DoesNotContain(JobWorktree.BranchFor(JobId), GitRepo.Branches(repo));
+    }
+
+    // The add made the (empty) directory itself, so a git that fails without touching it leaves nothing: the undo deletes it.
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task ADirectoryThatExistedBeforeTheAddIsNotDeletedAndTheTextSaysWhyAsync(bool existingBranch)
+    public async Task AFailedAddThatNeverTouchedTheDirectoryItWasGivenLeavesNoEmptyDirectoryAsync(bool existingBranch)
     {
         string repo = SeededRepo(existingBranch);
-        string job = JobWorktree.PathFor(repo, JobId);
-        Directory.CreateDirectory(job);
-        File.WriteAllText(Path.Combine(job, "mine.txt"), "mine\n");
+        string tip = existingBranch ? GitRepo.RevParse(repo, $"refs/heads/{Existing}") : "";
         Exception ex;
-        using (FakeGit.Scripted("""case "$*" in *'worktree add'*) exit 1;; esac"""))
+        using (FakeAdd("exit 1"))
             ex = await FailedAddAsync(repo, existingBranch);
 
-        Assert.Contains("left behind", ex.Message, StringComparison.Ordinal);
-        Assert.Contains("not deleted: it existed before the add", ex.Message, StringComparison.Ordinal);
-        Assert.Equal("mine\n", File.ReadAllText(Path.Combine(job, "mine.txt")));
+        Assert.DoesNotContain("left behind", ex.Message, StringComparison.Ordinal);
+        AssertNothingLeft(repo, existingBranch, tip);
+        Assert.Empty(Directory.EnumerateFileSystemEntries(Path.Combine(repo, ".claustrum", "worktrees")));
     }
 
-    // An empty directory is the case git itself accepts for an add; the fake refuses it, so the undo meets it unregistered.
-    [Fact]
-    public async Task AnEmptyDirectoryThatExistedBeforeTheAddIsNotDeletedAsync()
-    {
-        string repo = SeededRepo(existingBranch: false);
-        string job = Directory.CreateDirectory(JobWorktree.PathFor(repo, JobId)).FullName;
-        Exception ex;
-        using (FakeGit.Scripted("""case "$*" in *'worktree add'*) exit 1;; esac"""))
-            ex = await FailedAddAsync(repo, existingBranch: false);
-
-        Assert.Contains("not deleted: it existed before the add", ex.Message, StringComparison.Ordinal);
-        Assert.True(Directory.Exists(job));
-    }
-
-    [Fact]
-    public async Task AJobPathThatWasALinkBeforeTheAddIsLeftInPlaceAndItsTargetUntouchedAsync()
-    {
-        string repo = SeededRepo(existingBranch: false);
-        string outside = OutsideDirectory();
-        string job = JobWorktree.PathFor(repo, JobId);
-        Directory.CreateDirectory(Path.GetDirectoryName(job) ?? repo);
-        Directory.CreateSymbolicLink(job, outside);
-        Exception ex;
-        using (FakeGit.Scripted("""case "$*" in *'worktree add'*) exit 1;; esac"""))
-            ex = await FailedAddAsync(repo, existingBranch: false);
-
-        Assert.Contains("not deleted: it existed before the add", ex.Message, StringComparison.Ordinal);
-        Assert.NotNull(new DirectoryInfo(job).LinkTarget);
-        Assert.Equal("mine\n", File.ReadAllText(Path.Combine(outside, "keep.txt")));
-    }
-
-    // The add itself swapped a link in at the job path (the guard before the add saw nothing there): the link is not followed.
+    // The add itself swapped a link in at the job path (the directory it made was replaced): the link is not followed.
     [Fact]
     public async Task AJobPathThatBecameALinkDuringTheAddIsLeftInPlaceAndItsTargetUntouchedAsync()
     {
@@ -244,12 +271,66 @@ public sealed class JobWorktreeUnregisteredDirectoryTests : IDisposable
         string outside = OutsideDirectory();
         string job = JobWorktree.PathFor(repo, JobId);
         Exception ex;
-        using (FakeAdd($"ln -s '{outside}' \"$4\"; exit 1"))
+        using (FakeAdd($"rmdir \"$4\"; ln -s '{outside}' \"$4\"; exit 1"))
             ex = await FailedAddAsync(repo, existingBranch: false);
 
         Assert.Contains("not deleted: it is a link", ex.Message, StringComparison.Ordinal);
         Assert.NotNull(new DirectoryInfo(job).LinkTarget);
         Assert.Equal("mine\n", File.ReadAllText(Path.Combine(outside, "keep.txt")));
+    }
+
+    // 128 + the signal is what a terminal's signal leaves git with. With the token cancelled within the 1 s grace it is a cancel
+    // (the undo runs: no directory, no owned branch, a given branch kept); with no cancel it is git saying no, an ordinary failure.
+    [Theory]
+    [InlineData(129, false)]
+    [InlineData(130, false)]
+    [InlineData(131, true)]
+    [InlineData(143, true)]
+    public async Task AGitThatDiedOfTheTerminalsSignalIsACancelWhenTheTokenIsCancelledWithinTheGraceAsync(int exitCode, bool existingBranch)
+    {
+        string repo = SeededRepo(existingBranch);
+        string tip = existingBranch ? GitRepo.RevParse(repo, $"refs/heads/{Existing}") : "";
+        using CancellationTokenSource cancel = CancellationTokenSource.CreateLinkedTokenSource(Ct);
+        cancel.CancelAfter(TimeSpan.FromMilliseconds(300));
+        using (FakeAdd($"mkdir -p \"$4/sub\"; exit {exitCode}"))
+        {
+            OperationCanceledException ex = existingBranch
+                ? await Assert.ThrowsAnyAsync<OperationCanceledException>(() => JobWorktree.CheckOutBranchAsync(repo, JobId, Existing, scratch.CreateDirectory(), cancel.Token))
+                : await Assert.ThrowsAnyAsync<OperationCanceledException>(() => JobWorktree.AddAsync(repo, JobId, cancel.Token));
+
+            Assert.DoesNotContain("left behind", ex.Message, StringComparison.Ordinal);
+        }
+
+        AssertNothingLeft(repo, existingBranch, tip);
+    }
+
+    [Theory]
+    [InlineData(129, false)]
+    [InlineData(143, true)]
+    public async Task AGitThatDiedOfASignalWithNoCancelComingIsAnOrdinaryFailureAndStillUndoneAsync(int exitCode, bool existingBranch)
+    {
+        string repo = SeededRepo(existingBranch);
+        string tip = existingBranch ? GitRepo.RevParse(repo, $"refs/heads/{Existing}") : "";
+        Exception ex;
+        using (FakeAdd($"mkdir -p \"$4/sub\"; exit {exitCode}"))
+            ex = await FailedAddAsync(repo, existingBranch);
+
+        Assert.IsNotAssignableFrom<OperationCanceledException>(ex);
+        Assert.Contains($"exited {exitCode}", ex.Message, StringComparison.Ordinal);
+        AssertNothingLeft(repo, existingBranch, tip);
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(128)]
+    public async Task AnOrdinaryExitCodeOfGitFailsAtOnceWithoutTheGraceAsync(int exitCode)
+    {
+        string repo = SeededRepo(existingBranch: false);
+        Stopwatch stopwatch = Stopwatch.StartNew();
+        using (FakeAdd($"exit {exitCode}"))
+            _ = await FailedAddAsync(repo, existingBranch: false);
+
+        Assert.True(stopwatch.ElapsedMilliseconds < 900, $"took {stopwatch.ElapsedMilliseconds} ms: the signal grace must not apply");
     }
 
     // A job id with a separator puts the directory outside `.claustrum/worktrees`: not a job directory of this repository.
