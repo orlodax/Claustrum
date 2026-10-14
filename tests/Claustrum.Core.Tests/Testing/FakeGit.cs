@@ -22,19 +22,35 @@ public sealed class FakeGit : IDisposable
     /// <param name="echoArgs">Instead of exiting with a code, prints the arguments one per line and exits 0: what a git too old to know a flag does with it.</param>
     public FakeGit(string subcommand, int exitCode, string? alsoContains = null, bool echoArgs = false)
     {
+        string also = alsoContains is null ? "" : $" && case \"$*\" in *'{alsoContains}'*) true;; *) false;; esac";
+        Install($$"""
+            if [ "$sub" = "{{subcommand}}" ]{{also}}; then {{(echoArgs ? "printf '%s\\n' \"$@\"; exit 0" : $"exit {exitCode}")}}; fi
+            """);
+    }
+
+    private FakeGit(string interception) => Install(interception);
+
+    /// <summary>
+    /// A fake git running <paramref name="interception"/>, a POSIX sh fragment, before it hands the call to the real one: `$sub` is
+    /// the first argument that does not start with `-`, `"$@"` the whole command line (`worktree add -q &lt;path&gt; ...`: the path is
+    /// `$4`). A branch that does not `exit` falls through to the real git.
+    /// </summary>
+    public static FakeGit Scripted(string interception) => new(interception);
+
+    private void Install(string interception)
+    {
         if (OperatingSystem.IsWindows())
-            Assert.Skip("the fake git is an sh script and exit codes 130/131/143 are read on Unix only.");
+            Assert.Skip("the fake git is an sh script and exit codes 129/130/131/143 are read on Unix only.");
 
         string real = originalPath.Split(Path.PathSeparator).Select(entry => Path.Combine(entry, "git")).FirstOrDefault(File.Exists)
             ?? throw new InvalidOperationException("no git on PATH");
-        string also = alsoContains is null ? "" : $" && case \"$*\" in *'{alsoContains}'*) true;; *) false;; esac";
         string script = $$"""
             #!/bin/sh
             sub=""
             for a in "$@"; do
               case "$a" in -*) ;; *) sub="$a"; break;; esac
             done
-            if [ "$sub" = "{{subcommand}}" ]{{also}}; then {{(echoArgs ? "printf '%s\\n' \"$@\"; exit 0" : $"exit {exitCode}")}}; fi
+            {{interception}}
             exec "{{real}}" "$@"
             """;
         string path = Path.Combine(directory, "git");
