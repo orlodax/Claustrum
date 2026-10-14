@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Claustrum.Core.IO;
 using Claustrum.Core.Model;
 using Claustrum.Roles.Sync;
 using Claustrum.Roles.Tests.Sync;
@@ -146,20 +147,33 @@ public sealed class ApiHouseRulesFenceTests : IDisposable
         Assert.Contains("### AGENTS.md (not inlined: it is not a regular file)", rendered.SystemBody, StringComparison.Ordinal);
     }
 
-    // OpenedFilePath proves where the handle lands: an opened symlink answers with the target's real path, never the link's own.
+    // Windows asks the handle for its final path (an opened symlink answers with the target's); Unix opens by a no-follow walk,
+    // which reaches the target by its real names and refuses the link's own.
     [Fact]
-    public void TheOpenedPathOfASymlinkIsTheTargetsRealPath()
+    public void AnOpenedSymlinkIsTheTargetsFileNotTheLinks()
     {
         string target = Write("x", "real", "target.md");
         string link = Path.Combine(cwd, "link.md");
         LinkFixtures.FileLink(link, target);
 
-        using FileStream stream = new(link, FileMode.Open, FileAccess.Read);
-        string? opened = OpenedFilePath.TryGet(stream.SafeFileHandle, link);
+        if (OperatingSystem.IsWindows())
+        {
+            using FileStream stream = new(link, FileMode.Open, FileAccess.Read);
+            string? opened = OpenedFilePath.TryGet(stream.SafeFileHandle);
 
-        Assert.NotNull(opened);
-        Assert.EndsWith(Path.Combine("real", "target.md"), opened, OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
-        Assert.DoesNotContain("link.md", opened, StringComparison.Ordinal);
+            Assert.NotNull(opened);
+            Assert.EndsWith(Path.Combine("real", "target.md"), opened, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("link.md", opened, StringComparison.Ordinal);
+            return;
+        }
+
+        using FileStream? viaTarget = PlainFile.OpenNoFollowUnder(SyncRoot.Resolve(cwd), ["real", "target.md"], out string? refusal);
+        using FileStream? viaLink = PlainFile.OpenNoFollowUnder(SyncRoot.Resolve(cwd), ["link.md"], out string? linkRefusal);
+
+        Assert.NotNull(viaTarget);
+        Assert.Null(refusal);
+        Assert.Null(viaLink);
+        Assert.NotNull(linkRefusal);
     }
 
     // A reader that opens the file at the same moment a writer swaps a link in and out must never get the outside bytes:

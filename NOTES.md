@@ -5696,31 +5696,57 @@ byte-identically; `ApiHouseRulesTests` pins that against an empty cwd.
   path fence: a fork PR commits `AGENTS.md -> .git/config`, which holds `GITHUB_TOKEN` under `actions/checkout`, and
   it went to OpenRouter in the system prompt. (2) The path check and `File.OpenRead` were two steps; measured, 230
   of 3000 renders read a secret swapped in between. Now the string fence stays as a cheap pre-filter (it keeps a
-  clearly outside or network path from being opened at all), the file is opened, and `OpenedFilePath.TryGet` yields
-  the opened file's real path, which must lie under the fence root and be a seekable file named `*.md` with no
-  `.git` component below the root (case-insensitive on Windows). The same rule holds for a plain file and a link,
+  clearly outside or network path from being opened at all), the file is opened, and its real path must lie under the
+  fence root and be a regular file named `*.md` with no `.git` component below the root (case-insensitive on Windows;
+  how the open proves it: "How the handle is judged"). The same rule holds for a plain file and a link,
   so nothing depends on a "is it a link" read that could itself be raced. Where the path cannot be determined,
   nothing is inlined and the receipt says so (fail closed).
-- **How the handle is judged (reworked 2026-10-14, #110).** Windows: `GetFinalPathNameByHandleW` with the DOS name,
-  stripped of `\\?\` like `WindowsFinalPath`; the root is spelled by `WindowsFinalPath.TryResolve`, so both sides are the
-  OS's. **Unix, Linux and macOS alike: not "ask the OS for the handle's path" but "prove the handle IS the file at
-  the expected path".** `SyncRoot.Resolve(path)` gives the fully resolved path, the rules above are applied to that
-  string, and `PlainFile.IsSameFile` compares `(device, inode)` of `fstat` on the opened handle with `stat` on the
-  resolved path, both through the runtime's shim (`SystemNative_FStat` / `SystemNative_Stat`, `libSystem.Native`,
-  linked into the AOT binary). `FileStatus` is the same on every OS: `Dev` (int64) at offset 88 and `Ino` (int64) at 104,
-  read off `FileStatus` in dotnet/runtime `src/native/libs/System.Native/pal_io.h` (release/10.0: Flags 0, Mode 4,
-  Uid 8, Gid 12, Size 16, five time pairs to 88) and checked on Linux (same file, hard link and link to it true; another file,
-  a missing path, `/dev/null` false). Anything that fails, or differs, is "cannot say", so nothing is inlined. This
-  replaced `/proc/self/fd` (Linux) and a `proc_pidfdinfo(PROC_PIDFDVNODEPATHINFO)` struct of 1200 bytes with the
-  path at offset 176 that had been written from memory and never run on a Mac (it failed closed, so api inlining
-  could never have worked there: #110, closed). Still not `fcntl(F_GETPATH)`: it is variadic and on Apple arm64
-  variadic arguments go on the stack, which a `[LibraryImport]` cannot do. The swap race stays closed: a swap before
-  the open makes the resolved path (computed after the open) and the handle name different files, or a path outside
-  the fence; a swap after the open cannot change what the handle reads. `Resolve` runs on both sides of the stat
-  and must agree, so a link flipped in between is "cannot say". Residual, theoretical: an attacker who can already
-  write links in the repo and win four timed swaps in microseconds. Not run on a Mac (CI has no macOS leg); the
-  shim's layout is the same there by construction. Other Unixes use the same shim.
-  The P/Invokes are AOT-clean (`LibraryImport`; the linux-x64 publish has no IL2026/IL3050).
+- **How the handle is judged (reworked twice, 2026-10-14: #110, then the review of 727ff74).** Windows: unchanged,
+  `GetFinalPathNameByHandleW` with the DOS name, stripped of `\\?\` like `WindowsFinalPath`; the root is spelled by
+  `WindowsFinalPath.TryResolve`, so both sides are the OS's (measured against the earlier race).
+  **Unix: the file is opened by a no-follow walk and nothing is compared afterwards.**
+  - **What failed (measured 2026-10-14).** #110 replaced `/proc/self/fd` with an identity check: `SyncRoot.Resolve`,
+    open, `stat(real)` (which follows links) compared by `(dev, ino)` with `fstat`, `Resolve` again. A blind review ran a
+    `renameat2(RENAME_EXCHANGE)` loop flipping `AGENTS.md` between a regular file and a link to `~/.ssh/id_rsa`:
+    **the secret was inlined in about 19% of 1.3M renders** (the parent, which read the handle's path, leaked 0). The
+    five separate path reads (`Resolve`, open, `stat`, `Resolve`, the string rules) can each see a different state, and
+    "Residual, theoretical: win four timed swaps" was wrong: an exchange is one atomic rename, so the window needs no luck.
+  - **The walk.** `ApiHouseRules.Open` takes `SyncRoot.Resolve(path)` once, applies the string rules to it (inside
+    the root, ends in `.md`, no `.git` component via `PlainFile.IsGitDirName`), then `PlainFile.OpenNoFollowUnder`
+    opens the root's real path as a directory and, per component below it, `openat(dirfd, name, O_RDONLY | O_NOFOLLOW |
+    O_CLOEXEC | O_DIRECTORY)`, the leaf with `O_NONBLOCK` instead of `O_DIRECTORY` (a FIFO must not block). A link at ANY
+    component is ELOOP (FreeBSD: EMLINK) or ENOTDIR: a refusal. The leaf fd is `fstat`-ed regular
+    (`SystemNative_FStat`, as before) and the bytes are read from that fd. By construction the fd is the file a
+    link-free walk from the root reaches; what `Resolve` said only decides which names to walk, so a stale or raced
+    `Resolve` can make the walk refuse but cannot make it follow a link. The root itself is the cwd's real path,
+    outside the attacker's write scope by assumption, so it is opened plainly. No second `Resolve`, no identity
+    compare, so `IsSameFile` and the `SystemNative_Stat` import are gone. Not `fcntl(F_GETPATH)` (variadic, and on
+    Apple arm64 variadic arguments go on the stack where a `LibraryImport` cannot put them); `openat` is variadic
+    too but is called with no mode, like `open` (no `O_CREAT`), which is safe.
+  - **Flag values (from the headers, per OS; Linux per arch).** `O_DIRECTORY`, `O_NOFOLLOW`, `O_CLOEXEC`, `O_NONBLOCK`:
+    Linux x64 `0x10000 / 0x20000 / 0x80000 / 0x800` (`asm-generic/fcntl.h`); **Linux arm64 `0x4000 / 0x8000 /
+    0x80000 / 0x800`: arm64 keeps the 32-bit ARM `O_DIRECTORY` and `O_NOFOLLOW` (`arch/arm64/include/uapi/asm/fcntl.h`), they are NOT the
+    generic ones**; macOS `0x100000 / 0x100 / 0x1000000 / 0x4` (xnu `bsd/sys/fcntl.h`); FreeBSD `0x20000 / 0x100 /
+    0x100000 / 0x4` (`sys/sys/fcntl.h`). Any other Linux arch: no walk, nothing inlined (fail closed).
+  - **Hard links (same review).** A hard link is a regular `*.md` inside the cwd with the inode of `.git/config` (or
+    of any file the user owns on that filesystem), and no path check can see it. A file with `st_nlink > 1`, or whose
+    count cannot be read, is not inlined: the receipt says `has other hard links` and the heading `(not inlined: it has
+    other hard links)`. The cost is that a deliberately hard-linked rules file is not inlined either (fails closed;
+    symlinks to an inside `.md` still are). The runtime's `FileStatus` has no nlink, so per OS, read off the opened fd and
+    cross-checked (the type bits at the struct's own `st_mode` offset must say regular, else the layout is wrong: refuse):
+    Linux `statx(fd, "", AT_EMPTY_PATH 0x1000, STATX_NLINK 0x4, buf)`, glibc 2.28+, layout arch-independent
+    (`linux/stat.h`: `stx_mask` u32 at 0, `stx_nlink` u32 at 16, `stx_mode` u16 at 28; a missing symbol or a cleared
+    `STATX_NLINK` bit is a refusal); macOS `fstat` with the 64-bit-inode `struct stat` (`__DARWIN_STRUCT_STAT64`: `st_dev` int32
+    at 0, `st_mode` u16 at 4, `st_nlink` u16 at 6) through the symbol `fstat$INODE64` on x64, where the plain `fstat` is the
+    32-bit-inode layout kept for old binaries, and plain `fstat` on arm64, which has only the 64-bit one; FreeBSD 12+
+    `fstat` (`st_dev` u64 at 0, `st_ino` u64 at 8, `st_nlink` u64 at 16, `st_mode` u16 at 24; `sys/sys/stat.h`); Windows
+    `GetFileInformationByHandle`, `nNumberOfLinks` (u32 at 40) over 1.
+  - **Verified (Linux x64).** Plain file and link to an inside `.md` inlined; links to `.git/config`, to an outside file,
+    a hard link to `.git/config`, a hard link to an inside file and a FIFO refused; the `RENAME_EXCHANGE` flipper against
+    `Compose` for 30 s (432129 renders, 14.3M exchanges, 17837 inlined the regular file) and against
+    `OpenNoFollowUnder` alone for 30 s (1.68M opens, 2.01M link refusals): **0 leaks**. The macOS and FreeBSD values are from the
+    headers, **not run** (CI has a macOS leg for build and tests, but nothing there exercises a hostile swap).
+    The P/Invokes are AOT-clean (`LibraryImport`; the linux-x64 publish has no IL2026/IL3050).
 - **Isolated runs inline the branch's rules (2026-10-13, review finding 4).** `Prepare` renders with `request.Cwd`, the
   main checkout, so an isolated api run (`--branch`, or `max_parallel >= 2`) used to get the working copy's rules, not
   those of the branch it ran on. Once the worktree exists, `DelegateEngine.RunIsolatedAsync` calls
