@@ -89,7 +89,7 @@ public static class RunCommand
         // Before the handler: it swallows the first signal, and a stdin read blocked here listens on no token.
         string brief = ResolveBrief(briefText, briefFilePath);
 
-        // The first Ctrl-C or SIGTERM lets Runner kill the backend and write the `cancelled` receipt; a second one exits.
+        // The first Ctrl-C, SIGTERM or SIGHUP lets Runner kill the backend and write the `cancelled` receipt; a second Ctrl-C or SIGTERM exits.
         using CancelSignalHandler cancel = new();
 
         try
@@ -115,7 +115,7 @@ public static class RunCommand
                 CastBudget: castBudget,
                 MaxParallel: maxParallel,
                 CastName: resolvedCastName,
-                OnStreamLine: streamMode ? Console.Error.WriteLine : null,
+                OnStreamLine: streamMode ? SafeConsole.Error : null,
                 Branch: branch is { Length: > 0 } ? branch : null);
 
             RunResult result;
@@ -130,11 +130,14 @@ public static class RunCommand
                 (result, refusedExit) = (ex.Receipt, ExitCodes.Usage);
             }
 
+            // The receipt is on disk: a Windows console close need wait no longer.
+            cancel.Settled();
+
             RunResult output = rawMode ? result : result with { Raw = null };
 
             int exitCode = refusedExit ?? ExitCodeFor(output.Status);
             if (jsonMode)
-                Console.WriteLine(JsonSerializer.Serialize(output, ClaustrumJsonContext.Default.RunResult));
+                SafeConsole.Out(JsonSerializer.Serialize(output, ClaustrumJsonContext.Default.RunResult));
             else
                 PrintHuman(output, exitCode);
 
@@ -147,6 +150,7 @@ public static class RunCommand
         // the boundary's generic "anything else" branch does not know about.
         catch (OperationCanceledException ex)
         {
+            cancel.Settled();
             return Cancelled(ex);
         }
     }
@@ -178,7 +182,7 @@ public static class RunCommand
     internal static int Cancelled(OperationCanceledException ex)
     {
         if (!defaultCancelMessages.Contains(ex.Message, StringComparer.Ordinal))
-            Console.Error.WriteLine($"warning: {ex.Message}");
+            SafeConsole.Error($"warning: {ex.Message}");
         return ExitCodes.Cancelled;
     }
 
@@ -196,35 +200,35 @@ public static class RunCommand
 
     private static void PrintHuman(RunResult result, int exitCode)
     {
-        Console.WriteLine($"status: {result.Status} (exit {exitCode})");
+        SafeConsole.Out($"status: {result.Status} (exit {exitCode})");
 
         // An isolated run's work is on its branch, not in the directory the reader is looking at (F3).
         if (result.Branch is { } branch)
-            Console.WriteLine($"branch: {branch}");
+            SafeConsole.Out($"branch: {branch}");
         if (result.Worktree is { } worktree)
-            Console.WriteLine($"worktree: {worktree}");
+            SafeConsole.Out($"worktree: {worktree}");
         if (result.Commit is { } commit)
-            Console.WriteLine($"commit: {commit}");
+            SafeConsole.Out($"commit: {commit}");
 
         if (result.ChangedFiles.Length > 0)
         {
-            Console.WriteLine("changed files:");
+            SafeConsole.Out("changed files:");
             foreach (ChangedFile file in result.ChangedFiles)
-                Console.WriteLine($"  {KindLetter(file.Kind)} {file.Path}");
+                SafeConsole.Out($"  {KindLetter(file.Kind)} {file.Path}");
         }
 
         if (result.FinalMessage.Length > 0)
         {
-            Console.WriteLine();
-            Console.WriteLine(result.FinalMessage);
+            SafeConsole.Out();
+            SafeConsole.Out(result.FinalMessage);
         }
 
         // A "work left uncommitted" one says the branch is missing work; --json readers have warnings[].
         foreach (string warning in result.Warnings)
-            Console.Error.WriteLine($"warning: {warning}");
+            SafeConsole.Error($"warning: {warning}");
 
         if (result.Error is { Length: > 0 } error)
-            Console.Error.WriteLine($"error: {error}");
+            SafeConsole.Error($"error: {error}");
     }
 
     private static char KindLetter(ChangeKind kind) => kind switch

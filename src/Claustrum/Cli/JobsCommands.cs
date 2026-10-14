@@ -158,7 +158,7 @@ public static class JobsCommands
         string jobsRoot = JobDirectory.ResolveRoot(AppServices.Platform);
 
         // #106: the first Ctrl-C, SIGTERM or SIGHUP lets the remove in flight finish (it runs to its end under no token) and
-        // stops the sweep; a second one exits. Same handler as `run`; git shares our process group, so it hears the signal too.
+        // stops the sweep; a second Ctrl-C or SIGTERM exits. Same handler as `run`; git shares our process group, so it hears the signal too.
         // #113: clean writes no receipt, so its second-signal hint says what is abandoned instead.
         using CancelSignalHandler cancel = new("stop now; a free in flight is left for the next jobs clean");
         int removed = 0;
@@ -168,9 +168,9 @@ public static class JobsCommands
         {
             (int swept, string[] sweepFailures) = await JobWorktree.SweepTrashAsync(cwd, cancel.Token);
             if (swept > 0)
-                Console.WriteLine($"swept {swept} leftover trash {(swept == 1 ? "directory" : "directories")}");
+                SafeConsole.Out($"swept {swept} leftover trash {(swept == 1 ? "directory" : "directories")}");
             foreach (string sweepFailure in sweepFailures)
-                Console.Error.WriteLine($"warning: could not sweep {sweepFailure}");
+                SafeConsole.Error($"warning: could not sweep {sweepFailure}");
             removed += swept;
         }
         catch (OperationCanceledException ex)
@@ -190,7 +190,7 @@ public static class JobsCommands
             // git's remove calls "not a working tree" — exit 1 on every sweep until someone deletes it by hand.
             if (await ArchitectWorktree.TryRemoveStrayProbeAsync(cwd, worktreeDirectory, CancellationToken.None))
             {
-                Console.WriteLine($"removed stray probe directory {jobId}");
+                SafeConsole.Out($"removed stray probe directory {jobId}");
                 removed++;
                 continue;
             }
@@ -206,9 +206,9 @@ public static class JobsCommands
             {
                 string branch = await JobWorktree.HeadBranchAsync(cwd, jobId, cancel.Token) ?? JobWorktree.BranchFor(jobId);
                 string? warning = await JobWorktree.RemoveAsync(cwd, jobId, cancel.Token);
-                Console.WriteLine($"removed {jobId} (branch {branch} kept)");
+                SafeConsole.Out($"removed {jobId} (branch {branch} kept)");
                 if (warning is not null)
-                    Console.Error.WriteLine($"warning: {warning}");
+                    SafeConsole.Error($"warning: {warning}");
                 removed++;
             }
             catch (OperationCanceledException ex)
@@ -222,11 +222,14 @@ public static class JobsCommands
             }
         }
 
+        // Nothing more is freed: a Windows console close need wait no longer.
+        cancel.Settled();
+
         if (removed == 0 && failures.Count == 0 && !cancel.Token.IsCancellationRequested)
-            Console.WriteLine("(nothing to clean)");
+            SafeConsole.Out("(nothing to clean)");
 
         foreach (string failure in failures)
-            Console.Error.WriteLine($"could not remove {failure}");
+            SafeConsole.Error($"could not remove {failure}");
 
         if (cancelled is not null || cancel.Token.IsCancellationRequested)
             return cancelled is null ? ExitCodes.Cancelled : RunCommand.Cancelled(cancelled);
