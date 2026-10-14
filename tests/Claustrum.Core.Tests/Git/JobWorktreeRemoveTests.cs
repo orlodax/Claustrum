@@ -182,10 +182,10 @@ public sealed class JobWorktreeRemoveTests : IDisposable
         Assert.Equal(tip, GitRepo.RevParse(repo, "refs/heads/claustrum/job-1"));
     }
 
-    // A worktree that is no longer on its branch cannot be proved untouched: a plain remove, no force, and
-    // the branch is not deleted.
+    // A worktree that is no longer on its branch cannot be proved untouched, and since the 2026-10-14 review a free
+    // refuses it too (its commits on the other branch are not the job's to judge): left in place, nothing deleted.
     [Fact]
-    public async Task AnAbandonedWorktreeOffItsBranchIsPlainRemovedAndNoBranchIsDeletedAsync()
+    public async Task AnAbandonedWorktreeOffItsBranchIsLeftInPlaceAndNoBranchIsDeletedAsync()
     {
         string repo = scratch.CreateSeededRepo();
         JobWorktreeInfo worktree = await JobWorktree.AddAsync(repo, "job-1", Ct);
@@ -193,8 +193,9 @@ public sealed class JobWorktreeRemoveTests : IDisposable
 
         Exception? failure = await JobWorktree.TryRemoveAbandonedAsync(repo, worktree, Ct);
 
-        Assert.Null(failure);
-        Assert.False(Directory.Exists(worktree.Path));
+        Assert.IsType<InvalidOperationException>(failure);
+        Assert.Contains("refs/heads/other, not claustrum/job-1", failure.Message, StringComparison.Ordinal);
+        Assert.True(Directory.Exists(worktree.Path));
         Assert.Contains("claustrum/job-1", GitRepo.Branches(repo));
         Assert.Contains("other", GitRepo.Branches(repo));
     }

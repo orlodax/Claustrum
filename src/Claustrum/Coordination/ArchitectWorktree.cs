@@ -143,15 +143,29 @@ public static partial class ArchitectWorktree
     // #104: a symlink committed under `.claustrum` (`briefs/1-builder.md -> ~/.ssh/id_rsa`) is checked out into the
     // architect's worktree, and its harness would read or write through it. Mode 120000, whatever it targets. The
     // worktree is cut from HEAD, so HEAD is what decides (review 2026-10-13: a `git rm` left uncommitted passed the index
-    // alone); the index is read too, since the next commit would add one. Filtered here, not by pathspec, so that
-    // `.Claustrum/` on a case-insensitive checkout cannot slip past a literal one.
+    // alone); the index is read too, since the next commit would add one. Review 2026-10-14: only what sits under a
+    // top-level name that case-folds to `.claustrum` is listed — whole-tree listings of a big repo ran into the 30 s bound.
     private static async Task RefuseTrackedLinksAsync(string gitRoot, CancellationToken cancellationToken)
     {
-        // `-z`: `<mode> <type|sha> <sha|stage>\t<path>` per entry, the path raw.
+        // `-z`: `<mode> <type|sha> <sha|stage>\t<path>` per entry, the path raw. `--literal-pathspecs`: a name is a name,
+        // not a glob; the index's `:(icase)` magic is exactly what the case-folding needs, so that call keeps pathspecs live.
         // An unborn branch has no HEAD (rev-parse exits 1): only its index can hold a link.
         string born = await GitAsync(gitRoot, "rev-parse", ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], 1, cancellationToken);
-        string head = born.Trim().Length == 0 ? "" : await GitAsync(gitRoot, "ls-tree", ["ls-tree", "-r", "-z", "HEAD"], 0, cancellationToken);
-        string index = await GitAsync(gitRoot, "ls-files", ["ls-files", "-s", "-z"], 0, cancellationToken);
+        string head = "";
+        if (born.Trim().Length > 0)
+        {
+            string top = await GitAsync(gitRoot, "ls-tree", ["ls-tree", "-z", "HEAD"], 0, cancellationToken);
+            string[] names =
+            [
+                .. top.Split('\0', StringSplitOptions.RemoveEmptyEntries)
+                    .Select(entry => entry[(entry.IndexOf('\t') + 1)..])
+                    .Where(name => name.Equals(".claustrum", StringComparison.OrdinalIgnoreCase)),
+            ];
+            if (names.Length > 0)
+                head = await GitAsync(gitRoot, "ls-tree", ["--literal-pathspecs", "ls-tree", "-r", "-z", "HEAD", "--", .. names], 0, cancellationToken);
+        }
+
+        string index = await GitAsync(gitRoot, "ls-files", ["--no-literal-pathspecs", "ls-files", "-s", "-z", "--", ":(icase).claustrum"], 0, cancellationToken);
         string[] links =
         [
             .. head.Split('\0', StringSplitOptions.RemoveEmptyEntries)

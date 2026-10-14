@@ -4,6 +4,7 @@ using System.Text.Json;
 using Claustrum.Coordination;
 using Claustrum.Core.Git;
 using Claustrum.Core.Jobs;
+using Claustrum.Roles.Sync;
 
 namespace Claustrum.Cli;
 
@@ -32,8 +33,9 @@ public static class JobsCommands
         Command clean = new(
             "clean",
             "Remove finished isolated jobs' worktrees (docs/PLAN.md §D4); their branches, which carry the work, are kept. "
-                + "A worktree with uncommitted changes is reported and left in place, and so is one holding job worktrees of its own "
-                + "(a coordinate architect's: clean it with --cwd <that worktree> first). The first Ctrl-C or SIGTERM lets the remove in "
+                + "A worktree with uncommitted changes, off its branch, mid-rebase/merge/cherry-pick, with edits hidden by skip-worktree or "
+                + "assume-unchanged, or that is not this repository's worktree is reported and left in place, and so is one holding job worktrees "
+                + "of its own (a coordinate architect's: clean it with --cwd <that worktree> first). The first Ctrl-C or SIGTERM lets the remove in "
                 + "flight finish and stops the sweep (exit 130); a second one exits at once.") { cleanCwd };
         clean.SetAction(async parseResult => await CleanAsync(parseResult.GetValue(cleanCwd)));
 
@@ -132,11 +134,21 @@ public static class JobsCommands
     // it carries the job's work as a commit since #61, so the architect can still rebase from it. A
     // worktree that still holds uncommitted work is reported and left, never forced (F3) — and so is a
     // coordinate architect's that still holds its children's (#74): `--cwd <it>` sweeps those first. A clean
-    // one is renamed aside and pruned (#106); the sweep first deletes any `.trash-*` an earlier free left.
+    // one is renamed aside and its own registration deleted (#106); the sweep first deletes any `.trash-*` an earlier free left.
     private static async Task<int> CleanAsync(string? cwdOption)
     {
         string cwd = Path.GetFullPath(cwdOption ?? Environment.CurrentDirectory);
         string worktreesRoot = Path.Combine(cwd, ".claustrum", "worktrees");
+
+        // #104, review 2026-10-14: a `.claustrum` link that leaves the repo would have the sweep delete, and the frees
+        // rename, directories outside it. Core cannot see SyncRoot, so the fence is asked here, before anything is touched.
+        if (SyncRoot.Repo(cwd).Escapes(worktreesRoot))
+        {
+            Console.Error.WriteLine(
+                $"{worktreesRoot} resolves outside the working directory ({SyncRoot.Resolve(worktreesRoot)}): `.claustrum` is a link that leaves it, and `jobs clean` touches nothing through one");
+            return ExitCodes.Usage;
+        }
+
         if (!Directory.Exists(worktreesRoot))
         {
             Console.WriteLine("(no worktrees)");
@@ -191,8 +203,9 @@ public static class JobsCommands
             // finding). Report it and keep going.
             try
             {
-                string? warning = await JobWorktree.RemoveAsync(cwd, jobId, cancel.Token);
-                Console.WriteLine($"removed {jobId} (branch {RecordedBranch(jobsRoot, jobId) ?? JobWorktree.BranchFor(jobId)} kept)");
+                string branch = RecordedBranch(jobsRoot, jobId) ?? JobWorktree.BranchFor(jobId);
+                string? warning = await JobWorktree.RemoveAsync(cwd, jobId, branch, cancel.Token);
+                Console.WriteLine($"removed {jobId} (branch {branch} kept)");
                 if (warning is not null)
                     Console.Error.WriteLine($"warning: {warning}");
                 removed++;
