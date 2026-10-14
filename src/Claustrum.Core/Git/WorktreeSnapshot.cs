@@ -241,9 +241,10 @@ public static class WorktreeSnapshot
         try
         {
             // A tracked link is hashed as its target string, the way git stores it, and never followed: a link to
-            // /dev/zero would otherwise hang the hash (review 2026-10-14).
+            // /dev/zero would otherwise hang the hash (review 2026-10-14). The prefix keeps a file holding that same
+            // text from hashing equal, so swapping one for the other still counts as a change (second review).
             if (new FileInfo(fullPath).LinkTarget is { } target)
-                return Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(target)));
+                return Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes("link\0" + target)));
 
             if (!File.Exists(fullPath))
                 return null;
