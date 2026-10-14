@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using Claustrum.Core.IO;
 using Claustrum.Core.Model;
 
 namespace Claustrum.Core.Git;
@@ -193,8 +194,9 @@ public static class WorktreeSnapshot
 
         try
         {
-            using FileStream stream = File.OpenRead(fullPath);
-            return Convert.ToHexStringLower(SHA256.HashData(stream));
+            // A FIFO in place of a tracked file passes File.Exists and blocks open(2); a refusal is unhashable too (review 2026-10-13).
+            using FileStream? stream = PlainFile.OpenRead(fullPath, out _);
+            return stream is null ? null : Convert.ToHexStringLower(SHA256.HashData(stream));
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {

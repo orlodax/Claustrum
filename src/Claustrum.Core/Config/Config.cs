@@ -248,7 +248,9 @@ public sealed class Config
 
     private static ConfigDocument ReadDocument(IPlatform platform, string path)
     {
-        string json = platform.ReadAllText(path);
+        // A repo's claustrum.json swapped for a FIFO would block here forever (review 2026-10-13).
+        string json = platform.ReadRegularFileText(path, out string? refusal)
+            ?? throw new ConfigException($"'{path}': {refusal}");
         try
         {
             ConfigDocument? document = JsonSerializer.Deserialize(json, ClaustrumJsonContext.Default.ConfigDocument);

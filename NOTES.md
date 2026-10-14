@@ -5166,7 +5166,7 @@ points inside still reaches `ReadAllText` and throws `FileNotFoundException` as 
   from the typed full path, so a mid-path directory link counts too; "regular" is `File.Exists` (a FIFO named
   `x.md` is not excluded, git cannot commit one).
 - **A FIFO and the Windows spellings of `.git` (2026-10-13, found by review).** A FIFO named `ROLE.md` (or a cast
-  file) passed `File.Exists` and blocked `File.ReadAllText` forever in open(2); `PlainFile.OpenRead` now opens
+  file) passed `File.Exists` and blocked `File.ReadAllText` forever in open(2); `PlainFile.OpenRead` (now in `Claustrum.Core/IO`, see "A FIFO in place of a tracked file") opens
   O_NONBLOCK and refuses a handle that does not seek (`RoleRenderException` / `CastException`), no path stat first.
   The `.git` test is `PlainFile.IsGitDirName`, shared with `ApiHouseRules`: on Windows `.git.`, `.git ` and `GIT~1` count too.
 - **Out of scope in that review, all pre-existing, deferred past v0.1.0:** cast store writes through
@@ -5612,9 +5612,31 @@ byte-identically; `ApiHouseRulesTests` pins that against an empty cwd.
 - **Not done.** The `{{house_rules}}` template token still expands the plain shared text for every harness; no
   role uses it today, and `ComposeSystemBody` is the one place the section is placed.
 - **A FIFO named `AGENTS.md`, and the Windows spellings of `.git` (2026-10-13, found by review).** `File.Exists` is
-  true for a FIFO, so `File.OpenRead` blocked in open(2) before the handle checks ran. `PlainFile.OpenRead` opens
+  true for a FIFO, so `File.OpenRead` blocked in open(2) before the handle checks ran. `PlainFile.OpenRead` (now in `Claustrum.Core/IO`, see "A FIFO in place of a tracked file") opens
   `O_RDONLY|O_NONBLOCK|O_CLOEXEC` (Linux `0x800|0x80000`, macOS `0x4|0x1000000`, FreeBSD `0x4|0x100000`; Windows keeps
   `File.OpenRead`, a pipe cannot sit in its filesystem), then refuses a handle that does not seek: the heading says
   `not a regular file` and the receipt names it. `Unfit` treats a segment as `.git` via `PlainFile.IsGitDirName`
   (Windows: `.git.`, `.git `, `GIT~N`). Case is ignored on every OS, a deviation toward strict: macOS volumes are
   usually case-insensitive. macOS flag values are from the headers, **not run on a Mac**.
+
+## A FIFO in place of a tracked file (2026-10-13, second blind review of #55/#97)
+- **The hang.** `PlainFile` first guarded only AGENTS.md, role overrides and casts. The review found every `run`
+  still hung, for every backend, when a TRACKED file was replaced by a FIFO: `git status` reports it ` M` and
+  `WorktreeSnapshot.HashWorktreeFile` (`File.Exists`, `File.OpenRead`) blocked in open(2), called from `Runner`
+  before each run. `PlainFile` therefore moved to `src/Claustrum.Core/IO/` (Core is below Roles; `Core.csproj` now
+  sets `AllowUnsafeBlocks` for its `LibraryImport`). `HashWorktreeFile` uses it, and a refusal is *unhashable*
+  (null), the same outcome as a locked file (NOTES "Worktree snapshot: an unreadable file is unhashable").
+- **`claustrum.json` too.** `IPlatform.ReadRegularFileText` (a default interface method, so fakes keep compiling;
+  `RealPlatform` overrides it with `PlainFile`) is what `Config.ReadDocument` calls for both layers; a refusal is a
+  `ConfigException`. `IPlatform.ReadAllText` is unchanged.
+- **Left alone on purpose.** `--brief-file`, `--file` and `cast create --answers` take a path the user typed on
+  the command line, and `<(cmd)` / `/dev/stdin` are pipes: refusing non-seekable input there would break a
+  legitimate way to feed them. They block only if the user names a FIFO nobody writes to. Also `sync`'s own reads
+  of generated files (`SyncWriter`, `SyncCommand.ExistingContent`, `McpConfigSync`, `SyncManifestStore`) and
+  `InitCommand`: not touched by this slice, so a FIFO at a generated path still blocks them (open, not done).
+  Job-directory files are Claustrum's own. `git status`/`git diff HEAD` returned promptly with a tracked FIFO
+  (smoke on Linux, git 2.x); the snapshot's mtime/size scan only stats.
+- **A socket.** open(2) on a Unix socket fails with ENXIO (Linux, macOS, FreeBSD) or EOPNOTSUPP (macOS 102,
+  FreeBSD 45) before `CanSeek` is reached; both now take the same `not a regular file` refusal as a FIFO.
+- **`.git` on Windows.** `IsGitDirName` cuts a segment at the first `:` before trimming dots and spaces, so
+  `.git::$INDEX_ALLOCATION` (CVE-2019-1352) counts. Plausible on NTFS, **not run on Windows**.

@@ -1,3 +1,5 @@
+using Claustrum.Core.IO;
+
 namespace Claustrum.Core.Platform;
 
 public sealed class RealPlatform : IPlatform
@@ -28,6 +30,16 @@ public sealed class RealPlatform : IPlatform
     public bool PathExists(string path) => File.Exists(path) || Directory.Exists(path);
 
     public string ReadAllText(string path) => File.ReadAllText(path);
+
+    public string? ReadRegularFileText(string path, out string? refusal)
+    {
+        using FileStream? stream = PlainFile.OpenRead(path, out refusal);
+        if (stream is null)
+            return null;
+
+        using StreamReader reader = new(stream);
+        return reader.ReadToEnd();
+    }
 
     private static ClaustrumOs DetectOs()
     {
