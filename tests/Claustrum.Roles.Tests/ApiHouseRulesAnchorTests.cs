@@ -232,9 +232,10 @@ public sealed partial class ApiHouseRulesAnchorTests : IDisposable
     }
 
     // Windows: the root a handle's final path is judged against is the MAIN checkout's final spelling plus the job's own relative
-    // part, never one recomputed from the worktree path; a missing directory cannot be placed.
+    // part, never one recomputed from the worktree path. A missing directory is placed under its nearest existing ancestor, as
+    // WindowsFinalPath.TryResolve does by design (PR #116 Windows CI).
     [Fact]
-    public void OnWindowsTheRootSpellingIsTheFinalPathJoinedWithWhatIsBelowItAndNullWhenMissing()
+    public void OnWindowsTheRootSpellingIsTheFinalPathJoinedWithWhatIsBelowIt()
     {
         if (!OperatingSystem.IsWindows())
             Assert.Skip("RootSpelling asks the Windows final-path API; elsewhere it answers null.");
@@ -244,7 +245,9 @@ public sealed partial class ApiHouseRulesAnchorTests : IDisposable
 
         Assert.NotNull(spelling);
         Assert.EndsWith(below, spelling, StringComparison.OrdinalIgnoreCase);
-        Assert.Null(OpenedFilePath.RootSpelling(Path.Combine(main, "no-such-directory"), below));
+        string? missing = OpenedFilePath.RootSpelling(Path.Combine(main, "no-such-directory"), below);
+        Assert.NotNull(missing);
+        Assert.EndsWith(Path.Combine("no-such-directory", below), missing, StringComparison.OrdinalIgnoreCase);
     }
 
     // Windows: the job directory swapped for a junction to a directory that holds rules files inlines nothing (the path check or
