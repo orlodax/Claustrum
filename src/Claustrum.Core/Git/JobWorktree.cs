@@ -4,6 +4,7 @@ using System.Security.Cryptography;
 using System.Text;
 using Claustrum.Core.IO;
 using Claustrum.Core.Jobs;
+using Claustrum.Core.Process;
 
 namespace Claustrum.Core.Git;
 
@@ -576,13 +577,21 @@ public static class JobWorktree
     {
         Directory.CreateDirectory(Path.Combine(cwd, ".claustrum", "worktrees"));
 
-        // #108: only a directory this add created may be deleted by its undo.
-        bool madeByThisAdd = !Path.Exists(worktree.Path) && new FileInfo(worktree.Path).LinkTarget is null;
+        // #108, found by review 2026-10-14: the directory is made here, exclusively, so the undo deletes only what this add
+        // made. Refused before git runs when someone else's is already there.
+        if (CreateExclusively(worktree.Path) is { } notMade)
+            return notMade;
+
         string reason;
         try
         {
             (int exitCode, string stdout, string stderr) =
                 await GitProcess.RunAsync(cwd, ["worktree", "add", "-q", worktree.Path, .. target], repoCodeTimeout, cancellationToken);
+
+            // The terminal's signal reached git first (SignalExit): with the token cancelled it is a cancel, not git saying no.
+            if (SignalExit.IsCancelSignal(exitCode) && await SignalExit.CancelArrivesAsync(cancellationToken))
+                cancellationToken.ThrowIfCancellationRequested();
+
             if (exitCode == 0)
                 return null;
 
@@ -592,19 +601,51 @@ public static class JobWorktree
         {
             // Still a cancel, so `run` exits 130; what the undo could not remove rides on the message. Since
             // #94 (2026-10-13) that message is the cancelled receipt's `error`, not a RunCommand.Cancelled line.
-            if (await UndoAddAsync(cwd, worktree, madeByThisAdd) is { } left)
+            if (await UndoAddAsync(cwd, worktree) is { } left)
                 throw new OperationCanceledException($"git worktree add was cancelled; left behind: {left}", ex, ex.CancellationToken);
             throw;
         }
         catch (TimeoutException)
         {
             string timedOut = $"git worktree add did not finish within {repoCodeTimeout.TotalMinutes} minutes";
-            return await UndoAddAsync(cwd, worktree, madeByThisAdd) is { } left
+            return await UndoAddAsync(cwd, worktree) is { } left
                 ? $"{timedOut}; left behind: {left}"
                 : $"{timedOut}; nothing left behind";
         }
 
-        return await UndoAddAsync(cwd, worktree, madeByThisAdd) is { } leftover ? $"{reason}; left behind: {leftover}" : reason;
+        return await UndoAddAsync(cwd, worktree) is { } leftover ? $"{reason}; left behind: {leftover}" : reason;
+    }
+
+    // `Directory.Move` fails when the target exists (measured on Linux for an empty directory, a full one, a file, a link, a
+    // dangling link), so a staging directory moved onto the job's path proves this add made it; the microseconds between .NET's
+    // check and rename(2) can only replace an empty directory, which holds nothing. Git accepts an existing empty directory.
+    // The `.trash-` name lets `jobs clean` sweep a staging directory a kill left. Null when made, else why not.
+    private static string? CreateExclusively(string path)
+    {
+        string trimmed = Path.TrimEndingDirectorySeparator(path);
+        if (Path.GetDirectoryName(trimmed) is not { } parent)
+            return $"{path} has no parent directory";
+
+        string staging = Path.Combine(parent, $"{TrashPrefix}{Path.GetFileName(trimmed)}-{Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(4))}");
+        try
+        {
+            Directory.CreateDirectory(staging);
+            Directory.Move(staging, path);
+            return null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            try
+            {
+                Directory.Delete(staging);
+            }
+            catch (Exception cleanup) when (cleanup is IOException or UnauthorizedAccessException)
+            {
+                // Empty, and swept by the next `jobs clean`.
+            }
+
+            return $"the job directory {path} could not be created exclusively ({ex.Message})";
+        }
     }
 
     // T1: the role never ran, so nothing in the worktree is anyone's. `-f -f`, because git killed
@@ -613,7 +654,7 @@ public static class JobWorktree
     // gone fails the remove and stays registered (both measured, git 2.56). Never a repo-wide prune (review 2026-10-14).
     // The bound is the checkout's: deleting a large tree is as slow as writing it. Null when nothing is left.
     // #108: a directory git left unregistered (killed before it wrote the entry) is deleted too, see TryDeleteUnregisteredAsync.
-    private static async Task<string?> UndoAddAsync(string cwd, JobWorktreeInfo worktree, bool madeByThisAdd)
+    private static async Task<string?> UndoAddAsync(string cwd, JobWorktreeInfo worktree)
     {
         try
         {
@@ -624,8 +665,7 @@ public static class JobWorktree
             List<string> left = [];
             if (Directory.Exists(worktree.Path))
             {
-                string? stays = madeByThisAdd ? await TryDeleteUnregisteredAsync(cwd, worktree.Path) : "it existed before the add";
-                if (stays is not null)
+                if (await TryDeleteUnregisteredAsync(cwd, worktree.Path) is { } stays)
                     left.Add($"{worktree.Path} ({Reason("worktree remove", exitCode, stderr, stdout)}; not deleted: {stays})");
             }
 

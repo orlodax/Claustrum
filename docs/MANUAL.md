@@ -55,20 +55,27 @@ refused brief, a missing cast, a role sent to a harness it does not list, a `gh`
 cancelled. Once the job directory exists (queued for a `max_parallel` slot, waiting for a `--branch`
 lock, adding its worktree, or running), the first Ctrl-C (SIGINT), SIGQUIT, SIGTERM or SIGHUP (the terminal closing) ends the run
 with a `cancelled` receipt: exit 130, the document on stdout under `--json`, `result.json` on disk
-(#94). A cancel while queued or adding leaves no worktree, directory or branch (#108: a directory git had not yet registered is deleted too); one just after the add, before
+(#94). A cancel while queued or adding leaves no worktree, directory or branch (#108: the job directory is made
+by Claustrum itself before git runs, and deleted again if git never registered it; the only gap is git killed in the
+microseconds between writing its `gitdir` and `.git` files, which can leave a stray locked entry, see NOTES); one just after the add, before
 the backend starts, leaves the registered worktree and its branch at the starting commit (`jobs
 clean` removes the worktree later, never the branch); one while running keeps both with a commit of
 any work so far (§9). Before the job directory exists nothing is minted: a signal while
 `run`/`coordinate` is still reading its brief from stdin gets the runtime's default exit (130 for
 Ctrl-C, 143 for SIGTERM, 129 for SIGHUP, no handler yet); one during `coordinate`'s planning (while `gh` runs) is
-exit 130 with no receipt. A second signal ends the
-process at once with the runtime's own code (130 after a second Ctrl-C, 143 after a second SIGTERM,
-129 after a second SIGHUP, 131 after a second SIGQUIT), no receipt, and the backend may keep running (it received no signal of
-its own when the sender was `kill`). On Windows Ctrl-C and Ctrl-Break take the cancel path (both reach
-`Console.CancelKeyPress`; not measured on Windows), SIGTERM registers but cannot be cancelled there,
-SIGHUP is the console-close event (the window closing): it registers and starts the same cancel, but Windows ends the
-process within seconds of the handler returning, so the receipt is best-effort (not measured), and the forced-exit
-codes above are the Unix ones.
+exit 130 with no receipt. A second Ctrl-C, SIGQUIT or SIGTERM ends the
+process at once with the runtime's own code (130, 131, 143), no receipt, and the backend may keep running (it received no signal of
+its own when the sender was `kill`). **SIGHUP never forces**: closing a terminal delivers two within a fraction of a
+millisecond (the shell's hangup, then the kernel's to the foreground group), so a later SIGHUP is absorbed and the first one's
+cancel runs to its receipt. The backend shares Claustrum's process group, so a terminal's SIGHUP or Ctrl-C (or a
+`kill -- -<pgid>`) can kill it before the cancel arrives: a backend that dies by SIGHUP, SIGINT, SIGQUIT or SIGTERM
+(exit 129, 130, 131, 143) and a cancel that arrives within one second still read as `cancelled`; without one it is a failed
+backend. Once the terminal is gone, `--stream` echo and the final output are best-effort: a failed write is dropped, the
+receipt is on disk first and the exit code is unchanged. On Windows Ctrl-C and Ctrl-Break take the cancel path (both reach
+`Console.CancelKeyPress`; not measured on Windows), SIGTERM registers but cannot be cancelled there, and
+SIGHUP is the console-close event (the window closing): it starts the same cancel and holds the handler for up to 4 s, until the
+receipt is written (`run`, `coordinate`) or the sweep has stopped (`jobs clean`), because Windows ends the
+process once the handler returns (not measured); the forced-exit codes above are the Unix ones.
 
 ### `claustrum run <role>`
 

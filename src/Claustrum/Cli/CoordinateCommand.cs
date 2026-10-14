@@ -67,7 +67,7 @@ public static class CoordinateCommand
         // Resolved before the handler: it swallows the first signal, and a stdin read blocked here listens on no token.
         string? brief = BriefSource.TryResolve(briefText, briefFilePath, allowBareStdin: false);
 
-        // The first Ctrl-C or SIGTERM lets Runner kill the backend and write the `cancelled` receipt; a second one exits.
+        // The first Ctrl-C, SIGTERM or SIGHUP lets Runner kill the backend and write the `cancelled` receipt; a second Ctrl-C or SIGTERM exits.
         using CancelSignalHandler cancel = new();
 
         try
@@ -81,7 +81,7 @@ public static class CoordinateCommand
                 Overrides: overrides,
                 Stream: streamMode,
                 DiffCapBytes: RunCommand.CliDiffCapBytes,
-                OnStreamLine: streamMode ? Console.Error.WriteLine : null);
+                OnStreamLine: streamMode ? SafeConsole.Error : null);
 
             // Everything that can be refused happens before the job directory exists — bad flags, a
             // missing cast, a `gh` that failed — because JobDirectory.Create also prunes the job
@@ -96,7 +96,7 @@ public static class CoordinateCommand
             // Before the run, not with its receipt (#74 G1): a local edit the architect's worktree will not see
             // matters while the run can still be stopped. stderr, so `--json`'s stdout stays one document.
             foreach (string warning in plan.Warnings)
-                Console.Error.WriteLine($"warning: {warning}");
+                SafeConsole.Error($"warning: {warning}");
 
             // The job exists before the run does: its id is the budget tree every child the architect
             // spawns will join (docs/PLAN.md §D3), and the appendix prints it (DelegateRequest.JobIdToken).
@@ -114,6 +114,9 @@ public static class CoordinateCommand
                 (result, refusedExit) = (ex.Receipt, ExitCodes.Usage);
             }
 
+            // The receipt is on disk: a Windows console close need wait no longer.
+            cancel.Settled();
+
             RunResult output = rawMode ? result : result with { Raw = null };
 
             // Only a capped cast has a ledger at all (DelegateEngine builds no JobTreeBudget without
@@ -123,7 +126,7 @@ public static class CoordinateCommand
 
             if (jsonMode)
             {
-                Console.WriteLine(JsonSerializer.Serialize(output, ClaustrumJsonContext.Default.RunResult));
+                SafeConsole.Out(JsonSerializer.Serialize(output, ClaustrumJsonContext.Default.RunResult));
 
                 // stdout stays exactly one RunResult document, so the tree's numbers go to stderr —
                 // they are the other half of what this run cost (PrintHumanAsync).
@@ -136,6 +139,7 @@ public static class CoordinateCommand
         }
         catch (OperationCanceledException ex)
         {
+            cancel.Settled();
             return RunCommand.Cancelled(ex);
         }
     }
@@ -159,39 +163,39 @@ public static class CoordinateCommand
 
     private static async Task PrintHumanAsync(RunResult result, int exitCode, JobPaths job, bool capped)
     {
-        Console.WriteLine($"status: {result.Status} (exit {exitCode})");
-        Console.WriteLine($"job:    {job.Id}");
-        Console.WriteLine($"tree:   claustrum jobs budget {job.Id}");
-        Console.WriteLine($"logs:   claustrum jobs logs {job.Id}");
+        SafeConsole.Out($"status: {result.Status} (exit {exitCode})");
+        SafeConsole.Out($"job:    {job.Id}");
+        SafeConsole.Out($"tree:   claustrum jobs budget {job.Id}");
+        SafeConsole.Out($"logs:   claustrum jobs logs {job.Id}");
 
         // #74: in a repository the architect worked in its own worktree, so its work is on its branch,
         // not in the directory the reader is looking at — `run`'s three lines (F3).
         if (result.Branch is { } branch)
-            Console.WriteLine($"branch: {branch}");
+            SafeConsole.Out($"branch: {branch}");
         if (result.Worktree is { } worktree)
-            Console.WriteLine($"worktree: {worktree}");
+            SafeConsole.Out($"worktree: {worktree}");
         if (result.Commit is { } commit)
-            Console.WriteLine($"commit: {commit}");
+            SafeConsole.Out($"commit: {commit}");
 
         // Two amounts, still both: this one is what the backend reported for this run (`-` when it
         // reported nothing), the tree line below is the ledger total the architect's own entry is now
         // part of (issue #21). They differ exactly when a cost-less backend had the cap charged
         // instead (NOTES.md "M4 follow-ups…").
-        Console.WriteLine($"architect cost {(result.CostUsd is { } cost ? BudgetLedger.Dollars(cost) : "-")}");
+        SafeConsole.Out($"architect cost {(result.CostUsd is { } cost ? BudgetLedger.Dollars(cost) : "-")}");
         await WriteTreeCostAsync(job, Console.Out, capped);
 
         if (result.FinalMessage.Length > 0)
         {
-            Console.WriteLine();
-            Console.WriteLine(result.FinalMessage);
+            SafeConsole.Out();
+            SafeConsole.Out(result.FinalMessage);
         }
 
         // A refused commit of the architect's leftovers is a warning on the receipt, as for `run`.
         foreach (string warning in result.Warnings)
-            Console.Error.WriteLine($"warning: {warning}");
+            SafeConsole.Error($"warning: {warning}");
 
         if (result.Error is { Length: > 0 } error)
-            Console.Error.WriteLine($"error: {error}");
+            SafeConsole.Error($"error: {error}");
     }
 
     // The whole tree's spend: the children's entries plus the architect's own, which CoordinateEngine
@@ -204,7 +208,7 @@ public static class CoordinateCommand
     {
         if (!capped)
         {
-            writer.WriteLine("tree: unlimited (children not accounted)");
+            SafeConsole.WriteLine(writer, "tree: unlimited (children not accounted)");
             return;
         }
 
@@ -228,11 +232,11 @@ public static class CoordinateCommand
                     architect = $" (architect {BudgetLedger.Dollars(own.Entry.Cost ?? 0m)} included)";
             }
 
-            writer.WriteLine($"tree spent {BudgetLedger.Dollars(spent)}{architect}, reserved {BudgetLedger.Dollars(reserved)}");
+            SafeConsole.WriteLine(writer, $"tree spent {BudgetLedger.Dollars(spent)}{architect}, reserved {BudgetLedger.Dollars(reserved)}");
         }
         catch (Exception ex) when (ex is TimeoutException or IOException or UnauthorizedAccessException)
         {
-            writer.WriteLine($"tree: ledger unavailable ({ex.Message})");
+            SafeConsole.WriteLine(writer, $"tree: ledger unavailable ({ex.Message})");
         }
     }
 }

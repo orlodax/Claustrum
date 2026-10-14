@@ -86,6 +86,10 @@ public sealed class ProcessRunner(IPlatform platform)
             await process.WaitForExitAsync(CancellationToken.None);
         }
 
+        // The terminal's signal can kill the child before our handler cancels the token: a cancel, not a failed backend.
+        if (termination == ProcessTermination.Completed && SignalExit.IsCancelSignal(process.ExitCode) && await SignalExit.CancelArrivesAsync(cancellationToken))
+            termination = ProcessTermination.Cancelled;
+
         stopwatch.Stop();
         return new ProcessOutcome(process.ExitCode, stdout.ToString(), stderr.ToString(), termination, stopwatch.Elapsed);
     }
