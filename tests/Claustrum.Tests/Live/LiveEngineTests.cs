@@ -153,8 +153,10 @@ public sealed class LiveEngineTests
         Assert.DoesNotContain(LiveStatus.WaitingForInput, seen);
         ConversationEntry[] entries = job.Conversation();
         Assert.Equal([ConversationKind.Question, ConversationKind.Notice, ConversationKind.Message], entries.Select(entry => entry.Kind));
-        Assert.StartsWith("No human is available to answer.", entries[1].Text, StringComparison.Ordinal);
-        Assert.Contains("No human is available to answer.", job.Input()[1], StringComparison.Ordinal);
+        Assert.Equal(LiveSession.NoHumanNotice, entries[1].Text);
+        Assert.StartsWith("No human is available to answer now.", entries[1].Text, StringComparison.Ordinal);
+        Assert.Contains("stop with status needs_input", entries[1].Text, StringComparison.Ordinal);
+        Assert.Contains("No human is available to answer now.", job.Input()[1], StringComparison.Ordinal);
     }
 
     [Fact]

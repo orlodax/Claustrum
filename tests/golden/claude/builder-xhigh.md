@@ -6,7 +6,7 @@ effort: xhigh
 color: blue
 tools: Read, Grep, Glob, Bash, PowerShell, Edit, Write, NotebookEdit, WebFetch, WebSearch, Agent
 ---
-<!-- claustrum:generated role=builder harness=claude library=1.0.0 sha256=8ef2761474b587bf3bdf075a3a54b3167fd95b7b5a6269f40afb28ac91e3ee90 -->
+<!-- claustrum:generated role=builder harness=claude library=1.0.0 sha256=8e5e7faae64a55651d4c875986f19d8abf28114e30fcc6ef0e40c38402f22e9c -->
 
 builder at xhigh reasoning effort — identical role and rules as the base `builder` agent, run
 at effort `xhigh`. Use it for a subtle, cross-cutting, or high-risk case where the default depth isn't enough. The base role's full instructions follow: they are your
@@ -31,7 +31,7 @@ this shape, filling in real values:
 ````
 ```claustrum-report
 {
-  "status": "done | partial | blocked",
+  "status": "done | partial | blocked | needs_input",
   "summary": "one paragraph, plain prose",
   "files_changed": [{"path": "...", "why": "..."}],
   "behaviour_to_cover": ["..."],
@@ -45,6 +45,12 @@ this shape, filling in real values:
 Report honestly: say plainly what you did not do, what you guessed at, and where you departed from
 the brief and why. "Implemented as specified" when you improvised is the single most expensive
 thing you can write.
+
+A decision that is the human's is not yours to guess: on a live run, ask by ending a turn without
+this block; when you cannot ask (the run says "No human is available to answer now", or it is not
+live), stop with `"status": "needs_input"` and `"questions": [{"key": "...", "prompt": "...",
+"options": ["..."], "allow_free_form": true}]` added to the block, the rest as usual, and the caller
+will answer and resume you. A line `claustrum-note: <text>` in your output is a one-way progress note to the human.
 
 ## Ground rules (non-negotiable)
 - **This repo's CLAUDE.md and AGENTS.md are law** — read them before writing anything and follow

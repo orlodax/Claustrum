@@ -38,6 +38,15 @@ public sealed record FakeClaudeScript
     /// <summary>When set, the reply carries a `claustrum-report` fence with this `summary`.</summary>
     public string? Summary { get; init; }
 
+    /// <summary>
+    /// When set, the reply's `claustrum-report` fence holds exactly this JSON (a `needs_input` report with its `questions`, #124),
+    /// instead of <see cref="Summary"/>'s. May not hold a single quote or a line break.
+    /// </summary>
+    public string? ReportJson { get; init; }
+
+    /// <summary>When set, the one-shot reply names this `session_id`, so the job has a session `--resume` can continue.</summary>
+    public string? SessionId { get; init; }
+
     public bool Fail { get; init; }
 
     /// <summary>
@@ -64,8 +73,9 @@ public sealed record FakeClaudeScript
 /// <param name="SleepSeconds">How long the turn takes before its `result`: other messages queue on stdin meanwhile, as with the real thing.</param>
 /// <param name="ReadMidTurn">How many more stdin lines the turn blocks to read (and log) before its `result`: a message that arrives mid-turn, as the real claude takes it.</param>
 /// <param name="LingerSeconds">How long the process stays alive after the `result`, as a claude that is slow to exit once it has reported.</param>
+/// <param name="ReportJson">The exact JSON of the `claustrum-report` fence this turn ends with (a `needs_input` report), instead of <paramref name="Summary"/>'s; no single quote.</param>
 /// <param name="TotalCostUsd">The session's running cost at this turn's `result`; by default it rises per turn from claude's measured $0.2037 / $0.2278.</param>
-public sealed record FakeClaudeTurn(string Text, string? Summary = null, bool EchoReply = false, int SleepSeconds = 0, decimal? TotalCostUsd = null, int ReadMidTurn = 0, int LingerSeconds = 0)
+public sealed record FakeClaudeTurn(string Text, string? Summary = null, bool EchoReply = false, int SleepSeconds = 0, decimal? TotalCostUsd = null, int ReadMidTurn = 0, int LingerSeconds = 0, string? ReportJson = null)
 {
     public static FakeClaudeTurn Ask(string question, int sleepSeconds = 0) => new(question, SleepSeconds: sleepSeconds);
 
@@ -120,13 +130,19 @@ public static class FakeClaude
 
     private static string ReplyJson(FakeClaudeScript script)
     {
-        string result = script.Summary is { } summary
-            ? $"done\\n```claustrum-report\\n{{\\\"summary\\\":\\\"{summary}\\\"}}\\n```"
-            : "done";
+        string result = script.ReportJson is { } reportJson
+            ? $"done\\n```claustrum-report\\n{Escaped(reportJson)}\\n```"
+            : script.Summary is { } summary
+                ? $"done\\n```claustrum-report\\n{{\\\"summary\\\":\\\"{summary}\\\"}}\\n```"
+                : "done";
         string isError = script.Fail ? "true" : "false";
         string type = script.StreamLines.Length > 0 ? "\"type\":\"result\"," : "";
-        return "{" + type + "\"result\":\"" + result + "\",\"total_cost_usd\":0.01,\"is_error\":" + isError + "}";
+        string session = script.SessionId is { } id ? "\"session_id\":\"" + id + "\"," : "";
+        return "{" + type + session + "\"result\":\"" + result + "\",\"total_cost_usd\":0.01,\"is_error\":" + isError + "}";
     }
+
+    // A JSON document as the content of a JSON string: backslashes and quotes escaped.
+    private static string Escaped(string json) => json.Replace("\\", "\\\\", StringComparison.Ordinal).Replace("\"", "\\\"", StringComparison.Ordinal);
 
     private static string PosixText(FakeClaudeScript script)
     {
@@ -183,7 +199,9 @@ public static class FakeClaude
     // The two events a turn prints: an `assistant` message, then the `result` that closes it with the running totals.
     private static string TurnCommands(FakeClaudeTurn turn, int index)
     {
-        string report = turn.Summary is { } summary ? $"\\n```claustrum-report\\n{{\\\"summary\\\":\\\"{summary}\\\"}}\\n```" : "";
+        string report = turn.ReportJson is { } reportJson
+            ? $"\\n```claustrum-report\\n{Escaped(reportJson)}\\n```"
+            : turn.Summary is { } summary ? $"\\n```claustrum-report\\n{{\\\"summary\\\":\\\"{summary}\\\"}}\\n```" : "";
         string cost = (turn.TotalCostUsd ?? 0.2037m + 0.0241m * index).ToString(System.Globalization.CultureInfo.InvariantCulture);
         string head = "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"session_id\":\"fake-session\",\"num_turns\":1,\"result\":\"" + turn.Text;
         string echo = turn.EchoReply ? " you said: '\"$said\"'" : "";

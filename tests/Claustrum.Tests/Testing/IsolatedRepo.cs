@@ -97,6 +97,17 @@ public sealed class IsolatedRepo : IDisposable
         return (process, document.RootElement.Clone());
     }
 
+    /// <summary>`claustrum coordinate --resume &lt;job&gt; --json` plus <paramref name="extraArgs"/> (#124 stage 3b), with stdout parsed when it is one document.</summary>
+    public async Task<(CliResult Process, JsonElement? Result)> CoordinateResumeAsync(string jobId, params string[] extraArgs)
+    {
+        CliResult process = await RunAsync(["coordinate", "--resume", jobId, "--json", .. extraArgs]);
+        if (process.Stdout.Trim().Length == 0)
+            return (process, null);
+
+        using JsonDocument document = JsonDocument.Parse(process.Stdout);
+        return (process, document.RootElement.Clone());
+    }
+
     /// <summary>The job directories under this home: what a refused `coordinate` must leave empty.</summary>
     public string[] JobDirectories() =>
         Directory.Exists(JobsRoot) ? [.. Directory.GetDirectories(JobsRoot).Select(Path.GetFileName).OfType<string>()] : [];
