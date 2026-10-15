@@ -76,7 +76,7 @@ public static class InitCommand
     {
         string cwd = Environment.CurrentDirectory;
         Config config = Config.Load(AppServices.Platform, cwd);
-        HashSet<string> definedAliases = UserDefinedAliases(config);
+        IReadOnlySet<string> definedAliases = config.UserModelAliases;
         string userPath = config.UserConfigPath;
 
         List<CastQuestion> questions = [];
@@ -274,7 +274,7 @@ public static class InitCommand
     // Returns null on success, or an error message.
     private static string? MergeIntoUserConfig(string userPath, Dictionary<string, string> answers, Config config, IPlatform platform)
     {
-        HashSet<string> userDefined = UserDefinedAliases(config);
+        IReadOnlySet<string> userDefined = config.UserModelAliases;
 
         // Filter to only missing aliases
         Dictionary<string, string> toWrite = [];
@@ -320,7 +320,7 @@ public static class InitCommand
 
         // Merge
         Dictionary<string, string> models = new(existingDoc.Models ?? []);
-        // TryAdd: a repo claustrum.json can shadow a user alias in Origins, but the file's own entry is never overwritten.
+        // TryAdd: the user file's own entry is never overwritten.
         foreach ((string alias, string value) in toWrite)
             models.TryAdd(alias, value);
 
@@ -419,7 +419,7 @@ public static class InitCommand
     // Ask missing aliases interactively on the terminal (synchronous, like cast new's AskUntilSupported).
     private static string? AskAndWriteMissingAliasesInteractive(string userPath, Config config)
     {
-        HashSet<string> userDefined = UserDefinedAliases(config);
+        IReadOnlySet<string> userDefined = config.UserModelAliases;
 
         Dictionary<string, string> answers = [];
         foreach ((string alias, string defaultValue) in BuiltInDefaults())
@@ -454,23 +454,9 @@ public static class InitCommand
         ["fast"] = "claude:haiku",
     };
 
-    // "Defined" means defined in the user config. Merged.Models always holds the built-ins, so asking it makes
-    // every alias look answered (2026-10-15, F3): the origin layer is the test, here and nowhere else.
-    private static HashSet<string> UserDefinedAliases(Config config)
-    {
-        HashSet<string> defined = [];
-        foreach ((string key, ConfigLayer layer) in config.Origins)
-        {
-            if (key.StartsWith("models.", StringComparison.Ordinal) && layer == ConfigLayer.User)
-                defined.Add(key["models.".Length..]);
-        }
-
-        return defined;
-    }
-
     private static int CountMissingAliases(Config config)
     {
-        HashSet<string> userDefined = UserDefinedAliases(config);
+        IReadOnlySet<string> userDefined = config.UserModelAliases;
 
         int count = 0;
         foreach (string alias in BuiltInDefaults().Keys)

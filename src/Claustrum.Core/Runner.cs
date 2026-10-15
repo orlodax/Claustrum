@@ -123,12 +123,14 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
         // Wrap OnStreamLine with the backend's stream formatter when --stream is active
         // and not in raw mode.
         Action<string>? streamLine = options.OnStreamLine;
-        if (streamLine is not null && !options.StreamRaw && backend.CreateStreamFormatter(request.Cwd) is { } formatter)
+        // Own local: a lambda that called `streamLine` would capture the variable it is assigned to and recurse into itself.
+        Action<string>? writeLine = streamLine;
+        if (writeLine is not null && !options.StreamRaw && backend.CreateStreamFormatter(request.Cwd) is { } formatter)
             streamLine = rawLine =>
             {
                 string? formatted = formatter.FormatLine(rawLine);
                 if (formatted is not null)
-                    streamLine(formatted);
+                    writeLine(formatted);
             };
         RunOptions runOptions = options with { OnStreamLine = streamLine };
 

@@ -24,6 +24,10 @@ public sealed class Config
     // messages name real paths instead of re-walking the git root for every caller (CLI and MCP).
     public string UserConfigPath { get; init; } = "";
 
+    // The model aliases the user file itself defines. Origins keeps only the winning layer per key, so a repo
+    // claustrum.json overriding an alias hides it there, and Merged.Models always holds the built-ins: "defined by the user" is answered from this set (2026-10-15).
+    public IReadOnlySet<string> UserModelAliases { get; init; } = new HashSet<string>();
+
     /// <summary>The repo's <c>claustrum.json</c>, or null when there is no git root or no such file.</summary>
     public string? RepoConfigPath { get; init; }
 
@@ -57,8 +61,14 @@ public sealed class Config
         ConfigDocument merged = TrackDefaults(BuiltInDefaults(), ConfigLayer.Builtin, origins);
 
         string userPath = UserConfigFilePath(platform);
+        HashSet<string> userModelAliases = [];
         if (platform.FileExists(userPath))
-            merged = MergeLayer(merged, ReadDocument(platform, userPath), ConfigLayer.User, origins);
+        {
+            ConfigDocument userDocument = ReadDocument(platform, userPath);
+            if (userDocument.Models is { } userModels)
+                userModelAliases.UnionWith(userModels.Keys);
+            merged = MergeLayer(merged, userDocument, ConfigLayer.User, origins);
+        }
 
         string? gitRoot = cwd is null ? null : GitRootLocator.Find(cwd, platform);
         string? repoPath = null;
@@ -76,7 +86,7 @@ public sealed class Config
         if (ReadEnvLayer(platform) is { } envLayer)
             merged = MergeLayer(merged, envLayer, ConfigLayer.Env, origins);
 
-        return new Config { Merged = merged, Origins = origins, UserConfigPath = userPath, RepoConfigPath = repoPath, RepoPath = repoCandidate };
+        return new Config { Merged = merged, Origins = origins, UserConfigPath = userPath, UserModelAliases = userModelAliases, RepoConfigPath = repoPath, RepoPath = repoCandidate };
     }
 
     // Model class -> alias -> "[backend:]model-id" (docs/PLAN.md A7); role.json's Permission

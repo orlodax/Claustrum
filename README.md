@@ -87,12 +87,12 @@ committable and shared:
 
 ```json
 { "name": "default", "library": "1.0.0",
-  "architect": { "mode": "host", "model": null, "tier": null },
+  "architect": { "mode": "host", "model": null, "tier": null, "resolved": null },
   "roles": {
-    "builder":       { "model": "opencode:openrouter/deepseek/deepseek-v4-pro", "backend": null, "tier": null, "max_parallel": 3 },
-    "code-reviewer": { "model": "claude:opus", "backend": null, "tier": "xhigh", "max_parallel": null },
+    "builder":       { "model": "opencode:openrouter/deepseek/deepseek-v4-pro", "backend": null, "tier": null, "max_parallel": 3, "resolved": null },
+    "code-reviewer": { "model": "claude:opus", "backend": null, "tier": "xhigh", "max_parallel": null, "resolved": null },
     "demo-author":   null,
-    "tester":        { "model": "opencode:openrouter/deepseek/deepseek-v4-flash", "backend": null, "tier": null, "max_parallel": null },
+    "tester":        { "model": "opencode:openrouter/deepseek/deepseek-v4-flash", "backend": null, "tier": null, "max_parallel": null, "resolved": null },
     "ui-reviewer":   null },
   "budget_usd": 10 }
 ```
