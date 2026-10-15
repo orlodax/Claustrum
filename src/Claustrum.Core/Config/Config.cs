@@ -28,6 +28,9 @@ public sealed class Config
     // claustrum.json overriding an alias hides it there, and Merged.Models always holds the built-ins: "defined by the user" is answered from this set (2026-10-15).
     public IReadOnlySet<string> UserModelAliases { get; init; } = new HashSet<string>();
 
+    // The same for the repo's claustrum.json: a committed alias wins at run time, so `init` has nothing to ask for it.
+    public IReadOnlySet<string> RepoModelAliases { get; init; } = new HashSet<string>();
+
     /// <summary>The repo's <c>claustrum.json</c>, or null when there is no git root or no such file.</summary>
     public string? RepoConfigPath { get; init; }
 
@@ -73,20 +76,24 @@ public sealed class Config
         string? gitRoot = cwd is null ? null : GitRootLocator.Find(cwd, platform);
         string? repoPath = null;
         string? repoCandidate = null;
+        HashSet<string> repoModelAliases = [];
         if (gitRoot is not null)
         {
             repoCandidate = Path.Combine(gitRoot, "claustrum.json");
             if (platform.FileExists(repoCandidate))
             {
                 repoPath = repoCandidate;
-                merged = MergeLayer(merged, ReadDocument(platform, repoPath), ConfigLayer.Repo, origins);
+                ConfigDocument repoDocument = ReadDocument(platform, repoPath);
+                if (repoDocument.Models is { } repoModels)
+                    repoModelAliases.UnionWith(repoModels.Keys);
+                merged = MergeLayer(merged, repoDocument, ConfigLayer.Repo, origins);
             }
         }
 
         if (ReadEnvLayer(platform) is { } envLayer)
             merged = MergeLayer(merged, envLayer, ConfigLayer.Env, origins);
 
-        return new Config { Merged = merged, Origins = origins, UserConfigPath = userPath, UserModelAliases = userModelAliases, RepoConfigPath = repoPath, RepoPath = repoCandidate };
+        return new Config { Merged = merged, Origins = origins, UserConfigPath = userPath, UserModelAliases = userModelAliases, RepoModelAliases = repoModelAliases, RepoConfigPath = repoPath, RepoPath = repoCandidate };
     }
 
     // Model class -> alias -> "[backend:]model-id" (docs/PLAN.md A7); role.json's Permission

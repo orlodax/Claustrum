@@ -76,18 +76,18 @@ public static class InitCommand
     {
         string cwd = Environment.CurrentDirectory;
         Config config = Config.Load(AppServices.Platform, cwd);
-        IReadOnlySet<string> definedAliases = config.UserModelAliases;
+        HashSet<string> definedAliases = DefinedAliases(config);
         string userPath = config.UserConfigPath;
 
         List<CastQuestion> questions = [];
         foreach ((string alias, string defaultValue) in BuiltInDefaults())
         {
-            // Only ask about aliases the user config does not define yet.
+            // Only ask about aliases neither the user config nor the repo's claustrum.json defines.
             if (definedAliases.Contains(alias))
                 continue;
 
             // Options: built-in default target first, then distinct targets from aliases already
-            // defined in the user config (not built-in ones).
+            // defined in the user config or the repo's claustrum.json (not built-in ones).
             HashSet<string> options = [defaultValue];
             foreach (string defined in definedAliases)
                 options.Add(config.Merged.Models?.GetValueOrDefault(defined) ?? defaultValue);
@@ -126,33 +126,36 @@ public static class InitCommand
 
         if (answersPath is { Length: > 0 })
         {
-            IPlatform platform = AppServices.Platform;
-            string? error = WriteAnswers(userPath, answersPath, platform, config);
+            string? error = WriteAnswers(userPath, answersPath, AppServices.Platform, config);
             if (error is not null)
             {
                 Console.Error.WriteLine($"error: {error}");
                 return ExitCodes.Usage;
             }
+
+            // Reloaded before syncing: the agents are rendered with the aliases just written, and a partial
+            // answers file is not an initialized repo (2026-10-15, review 2).
+            config = LoadConfig(cwd);
+            missingCount = CountMissingAliases(config);
         }
-        else if (missingCount > 0)
+        else if (missingCount > 0 && !Console.IsInputRedirected)
         {
-            if (!Console.IsInputRedirected)
+            // Ask on the terminal, re-asking invalid answers as `cast new` does.
+            string? writeError = AskAndWriteMissingAliasesInteractive(userPath, config);
+            if (writeError is not null)
             {
-                // Ask on the terminal, re-asking invalid answers as `cast new` does.
-                string? writeError = AskAndWriteMissingAliasesInteractive(userPath, config);
-                if (writeError is not null)
-                {
-                    Console.Error.WriteLine($"error: {writeError}");
-                    return ExitCodes.Usage;
-                }
-                // Reload config now that the user config has new aliases
-                config = LoadConfig(cwd);
-            }
-            else
-            {
-                Console.Error.WriteLine($"model aliases: {missingCount} missing from {userPath}; answer `claustrum init questions --json` and run `claustrum init --answers <file>`");
+                Console.Error.WriteLine($"error: {writeError}");
                 return ExitCodes.Usage;
             }
+
+            config = LoadConfig(cwd);
+            missingCount = CountMissingAliases(config);
+        }
+
+        if (missingCount > 0)
+        {
+            Console.Error.WriteLine($"model aliases: {missingCount} missing from {userPath}; answer `claustrum init questions --json` and run `claustrum init --answers <file>`");
+            return ExitCodes.Usage;
         }
 
         // --- Scaffold ---
@@ -419,12 +422,12 @@ public static class InitCommand
     // Ask missing aliases interactively on the terminal (synchronous, like cast new's AskUntilSupported).
     private static string? AskAndWriteMissingAliasesInteractive(string userPath, Config config)
     {
-        IReadOnlySet<string> userDefined = config.UserModelAliases;
+        HashSet<string> defined = DefinedAliases(config);
 
         Dictionary<string, string> answers = [];
         foreach ((string alias, string defaultValue) in BuiltInDefaults())
         {
-            if (userDefined.Contains(alias))
+            if (defined.Contains(alias))
                 continue;
 
             Console.Error.WriteLine($"{alias}: {builtInClasses.GetValueOrDefault(alias, "model alias")}");
@@ -454,17 +457,13 @@ public static class InitCommand
         ["fast"] = "claude:haiku",
     };
 
+    // Missing means defined by neither layer: a committed claustrum.json alias already wins at run time.
+    private static HashSet<string> DefinedAliases(Config config) => [.. config.UserModelAliases, .. config.RepoModelAliases];
+
     private static int CountMissingAliases(Config config)
     {
-        IReadOnlySet<string> userDefined = config.UserModelAliases;
-
-        int count = 0;
-        foreach (string alias in BuiltInDefaults().Keys)
-        {
-            if (!userDefined.Contains(alias))
-                count++;
-        }
-        return count;
+        HashSet<string> defined = DefinedAliases(config);
+        return BuiltInDefaults().Keys.Count(alias => !defined.Contains(alias));
     }
 
     // Creates the three directories, or none: null when they now exist, otherwise the real path of the first
