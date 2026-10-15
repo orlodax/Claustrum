@@ -118,7 +118,7 @@ public sealed class Config
 
         RecordFlagOrigins(role.Name, overrides);
 
-        return new ResolvedRole(role.Name, role.SystemBody, backend, modelId, effort, new PermissionPolicy(level, deny), role.Blind, role.ReportSchema is { Length: > 0 }, role.Warnings);
+        return new ResolvedRole(role.Name, role.SystemBody, backend, modelId, effort, new PermissionPolicy(level, deny), role.Blind, role.ReportSchema is { Length: > 0 }, role.Warnings, roleSettings?.UserMcp ?? false);
     }
 
     // Exposes the alias chase for callers that only have a bare model spec, not a role — the cast
@@ -291,6 +291,8 @@ public sealed class Config
             origins[$"roles.{name}.effort"] = layer;
         if (incoming.Permission is not null)
             origins[$"roles.{name}.permission"] = layer;
+        if (incoming.UserMcp is not null)
+            origins[$"roles.{name}.user_mcp"] = layer;
 
         string[]? deny = existing?.Deny;
         if (incoming.Deny is { Length: > 0 })
@@ -299,7 +301,7 @@ public sealed class Config
             origins[$"roles.{name}.deny"] = layer;
         }
 
-        return new RoleSettings(incoming.Model ?? existing?.Model, incoming.Effort ?? existing?.Effort, incoming.Permission ?? existing?.Permission, deny);
+        return new RoleSettings(incoming.Model ?? existing?.Model, incoming.Effort ?? existing?.Effort, incoming.Permission ?? existing?.Permission, deny, incoming.UserMcp ?? existing?.UserMcp);
     }
 
     private static BackendConfig MergeBackend(BackendConfig? existing, BackendConfig incoming, string name, ConfigLayer layer, Dictionary<string, ConfigLayer> origins)

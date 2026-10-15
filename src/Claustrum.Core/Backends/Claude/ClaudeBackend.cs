@@ -48,6 +48,15 @@ public sealed class ClaudeBackend(IPlatform platform) : IBackend
         args.AddRange(["--output-format", "stream-json", "--verbose"]);
         args.AddRange(["--model", run.Role.Model]);
         args.AddRange(["--append-system-prompt-file", run.SystemPromptFilePath]);
+
+        // #128: without --strict-mcp-config every role loaded the operator's user-level servers (~12k cache-creation
+        // tokens a turn, and personal connectors on a headless run). `user_mcp: true` is the opt-back-in.
+        McpSelection mcp = run.Role.UserMcp ? new McpSelection(null, [ClaudeMcpConfig.UserServers]) : ClaudeMcpConfig.Select(platform, run.Cwd, run.JobDirectory);
+        if (!run.Role.UserMcp)
+            args.Add("--strict-mcp-config");
+        if (mcp.ConfigPath is not null)
+            args.AddRange(["--mcp-config", mcp.ConfigPath]);
+
         args.AddRange(PermissionArgs(run.Role.Permission));
 
         // Spawned by `coordinate` (§D3): a native subagent would run outside the cast and outside
@@ -73,7 +82,7 @@ public sealed class ClaudeBackend(IPlatform platform) : IBackend
 
         // On argv the brief showed in every process listing: a `pgrep -f` pattern a brief quoted matched
         // the job running it (#68, measured 2026-10-08). Stdin also lifts the argv length cap.
-        return new ProcessSpec(Name, [.. args], run.Cwd, run.Env, [], StdinText: run.Brief);
+        return new ProcessSpec(Name, [.. args], run.Cwd, run.Env, [], StdinText: run.Brief, McpServers: mcp.Servers, Warnings: mcp.Warning is { } warning ? [warning] : null);
     }
 
     public ParsedOutput Parse(string stdout, string stderr, int exitCode)

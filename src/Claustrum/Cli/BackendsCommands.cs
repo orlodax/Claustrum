@@ -321,6 +321,8 @@ public static class BackendsCommands
                 PrintLine(config, $"roles.{roleName}.permission", settings.Permission);
             if (settings.Deny is { Length: > 0 })
                 PrintLine(config, $"roles.{roleName}.deny", string.Join(", ", settings.Deny));
+            if (settings.UserMcp is { } userMcp)
+                PrintLine(config, $"roles.{roleName}.user_mcp", userMcp ? "true" : "false");
         }
 
         foreach ((string backendName, BackendConfig backendConfig) in config.Merged.Backends ?? [])

@@ -427,6 +427,8 @@ Layers, later wins per key, `deny` lists concatenate:
 `sync` reads the same layers (§12): `models` aliases, and `roles.<name>.model|effort|deny`, decide the synced
 agent files. `sync --global` reads only the user file, never the repo's `claustrum.json`.
 
+`roles.<name>.user_mcp` (`true`/`false`, default `false`) keeps a claude role's user-level MCP servers (§13).
+
 `backends.<name>` takes `path` only. There was an `injection` key once; nothing ever read it and it was
 removed (#56), so a config that still carries it loads, the key ignored like any other unknown one — `claude`
 always injects with `--append-system-prompt-file`. There is no JSON schema file, and a key Claustrum does
@@ -859,6 +861,15 @@ end, call `coordinate` and relay `job_status`.
 | `copilot` | `npm i -g @github/copilot` | logged in (`~/.copilot/config.json`) or `COPILOT_GITHUB_TOKEN`/`GH_TOKEN`/`GITHUB_TOKEN` | per-job `.agent.md` via `--add-dir`, agent `claustrum-<role>` | **none** (`assistant.usage` is suppressed in JSON mode); `--reasoning-effort` is omitted for `auto` |
 | `api` | `curl` | `OPENROUTER_API_KEY` / `ANTHROPIC_API_KEY` by model prefix | system message (with `AGENTS.md`/`CLAUDE.md` inlined, §4); **no tools**, `changed_files` always empty | yes |
 
+**MCP servers on `claude`.** A claude role runs with `--strict-mcp-config`: it gets the servers of the working
+directory's own `.mcp.json` (what `sync` writes: `claustrum` and any browser server) and nothing from your user
+config, so your personal connectors are not attached to headless runs and do not cost tokens on every turn. A
+`.mcp.json` that is a link leaving the directory, a pipe or device, or not valid JSON is refused with a warning on the
+receipt, and the run then has no MCP servers. To keep your user-level servers for a role, set
+`"roles": { "<role>": { "user_mcp": true } }` in `claustrum.json` or the user config. The servers a run was given are
+in the job's `backend.json` (`mcp_servers`; `["user"]` when opted in). `opencode` has no way to leave its global
+config out of a run, so its roles still see those servers.
+
 Permission levels and what each backend does with them:
 
 | Level | Roles | `claude` | `opencode` | `cursor` | `copilot` |
@@ -892,6 +903,7 @@ warns when binary and working directory straddle that line.
 
 `~/.claustrum/jobs/<job id>/` (`CLAUSTRUM_HOME` overrides the root): `request.json`, `system.md`
 (the exact system body the role got — the first place to look when a role misbehaves),
+`backend.json` (backend, model, and for claude the `mcp_servers` the run had, with `mcp.json`, the copy it loaded),
 `stdout.log`, `stderr.log`, `result.json`. `jobs.keep_last` (200) prunes old ones when a new job is
 created. Budget ledgers live beside them under `budget/<tree>/`.
 

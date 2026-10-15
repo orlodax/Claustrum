@@ -6092,3 +6092,28 @@ A blind review ran the built binary in a pty under `bash -i` and with group sign
 - **A Windows console close after an earlier signal did not wait.** `OnHangup` returned before `settled.Wait` when the
   compare-exchange failed, so a close after a Ctrl-C or SIGTERM ended the process unreceipted. Now every SIGHUP waits on `settled`
   (4 s) on Windows; only the first still cancels and writes the hint. **Not run on Windows.**
+
+## A claude role gets the repo's MCP servers, not the operator's (2026-10-15, issue #128)
+
+- **Measured.** `claude -p` without `--strict-mcp-config` loaded every user-level MCP server of the operator (on the
+  owner's machine: Gmail, Microsoft 365, Supermetrics, Ryanair, Desktop Commander and a dozen plugin servers). A one-word
+  haiku prompt in a temp repo: **41,348** cache-creation tokens by default, **29,523** with `--strict-mcp-config`: ~12k extra
+  tokens on every turn of every claude role, and personal connectors reachable from headless runs (Shell and Full leave MCP
+  tools open on purpose).
+- **Now.** Every claude run gets `--strict-mcp-config`; with the working directory's `.mcp.json` (the worktree for an isolated
+  run) it also gets `--mcp-config <job>/mcp.json`, a COPY of the file made after it was judged, so the bytes checked are the
+  bytes loaded. Refused, with a warning on the receipt and no servers: a FIFO/device/socket (`PlainFile`), a file that does
+  not parse, a link that leaves the working directory. Links are walked by hand on the raw text: a `..` in a link is refused
+  (a resolved path would collapse `sub/../x` before the directory link `sub` was looked at), every hop must stay under the
+  cwd, no directory below it on the way may be a link, and an absolute target spelled through a link to the cwd is refused
+  too (the safe side). Hard links are not judged: unlike the api backend's inlining, nothing here is put in a prompt.
+- **Opt back in:** `roles.<role>.user_mcp: true`. Then `--strict-mcp-config` is not passed and claude loads what it did
+  before (user servers plus the project's `.mcp.json`). Record: `backend.json` gets `mcp_servers` (`["user"]` when opted in);
+  `system.md` is the prompt claude receives, so it is not touched. `request.json` is unchanged.
+- **opencode (checked 2026-10-15 on 2.0.12, no model call):** no clean equivalent. The global `~/.config/opencode` config is
+  merged into every run, `OPENCODE_CONFIG_CONTENT` (which Claustrum already sets) is merged on top and cannot remove a
+  server, and the only switches found in the binary (`OPENCODE_CONFIG_PROJECT_DISABLE`, `OPENCODE_DISABLE_PROJECT_CONFIG`)
+  turn off the PROJECT config, the opposite of what is wanted. Naming the global servers with `enabled: false` would mean
+  reading and guessing at the user's config; moving `XDG_CONFIG_HOME` would take the auth with it. Left as it is.
+- **Not measured:** `--strict-mcp-config` with no `--mcp-config` at all (a repo with no `.mcp.json`) was exercised against a
+  fake `claude` only, never the real binary, since that needs a model call.
