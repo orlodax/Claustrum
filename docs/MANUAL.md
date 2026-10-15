@@ -94,6 +94,12 @@ claustrum run <role> [--brief <text> | --brief-file <path|->]
 - `--cast` defaults to `.claustrum/casts/default.json` when that file exists. A cast role with a
   numeric `max_parallel` — 1 included — caps how many of its runs go at once; above 1, **every**
   builder run gets its own worktree and branch (§9).
+  When the model came from the cast (no `--model` or `--backend` flag), `run` warns via
+  `warnings[]` in the result and on stderr if the alias silently fell through to a built-in
+  default (`no claustrum.json or user config defines it`), or if the alias's stored `resolved`
+  value no longer matches what it resolves to now — so an alias that once meant one model and
+  now means another is never invisible. An explicit `--model`/`--backend` flag suppresses both
+  warnings for that role.
 - `--branch <name>` runs isolated in a new worktree checked out on that **existing local branch**,
   whatever the cast's `max_parallel` — e.g. `--branch claustrum/<job id>` to send a reviewed
   builder's branch back for a fix (§9). Two runs on one branch run one after the other: the second
@@ -447,6 +453,12 @@ committable, shared with the team:
 - `budget_usd: null` disables the cap (`cast show` prints it as `"budget_usd": null`); a per-call
   `--budget` still applies.
 - Per-call `--model`/`--backend`/`--tier` flags override the cast for that call.
+- Each role entry and `architect` may carry an optional `resolved` field,
+  `"backend:model-id"` — what the alias resolved to when the cast was created or last
+  edited. Filled automatically by `cast create`/`cast new`/`cast_create`; saved before
+  this change do not have it and still load. If the config changes so the same alias
+  resolves differently later, `run` warns: `cast '<name>' role '<role>': alias '<alias>'
+  resolved to <stored> when the cast was created, now to <current> (<source>)`.
 - A cast is never read, written or listed through a link that leaves the working directory (the fence
   of `sync`, §12): `cast new`/`create`/`use`/`show`/`list`, `cast_create` and `run`/`delegate` refuse with
   exit 2, naming the file and where it really leads (the fence decides before any existence check; a link out
@@ -456,7 +468,12 @@ committable, shared with the team:
 **The questionnaire** is owned by the tool so it is identical in every host: `claustrum cast
 questions --json` returns one question per library role, then the builders' parallel cap and the
 budget, with their live options (the aliases in `claustrum.json` that land on a harness the role
-lists; `not needed` where allowed; free-form `backend:id`; `no cap` for the budget):
+lists; `not needed` where allowed; free-form `backend:id`; `no cap` for the budget). The returned
+JSON also includes a `models` array: one entry per alias in the merged config with its current
+`target` (`backend:model-id`), the `layer` it came from (`builtin|user|repo|env`) and a
+human-readable `source`. Text mode prints this table before the questions, one line per alias, so
+the alias → model mapping (and a silent built-in fallback) is visible up front. A built-in alias
+shows `(built-in default — no claustrum.json or user config defines it)` as its source.
 
 | key | prompt | allows |
 |---|---|---|

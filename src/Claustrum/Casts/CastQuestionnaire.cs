@@ -29,6 +29,13 @@ public static class CastQuestionnaire
             .Select(entry => entry.Key)
             .OrderBy(name => name, StringComparer.Ordinal)];
 
+        // #121: show every alias in the merged config and what it resolves to, before the questions.
+        // Text mode prints this table; JSON readers (the skill, the MCP caller) get it as a first-class
+        // array.
+        CastModelOption[] models = [.. (config.Merged.Models ?? [])
+            .Select(entry => ToModelOption(entry.Key, config))
+            .OrderBy(m => m.Alias, StringComparer.Ordinal)];
+
         // A role is offered only the aliases that land on a harness its role.json lists (#43): the
         // demo-author and ui-reviewer are claude-only, and `run` refuses them anywhere else. Free-form
         // answers stay open, so the prompt says where the role runs.
@@ -97,6 +104,15 @@ public static class CastQuestionnaire
             AllowNotNeeded: false,
             AllowFreeForm: true));
 
-        return new CastQuestionnaireResult([.. questions], CastStore.ListNames(cwd));
+        return new CastQuestionnaireResult([.. questions], CastStore.ListNames(cwd), models);
+    }
+
+    private static string LayerName(ConfigLayer? layer) => layer?.ToString().ToLowerInvariant() ?? "";
+
+    // #121: one row per alias — all the claustrum.json models, built-in defaults included.
+    private static CastModelOption ToModelOption(string alias, Config config)
+    {
+        ModelResolution r = config.Describe(alias);
+        return new CastModelOption(alias, $"{r.Backend}:{r.ModelId}", LayerName(r.Layer), r.Source ?? CastModelLines.BuiltinNote);
     }
 }

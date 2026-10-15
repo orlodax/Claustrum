@@ -1,10 +1,13 @@
 using System.Globalization;
+using Claustrum.Core.Config;
 
 namespace Claustrum.Casts;
 
 // Turns questionnaire answers (docs/PLAN.md §D2 — one string per CastQuestion.Key) into a Cast.
 // Pure and AppServices-free: `library` is the caller's AppServices.RoleLibrary.Version, not read
 // here, so this stays unit-testable without the embedded role library.
+// WithResolved is the one method that needs Config — it is called by the CLI/MCP commands, not by
+// tests or library callers, so Config.Describe is not a dependency of FromAnswers itself.
 public static class CastBuilder
 {
     public const string NotNeeded = "not needed";
@@ -89,4 +92,30 @@ public static class CastBuilder
             ? value
             : throw new CastException($"budget answer '{answer}' is neither a number nor '{NoCap}'");
     }
+
+    // #121: record what each role's alias (or free-form spec) resolved to at creation time, so
+    // `run` can warn later when the config has moved it. Calls Config.Describe for every role and
+    // the architect that carries a model. A free-form 'backend:model-id' resolves to itself, which
+    // is why its Resolved field matches the string the user typed.
+    public static Cast WithResolved(Cast cast, Config config)
+    {
+        Dictionary<string, CastRoleEntry?> roles = [];
+        foreach ((string role, CastRoleEntry? entry) in cast.Roles)
+        {
+            if (entry?.Model is not { } alias)
+            {
+                roles[role] = entry;
+                continue;
+            }
+            roles[role] = entry with { Resolved = Target(config.Describe(alias)) };
+        }
+
+        CastArchitect architect = cast.Architect.Model is { } architectAlias
+            ? cast.Architect with { Resolved = Target(config.Describe(architectAlias)) }
+            : cast.Architect;
+
+        return cast with { Roles = roles, Architect = architect };
+    }
+
+    public static string Target(ModelResolution r) => $"{r.Backend}:{r.ModelId}";
 }

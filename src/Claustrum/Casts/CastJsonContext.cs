@@ -7,5 +7,6 @@ namespace Claustrum.Casts;
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.SnakeCaseLower, WriteIndented = true)]
 [JsonSerializable(typeof(Cast))]
 [JsonSerializable(typeof(CastQuestionnaireResult))]
+[JsonSerializable(typeof(CastModelOption))]
 [JsonSerializable(typeof(Dictionary<string, string>))]
 public sealed partial class CastJsonContext : JsonSerializerContext;

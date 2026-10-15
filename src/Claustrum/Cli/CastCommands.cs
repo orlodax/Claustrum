@@ -53,6 +53,17 @@ public static class CastCommands
         if (result.ExistingCasts.Length > 0)
             Console.WriteLine($"existing casts: {string.Join(", ", result.ExistingCasts)} (reuse one instead?)");
 
+        if (result.Models is { Length: > 0 } models)
+        {
+            Console.WriteLine("models:");
+            foreach (CastModelOption m in models)
+            {
+                string note = m.Layer == "builtin" ? CastModelLines.BuiltinNote : m.Source;
+                Console.WriteLine($"  {m.Alias} → {m.Target} ({note})");
+            }
+            Console.WriteLine();
+        }
+
         foreach (CastQuestion question in result.Questions)
         {
             Console.WriteLine($"{question.Key}: {question.Prompt}");
@@ -73,6 +84,17 @@ public static class CastCommands
         if (questionnaire.ExistingCasts.Length > 0)
             Console.WriteLine($"existing casts: {string.Join(", ", questionnaire.ExistingCasts)}");
 
+        if (questionnaire.Models is { Length: > 0 } models)
+        {
+            Console.WriteLine("models:");
+            foreach (CastModelOption m in models)
+            {
+                string note = m.Layer == "builtin" ? CastModelLines.BuiltinNote : m.Source;
+                Console.WriteLine($"  {m.Alias} → {m.Target} ({note})");
+            }
+            Console.WriteLine();
+        }
+
         Dictionary<string, string> answers = [];
         foreach (CastQuestion question in questionnaire.Questions)
         {
@@ -82,10 +104,12 @@ public static class CastCommands
         }
 
         Cast cast = CastBuilder.FromAnswers(name, AppServices.RoleLibrary.Version, AppServices.RoleLibrary.ListRoles(), answers);
+        cast = CastBuilder.WithResolved(cast, config);
         CastHarnessCheck.Require(cast, AppServices.RoleLibrary, AppServices.Backends, config, cwd);
         CastStore.Save(cwd, cast);
 
         Console.WriteLine(CastStore.PathFor(cwd, name));
+        PrintModelLines(cast, config);
         return ExitCodes.Ok;
     }
 
@@ -93,11 +117,13 @@ public static class CastCommands
     {
         string cwd = Environment.CurrentDirectory;
         Dictionary<string, string> answers = CastAnswers.Read(answersPath);
-        Cast cast = CastBuilder.FromAnswers(name, AppServices.RoleLibrary.Version, AppServices.RoleLibrary.ListRoles(), answers);
-        CastHarnessCheck.Require(cast, AppServices.RoleLibrary, AppServices.Backends, Config.Load(AppServices.Platform, cwd), cwd);
+        Config config = Config.Load(AppServices.Platform, cwd);
+        Cast cast = CastBuilder.WithResolved(CastBuilder.FromAnswers(name, AppServices.RoleLibrary.Version, AppServices.RoleLibrary.ListRoles(), answers), config);
+        CastHarnessCheck.Require(cast, AppServices.RoleLibrary, AppServices.Backends, config, cwd);
         CastStore.Save(cwd, cast);
 
         Console.WriteLine(CastStore.PathFor(cwd, name));
+        PrintModelLines(cast, config);
         return ExitCodes.Ok;
     }
 
@@ -159,5 +185,16 @@ public static class CastCommands
 
         Console.WriteLine(CastStore.PathFor(cwd, CastStore.DefaultName));
         return ExitCodes.Ok;
+    }
+
+    // #121: per-role model lines and warnings for cast create/new. Prints lines to stdout and
+    // builtin-fallback warnings to stderr, so the user sees both in the terminal.
+    private static void PrintModelLines(Cast cast, Config config)
+    {
+        (string[] lines, string[] warnings) = CastModelLines.ForCast(cast, config);
+        foreach (string line in lines)
+            SafeConsole.Out(line);
+        foreach (string warning in warnings)
+            SafeConsole.Error($"warning: {warning}");
     }
 }
