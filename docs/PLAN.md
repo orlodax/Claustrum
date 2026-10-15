@@ -266,6 +266,138 @@ Any value may be an alias from `claustrum.json.models`. Every `delegate`/`run` a
 - MCP: `cast_questions`, `cast_create`, `cast_list`, `coordinate` (async by nature → returns job id; progress via `job_status`), and `cast` accepted on `delegate`.
 - `.claustrum/` is created by `init` with `casts/`, `briefs/`, `worktrees/` (the last two git-ignored).
 
+## Part E — Hosted providers: the company's own DeepSeek server (proposed 2026-10-15, scoped the same day)
+
+### E0. Why, and what "hosted" means here
+The team's builders and testers run DeepSeek Flash and Pro through OpenRouter, on opencode. The CEO
+bought a GPU server to serve those same two models in-house: same models, same harness, a different
+URL, no per-token bill and no brief leaving the LAN. That is the whole scope, with priority over the
+open backlog. "Hosted" is therefore **not a sixth backend** and not a new family of harnesses: it is
+one **OpenAI-compatible endpoint** that the two backends which already speak OpenAI chat completions
+are pointed at — `opencode` (the one the devs use) and `api` (the blind reviewer, no tools). Claude
+Code and Copilot *could* be pointed at the same box (`ANTHROPIC_BASE_URL`, `COPILOT_PROVIDER_BASE_URL`;
+both measured reachable in this repo on 2026-09-22) and Cursor cannot (no BYOK in its CLI), but
+nobody intends to host them, so they are recorded here as possible and left out of M5.
+
+What this needs from each side, read and measured on 2026-10-15:
+| Side | Mechanism | Evidence |
+|---|---|---|
+| `opencode` [2.0.12] | a provider block in the `OPENCODE_CONFIG_CONTENT` Claustrum already injects per run: `npm: "@ai-sdk/openai-compatible"`, `options.baseURL`, `options.apiKey`, `models: {<id>: {}}`; the model spec `<provider>/<id>` is opencode's native form, so `--model tek-gpu/deepseek-v4-flash` is the whole argv change | the string `@ai-sdk/openai-compatible` is in the installed binary 14 times; https://opencode.ai/config.json has `provider.<id>.options.baseURL` but marks `provider` **deprecated** for `providers.<id>` (`package`, `settings`, `canonical`) — which one 2.0.12 honours is the first thing to measure, free (a wrong model name exits 1 before any API call, NOTES.md "The opencode and api backends, validated against real endpoints") |
+| `api` | a third provider kind beside `openrouter:`/`anthropic:`: `<base_url>/v1/chat/completions`, auth header only when the provider names a key variable; `ParseOpenRouterSuccess` already reads the OpenAI shape and treats `usage.cost` as optional | the OpenRouter capture in `tests/fixtures/api/` *is* an OpenAI-compatible body |
+| the server | OpenAI chat completions with **tool calling enabled** (vLLM: `--enable-auto-tool-choice --tool-call-parser <deepseek parser>`; SGLang: its `--tool-call-parser`) — without it no builder can edit a file on any harness, only the api reviewer works | [opencode docs](https://opencode.ai/v2/docs/models); DeepSeek's reasoning output (Pro) needs the stack's reasoning parser too, or the `reasoning` field opencode reads is empty |
+
+### E1. Config: `providers.<name>` (one new section in `claustrum.json`, §A7 layers unchanged)
+```json
+{ "providers": {
+    "tek-gpu": {
+      "base_url": "http://gpu.lan:8000",
+      "api_key_env": "TEK_GPU_API_KEY",
+      "price_usd_per_mtok": { "input": 0, "output": 0 },
+      "models": ["deepseek-v4-flash", "deepseek-v4-pro"],
+      "timeout_seconds": 3600 } },
+  "models": {
+    "cheap-coding":      "opencode:tek-gpu/deepseek-v4-flash",
+    "standard-coding":   "opencode:tek-gpu/deepseek-v4-pro",
+    "frontier-coding":   "opencode:tek-gpu/deepseek-v4-pro",
+    "reviewer":          "api:tek-gpu/deepseek-v4-pro" } }
+```
+- `base_url` required, scheme and host, no `/v1` (each backend appends its own path). `api_key_env`
+  names a variable — the key never sits in a committable file, same rule as today; absent means the
+  server takes no auth and opencode gets a placeholder. `price_usd_per_mtok` defaults to `0/0` (E3).
+  `models` is optional and only feeds `doctor`'s "alias names a model the server does not serve"
+  warning. `timeout_seconds` overrides `defaults.timeout_seconds` for runs on this provider: Pro on
+  local hardware is slower than OpenRouter's fleet, and 1800 s was tuned for the cloud.
+- **Grammar:** `<backend>:<provider>/<model-id>` where `<provider>` is a key of `providers`.
+  `Config.ResolveModel` recognises a configured provider name before the first `/` and hands the
+  backend `ResolvedRole.Model = "<model-id>"` plus a new `ResolvedRole.Provider` (`HostedProvider`
+  record: name, base url, key variable name, price, timeout). Only *configured* names are
+  recognised, so `opencode:openrouter/deepseek/…` is untouched — and a provider named like an
+  opencode built-in (`openai`, `openrouter`, `deepseek`) shadows it on that backend, which `doctor`
+  warns about. `api:openrouter:<id>` / `api:anthropic:<id>` keep their colon form unchanged. A
+  hosted spec on `claude`, `copilot` or `cursor` is refused at resolution ("backend 'x' is not
+  wired to hosted providers (docs/PLAN.md E0)"), so a typo never silently runs on the cloud.
+- `providers` merges per key like `backends` does, with `Origins` entries (`providers.tek-gpu.base_url`),
+  so `backends doctor` prints the winning layer. The user layer is where the team's URL normally
+  lives; the repo layer may name it too (a URL is not a secret), the key variable never.
+- `HostedProvider` is Core data on `ResolvedRole`, like `PermissionPolicy`: Core never reads a cast
+  or an env var of its own (NOTES.md "Backend config and env passthrough are call-site data").
+- **Migration from OpenRouter is one alias edit per class.** `claustrum init` learns a
+  `--provider <name>=<base_url>` option that writes the `providers` entry and points `cheap-coding`
+  at it instead of `openrouter/deepseek/deepseek-v4-flash`; existing casts keep working because
+  they name aliases, not endpoints (§D1).
+
+### E2. Injection, one wave each
+- **opencode:** `BuildConfigContent` adds the provider block beside the agent; `options.apiKey` is
+  the key variable's value, or a placeholder when the provider has none (a tutorial reports opencode
+  insists on *some* key for a custom provider — measure whether the inline one suffices or an
+  `auth.json` entry is needed, which would break the process-scoped promise and must be recorded
+  if so). `#<variant>` on the spec still rides to `--model` unchanged (#35); whether Pro's thinking
+  mode is reachable that way through `@ai-sdk/openai-compatible` is a measurement, not a promise.
+- **api:** the third provider kind; `BuildCurlConfig` writes the `Authorization: Bearer` header only
+  when `api_key_env` is set.
+Each wave ships genuine fixtures captured from the real server under
+`tests/fixtures/<backend>/hosted-<stack>-*.json(l)`, named for the serving stack that produced them.
+
+### E3. Cost: a hosted run is priced by Claustrum, never by the backend
+Today a backend that reports no cost is charged its whole cap (NOTES.md "Cost-less backends are
+charged their cap"), and admission refuses a cap that floors to $0. Both rules are wrong for a
+server the company already paid for:
+- A run on a hosted provider settles at `usage × price_usd_per_mtok`, computed by `Runner` from
+  `ParsedOutput.Usage`, **overriding** whatever dollar figure the backend reported (opencode's
+  per-step `cost` is $0 or nonsense for a custom provider either way). With the default price that
+  is $0; a team that wants a notional accounting sets a price. ⚠ `Usage` drops DeepSeek's
+  `reasoning` tokens today (same NOTES.md section, "billed as output and reported separately") —
+  harmless at $0, under-counted at any other price; fixing it is a `RunResult` schema change and a
+  separate issue.
+- A price of `0/0` makes the run **free at admission**: it reserves $0, is never refused for budget,
+  and the tree's cap keeps governing the cloud roles beside it. The levers for "running forever" on
+  a free provider are the provider's `timeout_seconds` and `max_parallel`, not dollars — and the
+  receipt says so with a warning when usage is missing ("hosted provider 'tek-gpu' reported no
+  usage; charged $0 at its price").
+- `jobs budget` prints hosted entries with their provider name, so a tree's ledger shows where the
+  $0 lines came from.
+
+### E4. `doctor`, the questionnaire, `sync`, smoke
+- `backends doctor` gains a `providers:` section, free: `GET <base_url>/v1/models` through curl
+  with a 5 s timeout → reachable / served models / each alias on the provider checked against them /
+  key variable present or absent (value never printed) / which backends can use it (opencode, api).
+  `--probe` on a hosted provider is a free round trip and the probe line says so.
+- `cast questions` offers an alias on a hosted provider only when its backend is installed **and**
+  the provider answered `doctor`; free-form answers stay open, and `CastHarnessCheck` refuses a
+  hosted spec on claude/copilot/cursor with E1's reason.
+- `sync --only opencode` writes the provider block into `opencode.json` beside the `mcp` entry it
+  already manages (McpConfigSync precedent, hash-tracked), so a *host-mode* architect chatting in
+  opencode uses the same DeepSeek. Last wave, after the headless path works.
+- `scripts/smoke.sh`/`.ps1` gain `CLAUSTRUM_SMOKE_PROVIDER=<name>`: the opencode and api rows run
+  on it, and the `max_parallel: 2` cast lands its two branches on the server.
+
+### E5. What needs the owner's hands, and what is assumed until then
+Unknown on 2026-10-15, and the plan assumes the first answer of each: serving stack (**vLLM**, else
+SGLang — both OpenAI-compatible with tool calling and a DeepSeek reasoning parser); reachability
+(**LAN URL from every dev box**, no VPN step in the smoke script); auth (**none**, else a bearer
+token in `api_key_env`); the served ids (**`deepseek-v4-flash`, `deepseek-v4-pro`** as the server
+names them — the alias values change if not); tool calling and reasoning parsers enabled at launch
+(**yes**); concurrency the server can take (**4**, which `max_parallel` already caps per role; a
+provider-level `max_concurrent` gate is a follow-up if two casts share the box). TLS with a private
+CA is out of scope until needed: `curl` verifies by default and no `-k` is added.
+
+### M5 waves
+**Wave 0 — provider in Core** (#E-1). `providers` section + merge + origins, `HostedProvider` on
+`ResolvedRole`, the grammar in `ResolveModel`, the three refusals, the free-admission ledger path
+and the priced settlement (E3), `doctor`'s `providers:` section, `init --provider`. Gate: unit tests
+on config layering, grammar, ledger; `doctor` against a stub HTTP server. No backend changes yet —
+every existing run is byte-identical.
+**Wave 1 — `opencode` on the server** (#E-2). The payload: builders and testers on in-house
+DeepSeek. Settles `provider` vs `providers`, the apiKey placeholder, tool calling and Pro's
+reasoning through the stack, and lands the `tests/fixtures/opencode/hosted-*.jsonl` captures.
+**Wave 2 — `api` on the server** (#E-3). The blind reviewer on in-house Pro; genuine fixtures.
+**Wave 3 — the drive, smoke, docs, questionnaire, sync** (#E-4). A `coordinate` on a toy repo with
+an in-house cast, recorded like the M4 drives; smoke rows; MANUAL §7/§13 and INSTALL; E4's
+questionnaire and `sync` items; the claude/copilot/cursor non-decision recorded in NOTES.
+Done when: `claustrum coordinate --cast inhouse --issues <n>` on a toy repo runs two builders and
+the tester on `opencode:tek-gpu/…` and the reviewer on `api:tek-gpu/…`, every ledger line at $0,
+`doctor` lists the two served models, and the receipts' diffs are real.
+
 ## Part C — GitHub workflow for the repo itself
 - Step 0 clones `https://github.com/orlodax/Claustrum.git` to `D:\Claustrum`; the empty repo needs `main` created by the first push (`git push -u origin main`), then branch protection: require linear history.
 - **New project board "Claustrum"** (the existing `NeuralVibez` #4 is scoped to NeuralVibez). One epic issue per milestone (M0–M4) + child issues per component; each issue goes on the board with status (Ready / in the current iteration for M0–M1) **and** Start/Target dates so the Roadmap view shows them (owner's rule 3). Field ids get recorded in this repo's memory once the board exists.
@@ -279,6 +411,7 @@ Any value may be an alias from `claustrum.json.models`. Every `delegate`/`run` a
 | **M2 MCP + casts** | all MCP tools incl. `cast_questions`/`cast_create`, `.mcp.json` + `.vscode/mcp.json` merge, `tester` role, cast file + `cast` CLI verbs + `/claustrum` skill (claude), `--cast` on `run`/`delegate`, `sync --check/--dry-run` | from Claude Code with the MCP server connected: `/claustrum` interviews → writes `.claustrum/casts/default.json` → `delegate` builder → blind `delegate` code-reviewer completes hands-off using the cast; AOT publish still zero warnings |
 | **M3 backends + parallel** | `opencode`, `cursor`, `copilot`, `api` backends with recorded fixtures; their renderers + `/claustrum` skills; `ui-reviewer` (claude only); worktree isolation + `max_parallel` semaphore + tree budget; `init`, `doctor`, `sync --global` | `backends doctor` + `smoke.sh` green on Linux and `smoke.ps1` green on Windows for every installed backend (copilot, opencode after install); 3 parallel builders on a toy repo land on 3 branches with no clobbering; `sync --global --only claude` reproduces the owner's five files with only header diffs; cursor validated against a real `cursor-agent` (done 2026-09-21 on the owner's own install, issues #13/#14) |
 | **M4 coordinate + release** | `architect` role (last — it issues the delegations), `coordinate --cast --issues` (spawned architect, `gh` issue import, `Closes #n`), `INSTALL.md`, `release.yml` (5 RIDs + checksums + tool package), tier stubs generated | `claustrum coordinate --cast default --issues <n>` on a toy repo runs architect(opus) → 2 deepseek builders → opus review → flash tester unattended and leaves a rebased branch; tagged `v0.1.0` installs via binary on both OSes and via `dotnet tool install -g claustrum`; a fresh clone + INSTALL.md lets a teammate `/claustrum` from two different hosts |
+| **M5 hosted providers** (proposed 2026-10-15, Part E) | `providers.<name>` config + grammar `<backend>:<provider>/<id>`, `HostedProvider` on `ResolvedRole`, free admission + priced settlement in the ledger, `doctor providers:`, `init --provider`; then `opencode` and `api` pointed at the company DeepSeek server one wave each (claude/copilot possible but not hosted, cursor cannot — all three refused at resolution); drive/smoke/docs/questionnaire/`sync` last | `claustrum coordinate --cast inhouse --issues <n>` on a toy repo runs two builders + the tester on `opencode:<provider>/…` and the reviewer on `api:<provider>/…`, every ledger line at $0, `doctor` lists the served models |
 
 ### M4 waves (2026-10-08)
 
