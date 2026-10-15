@@ -1,12 +1,25 @@
 # Claustrum
 
 ## First time in this repo (or asked to set up/change a cast)
-Run `claustrum cast questions --json` (or the MCP `cast_questions` tool) and ask the user
-each question with your host's native question mechanism (e.g. `AskUserQuestion` in
-Claude Code). Write the answers to a file keyed by each question's `key`, then
+If a command exits 2 saying "this repo isn't initialized", ask the user with the host's
+question mechanism (e.g. `AskUserQuestion` in Claude Code) whether to run `claustrum init`.
+If yes:
+1. Run `claustrum init questions --json` (or the MCP tool) — one question per built-in
+   model alias the user config does not yet define.
+2. Ask each question with the host's native question mechanism. Write the answers to a
+   JSON file keyed by each alias.
+3. Run `claustrum init --answers <file>` (or the same programmatically) to write the
+   aliases to the user config (`~/.config/claustrum/config.json`).
+
+Then (or if already initialized), run `claustrum cast questions --json` (or the MCP
+`cast_questions` tool) and ask the user each question with your host's native question
+mechanism. Write the answers to a file keyed by each question's `key`, then
 `claustrum cast create --answers <file>` (or the MCP `cast_create` tool). The identical
 questions are asked in every harness this library supports; only the picker fidelity
 differs.
+
+The cast is per-developer (stored in `.claustrum/casts/`, git-ignored) and the model
+aliases live in the user config.
 
 ## Delegating
 Write the brief to a file first — fixed H2 sections `## Task`, `## Scope`,
@@ -32,5 +45,6 @@ end-to-end, run `claustrum coordinate --cast <name> --issues <n,m> --json` (or `
 `job_status` tool and fetch the `job_result` tool when it reports `done`. The architect runs
 headlessly on the cast's model, delegates builders → blind reviewer → tester (→ demo-author,
 for a browser-facing feature) itself, and leaves its work on branch `claustrum/<job_id>`;
-`claustrum jobs budget <job_id>` shows what the tree spent. If `architect.mode` is `host`, you
+`claustrum jobs budget <job_id>` shows what the tree spent. `coordinate` no longer needs the
+cast committed — an untracked or git-ignored cast works. If `architect.mode` is `host`, you
 are the architect: adopt the synced `architect` role and delegate with `--cast` yourself.

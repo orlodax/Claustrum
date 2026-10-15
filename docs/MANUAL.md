@@ -16,7 +16,7 @@ onto a machine is [INSTALL.md](INSTALL.md); running it on a real task for the fi
 | **role** | a job description shipped in the binary: `architect`, `builder`, `code-reviewer`, `ui-reviewer`, `tester`, `demo-author` |
 | **tier** | how hard a role thinks: `high` (base), `xhigh`, `max`; each tier names a model class and an effort |
 | **model class** | an alias a role names (`frontier-coding`, `cheap-coding`, …) that `claustrum.json` maps to a real `backend:model` |
-| **cast** | a committed file saying who plays which role, how many builders run at once, and the budget |
+| **cast** | a per-developer file (`.claustrum/casts/`, git-ignored) saying who plays which role, how many builders run at once, and the budget; model aliases live in the user config |
 | **brief** | the work order: markdown with fixed `##` sections |
 | **receipt** | the `RunResult` JSON every run returns, whoever did the work |
 | **job** | one run, with a directory under `~/.claustrum/jobs/<id>/` |
@@ -148,7 +148,8 @@ the children.
 
 In a git repository the architect works in its own worktree, which holds committed files only, so
 `coordinate` exits 2 — before any job exists, nothing spent — naming what to fix when: the cwd is
-not the repository root; the cast file, `claustrum.json` or a role file under `.claustrum/roles/`
+not the repository root; the cast file is untracked or ignored and no committed `.gitignore` rule
+ignores `.claustrum/casts/` (`run 'claustrum init' and commit .gitignore first`); `claustrum.json` or a role file under `.claustrum/roles/`
 (`<role>/role.json`, `<role>/ROLE.md`, `<role>/parts/*.md` — nothing else there is read, so a
 `.DS_Store` or a swap file is not checked) is modified, staged, untracked, ignored, `skip-worktree`
 or `assume-unchanged` (`commit (or un-ignore) <path> (<state>) first`); the `.gitignore` holding
@@ -230,14 +231,26 @@ claustrum sync [--only claude,opencode,copilot,cursor] [--roles a,b] [--global] 
 prints the unified diff and, after it, the model each agent file names and why; `--force` adopts a file
 Claustrum did not generate. `sync` reads `claustrum.json` (§7, §12).
 
-### `claustrum init [--all]`
+### `claustrum init [--all] [--answers <file>]`
 
-Scaffolds the current directory (no `--cwd`): writes `claustrum.json` if absent, creates
-`.claustrum/casts/` and git-ignores `.claustrum/{briefs,worktrees,locks}/`, runs `sync` for `claude`
-**always** — its sync is the one that registers the MCP server in `.mcp.json`/`.vscode/mcp.json` —
-plus each harness the repo already shows signs of (`.opencode/` or `opencode.json[c]`, `.github/`,
-`.cursor/`; `--all` for every one), and appends a "Claustrum delegation" pointer to an existing
-`AGENTS.md`. It never creates `AGENTS.md`/`CLAUDE.md` and never overwrites a file it did not
+Scaffolds the current directory: writes model aliases to the **user config**
+(`~/.config/claustrum/config.json`, or `%APPDATA%\claustrum\config.json` on Windows) when
+`--answers <file>` is given — a JSON object mapping alias (`frontier-reasoning`,
+`frontier-coding`, `standard-coding`, `cheap-coding`, `fast`) to `backend:model-id`. Only
+missing aliases are written; existing ones are never overwritten. Without `--answers`, missing
+aliases are asked on the terminal; with redirected stdin it prints a message and exits 2.
+
+`init questions --json` prints one question per missing built-in alias with options
+(including the built-in default), the same shape as `CastQuestion`. A repo `claustrum.json`
+is created empty when absent — aliases are per-developer in the user config.
+
+Also creates `.claustrum/casts/` and git-ignores `.claustrum/{casts,briefs,worktrees,locks}/`,
+runs `sync` for `claude` **always** — its sync is the one that registers the MCP server in
+`.mcp.json`/`.vscode/mcp.json` — plus each harness the repo already shows signs of
+(`.opencode/` or `opencode.json[c]`, `.github/`, `.cursor/`; `--all` for every one), and
+appends a "Claustrum delegation" pointer to an existing `AGENTS.md` saying the cast is
+per-developer and the aliases live in the user config.
+It never creates `AGENTS.md`/`CLAUDE.md` and never overwrites a file it did not
 generate; a rerun reports "already present, left unchanged".
 
 Every write is fenced to the current directory, as in `sync` (§12): a `.claustrum`, `claustrum.json`,
@@ -441,7 +454,7 @@ variable is present.
 ## 8. Casts
 
 `.claustrum/casts/<name>.json` in the working directory (like role overrides, not the git root),
-committable, shared with the team:
+per-developer, git-ignored:
 
 ```json
 { "name": "default", "library": "1.0.0",
@@ -876,6 +889,7 @@ created. Budget ledgers live beside them under `budget/<tree>/`.
 | You see | It means | Fix |
 |---|---|---|
 | exit 2, `blind role: brief carries rationale` | the reviewer's brief has `## Context`/`## Plan`/`## Rationale` or a pasted report | remove it; add requirement or code, never reasoning |
+| exit 2, `this repo isn't initialized: no user config at <path> and no claustrum.json at <path>; run \`claustrum init\`` | neither the user config file (`~/.config/claustrum/config.json`) nor the repo's `claustrum.json` exists | run `claustrum init` to set up model aliases and scaffold |
 | exit 2, `cast '<x>' not found` / `coordinate needs a cast` | no `.claustrum/casts/<x>.json` in the cwd | `cast create`/`cast new`, or `--cast` the right name |
 | exit 2, `coordinate runs the architect in a worktree, which sees only committed files — commit (or un-ignore) <path> (<state>) first` | the cast, `claustrum.json` or a role file under `.claustrum/roles/` (`<role>/role.json`, `<role>/ROLE.md`, `<role>/parts/*.md`) differs from `HEAD` — modified, staged, untracked or ignored — or hides a local edit (`skip-worktree`, `assume-unchanged`), and the architect's worktree would not see it | commit it (un-ignore a cast the repo ignores; `git update-index --no-skip-worktree`/`--no-assume-unchanged <path>` first for a hidden edit), then rerun; nothing was spent |
 | exit 2, `… — .gitignore (<state> — the worktree gets HEAD's ignore rules; commit it first)` | the file holding Claustrum's `.claustrum/` ignore rules has an uncommitted change, related to them or not: the worktree gets `HEAD`'s copy, so what was checked is not what it will see | commit it (or revert the edit), then rerun |

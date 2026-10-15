@@ -41,6 +41,7 @@ public static class CastCommands
     private static async Task<int> QuestionsAsync(bool jsonMode)
     {
         string cwd = Environment.CurrentDirectory;
+        Config.RequireInitialized(AppServices.Platform, cwd);
         Config config = Config.Load(AppServices.Platform, cwd);
         CastQuestionnaireResult result = await CastQuestionnaire.BuildAsync(AppServices.RoleLibrary, AppServices.Backends, config, cwd, CancellationToken.None);
 
@@ -78,6 +79,7 @@ public static class CastCommands
     private static async Task<int> NewAsync(string name)
     {
         string cwd = Environment.CurrentDirectory;
+        Config.RequireInitialized(AppServices.Platform, cwd);
         Config config = Config.Load(AppServices.Platform, cwd);
         CastQuestionnaireResult questionnaire = await CastQuestionnaire.BuildAsync(AppServices.RoleLibrary, AppServices.Backends, config, cwd, CancellationToken.None);
 
@@ -116,6 +118,7 @@ public static class CastCommands
     private static int Create(string answersPath, string name)
     {
         string cwd = Environment.CurrentDirectory;
+        Config.RequireInitialized(AppServices.Platform, cwd);
         Dictionary<string, string> answers = CastAnswers.Read(answersPath);
         Config config = Config.Load(AppServices.Platform, cwd);
         Cast cast = CastBuilder.WithResolved(CastBuilder.FromAnswers(name, AppServices.RoleLibrary.Version, AppServices.RoleLibrary.ListRoles(), answers), config);

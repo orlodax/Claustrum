@@ -24,6 +24,9 @@ public sealed record CoordinatePlan(
     // #74: the cwd is in a git repository, so the architect runs in its own worktree — decided once,
     // here, so the request, the appendix and the user prompt cannot disagree about it.
     bool Isolated,
+    // Cast-resolution warnings (built-in fallback, stored→current drift) that reach the job's
+    // warnings[] and stderr, just as they do for `run` (#122 item 6).
+    string[] CastWarnings,
     // #74 G1: what that worktree will lack and does not refuse (a harness config's local edit); each door
     // hands them to its caller before the run — not on the RunResult, which is the architect's receipt.
     string[] Warnings)
@@ -57,7 +60,11 @@ public sealed record CoordinatePlan(
         // Request.Overrides, not the resolved ones: only a real --model is "this run", while the
         // resolved value is the cast's own model on every invocation that did not override it.
         SystemAppendix: CoordinationBrief.RenderSystemAppendix(Cast, CastName, Request.Cwd, Request.Overrides.Model, Isolated),
-        Isolate: Isolated);
+        Isolate: Isolated,
+        PreRunWarnings: CastWarnings,
+        // #122: the cast is per-developer and git-ignored — if it's not tracked in HEAD, the
+        // worktree cut from HEAD won't have it. Pass it so RunIsolatedAsync copies it in.
+        WorktreeCastCopy: Isolated ? Cast : null);
 
     /// <summary>
     /// Config, role render, model alias and permission resolved on top of the plan — the rest of what

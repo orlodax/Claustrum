@@ -26,6 +26,9 @@ public static class CoordinateEngine
     /// </summary>
     public static async Task<CoordinatePlan> PlanAsync(CoordinateRequest request, IIssueSource issues, CancellationToken cancellationToken)
     {
+        // #122 item 1: refuse before anything else — no job directory minted yet.
+        Config.RequireInitialized(AppServices.Platform, request.Cwd);
+
         // Flags first, cast second, gh last: a mistyped invocation should name the flags, not the
         // repo state, and the only step that costs a network round trip goes after both.
         string? brief = RequireOneTaskSource(request);
@@ -55,11 +58,14 @@ public static class CoordinateEngine
         // The architect's tier/model/budget precedence, resolved here and kept on the plan: doing it
         // in ToDelegateRequest re-read the cast file *after* the job directory had been minted, so a
         // cast edited or deleted in between threw over a job nothing would ever close (issue #23).
-        (string tier, ConfigOverrides overrides, CastBudget? castBudget, _, _) =
-            CastApplication.Resolve(request.Cwd, Cast.ArchitectRole, request.CastName, request.TierFlag, request.Overrides);
+        CastApplicationResult appResult = CastApplication.Resolve(request.Cwd, Cast.ArchitectRole, request.CastName, request.TierFlag, request.Overrides);
+        string tier = appResult.Tier;
+        ConfigOverrides overrides = appResult.Overrides;
+        CastBudget? castBudget = appResult.CastBudget;
+        string[] castWarnings = appResult.Warnings;
 
         string userPrompt = CoordinationBrief.RenderUserPrompt(task, request.Issues, CoordinationBrief.ArchitectCwd(request.Cwd, isolated));
-        return new CoordinatePlan(request, cast, castName, userPrompt, tier, overrides, castBudget, isolated, warnings);
+        return new CoordinatePlan(request, cast, castName, userPrompt, tier, overrides, castBudget, isolated, castWarnings, warnings);
     }
 
     /// <summary>
