@@ -64,7 +64,8 @@ public static class RunCommand
             string? streamValue = parseResult.GetValue(stream);
             bool streamMode = parseResult.GetResult(stream) is not null;
             bool streamRaw = streamValue == "raw";
-            await ExecuteAsync(
+            // A block lambda that only awaited dropped the exit code: every run exited 0 (2026-10-15, 72 tests).
+            return await ExecuteAsync(
                 parseResult.GetRequiredValue(role),
                 parseResult.GetValue(brief),
                 parseResult.GetValue(briefFile),
