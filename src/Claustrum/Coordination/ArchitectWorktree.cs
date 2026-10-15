@@ -62,7 +62,7 @@ public static partial class ArchitectWorktree
         // #122: the cast is judged by its own git state (CheckCastState), apart from the paths below; the
         // casts rule is required only when it is untracked, so it is not in the generic `unignored` refusal (2026-10-15).
         string castPath = OnDiskPath(gitRoot, CastStore.PathFor(cwd, castName));
-        Difference[] castDifferences = [.. await UncommittedAsync(gitRoot, [castPath], cancellationToken)];
+        Difference[] castDifferences = [.. await UncommittedAsync(gitRoot, [castPath], cancellationToken), .. await HiddenAsync(gitRoot, [castPath], cancellationToken)];
         string? castProblem = CheckCastState(cwd, castName, castDifferences, castsIgnored);
 
         string[] paths =
