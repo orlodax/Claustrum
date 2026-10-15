@@ -32,7 +32,7 @@ public sealed class IsolatedRunBriefEndToEndTests : IDisposable
         repo.WriteCast(maxParallel: 2);
         repo.Script(Recording());
 
-        (CliResult process, JsonElement result) = await repo.RunBuilderAsync();
+        (CliResult process, JsonElement result) = await repo.RunBuilderAsync("--no-live");
 
         Assert.True(process.ExitCode == ExitCodes.Ok, process.Stderr);
         string[] argv = Argv();
@@ -63,7 +63,7 @@ public sealed class IsolatedRunBriefEndToEndTests : IDisposable
         repo.WriteCast(maxParallel);
         repo.Script(Recording());
 
-        (CliResult process, JsonElement result) = await repo.RunBuilderAsync();
+        (CliResult process, JsonElement result) = await repo.RunBuilderAsync("--no-live");
 
         Assert.True(process.ExitCode == ExitCodes.Ok, process.Stderr);
         Assert.Equal(JsonValueKind.Null, result.GetProperty("worktree").ValueKind);
@@ -84,7 +84,7 @@ public sealed class IsolatedRunBriefEndToEndTests : IDisposable
         repo.WriteCast(maxParallel: null);
         repo.Script(Recording());
 
-        (CliResult process, _) = await repo.RunBuilderAsync("--resume", "sess-1234");
+        (CliResult process, _) = await repo.RunBuilderAsync("--no-live", "--resume", "sess-1234");
 
         Assert.True(process.ExitCode == ExitCodes.Ok, process.Stderr);
         string[] argv = Argv();
@@ -105,7 +105,7 @@ public sealed class IsolatedRunBriefEndToEndTests : IDisposable
         string brief = string.Concat(Enumerable.Repeat("quote \" backtick ` dollar $HOME semi ; pipe | amp & €\n", 3000));
         File.WriteAllText(Path.Combine(repo.Repo, "long-brief.md"), brief);
 
-        CliResult process = await repo.RunAsync("run", "builder", "--brief-file", "long-brief.md", "--json");
+        CliResult process = await repo.RunAsync("run", "builder", "--brief-file", "long-brief.md", "--json", "--no-live");
 
         Assert.True(process.ExitCode == ExitCodes.Ok, process.Stderr);
         Assert.StartsWith(brief, Stdin(), StringComparison.Ordinal);

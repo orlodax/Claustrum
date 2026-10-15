@@ -5,7 +5,7 @@ using ModelContextProtocol.Server;
 
 namespace Claustrum.Tests.Mcp;
 
-// docs/PLAN.md §A6/§D5 fixes the MCP surface at eleven tools (M4 added `coordinate`). Nothing else
+// docs/PLAN.md §A6/§D5 fixes the MCP surface at eleven tools (M4 added `coordinate`); #124 made it twelve with `job_say`. Nothing else
 // asserted the surface itself, so a tool silently renamed, dropped, or added (the generated
 // SKILL.md names six of them by hand — see GeneratedSkillMatchesCliTests) was invisible to the suite.
 public sealed class McpToolSurfaceTests
@@ -13,11 +13,11 @@ public sealed class McpToolSurfaceTests
     private static readonly string[] expectedTools =
     [
         "cast_create", "cast_list", "cast_questions", "coordinate", "delegate", "delegate_async",
-        "doctor", "job_result", "job_status", "list_backends", "list_roles",
+        "doctor", "job_result", "job_say", "job_status", "list_backends", "list_roles",
     ];
 
     [Fact]
-    public void ClaustrumToolsExposesExactlyTheElevenPlannedTools()
+    public void ClaustrumToolsExposesExactlyTheTwelvePlannedTools()
     {
         Assert.Equal(expectedTools, Tools().Select(tool => tool.Name).Order(StringComparer.Ordinal));
     }
@@ -38,6 +38,8 @@ public sealed class McpToolSurfaceTests
     [InlineData("done")]
     [InlineData("failed")]
     [InlineData("unknown")]
+    [InlineData("waiting_for_input")]
+    [InlineData("abandoned")]
     public void JobStatusDescriptionNamesEveryStateItCanReturn(string state)
     {
         MethodInfo jobStatus = Tools().Single(tool => tool.Name == "job_status").Method;

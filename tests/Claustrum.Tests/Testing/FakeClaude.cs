@@ -45,6 +45,32 @@ public sealed record FakeClaudeScript
     /// (POSIX shells only; the lines may not hold a single quote).
     /// </summary>
     public string[] StreamLines { get; init; } = [];
+
+    /// <summary>
+    /// A conversing claude (#124): the script reads one stream-json user message per stdin line, answers each with an
+    /// `assistant` and a `result` event from the matching turn (the last turn repeats once the list runs out), stays
+    /// alive between turns and exits 0 when stdin closes. Replaces the one-shot reply; POSIX shells only.
+    /// </summary>
+    public FakeClaudeTurn[]? Turns { get; init; }
+
+    /// <summary>With <see cref="Turns"/>: a file every stdin line is appended to, raw, so a test sees each message the engine sent.</summary>
+    public string? LiveInputLog { get; init; }
+}
+
+/// <summary>One turn of a conversing <see cref="FakeClaude"/>. <see cref="Text"/> may not hold a quote, a backslash or a line break.</summary>
+/// <param name="Text">The turn's reply text.</param>
+/// <param name="Summary">When set, the reply ends with a `claustrum-report` fence carrying it: the role is done. Null is a question.</param>
+/// <param name="EchoReply">Appends the text of the user message this turn answers, JSON-escaped as it came on the wire.</param>
+/// <param name="SleepSeconds">How long the turn takes before its `result`: other messages queue on stdin meanwhile, as with the real thing.</param>
+/// <param name="ReadMidTurn">How many more stdin lines the turn blocks to read (and log) before its `result`: a message that arrives mid-turn, as the real claude takes it.</param>
+/// <param name="LingerSeconds">How long the process stays alive after the `result`, as a claude that is slow to exit once it has reported.</param>
+/// <param name="TotalCostUsd">The session's running cost at this turn's `result`; by default it rises per turn from claude's measured $0.2037 / $0.2278.</param>
+public sealed record FakeClaudeTurn(string Text, string? Summary = null, bool EchoReply = false, int SleepSeconds = 0, decimal? TotalCostUsd = null, int ReadMidTurn = 0, int LingerSeconds = 0)
+{
+    public static FakeClaudeTurn Ask(string question, int sleepSeconds = 0) => new(question, SleepSeconds: sleepSeconds);
+
+    public static FakeClaudeTurn Report(string summary, string text = "all done", bool echoReply = false, int sleepSeconds = 0) =>
+        new(text, summary, echoReply, sleepSeconds);
 }
 
 /// <summary>
@@ -68,11 +94,14 @@ public static class FakeClaude
     {
         if (OperatingSystem.IsWindows())
         {
+            if (script.Turns is not null)
+                throw new NotSupportedException("a conversing fake claude is a POSIX sh script; the test must call RequirePosixShell first.");
+
             File.WriteAllText(scriptPath, WindowsText(script));
             return;
         }
 
-        File.WriteAllText(scriptPath, PosixText(script));
+        File.WriteAllText(scriptPath, script.Turns is null ? PosixText(script) : LiveText(script));
         File.SetUnixFileMode(
             scriptPath,
             UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute
@@ -104,7 +133,10 @@ public static class FakeClaude
         StringBuilder text = new("#!/bin/sh\n");
         text.Append(script.ArgvLog is { } argv ? $"printf '%s\\n' \"$@\" > '{argv}'\n" : "");
         text.Append(script.StartStampDirectory is { } stamps ? $"touch '{stamps}/start-'$$\n" : "");
-        text.Append(script.StdinLog is { } stdin ? $"cat > '{stdin}'\n" : "cat > /dev/null\n");
+        // A live run (--input-format on argv, #124) keeps stdin open until the report, so a one-shot script reads only the
+        // brief's line: `cat` would wait for an end that comes after this script has exited.
+        string stdinTarget = script.StdinLog is { } stdin ? $"'{stdin}'" : "/dev/null";
+        text.Append($"case \" $*\" in *\" --input-format \"*) IFS= read -r brief; printf '%s\\n' \"$brief\" > {stdinTarget};; *) cat > {stdinTarget};; esac\n");
         text.Append(script.MarkerLog is { } start ? $"echo start >> '{start}'\n" : "");
         text.Append(script.SleepSeconds > 0 ? $"sleep {script.SleepSeconds}\n" : "");
         foreach ((string path, string content) in script.Writes)
@@ -124,6 +156,45 @@ public static class FakeClaude
         return text.ToString();
     }
 
+    private static string LiveText(FakeClaudeScript script)
+    {
+        FakeClaudeTurn[] turns = script.Turns ?? [];
+        StringBuilder text = new("#!/bin/sh\n");
+        text.Append(script.ArgvLog is { } argv ? $"printf '%s\\n' \"$@\" > '{argv}'\n" : "");
+        text.Append(script.MarkerLog is { } start ? $"echo start >> '{start}'\n" : "");
+        foreach ((string path, string content) in script.Writes)
+            text.Append($"printf '%s\\n' '{content}' > '{path}'\n");
+
+        foreach (string command in script.Commands)
+            text.Append(command).Append('\n');
+
+        string record = script.LiveInputLog is { } log ? $"printf '%s\\n' \"$line\" >> '{log}'; " : "";
+        text.Append("n=0\nsaid=''\ntake() { " + record + "said=$(printf '%s' \"$line\" | sed -n 's/.*\"text\":\"\\(.*\\)\"}\\]}}.*/\\1/p'); }\n");
+        text.Append("while IFS= read -r line; do\n  n=$((n+1))\n  take\n  case $n in\n");
+        for (int i = 0; i < turns.Length; i++)
+            text.Append(i == turns.Length - 1 ? "  *)" : $"  {i + 1})").Append(' ').Append(TurnCommands(turns[i], i)).Append(";;\n");
+
+        text.Append("  esac\ndone\n");
+        text.Append(script.MarkerLog is { } end ? $"echo end >> '{end}'\n" : "");
+        text.Append("exit 0\n");
+        return text.ToString();
+    }
+
+    // The two events a turn prints: an `assistant` message, then the `result` that closes it with the running totals.
+    private static string TurnCommands(FakeClaudeTurn turn, int index)
+    {
+        string report = turn.Summary is { } summary ? $"\\n```claustrum-report\\n{{\\\"summary\\\":\\\"{summary}\\\"}}\\n```" : "";
+        string cost = (turn.TotalCostUsd ?? 0.2037m + 0.0241m * index).ToString(System.Globalization.CultureInfo.InvariantCulture);
+        string head = "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"session_id\":\"fake-session\",\"num_turns\":1,\"result\":\"" + turn.Text;
+        string echo = turn.EchoReply ? " you said: '\"$said\"'" : "";
+        string tail = report + "\",\"total_cost_usd\":" + cost + ",\"usage\":{\"input_tokens\":" + 10 * (index + 1) + ",\"output_tokens\":" + 5 * (index + 1) + "}}";
+        string assistant = "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"" + turn.Text + "\"}]},\"session_id\":\"fake-session\"}";
+        string sleep = turn.SleepSeconds > 0 ? $"sleep {turn.SleepSeconds}; " : "";
+        string mid = turn.ReadMidTurn > 0 ? $"k=0; while [ $k -lt {turn.ReadMidTurn} ] && IFS= read -r line; do k=$((k+1)); take; done; " : "";
+        string linger = turn.LingerSeconds > 0 ? $"; sleep {turn.LingerSeconds}" : "";
+        return $"{mid}{sleep}printf '%s\\n' '{assistant}'; printf '%s\\n' '{head}{echo}{tail}'{linger}";
+    }
+
     // cmd's `>>` opens the file unshared: two runs appending at once lose one line to "file in use"
     // (RunCapEndToEndTests' overlap case on PR #75's Windows CI), so a refused append is retried.
     private static string WindowsAppend(string label, string line, string path) =>
@@ -133,7 +204,8 @@ public static class FakeClaude
     // 2026-09-22 finding). Not run in this repo's Linux gate; the argv/stdin capture is POSIX-only.
     private static string WindowsText(FakeClaudeScript script)
     {
-        StringBuilder text = new("@echo off\r\nfindstr \"^\" > nul\r\n");
+        // Under --input-format (a live run) stdin stays open past this script, so only the brief's line is read.
+        StringBuilder text = new("@echo off\r\necho %* | findstr /c:\"--input-format\" > nul && (set /p _brief=) || (findstr \"^\" > nul)\r\n");
         text.Append(script.MarkerLog is { } start ? WindowsAppend("markstart", "start", start) : "");
         text.Append(script.SleepSeconds > 0 ? $"ping -n {script.SleepSeconds + 1} 127.0.0.1 > nul\r\n" : "");
         foreach ((string path, string content) in script.Writes)
