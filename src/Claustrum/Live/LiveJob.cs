@@ -172,6 +172,10 @@ internal sealed class LiveJob
             throw new CliUsageException($"job '{Id}' is {AbandonedMessage}: nothing to cancel");
 
         string marker = Path.Combine(directory, "cancel");
+        // A link at the marker's own path is refused before the fence: a dangling one slipped past it on macOS (/var is itself a link) and
+        // was replaced by the write (CI, 2026-10-15). The marker is only ever a plain file Claustrum creates.
+        if (new FileInfo(marker).LinkTarget is { } target)
+            throw new CliUsageException($"{marker} is a link (to {target}): nothing is written through a link");
         if (fence.Escapes(marker))
             throw new CliUsageException($"{marker} resolves outside the jobs store ({SyncRoot.Resolve(marker)}): nothing is written through a link that leaves it");
 
