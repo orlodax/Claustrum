@@ -64,7 +64,7 @@ public static class JobsFollowCommand
 
     private static async Task<int> FollowOneAsync(string jobsRoot, string jobId, bool rawMode, CancellationToken ct)
     {
-        string jobDir = Path.Combine(jobsRoot, jobId);
+        string jobDir = Path.Combine(jobsRoot, JobId.Require(jobId));
         if (!Directory.Exists(jobDir))
         {
             Console.Error.WriteLine($"job '{jobId}' not found under {jobsRoot}");

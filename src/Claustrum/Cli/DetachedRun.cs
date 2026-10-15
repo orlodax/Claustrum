@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Claustrum.Core.Model;
 using Claustrum.Live;
 
 namespace Claustrum.Cli;
@@ -7,6 +8,8 @@ namespace Claustrum.Cli;
 // say which. A question ends the wait with exit 7 and the job keeps waiting for its answer; a finished job is printed exactly as `run`
 // prints its own, with the exit code of its status. The first Ctrl-C, SIGTERM or SIGHUP cancels the job through its host (`jobs
 // cancel`'s marker) and waits for its receipt, as an in-process `run` would have: the waiter owns the job until it returns.
+// Under --json exactly one document comes out whatever happens (review of #124 stage 2, F4): the needs_input one, the job's RunResult,
+// or a RunResult synthesized for a job whose own never came (abandoned: exit 6; unreadable: 1; Ctrl-C that could not cancel: 130).
 internal static class DetachedRun
 {
     public static async Task<int> WaitAsync(LiveJob job, int? answeredSeq, bool jsonMode, bool rawMode, string[] printedWarnings, CancelSignalHandler cancel)
@@ -19,15 +22,11 @@ internal static class DetachedRun
         catch (OperationCanceledException)
         {
             // A job with no host (or one that is already done or gone) is not this process's to cancel: it is left as it was.
-            try
-            {
-                job.RequestCancel();
-            }
-            catch (CliUsageException)
+            if (TryRequestCancel(job) is { } notCancelled)
             {
                 cancel.Settled();
                 JobWaitResult now = job.Observe();
-                return now.State == "done" ? Report(job, now, jsonMode, rawMode, printedWarnings) : ExitCodes.Cancelled;
+                return now.State == "done" ? Report(job, now, jsonMode, rawMode, printedWarnings) : NotCancelled(job, notCancelled, jsonMode, rawMode, printedWarnings);
             }
 
             (seen, _) = await LiveWait.UntilAsync(job, deadline: null, answeredSeq: null, finalOnly: true, CancellationToken.None);
@@ -35,6 +34,32 @@ internal static class DetachedRun
 
         cancel.Settled();
         return Report(job, seen, jsonMode, rawMode, printedWarnings);
+    }
+
+    // Null when the host was asked; otherwise why it was not.
+    private static string? TryRequestCancel(LiveJob job)
+    {
+        try
+        {
+            job.RequestCancel();
+            return null;
+        }
+        catch (Exception ex) when (ex is CliUsageException or IOException or UnauthorizedAccessException)
+        {
+            return ex.Message;
+        }
+    }
+
+    private static int NotCancelled(LiveJob job, string why, bool jsonMode, bool rawMode, string[] printedWarnings)
+    {
+        string error = $"Ctrl-C: the cancel request for job {job.Id} could not be made, so the job was not told to stop ({why})";
+        if (!jsonMode)
+        {
+            SafeConsole.Error($"error: {error}");
+            return ExitCodes.Cancelled;
+        }
+
+        return RunCommand.Present(job.SynthesizedReceipt(RunStatus.Cancelled, error), ExitCodes.Cancelled, jsonMode, rawMode, printedWarnings);
     }
 
     private static int Report(LiveJob job, JobWaitResult seen, bool jsonMode, bool rawMode, string[] printedWarnings)
@@ -57,16 +82,29 @@ internal static class DetachedRun
 
         if (seen.State == "abandoned")
         {
-            LiveWait.PrintAbandoned(seen, jsonMode);
-            return ExitCodes.Abandoned;
+            if (!jsonMode)
+            {
+                LiveWait.PrintAbandoned(seen, jsonMode: false);
+                return ExitCodes.Abandoned;
+            }
+
+            SafeConsole.Error(LiveJob.AbandonedMessage);
+            return RunCommand.Present(job.SynthesizedReceipt(RunStatus.Failed, $"{LiveJob.AbandonedMessage} (job {job.Id})"), ExitCodes.Abandoned, jsonMode, rawMode, printedWarnings);
         }
 
         if (job.ReadResult() is not { } result)
         {
-            SafeConsole.Error($"error: job {job.Id} ended with no readable result.json");
-            return ExitCodes.BackendFailure;
+            string unreadable = $"job {job.Id} ended with no readable result.json";
+            if (!jsonMode)
+            {
+                SafeConsole.Error($"error: {unreadable}");
+                return ExitCodes.BackendFailure;
+            }
+
+            return RunCommand.Present(job.SynthesizedReceipt(RunStatus.Failed, unreadable), exitOverride: null, jsonMode, rawMode, printedWarnings);
         }
 
-        return RunCommand.Present(result, refusedExit: null, jsonMode, rawMode, printedWarnings);
+        // A refusal of the host's machinery (a `.claustrum` link that leaves the repo) is exit 2 in-process too (#104).
+        return RunCommand.Present(result, job.WasRefused ? ExitCodes.Usage : null, jsonMode, rawMode, printedWarnings);
     }
 }

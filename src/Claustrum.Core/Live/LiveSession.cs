@@ -189,6 +189,8 @@ public sealed class LiveSession(JobPaths job, ILiveProtocol protocol, bool blind
             {
                 if (item.Discarded is { } why)
                     Append(ConversationParty.Claustrum, ConversationKind.Notice, why);
+                else if (item.Message is { Notice: true, Text.Length: > 0 } notice)
+                    Append(ConversationParty.Claustrum, ConversationKind.Notice, notice.Text);
                 else if (item.Message is { Text.Length: > 0 })
                     Deliver(item.Message.Text);
             }

@@ -51,10 +51,11 @@ the workspace); `--cwd` on the server and `cwd` on each call override it.
 ## 3. CLI reference
 
 Exit codes are fixed: `0` ok · `1` backend failure · `2` usage or config error (a bad flag, a
-refused brief, a missing cast, a role sent to a harness it does not list, a `gh` failure, a
+malformed job id (every `jobs` verb takes only `yyyyMMdd-HHmmss-xxxxxxxx`), a refused brief, a missing cast, a role sent to a harness it does not list, a `gh` failure, a
 `coordinate` whose untracked cast no committed rule ignores, a `.claustrum` link that leaves the repo, an
 uninitialized repo) · `3` backend not found · `4` timeout · `5` budget · `6` abandoned (`jobs wait`, `jobs reply`, `jobs cancel`,
-and a tree's `run`: the process running a job is gone, with no receipt) · `7` needs input (a tree's `run` or `jobs reply`: a child
+and a tree's `run`: the process running a job is gone, with no receipt; under `--json` the one document is then a RunResult
+with `status: failed` and an `error` saying so) · `7` needs input (a tree's `run` or `jobs reply`: a child
 asked its architect a question and still waits, *Questions inside a tree*) · `130` cancelled. Once the job directory exists (queued for a `max_parallel` slot, waiting for a `--branch`
 lock, adding its worktree, or running), the first Ctrl-C (SIGINT), SIGQUIT, SIGTERM or SIGHUP (the terminal closing) ends the run
 with a `cancelled` receipt: exit 130, the document on stdout under `--json`, `result.json` on disk
@@ -282,7 +283,9 @@ go into their findings. Only claude is live today; for any other backend the fla
 
 #### Questions inside a tree
 
-In a `coordinate` tree (`CLAUSTRUM_PARENT_JOB` set) the architect answers its children first. A live session's stdin pipe belongs to
+In a `coordinate` tree (`CLAUSTRUM_PARENT_JOB` set) whose architect is live (`CLAUSTRUM_ARCHITECT_LIVE=1`, which `coordinate` sets next to
+the tree id; a tree id exported by hand, `coordinate --no-live` and a backend with no live protocol leave it unset, and there a child runs
+in-process as before with reply timeout 0, told at once that no human is available) the architect answers its children first. A live session's stdin pipe belongs to
 the process that started it, so a child that may outlive its `run` call is hosted from the start in a detached `claustrum jobs host`
 (`--detach`), and a plain `claustrum run` there is `--detach` followed by a wait, with a reply timeout of 1800 s (the TTY rule's 0
 would tell the child at once that nobody can answer). If the job finishes, `run` prints and exits exactly as it does outside a tree.
@@ -295,9 +298,15 @@ exit code is its status's). What the architect cannot answer it escalates by end
 `coordinate`, so its human gets it (the terminal, or `job_status`/`job_say` over MCP, where `coordinate` now runs its architect with
 a 1800 s reply timeout), and the architect replies to the child with what they said. A child nobody answers within the window is
 told to decide alone. Ctrl-C (or SIGTERM, SIGHUP) on a waiting `run` or `reply` cancels the job through its host and prints the
-`cancelled` receipt, exit 130, as it would in-process. Not detached, so exactly as before: a blind role (it never asks), `--stream`
-(this process must stay in the room, so the child cannot be answered), `--no-live`, a backend that is not live, and any `run`
-outside a tree.
+`cancelled` receipt, exit 130, as it would in-process; a machinery refusal in the host (a `.claustrum` link that leaves the repo) is exit 2
+here too. Under `--json` a tree's `run` and `jobs reply` always print exactly one document: the `needs_input` one, the job's RunResult,
+or, when the job's own never comes (the host died: exit 6; `result.json` unreadable: exit 1; a Ctrl-C that could not reach the host:
+exit 130), a RunResult synthesized with the job id and an `error` saying which. No paid process is left with nobody to stop it: a detached
+host checks every few seconds that the `coordinate` job it hangs from is still alive (no `result.json`, its process running) and cancels
+its job, with a Notice in the conversation, once it is not; and a `coordinate` that finishes, is cancelled or times out cancels every
+detached job of its tree still running, listing them in its receipt's `warnings`. Not detached, so exactly as before: a blind role (it never
+asks), `--stream` (this process must stay in the room, so the child cannot be answered), `--no-live`, a backend that is not live, and any
+`run` outside a tree.
 
 ### `claustrum cast questions [--json] | create --answers <file> [--name n] | new [--name n] | list | show <name> | use <name>`
 
@@ -981,7 +990,7 @@ warns when binary and working directory straddle that line.
 `backend.json` (backend, model, and for claude the `mcp_servers` the run had, with `mcp.json`, the copy it loaded),
 `stdout.log`, `stderr.log`, `result.json`, and for a live job `conversation.jsonl`, `live.json` (the session's
 state and the open question's `seq`) and `inbox/` (messages waiting to be consumed). A detached job adds `host-request.json`
-(what the host runs), `host.json` (the host's pid and start time), `host.log` (its console output) and, once `jobs cancel` asks, `cancel`. `jobs.keep_last` (200) prunes old ones when a new job is
+(what the host runs), `host.json` (the host's pid and start time, and the tree it was started in), `host.log` (its console output) and, once `jobs cancel` asks, `cancel`; a `coordinate` job adds `owner.json` (its process, which its detached children watch). `jobs.keep_last` (200) prunes old ones when a new job is
 created. Budget ledgers live beside them under `budget/<tree>/`.
 
 ## 15. Troubleshooting

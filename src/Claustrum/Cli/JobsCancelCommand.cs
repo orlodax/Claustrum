@@ -23,7 +23,7 @@ public static class JobsCancelCommand
 
     private static async Task<int> ExecuteAsync(string id)
     {
-        LiveJob job = LiveJob.Find(id)
+        LiveJob job = LiveJob.Find(JobId.Require(id))
             ?? throw new CliUsageException($"job '{id}' not found under {JobDirectory.ResolveRoot(AppServices.Platform)}");
 
         job.RequestCancel();

@@ -64,6 +64,9 @@ public sealed class JobManager
         }
 
         // A job this process never started: its result.json says done; a live one (live.json) says what its session is doing (#124).
+        if (!NamesAStoreEntry(jobId))
+            return null;
+
         string resultPath = Path.Combine(JobDirectory.ResolveRoot(AppServices.Platform), jobId, "result.json");
         if (File.Exists(resultPath))
             return new JobStatusInfo("done", 0, null);
@@ -79,6 +82,9 @@ public sealed class JobManager
     {
         if (jobs.TryGetValue(jobId, out Entry? entry))
             return await ResolveTaskAsync(entry.Task);
+
+        if (!NamesAStoreEntry(jobId))
+            return null;
 
         string resultPath = Path.Combine(JobDirectory.ResolveRoot(AppServices.Platform), jobId, "result.json");
         return File.Exists(resultPath)
@@ -96,6 +102,10 @@ public sealed class JobManager
     // deterministically without either flaky timing or actually spawning a backend process.
     public static async Task<RunResult?> ResolveTaskAsync(Task<RunResult> task) =>
         task.IsCompleted ? await task : null;
+
+    // The disk fallbacks name a directory under the jobs store, so the id must be one plain name: a separator, or on Windows a drive
+    // (`C:x`), would leave the store (review of #124 stage 2, F6). The strict yyyyMMdd-HHmmss-xxxxxxxx shape is the `jobs` verbs' rule.
+    private static bool NamesAStoreEntry(string jobId) => jobId.Length > 0 && jobId is not ("." or "..") && jobId.AsSpan().IndexOfAny('/', '\\', ':') < 0;
 
     private sealed record Entry(JobPaths Job, Task<RunResult> Task, DateTimeOffset StartedAt);
 }

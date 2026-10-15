@@ -47,7 +47,9 @@ host's question mechanism and send the answer with `job_say {job_id, text}`. The
 If the cast's `architect.mode` is `spawned`, or the user asks Claustrum to coordinate issues
 end-to-end, run `claustrum coordinate --cast <name> --issues <n,m> --json` (or `--brief-file
 <path>`), or the MCP `coordinate` tool, which returns `{job_id, log_path}` at once; poll the
-`job_status` tool and fetch the `job_result` tool when it reports `done`. The architect runs
+`job_status` tool and fetch the `job_result` tool when it reports `done`. When you run `coordinate` through the
+MCP tool, its architect may escalate a question to you: `job_status` then shows `waiting_for_input` with the
+question. Ask the user with the host's question mechanism, then send the answer with `job_say {job_id, text}`. The architect runs
 headlessly on the cast's model, delegates builders → blind reviewer → tester (→ demo-author,
 for a browser-facing feature) itself, and leaves its work on branch `claustrum/<job_id>`;
 `claustrum jobs budget <job_id>` shows what the tree spent. `coordinate` no longer needs the

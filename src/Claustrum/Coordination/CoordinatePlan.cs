@@ -74,7 +74,16 @@ public sealed record CoordinatePlan(
     /// can be refused with no job directory on disk (issue #23). Both front doors call this *before*
     /// <see cref="JobDirectory.Create"/>, and pass the result to <see cref="CoordinateEngine.RunAsync"/>.
     /// </summary>
-    public PreparedDelegation Prepare() => DelegateEngine.Prepare(ToDelegateRequest());
+    public PreparedDelegation Prepare()
+    {
+        PreparedDelegation prepared = DelegateEngine.Prepare(ToDelegateRequest());
+
+        // #124 stage 2 review F2: whether the architect holds a live session is known only now (the backend has to have a live protocol and
+        // the role a report), and it is what lets a child route its question to it. Handed down next to the tree id; a child never infers it.
+        bool architectLive = prepared.Options.Live && prepared.Role.HasReport;
+        Dictionary<string, string> env = new(prepared.Request.Env, StringComparer.Ordinal) { [BudgetLedger.ArchitectLiveVariable] = architectLive ? "1" : "0" };
+        return prepared with { Request = prepared.Request with { Env = env } };
+    }
 
     /// <summary>
     /// <paramref name="prepared"/> with its user prompt's `Working directory:` line naming the real
@@ -97,7 +106,8 @@ public sealed record CoordinatePlan(
 
     // What makes every `claustrum run` the architect issues a member of this job's budget tree: the
     // backend inherits these, and a member never forwards them onward (EnvAllowList's ⚠ — caller env
-    // wins over the allow-list, which is why they are set here and not on the allow-list).
+    // wins over the allow-list, which is why they are set here and not on the allow-list). Prepare adds
+    // the architect's liveness (CLAUSTRUM_ARCHITECT_LIVE) once the backend is resolved.
     // ⚠ CLAUSTRUM_HOME travels with the tree id or `jobs budget <id>` reads a different ledger than
     // the children write to. The coordinate process itself is deliberately NOT given
     // CLAUSTRUM_PARENT_JOB: a member reserves the tree's cap for its whole life, leaving its own

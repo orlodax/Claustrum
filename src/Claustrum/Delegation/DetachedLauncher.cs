@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text.Json;
+using Claustrum.Core.IO;
 using Claustrum.Core.Jobs;
 using Claustrum.Live;
 
@@ -17,7 +18,7 @@ internal static class DetachedLauncher
     /// </summary>
     public static void Start(DelegateRequest request, JobPaths job)
     {
-        File.WriteAllText(job.HostRequestJson, JsonSerializer.Serialize(request, DelegationJsonContext.Default.DelegateRequest));
+        AtomicFile.WriteAllText(job.HostRequestJson, JsonSerializer.Serialize(request, DelegationJsonContext.Default.DelegateRequest));
 
         (string file, string[] leading) = SelfCommand();
         ProcessStartInfo startInfo = new()
@@ -39,7 +40,10 @@ internal static class DetachedLauncher
 
         using Process host = Process.Start(startInfo) ?? throw new IOException("the detached host did not start");
         host.StandardInput.Close();
-        File.WriteAllText(job.HostJson, JsonSerializer.Serialize(new HostRecord(host.Id, new DateTimeOffset(host.StartTime)), LiveJsonContext.Default.HostRecord));
+
+        // The tree is recorded for `coordinate`, which finds a tree's detached jobs by it when it ends.
+        HostRecord record = new(host.Id, new DateTimeOffset(host.StartTime), BudgetLedger.TreeIdFor(AppServices.Platform));
+        AtomicFile.WriteAllText(job.HostJson, JsonSerializer.Serialize(record, LiveJsonContext.Default.HostRecord));
     }
 
     // This binary again. Under `dotnet claustrum.dll` (a development run) the process is `dotnet`, and the dll is its first argument.

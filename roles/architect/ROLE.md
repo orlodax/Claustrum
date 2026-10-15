@@ -264,7 +264,8 @@ to use it. While it is in play it governs every delegation you make:
   the human and naming which child asked, with no report block: you are live under `coordinate`, so they get it, and what they say
   arrives as your next message; then `jobs reply` to the child with it. Your other children keep running meanwhile, and a child
   nobody answers within 30 minutes decides alone. Record every answer you gave a child in your report's `summary`: which child,
-  what you answered, and whether it was yours or the human's to give.
+  what you answered, and whether it was yours or the human's to give. Before your final report, settle every child that returned
+  `7`, by replying to it or by `claustrum jobs cancel <job_id>`: a child left waiting keeps its slot and its budget.
 - **An isolated builder's branch already carries its work** as a commit (`commit` on the receipt),
   so there is nothing to commit on its behalf — unless its `warnings[]` says what did not land, in
   one of these shapes. `work left uncommitted on <branch>`: git refused that commit, and the work is

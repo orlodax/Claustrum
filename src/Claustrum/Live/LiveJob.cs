@@ -37,7 +37,7 @@ internal sealed class LiveJob
     public static LiveJob? Find(string id)
     {
         string root = JobDirectory.ResolveRoot(AppServices.Platform);
-        if (id.Length == 0 || id is "." or ".." || id.AsSpan().IndexOfAny('/', '\\') >= 0 || !Directory.Exists(Path.Combine(root, id)))
+        if (!JobDirectory.IsJobId(id) || !Directory.Exists(Path.Combine(root, id)))
             return null;
 
         LiveJob job = new(root, id);
@@ -84,6 +84,42 @@ internal sealed class LiveJob
 
     /// <summary>The detached host of this job (`run --detach`, a tree's `run`), or null for a job run by the process that started it.</summary>
     public HostRecord? ReadHost() => Parse(ReadText("host.json"), LiveJsonContext.Default.HostRecord);
+
+    /// <summary>The process that owns this job when it is one `coordinate` runs (owner.json), or null.</summary>
+    public OwnerRecord? ReadOwner() => Parse(ReadText("owner.json"), LiveJsonContext.Default.OwnerRecord);
+
+    /// <summary>Whether result.json exists, readable or not: the job has ended.</summary>
+    public bool HasResult => File.Exists(Path.Combine(directory, "result.json"));
+
+    /// <summary>Whether the job's receipt is a refusal of its machinery (#104), which `run` ends with exit 2 and not the 1 of a failed status.</summary>
+    public bool WasRefused => File.Exists(Path.Combine(directory, "refused"));
+
+    /// <summary>
+    /// A RunResult for a job whose own receipt is missing or unreadable, so a front door that must print one document still can
+    /// (#124 stage 2 review F4): the job id and the role from request.json, <paramref name="error"/> saying why it is not the real thing.
+    /// </summary>
+    public RunResult SynthesizedReceipt(RunStatus status, string error) => new(
+        SchemaVersion: "1",
+        JobId: Id,
+        Status: status,
+        Backend: "unknown",
+        Model: "unknown",
+        Role: Role ?? "unknown",
+        FinalMessage: "",
+        ChangedFiles: [],
+        Diff: null,
+        DiffTruncated: false,
+        SessionId: null,
+        CostUsd: null,
+        Usage: null,
+        ExitCode: -1,
+        LogPath: Path.Combine(directory, "stdout.log"),
+        DurationSeconds: 0,
+        Error: error,
+        Raw: null,
+        Report: null,
+        ReportStatus: ReportStatus.Missing,
+        Warnings: []);
 
     /// <summary>The receipt, or null while result.json is missing or unreadable (it is written non-atomically).</summary>
     public RunResult? ReadResult() => Parse(ReadText("result.json"), ClaustrumJsonContext.Default.RunResult);
@@ -220,31 +256,45 @@ internal sealed class LiveJob
         if (IsBlind() is not false)
             throw new CliUsageException($"job '{Id}' runs a blind role{(Role is { } role ? $" ({role})" : "")}, or its role cannot be read: blind roles receive no human input, so there is nothing to say");
 
+        WriteInbox(new InboxMessage(DateTimeOffset.UtcNow, text));
+
+        LiveStatus now = ReadState()?.State ?? state.State;
+        return new SayResult(state.State == LiveStatus.WaitingForInput ? state.QuestionSeq : null, NameOf(now));
+    }
+
+    /// <summary>
+    /// Queues a notice from Claustrum itself for the live session to record in the conversation; the role is sent nothing. Returns the
+    /// inbox file, which is gone once the session has recorded it, or null when the job has no session still running (nothing to record into).
+    /// </summary>
+    public string? Notify(string text) =>
+        ReadState() is { State: not LiveStatus.Done } && !HasResult ? WriteInbox(new InboxMessage(DateTimeOffset.UtcNow, text, Notice: true)) : null;
+
+    // Temp file first, rename second: the session must never read a half-written message. The ticks are fixed-width so
+    // the names sort in the order they were written; only `*.json` is a message.
+    private string WriteInbox(InboxMessage message)
+    {
         string inbox = Path.Combine(directory, "inbox");
         if (fence.Escapes(inbox))
             throw new CliUsageException($"{inbox} resolves outside the jobs store ({SyncRoot.Resolve(inbox)}): nothing is written through a link that leaves it");
 
-        // Temp file first, rename second: the session must never read a half-written message. The ticks are fixed-width so
-        // the names sort in the order they were written; only `*.json` is a message.
         Directory.CreateDirectory(inbox);
         string name = $"{DateTime.UtcNow.Ticks:d19}-{Random.Shared.Next():x8}";
         string temp = Path.Combine(inbox, $"{name}.tmp");
-        string json = JsonSerializer.Serialize(new InboxMessage(DateTimeOffset.UtcNow, text), ClaustrumJsonContext.Default.InboxMessage);
+        string target = Path.Combine(inbox, $"{name}.json");
+        string json = JsonSerializer.Serialize(message, ClaustrumJsonContext.Default.InboxMessage);
         try
         {
             if (!PlainFile.TryWriteAllText(temp, json, FileMode.Create, out string? refusal))
                 throw new CliUsageException($"{temp}: {refusal}");
 
-            File.Move(temp, Path.Combine(inbox, $"{name}.json"));
+            File.Move(temp, target);
+            return target;
         }
         catch
         {
             File.Delete(temp);
             throw;
         }
-
-        LiveStatus now = ReadState()?.State ?? state.State;
-        return new SayResult(state.State == LiveStatus.WaitingForInput ? state.QuestionSeq : null, NameOf(now));
     }
 
     private bool TryReadRole([NotNullWhen(true)] out string? role, out string? cwd)

@@ -52,9 +52,11 @@ public static class EnvAllowList
     }
 
     // `env_passthrough: "all"` turns off the allow-list, not the rule above it: an inherited tree id
-    // would enrol a grandchild in a tree whose remainder its own parent already holds reserved.
+    // would enrol a grandchild in a tree whose remainder its own parent already holds reserved, and
+    // the architect's liveness (#124 stage 2 review F2) is a fact about the tree's own architect.
     private static bool IsTreeMembership(string name) =>
-        name.Equals(BudgetLedger.TreeVariable, StringComparison.OrdinalIgnoreCase);
+        name.Equals(BudgetLedger.TreeVariable, StringComparison.OrdinalIgnoreCase)
+        || name.Equals(BudgetLedger.ArchitectLiveVariable, StringComparison.OrdinalIgnoreCase);
 
     private static bool IsAllowed(string name) =>
         exactNames.Contains(name, StringComparer.OrdinalIgnoreCase)

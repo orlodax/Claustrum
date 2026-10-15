@@ -30,7 +30,7 @@ public static class JobsWaitCommand
         if (timeoutSeconds is <= 0)
             throw new CliUsageException("--timeout must be greater than zero");
 
-        LiveJob job = LiveJob.Find(id)
+        LiveJob job = LiveJob.Find(JobId.Require(id))
             ?? throw new CliUsageException($"job '{id}' not found under {JobDirectory.ResolveRoot(AppServices.Platform)}");
 
         using CancellationTokenSource cts = new();

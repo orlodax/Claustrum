@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using Claustrum.Core.Platform;
 // Alias, not `using Claustrum.Core.Config;`: from this file's namespace (a sibling of `Config` under
 // `Claustrum.Core`), the *namespace* `Claustrum.Core.Config` shadows the `Config` *type* inside it —
@@ -8,7 +9,7 @@ namespace Claustrum.Core.Jobs;
 
 // `~/.claustrum/jobs/<yyyyMMdd-HHmmss-4hex>/` (docs/PLAN.md A4); `CLAUSTRUM_HOME` relocates the
 // root, e.g. for parallel worktree jobs that must not share one job tree.
-public static class JobDirectory
+public static partial class JobDirectory
 {
     public static JobPaths Create(IPlatform platform)
     {
@@ -22,12 +23,22 @@ public static class JobDirectory
     }
 
     /// <summary>
+    /// Whether <paramref name="id"/> is exactly the shape <see cref="Create"/> mints, `yyyyMMdd-HHmmss-xxxxxxxx`. Checked before an id
+    /// reaches <c>Path.Combine</c>: on Windows a drive-qualified `C:x` replaces the root, and an id typed by a user is no path.
+    /// </summary>
+    public static bool IsJobId(string id) => JobIdPattern().IsMatch(id);
+
+    // ASCII classes and no IgnoreCase, so the match is ordinal whatever the culture; \z, not $, which also accepts a trailing newline.
+    [GeneratedRegex(@"^[0-9]{8}-[0-9]{6}-[0-9a-f]{8}\z", RegexOptions.CultureInvariant)]
+    private static partial Regex JobIdPattern();
+
+    /// <summary>
     /// The paths of a job directory that already exists, for the process that runs a job another one minted (a detached
-    /// host, #124); null when there is no such directory. The id is a name under the jobs root, never a path.
+    /// host, #124); null when the id is not a job id or there is no such directory.
     /// </summary>
     public static JobPaths? Open(IPlatform platform, string id)
     {
-        if (id.Length == 0 || id is "." or ".." || id.AsSpan().IndexOfAny('/', '\\') >= 0)
+        if (!IsJobId(id))
             return null;
 
         string directory = Path.Combine(ResolveRoot(platform), id);

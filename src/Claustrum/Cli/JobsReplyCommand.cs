@@ -25,7 +25,7 @@ public static class JobsReplyCommand
 
     private static async Task<int> ExecuteAsync(string id, string text, bool jsonMode)
     {
-        LiveJob job = LiveJob.Find(id)
+        LiveJob job = LiveJob.Find(JobId.Require(id))
             ?? throw new CliUsageException($"job '{id}' not found under {JobDirectory.ResolveRoot(AppServices.Platform)}");
 
         // Before the handler, like `run`: a refusal is a usage error, and the first signal after it is the wait's.
