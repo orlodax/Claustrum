@@ -2,10 +2,10 @@ using System.CommandLine;
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Claustrum.Casts;
 using Claustrum.Core.Config;
 using Claustrum.Core.IO;
-using Claustrum.Core.Json;
 using Claustrum.Core.Platform;
 using Claustrum.Roles.Sync;
 
@@ -140,7 +140,7 @@ public static class InitCommand
         }
         else if (missingCount > 0 && !Console.IsInputRedirected)
         {
-            // Ask on the terminal, re-asking invalid answers as `cast new` does.
+            // Ask on the terminal; an invalid answer is an error (exit 2), not asked again.
             string? writeError = AskAndWriteMissingAliasesInteractive(userPath, config);
             if (writeError is not null)
             {
@@ -290,8 +290,9 @@ public static class InitCommand
         if (toWrite.Count == 0)
             return null; // nothing to write
 
-        // Read existing user config (if any)
-        ConfigDocument existingDoc;
+        // Merged at the JSON level, not through ConfigDocument: a key Claustrum does not model ($schema, a note)
+        // is the user's, and re-serializing the typed document dropped it (2026-10-15, review of #127).
+        JsonObject root = [];
         if (platform.FileExists(userPath))
         {
             string? existingJson;
@@ -308,115 +309,82 @@ public static class InitCommand
 
             try
             {
-                existingDoc = JsonSerializer.Deserialize(existingJson, ClaustrumJsonContext.Default.ConfigDocument)
-                    ?? new ConfigDocument(Models: [], Roles: null, Backends: null, Defaults: null, Jobs: null);
+                root = JsonNode.Parse(existingJson) as JsonObject ?? throw new CastException($"'{userPath}' does not contain a JSON object");
             }
             catch (JsonException ex)
             {
                 return $"'{userPath}': {ex.Message}";
             }
+            catch (CastException ex)
+            {
+                return ex.Message;
+            }
         }
-        else
+
+        JsonObject models;
+        switch (root["models"])
         {
-            existingDoc = new ConfigDocument(Models: [], Roles: null, Backends: null, Defaults: null, Jobs: null);
+            case JsonObject existing:
+                models = existing;
+                break;
+            case null:
+                models = [];
+                root["models"] = models;
+                break;
+            default:
+                return $"'{userPath}': \"models\" is not a JSON object";
         }
 
-        // Merge
-        Dictionary<string, string> models = new(existingDoc.Models ?? []);
-        // TryAdd: the user file's own entry is never overwritten.
+        // The user file's own entry is never overwritten.
         foreach ((string alias, string value) in toWrite)
-            models.TryAdd(alias, value);
+        {
+            if (!models.ContainsKey(alias))
+                models[alias] = value;
+        }
 
-        ConfigDocument updated = existingDoc with { Models = models };
+        using MemoryStream buffer = new();
+        using (Utf8JsonWriter writer = new(buffer, new JsonWriterOptions { Indented = true, NewLine = "\n" }))
+            root.WriteTo(writer);
 
-        // Serialize with indentation through a CUSTOM writer to avoid null fields
-        string json = SerializeConfigDocumentIndented(updated);
+        string json = Encoding.UTF8.GetString(buffer.ToArray()) + "\n";
 
-        // Create directory if needed and write
-        string? dir = Path.GetDirectoryName(userPath);
-        if (dir is { Length: > 0 })
-            Directory.CreateDirectory(dir);
+        // Through a symlinked config (dotfiles) the rename lands on the target, not on the link.
+        if (Path.GetDirectoryName(userPath) is { Length: > 0 } userDir)
+            Directory.CreateDirectory(userDir);
 
-        if (!PlainFile.TryWriteAllText(userPath, json, FileMode.Create, out string? refusal))
-            return $"'{userPath}': {refusal}";
+        FileInfo userFile = new(userPath);
+        string target = userFile.LinkTarget is not null ? userFile.ResolveLinkTarget(returnFinalTarget: true)?.FullName ?? userPath : userPath;
+        if (Path.GetDirectoryName(target) is { Length: > 0 } targetDir)
+            Directory.CreateDirectory(targetDir);
 
-        return null; // success
+        return WriteAtomically(target, json);
     }
 
-    private static string SerializeConfigDocumentIndented(ConfigDocument doc)
+    // A temp file beside the config, then a rename over it: a crash or a full disk leaves the old file whole, never a
+    // truncated one. CreateNew (O_EXCL) refuses a planted link at the temp name.
+    private static string? WriteAtomically(string path, string content)
     {
-        using MemoryStream buffer = new();
-        using Utf8JsonWriter writer = new(buffer, new JsonWriterOptions { Indented = true });
-        writer.WriteStartObject();
-
-        if (doc.Models is { Count: > 0 })
+        string tmp = Path.Combine(Path.GetDirectoryName(path) ?? "", $".{Path.GetFileName(path)}.{Path.GetRandomFileName()}.claustrum-tmp");
+        try
         {
-            writer.WriteStartObject("models");
-            foreach ((string key, string value) in doc.Models)
-                writer.WriteString(key, value);
-            writer.WriteEndObject();
-        }
-
-        if (doc.Roles is { Count: > 0 })
-        {
-            writer.WriteStartObject("roles");
-            foreach ((string role, RoleSettings settings) in doc.Roles)
+            using (FileStream stream = new(tmp, FileMode.CreateNew, FileAccess.Write, FileShare.None))
             {
-                writer.WriteStartObject(role);
-                if (settings.Model is not null)
-                    writer.WriteString("model", settings.Model);
-                if (settings.Effort is not null)
-                    writer.WriteString("effort", settings.Effort);
-                if (settings.Permission is not null)
-                    writer.WriteString("permission", settings.Permission);
-                if (settings.Deny is { Length: > 0 })
-                {
-                    writer.WriteStartArray("deny");
-                    foreach (string d in settings.Deny)
-                        writer.WriteStringValue(d);
-                    writer.WriteEndArray();
-                }
-                writer.WriteEndObject();
+                if (!OperatingSystem.IsWindows() && File.Exists(path))
+                    File.SetUnixFileMode(tmp, File.GetUnixFileMode(path));
+
+                stream.Write(new UTF8Encoding(false).GetBytes(content));
             }
-            writer.WriteEndObject();
-        }
 
-        if (doc.Backends is { Count: > 0 })
+            File.Move(tmp, path, overwrite: true);
+            return null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            writer.WriteStartObject("backends");
-            foreach ((string name, BackendConfig bc) in doc.Backends)
-            {
-                writer.WriteStartObject(name);
-                if (bc.Path is not null)
-                    writer.WriteString("path", bc.Path);
-                writer.WriteEndObject();
-            }
-            writer.WriteEndObject();
-        }
+            if (File.Exists(tmp))
+                File.Delete(tmp);
 
-        if (doc.Defaults is { } defaults)
-        {
-            writer.WriteStartObject("defaults");
-            if (defaults.TimeoutSeconds is not null)
-                writer.WriteNumber("timeout_seconds", defaults.TimeoutSeconds.Value);
-            if (defaults.BudgetUsd is not null)
-                writer.WriteNumber("budget_usd", defaults.BudgetUsd.Value);
-            if (defaults.EnvPassthrough is not null)
-                writer.WriteString("env_passthrough", defaults.EnvPassthrough);
-            writer.WriteEndObject();
+            return $"'{path}': {ex.Message}";
         }
-
-        if (doc.Jobs is { } jobs)
-        {
-            writer.WriteStartObject("jobs");
-            if (jobs.KeepLast is not null)
-                writer.WriteNumber("keep_last", jobs.KeepLast.Value);
-            writer.WriteEndObject();
-        }
-
-        writer.WriteEndObject();
-        writer.Flush();
-        return Encoding.UTF8.GetString(buffer.ToArray()) + "\n";
     }
 
     // Ask missing aliases interactively on the terminal (synchronous, like cast new's AskUntilSupported).

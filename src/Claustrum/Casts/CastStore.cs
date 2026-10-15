@@ -70,8 +70,17 @@ public static class CastStore
         }
     }
 
+    // A name is a file name, never a path: a cast's JSON `name` is the document's own claim, and `../../leak` saved under
+    // it landed outside `.claustrum/casts/` — where the architect's commit takes it onto the branch (2026-10-15, review of #127).
+    public static void RequireFileName(string name)
+    {
+        if (name.Length == 0 || name is "." or ".." || name != name.Trim() || name.IndexOfAny(['/', '\\', ':']) >= 0 || name.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
+            throw new CastException($"cast name '{name}' is not a plain file name (no separators, no '..'): it must stay inside .claustrum/casts/");
+    }
+
     public static void Save(string cwd, Cast cast)
     {
+        RequireFileName(cast.Name);
         string path = PathFor(cwd, cast.Name);
         RequireInside(cwd, path, "written");
         Directory.CreateDirectory(DirectoryFor(cwd));
