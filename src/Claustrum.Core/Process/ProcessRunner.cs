@@ -79,6 +79,7 @@ public sealed class ProcessRunner(IPlatform platform)
         Task liveLoop = Task.CompletedTask;
 
         ProcessTermination termination = ProcessTermination.Completed;
+        bool stopped = false;
         try
         {
             // Inside the timeout, not before it: a child that never drains its stdin would otherwise
@@ -94,6 +95,7 @@ public sealed class ProcessRunner(IPlatform platform)
         catch (OperationCanceledException)
         {
             termination = cancellationToken.IsCancellationRequested ? ProcessTermination.Cancelled : ProcessTermination.TimedOut;
+            stopped = true;
             process.Kill(entireProcessTree: true);
             await process.WaitForExitAsync(CancellationToken.None);
         }
@@ -103,12 +105,18 @@ public sealed class ProcessRunner(IPlatform platform)
                 await EndLiveAsync(live, liveStop, liveLoop);
         }
 
+        // A report already delivered is the job's outcome (#124): stopping the process after it, for a timeout or a
+        // cancel, is housekeeping. The exit code of a child we killed (or a signal killed) is not the role's, so it reads as clean.
+        bool reportKept = live is { ReportDelivered: true };
+        if (reportKept)
+            termination = ProcessTermination.Completed;
+
         // The terminal's signal can kill the child before our handler cancels the token: a cancel, not a failed backend.
-        if (termination == ProcessTermination.Completed && SignalExit.IsCancelSignal(process.ExitCode) && await SignalExit.CancelArrivesAsync(cancellationToken))
+        if (termination == ProcessTermination.Completed && !reportKept && SignalExit.IsCancelSignal(process.ExitCode) && await SignalExit.CancelArrivesAsync(cancellationToken))
             termination = ProcessTermination.Cancelled;
 
         stopwatch.Stop();
-        return new ProcessOutcome(process.ExitCode, stdout.ToString(), stderr.ToString(), termination, stopwatch.Elapsed);
+        return new ProcessOutcome(reportKept && (stopped || SignalExit.IsCancelSignal(process.ExitCode)) ? 0 : process.ExitCode, stdout.ToString(), stderr.ToString(), termination, stopwatch.Elapsed);
     }
 
     // Stdin always ends up closed, and is never inherited: a child holding the MCP host's own live
