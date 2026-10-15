@@ -1,8 +1,8 @@
 name: ci
 
 on:
-  push:
-    branches: [main]
+  # PR only (2026-10-15): main takes rebase merges of PRs that the required checks hold green and
+  # up to date, so a push run would retest the same tree.
   pull_request:
 
 jobs:

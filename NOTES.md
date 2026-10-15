@@ -1986,6 +1986,13 @@ publishes nothing). The tag is the version: `v0.1.0` → `-p:Version=0.1.0`, der
   The pack step passes `-p:TargetLatestRuntimePatch=false` (measured from a clean `obj/`: floor
   `10.0.0`; a stale `obj/` keeps the old runtimeconfig and fakes a failure). It is not set in the
   csproj, where it would also compile the AOT binaries against the unpatched 10.0.0 runtime pack.
+- **`ci.yml` runs on PRs only (2026-10-15, owner's call).** A PR run tests the PR merged into the
+  current `main`; with rebase-only merges and an up-to-date branch, the commit that lands on `main`
+  has exactly that tree, so the push run retested it (~7 min of macOS/Windows per merge). This
+  holds only because `main`'s protection requires `test (ubuntu-latest)`, `test (windows-latest)`,
+  `test (macos-latest)` and `aot-publish` with "up to date" on. Without those required checks,
+  "up to date" enforces nothing, and two PRs tested separately could land untested together.
+  Renaming a job or a matrix leg renames its check: update the protection in the same PR.
 
 ## Reading a live job log needs FileShare.ReadWrite (2026-09-22, PR #26 windows leg)
 
