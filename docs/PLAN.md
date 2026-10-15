@@ -145,7 +145,7 @@ Resolution: built-in defaults → `~/.config/claustrum/config.json` (`%APPDATA%\
 Model grammar `[backend:]<model-id>`; aliases resolve recursively (depth 3). Role files (Part B) reference **model classes** (`frontier-coding`, `cheap-coding`, …) that are themselves aliases in this file, so a Claude user and a DeepSeek-only user share one role file.
 
 ### A8. CI / release
-- `ci.yml` (push/PR): `dotnet test` on ubuntu + windows; `dotnet publish -r linux-x64 -p:PublishAot=true` on ubuntu (needs `clang zlib1g-dev`) to catch trim warnings early.
+- `ci.yml` (PR only since 2026-10-15; required checks + up-to-date branch on `main`): `dotnet test` on ubuntu + windows (+ macOS since 2026-10-14); `dotnet publish -r linux-x64 -p:PublishAot=true` on ubuntu (needs `clang zlib1g-dev`) to catch trim warnings early.
 - `release.yml` (tag `v*`): matrix ubuntu-latest→linux-x64, ubuntu-24.04-arm→linux-arm64, windows-latest→win-x64, macos-15-intel→osx-x64 (macos-13 retired 2025-12-04), macos-latest→osx-arm64; publish AOT, rename `claustrum-<rid>[.exe]`, `SHA256SUMS.txt`, `softprops/action-gh-release`; plus `dotnet pack` tool package → NuGet when `NUGET_API_KEY` is set (as shipped 2026-10-15: trusted publishing instead, no stored key; the repo variable `NUGET_USER` turns it on).
 
 ## Part B — Role library & harness glue (`src/Claustrum.Roles`, `roles/`)
