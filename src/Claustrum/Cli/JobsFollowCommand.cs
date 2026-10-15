@@ -51,10 +51,10 @@ public static class JobsFollowCommand
 
         try
         {
-            if (jobId is { Length: > 0 })
-                return await FollowOneAsync(jobsRoot, jobId, rawMode, ct);
-            else
+            // An id given empty is a malformed id like any other jobs verb's (exit 2), not "follow every job".
+            if (jobId is null)
                 return await FollowAllAsync(jobsRoot, rawMode, ct);
+            return await FollowOneAsync(jobsRoot, jobId, rawMode, ct);
         }
         catch (OperationCanceledException)
         {
