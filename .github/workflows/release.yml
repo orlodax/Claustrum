@@ -94,13 +94,15 @@ jobs:
           global-json-file: global.json
       # No PublishAot override needed: packing the tool with PublishAot=true in the csproj succeeds
       # as is (measured 2026-09-22, SDK 10.0.4xx) — the package carries the IL build.
+      # TargetLatestRuntimePatch=false here, never in the csproj: the pack's inner publish counts as
+      # self-contained and pinned the tool to runtime 10.0.13 in v0.1.0 (#118); the AOT legs keep it.
       - shell: bash
         run: |
           args=()
           if [ -n "$VERSION" ]; then
             args+=(-p:Version="$VERSION")
           fi
-          dotnet pack src/Claustrum/Claustrum.csproj -c Release "${args[@]}" -o nupkg
+          dotnet pack src/Claustrum/Claustrum.csproj -c Release -p:TargetLatestRuntimePatch=false "${args[@]}" -o nupkg
       - uses: actions/upload-artifact@v4
         with:
           name: nupkg
