@@ -146,7 +146,7 @@ Model grammar `[backend:]<model-id>`; aliases resolve recursively (depth 3). Rol
 
 ### A8. CI / release
 - `ci.yml` (push/PR): `dotnet test` on ubuntu + windows; `dotnet publish -r linux-x64 -p:PublishAot=true` on ubuntu (needs `clang zlib1g-dev`) to catch trim warnings early.
-- `release.yml` (tag `v*`): matrix ubuntu-latest→linux-x64, ubuntu-24.04-arm→linux-arm64, windows-latest→win-x64, macos-15-intel→osx-x64 (macos-13 retired 2025-12-04), macos-latest→osx-arm64; publish AOT, rename `claustrum-<rid>[.exe]`, `SHA256SUMS.txt`, `softprops/action-gh-release`; plus `dotnet pack` tool package → NuGet when `NUGET_API_KEY` is set.
+- `release.yml` (tag `v*`): matrix ubuntu-latest→linux-x64, ubuntu-24.04-arm→linux-arm64, windows-latest→win-x64, macos-15-intel→osx-x64 (macos-13 retired 2025-12-04), macos-latest→osx-arm64; publish AOT, rename `claustrum-<rid>[.exe]`, `SHA256SUMS.txt`, `softprops/action-gh-release`; plus `dotnet pack` tool package → NuGet when `NUGET_API_KEY` is set (as shipped 2026-10-15: trusted publishing instead, no stored key; the repo variable `NUGET_USER` turns it on).
 
 ## Part B — Role library & harness glue (`src/Claustrum.Roles`, `roles/`)
 
@@ -334,7 +334,7 @@ only its own `## Context` block (#89), and the background-and-`wait` recipe for 
 
 **Wave 3 — release `v0.1.0`** (new issue). `release.yml` dry run via `workflow_dispatch`, then the
 tag; `SHA256SUMS.txt` checked; the binary installed per INSTALL.md on Linux and Windows; `dotnet
-tool install -g claustrum` from nuget.org when `NUGET_API_KEY` is set, otherwise from the release's
+tool install -g claustrum` from nuget.org when publishing is on (trusted publishing, `NUGET_USER`; 2026-10-15), otherwise from the release's
 `.nupkg` with `--add-source` (INSTALL.md says both). Closes #5.
 
 Phase 2 (not built now): `claustrum pipeline pipeline.json` — stages architect(api) → builders[] (parallel, git worktrees) → reviewer → tester, each stage a `RunRequest`; the runner feeds the reviewer only task + `RunResult.diff` (blind by construction), gates on `status`/verdict, aggregates one report.
