@@ -41,6 +41,7 @@ public sealed class ClaudeBackendBuildTests
         [
             "-p", "--output-format", "stream-json", "--verbose", "--model", "sonnet",
             "--append-system-prompt-file", "/job/system.md",
+            "--strict-mcp-config",
             "--permission-mode", "plan", "--permission-prompts", "none",
             "--allowedTools", "Read,Glob,Grep,Bash(git diff*),Bash(git log*),Bash(git show*),Bash(git status*),Bash(gh pr *),Bash(gh issue *)",
             "--no-session-persistence",
@@ -67,6 +68,7 @@ public sealed class ClaudeBackendBuildTests
         [
             "-p", "--output-format", "stream-json", "--verbose", "--model", "sonnet",
             "--append-system-prompt-file", "/job/system.md",
+            "--strict-mcp-config",
             "--permission-mode", "acceptEdits", "--permission-prompts", "none",
             "--disallowedTools", "Bash",
             "--no-session-persistence",
@@ -83,6 +85,7 @@ public sealed class ClaudeBackendBuildTests
         [
             "-p", "--output-format", "stream-json", "--verbose", "--model", "sonnet",
             "--append-system-prompt-file", "/job/system.md",
+            "--strict-mcp-config",
             "--permission-mode", "acceptEdits", "--permission-prompts", "none",
             "--allowedTools", "Edit,Write,Read,Glob,Grep,Bash(*)",
             "--disallowedTools", "Bash(git push),Bash(git push *)",
@@ -161,6 +164,7 @@ public sealed class ClaudeBackendBuildTests
         [
             "-p", "--output-format", "stream-json", "--verbose", "--model", "sonnet",
             "--append-system-prompt-file", "/job/system.md",
+            "--strict-mcp-config",
             "--dangerously-skip-permissions", "--permission-prompts", "none",
             "--no-session-persistence",
             "--effort", "high",
@@ -317,6 +321,7 @@ public sealed class ClaudeBackendBuildTests
         [
             "-p", "--output-format", "stream-json", "--verbose", "--model", "sonnet",
             "--append-system-prompt-file", "/job/system.md",
+            "--strict-mcp-config",
             "--permission-mode", "plan", "--permission-prompts", "none",
             "--allowedTools", "Read,Glob,Grep,Bash(git diff*),Bash(git log*),Bash(git show*),Bash(git status*),Bash(gh pr *),Bash(gh issue *)",
             "--disallowedTools", "Agent,Task",
@@ -334,6 +339,7 @@ public sealed class ClaudeBackendBuildTests
         [
             "-p", "--output-format", "stream-json", "--verbose", "--model", "sonnet",
             "--append-system-prompt-file", "/job/system.md",
+            "--strict-mcp-config",
             "--permission-mode", "plan", "--permission-prompts", "none",
             "--disallowedTools", "Edit,Write,NotebookEdit",
             "--disallowedTools", "Agent,Task",
@@ -351,6 +357,7 @@ public sealed class ClaudeBackendBuildTests
         [
             "-p", "--output-format", "stream-json", "--verbose", "--model", "sonnet",
             "--append-system-prompt-file", "/job/system.md",
+            "--strict-mcp-config",
             "--permission-mode", "acceptEdits", "--permission-prompts", "none",
             "--disallowedTools", "Bash",
             "--disallowedTools", "Agent,Task",
@@ -368,6 +375,7 @@ public sealed class ClaudeBackendBuildTests
         [
             "-p", "--output-format", "stream-json", "--verbose", "--model", "sonnet",
             "--append-system-prompt-file", "/job/system.md",
+            "--strict-mcp-config",
             "--permission-mode", "acceptEdits", "--permission-prompts", "none",
             "--allowedTools", "Edit,Write,Read,Glob,Grep,Bash(*)",
             "--disallowedTools", "Agent,Task",
@@ -385,6 +393,7 @@ public sealed class ClaudeBackendBuildTests
         [
             "-p", "--output-format", "stream-json", "--verbose", "--model", "sonnet",
             "--append-system-prompt-file", "/job/system.md",
+            "--strict-mcp-config",
             "--dangerously-skip-permissions", "--permission-prompts", "none",
             "--disallowedTools", "Agent,Task",
             "--no-session-persistence",
@@ -404,6 +413,7 @@ public sealed class ClaudeBackendBuildTests
         [
             "-p", "--output-format", "stream-json", "--verbose", "--model", "sonnet",
             "--append-system-prompt-file", "/job/system.md",
+            "--strict-mcp-config",
             "--dangerously-skip-permissions", "--permission-prompts", "none",
             "--disallowedTools", "Agent,Task",
             "--effort", "high",
