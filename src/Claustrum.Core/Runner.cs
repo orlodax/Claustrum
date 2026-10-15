@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Claustrum.Core.Backends;
+using Claustrum.Core.Config;
 using Claustrum.Core.Git;
 using Claustrum.Core.Jobs;
 using Claustrum.Core.Json;
@@ -193,13 +194,13 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
 
         LiveSession? live = liveProtocol is null ? null : new LiveSession(job, liveProtocol, role.Blind, options.ReplyTimeoutSeconds, resumeTurn: liveProtocol is IResumeLiveProtocol ? ResumeTurn : null);
 
-        // #124 stage 3b: a run with no live session records the role's `claustrum-note:` lines itself; a live one's belong to the session.
-        NoteRecorder? notes = live is null ? new NoteRecorder(job) : null;
+        // #124 stage 3b: the role's `claustrum-note:` lines. A live session owns its file's numbering, so it writes them (LiveSession.RecordNote).
+        NoteRecorder notes = new(job, live: live);
 
         ProcessOutcome outcome;
         try
         {
-            outcome = await processRunner.RunAsync(spec, runOptions.BackendConfig, job, runOptions.EnvPassthroughAll, notes?.Tap(streamLine) ?? streamLine, request.Timeout, cancellationToken, live);
+            outcome = await processRunner.RunAsync(spec, runOptions.BackendConfig, job, runOptions.EnvPassthroughAll, notes.Tap(streamLine), request.Timeout, cancellationToken, live);
         }
         catch (BackendNotFoundException ex)
         {
@@ -288,7 +289,7 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
                 ExitCode: outcome.ExitCode,
                 LogPath: job.StdoutLog,
                 DurationSeconds: outcome.Duration.TotalSeconds,
-                Error: status is RunStatus.Success or RunStatus.NeedsInput ? null : parsed.FinalMessage,
+                Error: status is RunStatus.Success or RunStatus.NeedsInput ? null : outcome.Failure ?? parsed.FinalMessage,
                 Raw: parsed.Raw,
                 Report: extracted.Report,
                 ReportStatus: extracted.Status,
@@ -541,7 +542,7 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
     {
         ProcessTermination.TimedOut => RunStatus.Timeout,
         ProcessTermination.Cancelled => RunStatus.Cancelled,
-        _ when parsed.IsError || outcome.ExitCode != 0 => RunStatus.Failed,
+        _ when parsed.IsError || outcome.ExitCode != 0 || outcome.Failure is not null => RunStatus.Failed,
         _ => RunStatus.Success,
     };
 
@@ -620,6 +621,9 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
             writer.WriteStartObject();
             writer.WriteString("backend", backend.Name);
             writer.WriteString("model", role.Model);
+
+            // #124 stage 3 review F5: a continuation of this job (`jobs answer`) runs at the level the job ran at, not today's.
+            writer.WriteString("permission", PermissionLevelParser.ToConfigString(role.Permission.Level));
             if (mcpServers is not null)
             {
                 writer.WriteStartArray("mcp_servers");

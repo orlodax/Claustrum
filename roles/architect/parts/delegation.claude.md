@@ -24,7 +24,7 @@
 
   then read each receipt file as you would a single run's output — one whose `status` is `needs_input`
   is a child's question, not its result: before your final report, settle every child that returned `7`, by
-  replying or by `claustrum jobs cancel <job_id>`. The Bash tool's
+  replying (`jobs answer` if it already ended) or by `claustrum jobs cancel <job_id>`. The Bash tool's
   `run_in_background: true` is the other way to start them — but read every receipt before your
   turn ends. Never start more at once than the cast's `max_parallel`. The rest of this section
   applies only when **no** cast is in play.

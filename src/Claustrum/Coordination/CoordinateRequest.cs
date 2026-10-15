@@ -1,4 +1,5 @@
 using Claustrum.Core.Config;
+using Claustrum.Delegation;
 
 namespace Claustrum.Coordination;
 
@@ -26,6 +27,7 @@ public sealed record CoordinateRequest(
 /// <summary>
 /// The coordinate job being continued and what the continuation reuses: its budget tree (<see cref="TreeId"/>, the first job of the
 /// chain, so the cap and the ledger carry on), its architect's backend session and work branch (null when it ran in place), and the
-/// human's answers as the next message.
+/// human's answers as the next message. <see cref="WorktreeOf"/> is the job whose worktree directory the architect ran in, which it takes over
+/// again (F1), and <see cref="Pin"/> what it ran as (F5).
 /// </summary>
-public sealed record CoordinateResume(string JobId, string TreeId, string SessionId, string? Branch, string Answers);
+public sealed record CoordinateResume(string JobId, string TreeId, string SessionId, string? Branch, string Answers, string? WorktreeOf = null, ResumePin? Pin = null);

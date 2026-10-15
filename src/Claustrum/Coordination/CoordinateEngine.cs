@@ -69,7 +69,7 @@ public static class CoordinateEngine
         CastBudget? castBudget = appResult.CastBudget;
         string[] castWarnings = appResult.Warnings;
 
-        string userPrompt = CoordinationBrief.RenderUserPrompt(task, request.Issues, CoordinationBrief.ArchitectCwd(request.Cwd, isolated));
+        string userPrompt = CoordinationBrief.RenderUserPrompt(task, request.Issues, CoordinationBrief.ArchitectCwd(request.Cwd, isolated, request.Resume?.WorktreeOf));
         return new CoordinatePlan(request, cast, castName, userPrompt, tier, overrides, castBudget, isolated, castWarnings, warnings);
     }
 
@@ -99,7 +99,8 @@ public static class CoordinateEngine
             Overrides: overrides,
             Stream: false,
             DiffCapBytes: diffCapBytes,
-            Resume: new CoordinateResume(target.JobId, origin.TreeId ?? target.JobId, session, target.Result.Branch, answers));
+            Resume: new CoordinateResume(
+                target.JobId, origin.TreeId ?? target.JobId, session, target.Result.Branch, answers, JobAnswering.HomeOf(target.Result.Worktree), JobAnswering.PinOf(target)));
     }
 
     /// <summary>
@@ -110,6 +111,10 @@ public static class CoordinateEngine
     /// </summary>
     public static async Task<RunResult> RunAsync(CoordinatePlan plan, PreparedDelegation prepared, JobPaths job, CancellationToken cancellationToken)
     {
+        // F2: a resumed architect takes its parent's one answer before it touches anything the parent's tree holds (its successor marker,
+        // the sweep of the tree's running children below): the loser of a double answer must leave the winner's tree alone.
+        await DelegateEngine.ClaimAsync(prepared, job);
+
         DateTimeOffset startedAt = DateTimeOffset.UtcNow;
         AtomicFile.WriteAllText(job.OwnerJson, JsonSerializer.Serialize(OwnerRecord.ForCurrentProcess(), LiveJsonContext.Default.OwnerRecord));
 

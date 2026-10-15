@@ -9,7 +9,8 @@ namespace Claustrum.Core.Process;
 // stop after that (a timeout, a cancel) does not change the job's outcome.
 // PerTurn: the backend resumes its session once per turn (IResumeLiveProtocol), so each turn is its own process.
 // The runner then reads no stdout lines for the session and gives RunAsync no stdin; after each process it
-// calls TurnEnded, then NextTurnAsync, which waits for the next turn's spec (null: the session is over).
+// calls TurnEnded, then NextTurnAsync, which waits for the next turn's spec (null: the session is over). NextTurnFailed: that next
+// turn could not be started, so the session ends there (its conversation says why) and the runner ends the job failed.
 public interface IProcessLive
 {
     bool ReportDelivered { get; }
@@ -25,6 +26,8 @@ public interface IProcessLive
     void TurnEnded(int exitCode, string stdout, string stderr);
 
     Task<ProcessSpec?> NextTurnAsync(CancellationToken cancellationToken);
+
+    void NextTurnFailed(string reason);
 
     void Ended();
 }

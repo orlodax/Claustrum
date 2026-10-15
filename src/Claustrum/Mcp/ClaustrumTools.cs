@@ -38,8 +38,8 @@ public sealed class ClaustrumTools
         "it). A role with blind:true (see list_roles) must be briefed with only the task as stated and how to " +
         "get the diff — never rationale, a plan, or a pasted claustrum-report block; the runner refuses such a " +
         "brief outright (docs/PLAN.md §B3 blind gate). A role that wants to ask the user something is told at " +
-        "once that nobody can answer (this call is blocked), so it decides and records the choice, or stops with status " +
-        "'needs_input' and its questions in the result (answer those with job_answer); use delegate_async when the user should be asked.")]
+        "once that no human is available (this call is blocked): it decides what it can and records the choice, and stops with status " +
+        "'needs_input' and its questions in the result for what is the user's (answer those with job_answer); use delegate_async when the user should be asked.")]
     public static Task<string> DelegateAsync(
         [Description("Role name, e.g. builder, code-reviewer, tester (see list_roles).")] string role,
         [Description("The brief: markdown with H2 sections ## Task/## Scope/## Must still work/## Diff (docs/PLAN.md §B3).")] string brief,
@@ -75,7 +75,8 @@ public sealed class ClaustrumTools
         "model for is an error here, with no job created. Poll job_status for progress and job_result for the " +
         "final RunResult once state is 'done'. A role may stop to ask the user something: job_status then " +
         "reports state 'waiting_for_input' and the question; ask the user and answer with job_say. The job's " +
-        "clock is paused while it waits, and after 30 minutes without an answer the role is told to decide alone.")]
+        "clock is paused while it waits, and after 30 minutes without an answer the role is told no human is available: it decides what it can and " +
+        "stops with status 'needs_input' and its questions for the rest (job_answer).")]
     public static string DelegateStart(
         string role, string brief, string? cwd = null, string? backend = null, string? model = null, string? effort = null,
         string? tier = null, string? permission = null, string[]? deny = null, decimal? budgetUsd = null,
@@ -108,7 +109,7 @@ public sealed class ClaustrumTools
         "what the worktree gets as HEAD has it instead (a committed .mcp.json/opencode.json with a local edit). The architect " +
         "answers its children's questions itself; when it cannot, it stops and asks you: job_status then reports state " +
         "'waiting_for_input' and the question (which child asked, if one did) — ask the user and answer with job_say. After " +
-        "30 minutes without an answer it is told to decide alone.")]
+        "30 minutes without an answer it is told no human is available: it decides what it can and stops with 'needs_input' for the rest (job_answer).")]
     public static Task<string> CoordinateAsync(
         [Description("GitHub issue numbers to import as the task, e.g. [12, 13].")] int[]? issues = null,
         [Description("Task text, instead of issues.")] string? brief = null,

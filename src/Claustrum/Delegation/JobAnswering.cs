@@ -2,13 +2,18 @@ using System.Text;
 using System.Text.Json;
 using Claustrum.Cli;
 using Claustrum.Core.Backends;
+using Claustrum.Core.IO;
+using Claustrum.Core.Jobs;
 using Claustrum.Core.Model;
 using Claustrum.Live;
 
 namespace Claustrum.Delegation;
 
-/// <summary>A finished <c>needs_input</c> job, read back for a continuation: its receipt and the request it was started from.</summary>
-internal sealed record AnswerTarget(string JobId, RunResult Result, DelegateRequest Request);
+/// <summary>
+/// A finished <c>needs_input</c> job, read back for a continuation: its receipt, the request it was started from and the permission
+/// level it ran at (backend.json; null for a job that predates it being recorded).
+/// </summary>
+internal sealed record AnswerTarget(string JobId, RunResult Result, DelegateRequest Request, string? Permission = null);
 
 // #124 stage 3b, the questions-as-data fallback (NOTES.md "Live sessions"): what `jobs answer`, `coordinate --resume` and MCP job_answer share. A role that could not
 // ask live stopped with `needs_input`; this opens that job, checks it can be continued, turns the human's answers into the next
@@ -46,6 +51,10 @@ internal static class JobAnswering
                 ? $"job '{jobId}' is not a coordinate job: continue it with `claustrum jobs answer {jobId}`"
                 : $"job '{jobId}' is a coordinate job: continue it with `claustrum coordinate --resume {jobId}`");
 
+        // A job is answered once (#124 stage 3 review F2): a second answer, or a retried tool call, would start another job on the same session.
+        if (job.HasAnswered)
+            throw new CliUsageException(AlreadyAnswered(jobId, job.ReadAnswered(), isCoordinateJob));
+
         if (!AppServices.Backends.TryGet(result.Backend, out IBackend? backend))
             throw new CliUsageException($"job '{jobId}' ran on backend '{result.Backend}', which is not registered here");
         if (!backend.CanResume)
@@ -53,21 +62,123 @@ internal static class JobAnswering
         if (result.SessionId is not { Length: > 0 })
             throw new CliUsageException($"job '{jobId}' recorded no session id, so its backend session cannot be resumed — start a new run with the answers in its brief");
 
-        return new AnswerTarget(jobId, result, request);
+        return new AnswerTarget(jobId, result, request, job.ReadPermission());
     }
 
-    /// <summary>The request that resumes the asking job's session as a new run, linked to it: same role, cast, backend, model, cwd, and its branch when it was isolated.</summary>
+    /// <summary>
+    /// The request that resumes the asking job's session as a new run, linked to it: same role, cast and cwd; its branch and worktree
+    /// when it was isolated (F1); and pinned to the backend, model and permission it ran as (F5), whatever the configuration says now.
+    /// </summary>
     public static DelegateRequest Continue(AnswerTarget target, string brief) => target.Request with
     {
         Brief = brief,
         ResumeSession = target.Result.SessionId,
         Branch = target.Result.Branch ?? target.Request.Branch,
+        WorktreeOf = HomeOf(target.Result.Worktree),
+        Pin = PinOf(target),
 
         // The session already holds what was attached, and the file may have changed since; the cast's warnings were said once.
         AttachFiles = [],
         PreRunWarnings = null,
         ParentJobId = target.JobId,
     };
+
+    /// <summary>What the job ran as, for the continuation's <see cref="DelegateRequest.Pin"/>.</summary>
+    internal static ResumePin PinOf(AnswerTarget target) => new(target.Result.Backend, target.Result.Model, target.Permission);
+
+    /// <summary>
+    /// The job whose <c>.claustrum/worktrees/&lt;id&gt;</c> is <paramref name="worktree"/> (a receipt's <c>worktree</c>; its last segment is a
+    /// job id, <c>JobWorktree.PathFor</c>), or null for a run that was not isolated. A continuation of a continuation
+    /// names the first job's directory again, because that is where the second one ran.
+    /// </summary>
+    internal static string? HomeOf(string? worktree) =>
+        worktree is not null && Path.GetFileName(Path.TrimEndingDirectorySeparator(worktree)) is { } name && JobDirectory.IsJobId(name) ? name : null;
+
+    /// <summary>
+    /// Claims <paramref name="parentJobId"/>'s one answer for the continuation <paramref name="continuationId"/>: answered.json is created
+    /// exclusively, so of two answers racing the first writer wins. Null when this continuation holds the claim (also when it already did),
+    /// else the refusal naming whoever does.
+    /// </summary>
+    public static string? TryClaim(string parentJobId, string continuationId, bool coordinate)
+    {
+        if (JobDirectory.Open(AppServices.Platform, parentJobId) is not { } parent)
+            return null;
+
+        AnsweredRecord record = new(continuationId, DateTimeOffset.UtcNow);
+        try
+        {
+            if (AtomicFile.TryCreate(parent.AnsweredJson, JsonSerializer.Serialize(record, LiveJsonContext.Default.AnsweredRecord)))
+                return null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return $"job '{parentJobId}' could not be marked as answered ({ex.Message}); nothing was started — retry";
+        }
+
+        AnsweredRecord? holder = LiveJob.Find(parentJobId)?.ReadAnswered();
+        return holder?.JobId == continuationId ? null : AlreadyAnswered(parentJobId, holder, coordinate);
+    }
+
+    /// <summary>
+    /// Gives the claim back when the continuation never reached its backend (refused for its machinery, a budget, a worktree, a missing
+    /// binary), so the answer was not spent and can be given again. A claim that names another job is left alone.
+    /// </summary>
+    public static void Release(string parentJobId, string continuationId)
+    {
+        if (JobDirectory.Open(AppServices.Platform, parentJobId) is not { } parent || LiveJob.Find(parentJobId)?.ReadAnswered()?.JobId != continuationId)
+            return;
+
+        try
+        {
+            File.Delete(parent.AnsweredJson);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // The claim stays: a retry is refused naming a continuation that never ran, which is the safe side of "answered once".
+        }
+    }
+
+    /// <summary>
+    /// The refusal of a second answer: names the continuation, how it stands, and — when it stopped to ask again — that it is
+    /// the one to answer now.
+    /// </summary>
+    public static string AlreadyAnswered(string jobId, AnsweredRecord? answered, bool coordinate)
+    {
+        if (answered is null)
+            return $"job '{jobId}' was already answered (it has an answered.json): a second answer would start another job on the same session";
+
+        LiveJob? continuation = LiveJob.Find(answered.JobId);
+        RunResult? result = continuation?.ReadResult();
+        string state = continuation is null ? "no longer in the store" : result is null ? "not finished" : $"ended {result.Status}";
+        string next = result is { Status: RunStatus.NeedsInput }
+            ? $"; it stopped to ask again — answer it instead: {(coordinate ? "claustrum coordinate --resume" : "claustrum jobs answer")} {answered.JobId}"
+            : "";
+
+        return $"job '{jobId}' was already answered at {answered.At:u} by job {answered.JobId} ({state}){next}";
+    }
+
+    // Longer than any chain of answers a person gives; the bound only stops a record that points back at itself.
+    private const int MaxChain = 64;
+
+    /// <summary>
+    /// The first job in the chain of continuations of <paramref name="jobId"/> (its answered.json, that job's, …) that has not finished,
+    /// or null. A continuation runs in the worktree of the job it continues (F1), so that worktree is not finished with while it runs.
+    /// </summary>
+    public static string? RunningContinuation(string jobsRoot, string jobId)
+    {
+        string current = jobId;
+        for (int hop = 0; hop < MaxChain; hop++)
+        {
+            if (LiveJob.Find(current)?.ReadAnswered() is not { } answered || !JobDirectory.IsJobId(answered.JobId))
+                return null;
+            if (!JobDirectory.IsFinished(jobsRoot, answered.JobId))
+                return answered.JobId;
+
+            current = answered.JobId;
+        }
+
+        return null;
+    }
 
     /// <summary>
     /// The next brief: the human's answers set against the questions the role asked. <paramref name="answers"/> maps a question's

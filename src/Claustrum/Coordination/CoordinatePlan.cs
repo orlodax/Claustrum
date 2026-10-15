@@ -59,7 +59,7 @@ public sealed record CoordinatePlan(
         OnStreamLine: Request.OnStreamLine,
         // Request.Overrides, not the resolved ones: only a real --model is "this run", while the
         // resolved value is the cast's own model on every invocation that did not override it.
-        SystemAppendix: CoordinationBrief.RenderSystemAppendix(Cast, CastName, Request.Cwd, Request.Overrides.Model, Isolated, Request.Resume?.TreeId),
+        SystemAppendix: CoordinationBrief.RenderSystemAppendix(Cast, CastName, Request.Cwd, Request.Overrides.Model, Isolated, Request.Resume?.TreeId, Request.Resume?.WorktreeOf),
         Isolate: Isolated,
         PreRunWarnings: CastWarnings,
         // #122: the cast is per-developer and git-ignored — if it's not tracked in HEAD, the
@@ -72,7 +72,9 @@ public sealed record CoordinatePlan(
         // isolated), and records what a further resume of it needs.
         Branch: Isolated ? Request.Resume?.Branch : null,
         ParentJobId: Request.Resume?.JobId,
-        Coordinate: new CoordinateOrigin(CastName, Request.TierFlag, Request.Overrides, Request.Resume?.TreeId));
+        Coordinate: new CoordinateOrigin(CastName, Request.TierFlag, Request.Overrides, Request.Resume?.TreeId),
+        WorktreeOf: Isolated ? Request.Resume?.WorktreeOf : null,
+        Pin: Request.Resume?.Pin);
 
     /// <summary>
     /// Config, role render, model alias and permission resolved on top of the plan — the rest of what
@@ -103,8 +105,8 @@ public sealed record CoordinatePlan(
 
         string brief = CoordinationBrief.BindWorkingDirectory(
             prepared.Request.Brief,
-            CoordinationBrief.ArchitectCwd(Request.Cwd, isolated: true),
-            JobWorktree.PathFor(Request.Cwd, jobId));
+            CoordinationBrief.ArchitectCwd(Request.Cwd, isolated: true, Request.Resume?.WorktreeOf),
+            JobWorktree.PathFor(Request.Cwd, Request.Resume?.WorktreeOf ?? jobId));
 
         return prepared with { Request = prepared.Request with { Brief = brief } };
     }

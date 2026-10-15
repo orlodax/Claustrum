@@ -95,7 +95,61 @@ public static class JobWorktree
     /// undeletable trash, if any, rides on <see cref="JobWorktreeInfo.FreeWarning"/>. The caller holds
     /// the branch's lock (<see cref="LockKeyFor"/>, R1) around the whole run.
     /// </summary>
-    public static async Task<JobWorktreeInfo> CheckOutBranchAsync(string cwd, string jobId, string branch, string jobsRoot, CancellationToken cancellationToken)
+    public static async Task<JobWorktreeInfo> CheckOutBranchAsync(string cwd, string jobId, string branch, string jobsRoot, CancellationToken cancellationToken) =>
+        await CheckOutBranchAtAsync(cwd, PathFor(cwd, jobId), branch, jobsRoot, cancellationToken);
+
+    /// <summary>
+    /// #124 stage 3 review F1: the worktree of the finished job <paramref name="homeJobId"/> taken over by the continuation of that
+    /// job (`jobs answer`, `coordinate --resume`), so the session resumes in the directory it began in. Its tool calls and the notes it
+    /// kept name that path; a continuation cut elsewhere would also free it first, leaving the session pointing at a directory that is gone.
+    /// Reused as it is when git lists it as the worktree holding <paramref name="branch"/> and it is clean (nested job worktrees
+    /// of a `coordinate` architect stay); recreated at the same path when it was removed (`jobs clean`); refused, saying why, when
+    /// something else is there or it holds work nobody has looked at. The caller holds the branch's lock (<see cref="LockKeyFor"/>).
+    /// </summary>
+    public static async Task<JobWorktreeInfo> ReopenAsync(string cwd, string homeJobId, string branch, string jobsRoot, CancellationToken cancellationToken)
+    {
+        string path = PathFor(cwd, homeJobId);
+        if (!Path.Exists(path) && new FileInfo(path).LinkTarget is null)
+            return await CheckOutBranchAtAsync(cwd, path, branch, jobsRoot, cancellationToken);
+
+        try
+        {
+            if (await WhyNotReusableAsync(cwd, path, branch, cancellationToken) is { } why)
+                throw new BranchRefusedException($"--branch {branch}: {path} cannot take the continuation of its job — {why}");
+
+            (int tipExit, string tip, _) = await FreeGitAsync(cwd, ["rev-parse", "--verify", "--quiet", $"refs/heads/{branch}"], cancellationToken);
+            return tipExit == 0
+                ? new JobWorktreeInfo(path, branch, cwd, tip.Trim(), OwnsBranch: false)
+                : throw new BranchRefusedException(NoSuchBranch(cwd, branch));
+        }
+        catch (TimeoutException ex)
+        {
+            throw new BranchRefusedException($"--branch {branch}: {ex.Message}");
+        }
+    }
+
+    // Null when `path` is the worktree git lists for `branch`, on it, with nothing in progress and nothing uncommitted. Anything else
+    // that occupies the path — a plain directory, a link, a worktree of another branch or repository — is named, never adopted.
+    private static async Task<string?> WhyNotReusableAsync(string cwd, string path, string branch, CancellationToken cancellationToken)
+    {
+        if (new DirectoryInfo(path).LinkTarget is not null)
+            return "it is a symbolic link";
+        if (!Directory.Exists(path))
+            return "it is not a directory";
+
+        WorktreeEntry? holder = await FindHolderAsync(cwd, branch, cancellationToken);
+        if (holder is null)
+            return $"it is not a worktree of this repository on {branch} (git lists none holding it)";
+        if (!await IsSameWorktreeAsync(path, holder.Path, cancellationToken))
+            return $"it is not the worktree holding {branch}, which is checked out in {holder.Path}";
+
+        if (await VerifyAsync(new JobWorktreeInfo(path, branch, cwd, "", OwnsBranch: false), cancellationToken) is { } mismatch)
+            return $"it is not cleanly on {branch} ({mismatch.Reason})";
+
+        return await UncommittedAsync(path, cancellationToken) is { } dirty ? $"{dirty} — commit or discard it, then retry" : null;
+    }
+
+    private static async Task<JobWorktreeInfo> CheckOutBranchAtAsync(string cwd, string path, string branch, string jobsRoot, CancellationToken cancellationToken)
     {
         string tip;
         string? freeWarning;
@@ -120,7 +174,7 @@ public static class JobWorktree
 
         // The short name: git checks a local branch out as a branch, where `refs/heads/<name>` here
         // would be a detached HEAD.
-        JobWorktreeInfo worktree = new(PathFor(cwd, jobId), branch, cwd, tip, OwnsBranch: false, freeWarning);
+        JobWorktreeInfo worktree = new(path, branch, cwd, tip, OwnsBranch: false, freeWarning);
         return await TryAddAsync(cwd, worktree, [branch], cancellationToken) is { } failure
             ? throw new BranchRefusedException($"--branch {branch}: {failure}")
             : worktree;

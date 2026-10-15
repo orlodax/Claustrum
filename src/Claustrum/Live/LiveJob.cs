@@ -125,6 +125,31 @@ internal sealed class LiveJob
     /// <summary>The request a `needs_input` job left for `jobs answer` (resume.json), or null when it has none or it cannot be read.</summary>
     public DelegateRequest? ReadResume() => Parse(ReadText("resume.json"), DelegationJsonContext.Default.DelegateRequest);
 
+    /// <summary>The continuation that took this `needs_input` job's answer (answered.json), or null when it has none or it cannot be read.</summary>
+    public AnsweredRecord? ReadAnswered() => Parse(ReadText("answered.json"), LiveJsonContext.Default.AnsweredRecord);
+
+    /// <summary>Whether an answer already started a continuation of this job, readable or not.</summary>
+    public bool HasAnswered => File.Exists(Path.Combine(directory, "answered.json"));
+
+    /// <summary>The permission level the job ran at (backend.json `permission`), or null for a job that predates it being recorded.</summary>
+    public string? ReadPermission()
+    {
+        if (ReadText("backend.json") is not { } text)
+            return null;
+
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(text);
+            return document.RootElement is { ValueKind: JsonValueKind.Object } root && root.TryGetProperty("permission", out JsonElement level) && level.ValueKind == JsonValueKind.String
+                ? level.GetString()
+                : null;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
     /// <summary>The coordinate job that took over this one's tree (`coordinate --resume`), or null.</summary>
     public string? ReadSuccessor() => ReadText("successor")?.Trim() is { } id && JobDirectory.IsJobId(id) ? id : null;
 
@@ -251,10 +276,10 @@ internal sealed class LiveJob
             throw new CliUsageException($"the text is over {MaxMessageBytes / 1024} KiB");
 
         LiveState state = ReadState()
-            ?? throw new CliUsageException($"job '{Id}' is not live: it has no live.json, so there is no session to talk to");
+            ?? throw new CliUsageException($"job '{Id}' is not live: it has no live.json, so there is no session to talk to{AnswerHint()}");
 
         if (state.State == LiveStatus.Done || File.Exists(Path.Combine(directory, "result.json")))
-            throw new CliUsageException($"job '{Id}' is done: nobody is listening");
+            throw new CliUsageException($"job '{Id}' is done: nobody is listening{AnswerHint()}");
 
         if (IsAbandoned(state))
             throw new CliUsageException($"job '{Id}' is {AbandonedMessage}: nobody is listening");
@@ -267,6 +292,18 @@ internal sealed class LiveJob
 
         LiveStatus now = ReadState()?.State ?? state.State;
         return new SayResult(state.State == LiveStatus.WaitingForInput ? state.QuestionSeq : null, NameOf(now));
+    }
+
+    // #124 stage 3 review F3: a job that finished by asking has no session to talk to, and `say`/`reply` are for one that is alive. Its
+    // answer resumes the session as a new job (`jobs answer`), once.
+    private string AnswerHint()
+    {
+        if (ReadResult() is not { Status: RunStatus.NeedsInput })
+            return "";
+
+        return ReadAnswered() is { } answered
+            ? $" (it stopped with needs_input and job {answered.JobId} already took the answer)"
+            : $" (it stopped with needs_input: answer it with `claustrum jobs answer {Id} --answers <file> | \"<text>\"`, or MCP job_answer)";
     }
 
     /// <summary>

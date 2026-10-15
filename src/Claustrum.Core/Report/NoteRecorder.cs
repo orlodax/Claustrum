@@ -8,9 +8,9 @@ namespace Claustrum.Core.Report;
 
 // #124 stage 3b, progress notes: a role on any backend may print a line `claustrum-note: <text>`; each one is appended to the job's
 // conversation.jsonl as a Message from the role, text and prefix as written, so `jobs follow` can tell it from a live turn's text.
-// One-way and best-effort: a job directory that stops taking writes costs the record, never the run. Only a run with no live
-// session records here: LiveSession owns the seq of a live job's file, so a live run's notes stay in its stream and log.
-public sealed class NoteRecorder(JobPaths job, TimeProvider? timeProvider = null)
+// One-way and best-effort: a job directory that stops taking writes costs the record, never the run. A live run's file is numbered by
+// its LiveSession, so there the note is handed to it (RecordNote) and is written the same way, as a Message from the role.
+public sealed class NoteRecorder(JobPaths job, TimeProvider? timeProvider = null, LiveSession? live = null)
 {
     public const string Prefix = "claustrum-note:";
 
@@ -130,6 +130,14 @@ public sealed class NoteRecorder(JobPaths job, TimeProvider? timeProvider = null
         {
             if (count >= MaxNotes || !seen.Add(note))
                 return;
+
+            if (live is not null)
+            {
+                if (live.RecordNote(note))
+                    count++;
+
+                return;
+            }
 
             ConversationEntry entry = new(count + 1, time.GetUtcNow(), ConversationParty.Role, ConversationKind.Message, note);
             byte[] bytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(entry, ClaustrumJsonContext.Default.ConversationEntry) + "\n");

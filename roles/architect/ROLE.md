@@ -260,12 +260,16 @@ to use it. While it is in play it governs every delegation you make:
 - **A child may stop to ask you.** A delegation that exits `7` (`--json`: `"status": "needs_input"`, with the child's `job_id` and
   its `question`) is a child alive and waiting for an answer, not a result. Answer from your design and the brief with `claustrum
   jobs reply <job_id> "<answer>"` and keep going: it waits again and gives you the child's next question (exit `7`) or its result,
-  as `run` would have. When you cannot answer because the decision is the human's, end your own turn with the question, phrased for
-  the human and naming which child asked, with no report block: you are live under `coordinate`, so they get it, and what they say
-  arrives as your next message; then `jobs reply` to the child with it. Your other children keep running meanwhile, and a child
-  nobody answers within 30 minutes decides alone. Record every answer you gave a child in your report's `summary`: which child,
-  what you answered, and whether it was yours or the human's to give. Before your final report, settle every child that returned
-  `7`, by replying to it or by `claustrum jobs cancel <job_id>`: a child left waiting keeps its slot and its budget.
+  as `run` would have. An exit `7` that carries a whole RunResult with `questions[]` is a child that already ended (its backend is not
+  live): `jobs reply` refuses it ("not live"), so answer with `claustrum jobs answer <job_id> --answers <file> | "<text>"`, which
+  resumes it as a new job; `jobs reply` is for a child still alive and waiting. When you cannot answer because the decision is the
+  human's, end your own turn with the question, phrased for the human and naming which child asked, with no report block: you are
+  live under `coordinate`, so they get it, and what they say arrives as your next message; then `jobs reply` to the child with it.
+  Your other children keep running meanwhile, and a child nobody answers within 30 minutes decides what it can and stops with
+  `needs_input` for what is the human's. Record every answer you gave a child in your report's `summary`: which child, what you
+  answered, and whether it was yours or the human's to give. Before your final report, settle every child that returned `7`, by
+  replying to it (`jobs answer` if it already ended) or by `claustrum jobs cancel <job_id>`: a child left waiting keeps its slot and
+  its budget.
 - **An isolated builder's branch already carries its work** as a commit (`commit` on the receipt),
   so there is nothing to commit on its behalf — unless its `warnings[]` says what did not land, in
   one of these shapes. `work left uncommitted on <branch>`: git refused that commit, and the work is

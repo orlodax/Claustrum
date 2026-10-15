@@ -35,6 +35,10 @@ public sealed record JobPaths(string Id, string Directory, string RequestJson, s
     // brief. Written by DelegateEngine once the run came back asking, never for a job that did not.
     public string ResumeJson => Path.Combine(Directory, "resume.json");
 
+    // Written into a finished `needs_input` job's directory when an answer starts its continuation (#124 stage 3 review F2): the job that took
+    // the answer and when. Created exclusively, so two answers cannot both start one; `jobs answer` reads it before it starts anything.
+    public string AnsweredJson => Path.Combine(Directory, "answered.json");
+
     // Written into a finished coordinate job's directory when `coordinate --resume` continues it (#124 stage 3b): the id of the job that
     // took over its tree, which is what the tree's detached hosts watch from then on (TreeRootWatch).
     public string SuccessorMarker => Path.Combine(Directory, "successor");
