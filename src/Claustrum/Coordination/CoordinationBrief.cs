@@ -76,9 +76,12 @@ public static class CoordinationBrief
     // `isolated` (#74): the architect runs in its own worktree under `cwd`, so every path it hands a
     // child is that worktree's, and the work branch already exists; not isolated, there is no git at all
     // (NOTES.md "coordinate runs the architect in its own worktree").
-    public static string RenderSystemAppendix(Cast cast, string castName, string cwd, string? modelOverride = null, bool isolated = false)
+    // `continuedTree` (#124 stage 3b): a resumed architect keeps the budget tree and the work branch of the job it continues, so the lines
+    // that name them carry that job's id; only its worktree is new, and its path keeps the token.
+    public static string RenderSystemAppendix(Cast cast, string castName, string cwd, string? modelOverride = null, bool isolated = false, string? continuedTree = null)
     {
         string workingDirectory = ArchitectCwd(cwd, isolated);
+        string tree = continuedTree ?? DelegateRequest.JobIdToken;
         List<string> lines =
         [
             "## Coordination",
@@ -101,8 +104,8 @@ public static class CoordinationBrief
             cast.BudgetUsd is { } budget
                 ? $"Budget: {BudgetLedger.Dollars(budget)} across the whole job tree"
                 : "Budget: unlimited — children are not accounted; `claustrum jobs budget` will be empty",
-            $"Job tree: {DelegateRequest.JobIdToken}",
-            $"Inspect: claustrum jobs budget {DelegateRequest.JobIdToken}",
+            $"Job tree: {tree}",
+            $"Inspect: claustrum jobs budget {tree}",
             "",
             // Both values quoted: a cwd or a cast name with a space in it otherwise splits into two
             // arguments, and double quotes read the same in bash and in PowerShell.
@@ -113,7 +116,7 @@ public static class CoordinationBrief
             """- A child that comes back with `status: budget_exceeded` has not necessarily spent anything — its `error` says what to do. "… while N running job(s) hold …": wait for one of your running children to finish, then start it again. "$R remaining; --budget X exceeds it": start it again with `--budget` at most R, or wait for a sibling to finish and free more. "rounds to $0.00 — pass --budget (at most $Y)": start it again with that explicit `--budget`. "$0.00 remaining" with nothing of yours running: the tree is spent — stop and report what is done. When you start two children at once (reviewer ‖ ui-reviewer, several builders), give each an explicit `--budget <usd>` that together fit the remaining budget; a child started without one reserves the whole remainder until it finishes, so its sibling is refused.""",
             "- Write each brief to .claustrum/briefs/<n>-<role>.md first, then pass that path to --brief-file.",
             "",
-            .. isolated ? WorkBranchLines(cwd, workingDirectory) : [NoGitLine(cwd)],
+            .. isolated ? WorkBranchLines(cwd, workingDirectory, tree) : [NoGitLine(cwd)],
         ]);
 
         return string.Join('\n', lines);
@@ -127,11 +130,11 @@ public static class CoordinationBrief
     private static string NoGitLine(string cwd) =>
         $"No git repository at {cwd}: there is no work branch and no worktree isolation — builders run in place, one at a time, and their changes land directly in {cwd}; nothing to rebase or clean.";
 
-    private static string[] WorkBranchLines(string cwd, string workingDirectory)
+    private static string[] WorkBranchLines(string cwd, string workingDirectory, string tree)
     {
         return
         [
-            $"Work branch: claustrum/{DelegateRequest.JobIdToken} — you are already on it, in your own worktree {workingDirectory}, cut from the operator's HEAD: it holds committed files only.",
+            $"Work branch: claustrum/{tree} — you are already on it, in your own worktree {workingDirectory}, cut from the operator's HEAD: it holds committed files only.",
             $"- The main checkout at {cwd} is the operator's: never cd into it, and never change its branch or its files.",
             $"- Every delegation takes --cwd \"{workingDirectory}\", as `Delegate with:` above does: an isolated builder's worktree then nests under yours, cut from the work branch's tip.",
             "- Commit your integration yourself and leave your worktree clean: when you finish, the runner commits whatever is still uncommitted in it onto the work branch, stray files included.",

@@ -30,4 +30,12 @@ public sealed record JobPaths(string Id, string Directory, string RequestJson, s
 
     // Written before the receipt of a run refused for its machinery (#104), so a waiter that sees the receipt knows to exit 2.
     public string RefusedMarker => Path.Combine(Directory, "refused");
+
+    // What `jobs answer` and `coordinate --resume` need to continue a finished `needs_input` job (#124 stage 3b): its DelegateRequest, minus the
+    // brief. Written by DelegateEngine once the run came back asking, never for a job that did not.
+    public string ResumeJson => Path.Combine(Directory, "resume.json");
+
+    // Written into a finished coordinate job's directory when `coordinate --resume` continues it (#124 stage 3b): the id of the job that
+    // took over its tree, which is what the tree's detached hosts watch from then on (TreeRootWatch).
+    public string SuccessorMarker => Path.Combine(Directory, "successor");
 }

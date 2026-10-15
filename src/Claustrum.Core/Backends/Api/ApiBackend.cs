@@ -28,6 +28,9 @@ public sealed class ApiBackend(IPlatform platform) : IBackend
 
     public string Name => "api";
 
+    // A chat-completions call carries no session: nothing to resume, so `jobs answer` refuses an api job and says to start a new run.
+    public bool CanResume => false;
+
     public async Task<Doctor> DetectAsync(BackendConfig? config, CancellationToken cancellationToken)
     {
         Doctor curl = await VersionProbe.RunAsync("curl", ["--version"], config, platform, cancellationToken, detectTimeout);

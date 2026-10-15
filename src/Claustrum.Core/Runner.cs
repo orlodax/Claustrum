@@ -193,10 +193,13 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
 
         LiveSession? live = liveProtocol is null ? null : new LiveSession(job, liveProtocol, role.Blind, options.ReplyTimeoutSeconds, resumeTurn: liveProtocol is IResumeLiveProtocol ? ResumeTurn : null);
 
+        // #124 stage 3b: a run with no live session records the role's `claustrum-note:` lines itself; a live one's belong to the session.
+        NoteRecorder? notes = live is null ? new NoteRecorder(job) : null;
+
         ProcessOutcome outcome;
         try
         {
-            outcome = await processRunner.RunAsync(spec, runOptions.BackendConfig, job, runOptions.EnvPassthroughAll, streamLine, request.Timeout, cancellationToken, live);
+            outcome = await processRunner.RunAsync(spec, runOptions.BackendConfig, job, runOptions.EnvPassthroughAll, notes?.Tap(streamLine) ?? streamLine, request.Timeout, cancellationToken, live);
         }
         catch (BackendNotFoundException ex)
         {
@@ -262,6 +265,8 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
 
             ExtractedReport extracted = ReportExtractor.Extract(parsed.FinalMessage);
             RunStatus status = DetermineStatus(outcome, parsed);
+            AskedForInput asked = ReadAsked(status, extracted.Report, role.Blind);
+            status = asked.Status;
             BranchReceipt branch = worktree is null
                 ? new BranchReceipt(Commit: null, diff, Warnings: [])
                 : await CommitWorkAsync(worktree, mismatch, role.Name, job, extracted.Report, diff, runOptions.DiffByteCapBytes);
@@ -283,13 +288,14 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
                 ExitCode: outcome.ExitCode,
                 LogPath: job.StdoutLog,
                 DurationSeconds: outcome.Duration.TotalSeconds,
-                Error: status == RunStatus.Success ? null : parsed.FinalMessage,
+                Error: status is RunStatus.Success or RunStatus.NeedsInput ? null : parsed.FinalMessage,
                 Raw: parsed.Raw,
                 Report: extracted.Report,
                 ReportStatus: extracted.Status,
-                Warnings: [.. postWarnings ?? [], .. extracted.Warnings, .. branch.Warnings],
+                Warnings: [.. postWarnings ?? [], .. extracted.Warnings, .. asked.Warnings, .. branch.Warnings],
                 Commit: branch.Commit,
-                Conversation: ConversationOf(job, live));
+                Conversation: ConversationOf(job, live, notes),
+                Questions: asked.Questions);
 
             return await FinishAsync(job, reservation, result, ran: true, runOptions);
         }
@@ -297,7 +303,7 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
         {
             // `ran: true` — this catch only fires after ProcessOutcome came back, so the backend did
             // burn whatever it burned even though nothing downstream could read a cost out of it.
-            return await FinishAsync(job, reservation, FailureResult(job, role, outcome, ex) with { Conversation = ConversationOf(job, live) }, ran: true, runOptions);
+            return await FinishAsync(job, reservation, FailureResult(job, role, outcome, ex) with { Conversation = ConversationOf(job, live, notes) }, ran: true, runOptions);
         }
         finally
         {
@@ -403,7 +409,26 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
             + "and end your turn WITHOUT the claustrum-report block: their reply arrives as your next message. When the work is finished, "
             + "end your reply with the mandatory ```claustrum-report fenced JSON block from your system prompt; a turn that ends without it is taken as a question.";
 
-    private static ConversationSummary? ConversationOf(JobPaths job, LiveSession? live) => live is null ? null : new ConversationSummary(job.ConversationJsonl, live.Entries);
+    private static ConversationSummary? ConversationOf(JobPaths job, LiveSession? live, NoteRecorder? notes) =>
+        live is not null ? new ConversationSummary(job.ConversationJsonl, live.Entries)
+        : notes is { Count: > 0 } ? new ConversationSummary(job.ConversationJsonl, notes.Count)
+        : null;
+
+    // #124 stage 3b: a run that ended well but whose report says `needs_input` is a run that stopped to ask. A blind role never asks (its
+    // doubts belong in findings), so its report's status is left alone and the receipt says it was not honoured.
+    private static AskedForInput ReadAsked(RunStatus status, ClaustrumReport? report, bool blind)
+    {
+        if (status != RunStatus.Success || report is not { NeedsInput: true })
+            return new AskedForInput(status, null, []);
+
+        if (blind)
+            return new AskedForInput(status, null, ["report status 'needs_input' ignored: a blind role cannot ask the human, its doubts belong in findings"]);
+
+        ReportQuestion[] questions = report.Questions;
+        return new AskedForInput(RunStatus.NeedsInput, questions, questions.Length == 0 ? ["report says needs_input but carries no readable questions: answer with free text"] : []);
+    }
+
+    private sealed record AskedForInput(RunStatus Status, ReportQuestion[]? Questions, string[] Warnings);
 
     // NOTES.md "Blind review is enforced, not requested".
     private static void EnsureBlindGate(ResolvedRole role, string brief)

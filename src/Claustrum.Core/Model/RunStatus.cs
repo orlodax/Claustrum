@@ -12,4 +12,7 @@ public enum RunStatus
     Cancelled,
     BackendMissing,
     BudgetExceeded,
+
+    // The role stopped to ask its human something and said so in its report (#124 stage 3b): finished, not failed.
+    NeedsInput,
 }

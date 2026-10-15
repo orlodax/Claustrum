@@ -35,4 +35,6 @@ public sealed record RunResult(
     // leftovers, or the role's own (#61). Null when nothing changed or the commit failed (a warning).
     string? Commit = null,
     // A live job only (#124): its conversation.jsonl, kept for jobs that end without a report as well.
-    ConversationSummary? Conversation = null);
+    ConversationSummary? Conversation = null,
+    // A `needs_input` run only (#124 stage 3b): what its report asked, for `jobs answer` and the MCP front door to relay.
+    ReportQuestion[]? Questions = null);

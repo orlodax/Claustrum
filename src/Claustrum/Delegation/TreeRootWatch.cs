@@ -10,6 +10,8 @@ namespace Claustrum.Delegation;
 // that is no job, or a job that never recorded an owner (a tree id exported by hand), is not a root, and nothing is cancelled for it.
 internal sealed class TreeRootWatch
 {
+    private const int MaxSuccessorHops = 16;
+
     private readonly LiveJob root;
     private readonly OwnerRecord owner;
 
@@ -24,7 +26,7 @@ internal sealed class TreeRootWatch
     {
         try
         {
-            return BudgetLedger.TreeIdFor(AppServices.Platform) is { } tree && LiveJob.Find(tree) is { } root && root.ReadOwner() is { } owner
+            return BudgetLedger.TreeIdFor(AppServices.Platform) is { } tree && LiveRoot(tree) is { } root && root.ReadOwner() is { } owner
                 ? new TreeRootWatch(root, owner)
                 : null;
         }
@@ -33,6 +35,17 @@ internal sealed class TreeRootWatch
             // A store that cannot be read costs the watch, never the job it was to guard.
             return null;
         }
+    }
+
+    // A coordinate job continued by `coordinate --resume` (#124 stage 3b) names the job that took over its tree; the chain is followed to
+    // its end, so a host started under the tree watches the architect that is running, not the one whose receipt was written long ago.
+    private static LiveJob? LiveRoot(string tree)
+    {
+        LiveJob? root = LiveJob.Find(tree);
+        for (int hop = 0; hop < MaxSuccessorHops && root?.ReadSuccessor() is { } next && LiveJob.Find(next) is { } successor; hop++)
+            root = successor;
+
+        return root;
     }
 
     /// <summary>

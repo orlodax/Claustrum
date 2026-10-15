@@ -35,10 +35,16 @@ public static class CoordinateCommand
         Option<bool> raw = new("--raw") { Description = "Include the backend's raw response in JSON output." };
         Option<int?> replyTimeout = LiveRun.ReplyTimeoutOption();
         Option<bool> noLive = LiveRun.NoLiveOption();
+        Option<string?> resume = new("--resume")
+        {
+            Description = "Continue the coordinate job <id> that stopped with needs_input: its architect session is resumed on its branch, under the same cast and "
+                + "budget tree, with the answers given by --answers (or --brief/--brief-file as free text). --cast, --issues and --cwd are the job's own.",
+        };
+        Option<string?> answers = new("--answers") { Description = "With --resume: a JSON file mapping each question's key to its answer." };
 
         Command command = new("coordinate", "Run the cast's architect headlessly over issues or a brief (docs/PLAN.md §D3).")
         {
-            cast, issues, brief, briefFile, cwd, tier, model, budget, timeout, json, stream, streamRawOption, raw, replyTimeout, noLive,
+            cast, issues, brief, briefFile, cwd, tier, model, budget, timeout, json, stream, streamRawOption, raw, replyTimeout, noLive, resume, answers,
         };
 
         command.SetAction(async parseResult =>
@@ -61,7 +67,9 @@ public static class CoordinateCommand
                 streamMode, streamRaw,
                 parseResult.GetValue(raw),
                 parseResult.GetValue(noLive),
-                parseResult.GetValue(replyTimeout));
+                parseResult.GetValue(replyTimeout),
+                parseResult.GetValue(resume),
+                parseResult.GetValue(answers));
         });
 
         return command;
@@ -70,8 +78,9 @@ public static class CoordinateCommand
     private static async Task<int> ExecuteAsync(
         string? castName, string? issuesCsv, string? briefText, string? briefFilePath, string? cwdOption,
         string? tierFlag, ConfigOverrides overrides, bool jsonMode, bool streamMode, bool streamRaw, bool rawMode,
-        bool noLive, int? replyTimeout)
+        bool noLive, int? replyTimeout, string? resumeJob, string? answersPath)
     {
+        RequireResumeFlagsConsistent(resumeJob, answersPath, castName, issuesCsv, cwdOption);
         string cwd = Path.GetFullPath(cwdOption ?? Environment.CurrentDirectory);
         (bool live, int replyTimeoutSeconds) = LiveRun.Resolve(noLive, replyTimeout);
 
@@ -98,6 +107,21 @@ public static class CoordinateCommand
                 OnStreamLine: streamMode ? SafeConsole.Error : null,
                 Live: live,
                 ReplyTimeoutSeconds: replyTimeoutSeconds);
+
+            // #124 stage 3b: continuing a coordinate job that stopped with needs_input. The request is the job's own, rebuilt from its record.
+            if (resumeJob is not null)
+            {
+                AnswerTarget target = JobAnswering.Open(JobId.Require(resumeJob), coordinate: true);
+                string message = JobAnswering.Compose(target.Result, answersPath is null ? null : JobAnswering.ReadAnswersFile(answersPath), brief);
+                request = CoordinateEngine.ResumeRequest(target, message, tierFlag, overrides, RunCommand.CliDiffCapBytes) with
+                {
+                    Stream = streamMode,
+                    StreamRaw = streamRaw,
+                    OnStreamLine = streamMode ? SafeConsole.Error : null,
+                    Live = live,
+                    ReplyTimeoutSeconds = replyTimeoutSeconds,
+                };
+            }
 
             // Everything that can be refused happens before the job directory exists — bad flags, a
             // missing cast, a `gh` that failed — because JobDirectory.Create also prunes the job
@@ -139,6 +163,9 @@ public static class CoordinateCommand
 
             RunResult output = rawMode ? result : result with { Raw = null };
 
+            // A resumed architect's children are accounted in the tree it continues (#124 stage 3b); a fresh one's tree is its own id.
+            string treeId = plan.ContinuedTree ?? job.Id;
+
             // Only a capped cast has a ledger at all (DelegateEngine builds no JobTreeBudget without
             // one), so this decides between two different true sentences, not a number and its zero.
             bool capped = plan.Cast.BudgetUsd is not null;
@@ -150,10 +177,10 @@ public static class CoordinateCommand
 
                 // stdout stays exactly one RunResult document, so the tree's numbers go to stderr —
                 // they are the other half of what this run cost (PrintHumanAsync).
-                await WriteTreeCostAsync(job, Console.Error, capped);
+                await WriteTreeCostAsync(treeId, job.Id, Console.Error, capped);
             }
             else
-                await PrintHumanAsync(output, exitCode, job, capped, printedWarnings);
+                await PrintHumanAsync(output, exitCode, job, treeId, capped, printedWarnings);
 
             return exitCode;
         }
@@ -162,6 +189,22 @@ public static class CoordinateCommand
             cancel.Settled();
             return RunCommand.Cancelled(ex);
         }
+    }
+
+    // --resume continues a job as it was started: its cast, task and directory are the job's, so a flag that would name another is refused
+    // rather than quietly ignored. --answers has no meaning without it.
+    private static void RequireResumeFlagsConsistent(string? resumeJob, string? answersPath, string? castName, string? issuesCsv, string? cwdOption)
+    {
+        if (resumeJob is null)
+        {
+            if (answersPath is not null)
+                throw new CliUsageException("--answers goes with --resume <job>");
+            return;
+        }
+
+        string? conflicting = castName is not null ? "--cast" : issuesCsv is not null ? "--issues" : cwdOption is not null ? "--cwd" : null;
+        if (conflicting is not null)
+            throw new CliUsageException($"{conflicting} cannot be combined with --resume: the resumed job's own cast, task and directory are used");
     }
 
     private static int[] ParseIssues(string? csv)
@@ -181,11 +224,11 @@ public static class CoordinateCommand
         return [.. numbers];
     }
 
-    private static async Task PrintHumanAsync(RunResult result, int exitCode, JobPaths job, bool capped, string[] printedWarnings)
+    private static async Task PrintHumanAsync(RunResult result, int exitCode, JobPaths job, string treeId, bool capped, string[] printedWarnings)
     {
         SafeConsole.Out($"status: {result.Status} (exit {exitCode})");
         SafeConsole.Out($"job:    {job.Id}");
-        SafeConsole.Out($"tree:   claustrum jobs budget {job.Id}");
+        SafeConsole.Out($"tree:   claustrum jobs budget {treeId}");
         SafeConsole.Out($"logs:   claustrum jobs logs {job.Id}");
 
         // #74: in a repository the architect worked in its own worktree, so its work is on its branch,
@@ -202,13 +245,16 @@ public static class CoordinateCommand
         // part of (issue #21). They differ exactly when a cost-less backend had the cap charged
         // instead (NOTES.md "M4 follow-ups…").
         SafeConsole.Out($"architect cost {(result.CostUsd is { } cost ? BudgetLedger.Dollars(cost) : "-")}");
-        await WriteTreeCostAsync(job, Console.Out, capped);
+        await WriteTreeCostAsync(treeId, job.Id, Console.Out, capped);
 
         if (result.FinalMessage.Length > 0)
         {
             SafeConsole.Out();
             SafeConsole.Out(result.FinalMessage);
         }
+
+        if (result.Status == RunStatus.NeedsInput)
+            RunCommand.PrintQuestions(result, $"claustrum coordinate --resume {job.Id} --answers <file> | --brief \"<text>\"");
 
         // A refused commit of the architect's leftovers is a warning on the receipt, as for `run`; the ones
         // printed before the run are not printed again.
@@ -225,7 +271,7 @@ public static class CoordinateCommand
     // exceptions DelegateEngine.TryAdmitAsync swallows).
     // ⚠ An uncapped cast writes no ledger entries at all, so `$0.00` would be a measurement nobody
     // took — it says `unlimited` instead, and `jobs budget <id>` is empty for the same reason.
-    private static async Task WriteTreeCostAsync(JobPaths job, TextWriter writer, bool capped)
+    private static async Task WriteTreeCostAsync(string treeId, string architectId, TextWriter writer, bool capped)
     {
         if (!capped)
         {
@@ -241,15 +287,15 @@ public static class CoordinateCommand
 
             // No ledger directory at all means not even the architect's entry was written — $0.00,
             // and no lock taken to learn it.
-            if (Directory.Exists(BudgetLedger.DirectoryFor(AppServices.Platform, job.Id)))
+            if (Directory.Exists(BudgetLedger.DirectoryFor(AppServices.Platform, treeId)))
             {
-                BudgetLedgerState ledger = await BudgetLedger.ReadAsync(AppServices.Platform, job.Id);
+                BudgetLedgerState ledger = await BudgetLedger.ReadAsync(AppServices.Platform, treeId);
                 (spent, reserved) = (ledger.Spent, ledger.Reserved);
 
                 // The tree id is the coordinate job's own id, so the architect's row is the one whose
                 // job id *is* the tree: naming its share is what keeps the doubling visible now that
                 // the total includes it.
-                if (ledger.Rows.FirstOrDefault(row => row.Entry.JobId == job.Id) is { } own)
+                if (ledger.Rows.FirstOrDefault(row => row.Entry.JobId == architectId) is { } own)
                     architect = $" (architect {BudgetLedger.Dollars(own.Entry.Cost ?? 0m)} included)";
             }
 

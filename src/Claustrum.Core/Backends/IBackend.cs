@@ -25,4 +25,10 @@ public interface IBackend
     /// simply runs as it always did.
     /// </summary>
     ILiveProtocol? LiveProtocol => null;
+
+    /// <summary>
+    /// Whether a run can be continued from the session id it returned (<c>ResolvedRun.ResumeSession</c>): what `jobs answer` needs of
+    /// the backend that asked (#124 stage 3b). False for one that keeps no session between runs.
+    /// </summary>
+    bool CanResume => true;
 }

@@ -17,4 +17,6 @@ public sealed record RunRequest(
     bool Stream,
     // MCP-originated attachments are read as regular files only: a FIFO or a device among them would block a
     // server call (2026-10-14, found by review). The CLI's --file stays a plain read, so `<(cmd)` works there.
-    bool AttachmentsMustBeRegular = false);
+    bool AttachmentsMustBeRegular = false,
+    // The `needs_input` job this one continues (`jobs answer`, `coordinate --resume`, #124 stage 3b); null for any other run.
+    string? ParentJobId = null);
