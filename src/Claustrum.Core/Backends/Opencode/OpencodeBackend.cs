@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using Claustrum.Core.Config;
@@ -12,7 +13,7 @@ namespace Claustrum.Core.Backends.Opencode;
 // record of every flag, event name and field below, and of the four things v2 took away that the
 // 2026-09-18 v1.18.31 pass had confirmed (`--dir`, `--variant`, `OPENCODE_PERMISSION`, and a `run`
 // that could reach the shared background service with this process's environment).
-public sealed class OpencodeBackend(IPlatform platform) : IBackend
+public sealed class OpencodeBackend(IPlatform platform) : IBackend, IPostRunHook
 {
     private static readonly TimeSpan detectTimeout = TimeSpan.FromSeconds(10);
 
@@ -199,6 +200,130 @@ public sealed class OpencodeBackend(IPlatform platform) : IBackend
         parent.ValueKind == JsonValueKind.Object
         && parent.TryGetProperty(propertyName, out JsonElement property)
         && property.TryGetInt32(out int value) ? value : null;
+
+    // IPostRunHook: enrich cost/usage from `opencode session export` when Parse could not get a
+    // complete picture (the final step never emits a step_finish — NOTES.md defect 3, confirmed
+    // 2026-09-22). The export is best-effort: a failure keeps the parsed output as-is and adds a
+    // warning saying which fallback applied.
+    async Task<PostRunResult?> IPostRunHook.PostRunAsync(
+        ParsedOutput parsed,
+        string cwd,
+        BackendConfig? backendConfig,
+        IPlatform platform,
+        CancellationToken cancellationToken)
+    {
+        if (parsed.SessionId is not { Length: > 0 } sessionId)
+            return null;
+
+        ResolvedBinary binary;
+        try
+        {
+            binary = BinaryLocator.Locate("opencode", ["session", "export", sessionId], backendConfig, platform);
+        }
+        catch (BackendNotFoundException)
+        {
+            return null;
+        }
+
+        // Build the same env the run used (allow-list only); the export needs PATH, HOME and
+        // OPENCODE_* vars to find the session database, not the caller's --env entries.
+        Dictionary<string, string> exportEnv = EnvAllowList.Build(platform, new Dictionary<string, string>(), passthroughAll: false);
+
+        ProcessStartInfo startInfo = new()
+        {
+            FileName = binary.Executable,
+            WorkingDirectory = cwd,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            RedirectStandardInput = true,
+            CreateNoWindow = true,
+        };
+        foreach (string arg in binary.Args)
+            startInfo.ArgumentList.Add(arg);
+
+        startInfo.Environment.Clear();
+        foreach (KeyValuePair<string, string> entry in exportEnv)
+            startInfo.Environment[entry.Key] = entry.Value;
+
+        using System.Diagnostics.Process process = new() { StartInfo = startInfo };
+        process.Start();
+        process.StandardInput.Close();
+
+        Task<string> stdoutTask = process.StandardOutput.ReadToEndAsync(CancellationToken.None);
+        Task<string> stderrTask = process.StandardError.ReadToEndAsync(CancellationToken.None);
+
+        TimeSpan exportTimeout = TimeSpan.FromSeconds(30);
+        using CancellationTokenSource timeoutSource = new(exportTimeout);
+        using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutSource.Token);
+        try
+        {
+            await process.WaitForExitAsync(linked.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            process.Kill(entireProcessTree: true);
+            await process.WaitForExitAsync(CancellationToken.None);
+            string reason = timeoutSource.IsCancellationRequested ? "timed out after 30s" : "cancelled";
+            return FailedExport(parsed.CostUsd is not null, reason);
+        }
+
+        string stdout = await stdoutTask;
+        string stderr = stderrTask.Result;
+
+        if (process.ExitCode != 0)
+        {
+            string reason = stderr.Trim() is { Length: > 0 } errMsg ? errMsg : $"exit code {process.ExitCode}";
+            return FailedExport(parsed.CostUsd is not null, reason);
+        }
+
+        // Read only `info.cost` and `info.tokens` from the session export JSON; ignore messages.
+        // The export is ~800 KB for a 30-step session; use a streaming parse, never materialise it.
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(stdout);
+            JsonElement root = document.RootElement;
+
+            if (!root.TryGetProperty("info", out JsonElement info) || info.ValueKind != JsonValueKind.Object)
+                return FailedExport(parsed.CostUsd is not null, "export JSON has no 'info' object");
+
+            decimal? exportCost = null;
+            if (info.TryGetProperty("cost", out JsonElement costProp) && costProp.TryGetDecimal(out decimal costValue))
+                exportCost = costValue;
+
+            Usage? exportUsage = null;
+            if (info.TryGetProperty("tokens", out JsonElement tokens) && tokens.ValueKind == JsonValueKind.Object)
+            {
+                // Same field layout as AddStepFinish: input→input, output→output, cache.read→cache_read, cache.write→cache_creation.
+                // reasoning tokens are dropped (Usage has no field for them, matching AddStepFinish).
+                JsonElement cache = tokens.TryGetProperty("cache", out JsonElement cacheProp) && cacheProp.ValueKind == JsonValueKind.Object
+                    ? cacheProp
+                    : default;
+                exportUsage = new Usage(
+                    TryGetInt(tokens, "input"),
+                    TryGetInt(tokens, "output"),
+                    TryGetInt(cache, "read"),
+                    TryGetInt(cache, "write"));
+            }
+
+            // Session export always has cost (measured on job 20261015-154643-6943f428: $0.18085).
+            // When it doesn't, fall through to the same failure path as a missing info block.
+            if (exportCost is null)
+                return FailedExport(parsed.CostUsd is not null, "export info has no cost");
+
+            return new PostRunResult(exportCost, exportUsage, Warning: null);
+        }
+        catch (JsonException ex)
+        {
+            return FailedExport(parsed.CostUsd is not null, $"unparseable export JSON: {ex.Message}");
+        }
+    }
+
+    private static PostRunResult FailedExport(bool hadStepCosts, string reason)
+    {
+        string fallback = hadStepCosts ? "cost from step_finish events" : "cost unknown, charged the cap";
+        return new PostRunResult(null, null, $"opencode session export failed ({reason}): {fallback}");
+    }
 
     // `{file:<path>}` substitution inside OPENCODE_CONFIG_CONTENT is real (confirmed live): opencode
     // reads the referenced file's contents in place of the placeholder, so the rendered role body
