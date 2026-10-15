@@ -73,11 +73,7 @@ internal sealed class LiveJob
     /// there is no result.json. A readable live.json is the precondition: a job without one is not live, hence not abandoned.
     /// </summary>
     public bool IsAbandoned(LiveState? state) =>
-        state is { State: not LiveStatus.Done } && !File.Exists(Path.Combine(directory, "result.json")) && !OwnerAlive(state);
-
-    // TODO(#124 front-door brief, item 3): temporary stub until LiveState.IsOwnerAlive lands from the engine builder; then
-    // this becomes `LiveState.IsOwnerAlive(state)` (or the instance form) and the stub goes. Until then no job is ever abandoned.
-    private static bool OwnerAlive(LiveState _) => true;
+        state is { State: not LiveStatus.Done } && !File.Exists(Path.Combine(directory, "result.json")) && !state.IsOwnerAlive();
 
     public LiveState? ReadState() => Parse(ReadText("live.json"), ClaustrumJsonContext.Default.LiveState);
 

@@ -52,8 +52,9 @@ the workspace); `--cwd` on the server and `cwd` on each call override it.
 
 Exit codes are fixed: `0` ok · `1` backend failure · `2` usage or config error (a bad flag, a
 refused brief, a missing cast, a role sent to a harness it does not list, a `gh` failure, a
-`coordinate` whose cast is not committed, a `.claustrum` link that leaves the repo) · `3` backend not found · `4` timeout · `5` budget · `130`
-cancelled. Once the job directory exists (queued for a `max_parallel` slot, waiting for a `--branch`
+`coordinate` whose untracked cast no committed rule ignores, a `.claustrum` link that leaves the repo, an
+uninitialized repo) · `3` backend not found · `4` timeout · `5` budget · `6` abandoned (`jobs wait` only: the
+process running a live job is gone) · `130` cancelled. Once the job directory exists (queued for a `max_parallel` slot, waiting for a `--branch`
 lock, adding its worktree, or running), the first Ctrl-C (SIGINT), SIGQUIT, SIGTERM or SIGHUP (the terminal closing) ends the run
 with a `cancelled` receipt: exit 130, the document on stdout under `--json`, `result.json` on disk
 (#94). A cancel while queued or adding leaves no worktree, directory or branch (#108: the job directory is made
@@ -250,7 +251,7 @@ front doors, one channel:
   a blind role, which receives no human input). `jobs wait <id>`
   blocks until the job is waiting or finished: it prints the question as `? text` then `(question N)`, or the summary
   line `jobs follow` ends on (exit 0 for either, 4 on `--timeout`, 130 on Ctrl-C). A job whose claustrum process is gone with no `result.json`
-  is *abandoned*: `jobs wait` prints `abandoned: the claustrum process running this job is gone` and exits 5, and
+  is *abandoned*: `jobs wait` prints `abandoned: the claustrum process running this job is gone` and exits 6, and
   `jobs follow` says so once and stops prompting. `--json` prints
   `{"state", "question": {"seq", "text"} | null, "result_status"}` instead, for a script or an architect to branch on.
 - **MCP.** `job_status` reports `state: waiting_for_input` and the `question`; the host asks its user with its own

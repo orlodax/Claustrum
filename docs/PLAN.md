@@ -119,7 +119,7 @@ claustrum roles list|show <name>        claustrum backends list|doctor [name]
 claustrum jobs list [--last N]|show <id>|logs <id> [--stderr]|clean [--cwd <dir>]|budget <tree> [--reset]
 claustrum mcp [--cwd <dir>]             claustrum sync … / init … (Part B)
 ```
-`--json` → exactly one RunResult document on stdout; human mode → status line, changed files, final message. Exit codes: 0 ok · 1 backend failure · 2 usage/config · 3 backend missing · 4 timeout · 5 budget · 130 cancelled.
+`--json` → exactly one RunResult document on stdout; human mode → status line, changed files, final message. Exit codes: 0 ok · 1 backend failure · 2 usage/config · 3 backend missing · 4 timeout · 5 budget · 6 abandoned (`jobs wait` only, #124) · 130 cancelled.
 
 ### A6. MCP server (`src/Claustrum/Mcp/ClaustrumTools.cs`)
 `Host.CreateEmptyApplicationBuilder` → logging to **stderr** → `AddMcpServer().WithStdioServerTransport().WithTools<ClaustrumTools>(…)`. Config root = launch cwd (hosts launch MCP servers in the workspace); `--cwd` and per-call `cwd` override.
