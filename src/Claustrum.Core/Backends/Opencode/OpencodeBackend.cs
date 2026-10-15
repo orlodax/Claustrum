@@ -347,25 +347,32 @@ public sealed class OpencodeBackend(IPlatform platform) : IBackend, IPostRunHook
 
             using CancellationTokenSource timeoutSource = new(exportTimeout);
             using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutSource.Token);
+            string stderr;
+            string json;
             try
             {
                 await process.WaitForExitAsync(linked.Token);
+
+                // The reads share the deadline: a grandchild that inherited the pipe (an MCP/LSP server
+                // from the run's config) outlives the export and would hold ReadToEnd open forever.
+                stderr = await stderrTask.WaitAsync(linked.Token);
+                if (process.ExitCode != 0)
+                {
+                    string detail = stderr.Trim();
+                    return new SessionExport(null, null, detail.Length > 0 ? detail[..Math.Min(detail.Length, 300)] : $"exit code {process.ExitCode}");
+                }
+
+                json = stdoutTask is not null ? await stdoutTask.WaitAsync(linked.Token) : await File.ReadAllTextAsync(outputPath!, linked.Token);
             }
             catch (OperationCanceledException)
             {
-                process.Kill(entireProcessTree: true);
+                if (!process.HasExited)
+                    process.Kill(entireProcessTree: true);
+
                 await process.WaitForExitAsync(CancellationToken.None);
                 return new SessionExport(null, null, timeoutSource.IsCancellationRequested ? "timed out after 30s" : "cancelled");
             }
 
-            string stderr = await stderrTask;
-            if (process.ExitCode != 0)
-            {
-                string detail = stderr.Trim();
-                return new SessionExport(null, null, detail.Length > 0 ? detail[..Math.Min(detail.Length, 300)] : $"exit code {process.ExitCode}");
-            }
-
-            string json = stdoutTask is not null ? await stdoutTask : await File.ReadAllTextAsync(outputPath!, CancellationToken.None);
             return ReadTotals(json);
         }
         catch (Exception ex)
@@ -419,10 +426,12 @@ public sealed class OpencodeBackend(IPlatform platform) : IBackend, IPostRunHook
         if (parsed.CostUsd is not null)
             return new PostRunResult(null, null, $"{prefix}: cost from step_finish events");
 
-        if (stdout.Trim() is { Length: > 0 } trimmed && SumWithoutFinalTextStep(Scan(trimmed)) is { } sum)
-            return new PostRunResult(sum.Cost, sum.Usage, $"{prefix}: cost is the step sum, without the final text step");
+        (decimal? Cost, Usage? Usage)? sum = stdout.Trim() is { Length: > 0 } trimmed ? SumWithoutFinalTextStep(Scan(trimmed)) : null;
 
-        return new PostRunResult(null, null, $"{prefix}: cost unknown, charged the cap");
+        // The words follow the outcome: a lone text-only step sums to (null, null), which is no step sum at all.
+        return sum is { Cost: not null }
+            ? new PostRunResult(sum.Value.Cost, sum.Value.Usage, $"{prefix}: cost is the step sum, without the final text step")
+            : new PostRunResult(null, sum?.Usage, $"{prefix}: cost unknown, charged the cap");
     }
 
     private static (decimal? Cost, Usage? Usage)? SumWithoutFinalTextStep(StepScan scan)
