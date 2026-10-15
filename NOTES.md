@@ -2932,6 +2932,18 @@ the `--standalone` question and handed over the v2 error shape. A deliberately w
      `step_finish`), so the figure that fixture is entitled to is now `null`, **not** the
      $0.0004988494 recorded in item 1 — item 1 is the record of what opencode emitted, not of what
      `Parse` must report. The upstream limitation is unchanged and cannot be closed from stdout.
+    - **2026-10-15, issue #125: `opencode session export` now provides the real total.**
+      `opencode session export <session_id>` prints the full session as JSON, including `info.cost`
+      (USD) and `info.tokens.{input, output, reasoning, cache.{read, write}}` — the session totals
+      including the final step's unreported cost. Measured on job `20261015-154643-6943f428`:
+      the `step_finish` costs summed to $0.17777, and `info.cost` was $0.18085 — a difference of
+      about 1.7 %. `Runner` now calls `IPostRunHook.PostRunAsync` after `Parse` and before
+      `ChargeAsync`; `OpencodeBackend` implements it by running the export with the same resolved
+      binary, the same env allow-list, and a 30 s timeout, then maps `info.tokens` onto `Usage` the
+      same way `AddStepFinish` does. When the export fails (non-zero exit, timeout, unparseable JSON,
+      or no `info.cost`), `Parse`'s original data — complete step costs or null — stands, and a
+      warning naming the fallback is appended. The old "complete or absent" rule stays as the fallback
+      for backends without a post-run hook and for opencode when the export itself fails.
 
 6. **The api backend, against a live OpenRouter endpoint.** `claustrum run code-reviewer --model
    api:openrouter:deepseek/deepseek-v4-flash --brief "## Task\nSay OK.\n## Diff\nnone" --budget 0.5

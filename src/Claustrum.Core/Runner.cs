@@ -184,6 +184,28 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
             }
 
             ParsedOutput parsed = backend.Parse(outcome.Stdout, outcome.Stderr, outcome.ExitCode);
+
+            // Issue #125: post-run enrichment for backends that can fetch cost/usage after the
+            // process has finished (opencode session export). Runs before the result is built or
+            // charged, so the enriched numbers flow into both. Best-effort: a failure or absent
+            // session_id leaves parsed unchanged and pushes a warning.
+            string[]? postWarnings = null;
+            if (backend is IPostRunHook postRun && parsed.SessionId is { Length: > 0 })
+            {
+                PostRunResult? enriched = await postRun.PostRunAsync(
+                    parsed, request.Cwd, runOptions.BackendConfig, platform, CancellationToken.None);
+
+                if (enriched is not null)
+                {
+                    if (enriched.CostUsd is not null)
+                        parsed = parsed with { CostUsd = enriched.CostUsd };
+                    if (enriched.Usage is not null)
+                        parsed = parsed with { Usage = enriched.Usage };
+                    if (enriched.Warning is { Length: > 0 })
+                        postWarnings = [enriched.Warning];
+                }
+            }
+
             ExtractedReport extracted = ReportExtractor.Extract(parsed.FinalMessage);
             RunStatus status = DetermineStatus(outcome, parsed);
             BranchReceipt branch = worktree is null
@@ -211,7 +233,7 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
                 Raw: parsed.Raw,
                 Report: extracted.Report,
                 ReportStatus: extracted.Status,
-                Warnings: [.. extracted.Warnings, .. branch.Warnings],
+                Warnings: [.. postWarnings ?? [], .. extracted.Warnings, .. branch.Warnings],
                 Commit: branch.Commit);
 
             return await FinishAsync(job, reservation, result, ran: true, runOptions);
