@@ -1,0 +1,210 @@
+using System.Text;
+using System.Text.Json;
+using System.Text.Json.Serialization.Metadata;
+using Claustrum.Cli;
+using Claustrum.Core.IO;
+using Claustrum.Core.Jobs;
+using Claustrum.Core.Json;
+using Claustrum.Core.Live;
+using Claustrum.Roles.Sync;
+
+namespace Claustrum.Live;
+
+// #124: the front doors' side of a live job's three files (conversation.jsonl, inbox/, live.json), shared by
+// `jobs say|wait|follow`, `run`/`coordinate`'s terminal prompt and the MCP tools. Every read goes through
+// PlainFile (a FIFO is a miss, not a hang) behind a fence that refuses a link leaving the jobs store, and a file
+// that is missing or half-written reads as null/empty: the caller asks again on its next poll.
+internal sealed class LiveJob
+{
+    private const int MaxMessageBytes = 1024 * 1024;
+
+    private readonly string directory;
+    private readonly SyncRoot fence;
+
+    private LiveJob(string root, string id)
+    {
+        Id = id;
+        directory = Path.Combine(root, id);
+        fence = SyncRoot.Repo(root);
+    }
+
+    public string Id { get; }
+
+    /// <summary>The job, or null when no such job exists (or its directory is a link that leaves the jobs store).</summary>
+    public static LiveJob? Find(string id)
+    {
+        string root = JobDirectory.ResolveRoot(AppServices.Platform);
+        if (id.Length == 0 || id is "." or ".." || id.AsSpan().IndexOfAny('/', '\\') >= 0 || !Directory.Exists(Path.Combine(root, id)))
+            return null;
+
+        LiveJob job = new(root, id);
+        return job.fence.Escapes(job.directory) ? null : job;
+    }
+
+    public static LiveJob At(JobPaths job) => new(JobDirectory.ResolveRoot(AppServices.Platform), job.Id);
+
+    public static string NameOf(LiveStatus status) => status switch
+    {
+        LiveStatus.WaitingForInput => "waiting_for_input",
+        LiveStatus.Done => "done",
+        _ => "running",
+    };
+
+    /// <summary>The conversation entry live.json names as the open question, when the state is waiting and the entry is already written.</summary>
+    public static ConversationEntry? OpenQuestion(LiveState? state, IReadOnlyList<ConversationEntry> entries) =>
+        state is { State: LiveStatus.WaitingForInput, QuestionSeq: { } seq } ? entries.FirstOrDefault(entry => entry.Seq == seq) : null;
+
+    public LiveState? ReadState() => Parse(ReadText("live.json"), ClaustrumJsonContext.Default.LiveState);
+
+    public IReadOnlyList<ConversationEntry> ReadConversation()
+    {
+        if (ReadText("conversation.jsonl") is not { } text)
+            return [];
+
+        // The last line may be mid-write: it fails to parse and is read whole on the next poll.
+        List<ConversationEntry> entries = [];
+        foreach (string line in text.Split('\n'))
+            if (Parse(line.Trim(), ClaustrumJsonContext.Default.ConversationEntry) is { Text: not null } entry)
+                entries.Add(entry);
+
+        return entries;
+    }
+
+    /// <summary>
+    /// result.json parsed, or null while it is missing or unreadable; <paramref name="exists"/> tells those apart (the
+    /// file is written non-atomically, so a present-but-unparsable one is usually a poll away from readable).
+    /// </summary>
+    public JsonDocument? ReadResultDocument(out bool exists)
+    {
+        exists = File.Exists(Path.Combine(directory, "result.json"));
+        if (!exists || ReadText("result.json") is not { } text)
+            return null;
+
+        try
+        {
+            JsonDocument document = JsonDocument.Parse(text);
+            if (document.RootElement.ValueKind == JsonValueKind.Object)
+                return document;
+
+            document.Dispose();
+            return null;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Where the job stands, for `jobs wait` and MCP job_status. A readable result.json is done; so is a live.json that
+    /// says done or an unreadable result.json, with ResultStatus null until the receipt can be read. An open question is
+    /// reported only once its entry is written, and not while an answer for it sits unconsumed in inbox/ (a caller that
+    /// says and then waits must not be handed the question it just answered).
+    /// </summary>
+    public JobWaitResult Observe()
+    {
+        using JsonDocument? result = ReadResultDocument(out bool resultExists);
+        if (result is not null)
+            return new JobWaitResult("done", null, StatusOf(result.RootElement));
+
+        LiveState? state = ReadState();
+        if (resultExists || state?.State == LiveStatus.Done)
+            return new JobWaitResult("done", null, null);
+
+        if (OpenQuestion(state, ReadConversation()) is { } question && !HasQueuedMessage())
+            return new JobWaitResult("waiting_for_input", new QuestionInfo(question.Seq, question.Text), null);
+
+        return new JobWaitResult("running", null, null);
+    }
+
+    public static string StatusOf(JsonElement receipt) =>
+        receipt.TryGetProperty("status", out JsonElement status) && status.ValueKind == JsonValueKind.String ? status.GetString() ?? "?" : "?";
+
+    /// <summary>Whether a message written by <see cref="Say"/> is still waiting for the session to consume it.</summary>
+    public bool HasQueuedMessage()
+    {
+        string inbox = Path.Combine(directory, "inbox");
+        try
+        {
+            return Directory.Exists(inbox) && !fence.Escapes(inbox) && Directory.EnumerateFiles(inbox, "*.json").Any();
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Queue <paramref name="text"/> for the live session: an answer while a question is open, a message to the running
+    /// role otherwise (the session decides which, on consumption). Refused when the job is not live or is done.
+    /// </summary>
+    public SayResult Say(string text)
+    {
+        if (text.Trim().Length == 0)
+            throw new CliUsageException("nothing to say: the text is empty");
+
+        if (Encoding.UTF8.GetByteCount(text) > MaxMessageBytes)
+            throw new CliUsageException($"the text is over {MaxMessageBytes / 1024} KiB");
+
+        LiveState state = ReadState()
+            ?? throw new CliUsageException($"job '{Id}' is not live: it has no live.json, so there is no session to talk to");
+
+        if (state.State == LiveStatus.Done || File.Exists(Path.Combine(directory, "result.json")))
+            throw new CliUsageException($"job '{Id}' is done: nobody is listening");
+
+        string inbox = Path.Combine(directory, "inbox");
+        if (fence.Escapes(inbox))
+            throw new CliUsageException($"{inbox} resolves outside the jobs store ({SyncRoot.Resolve(inbox)}): nothing is written through a link that leaves it");
+
+        // Temp file first, rename second: the session must never read a half-written message. The ticks are fixed-width so
+        // the names sort in the order they were written; only `*.json` is a message.
+        Directory.CreateDirectory(inbox);
+        string name = $"{DateTime.UtcNow.Ticks:d19}-{Random.Shared.Next():x8}";
+        string temp = Path.Combine(inbox, $"{name}.tmp");
+        string json = JsonSerializer.Serialize(new InboxMessage(DateTimeOffset.UtcNow, text), ClaustrumJsonContext.Default.InboxMessage);
+        try
+        {
+            if (!PlainFile.TryWriteAllText(temp, json, FileMode.Create, out string? refusal))
+                throw new CliUsageException($"{temp}: {refusal}");
+
+            File.Move(temp, Path.Combine(inbox, $"{name}.json"));
+        }
+        catch
+        {
+            File.Delete(temp);
+            throw;
+        }
+
+        LiveStatus now = ReadState()?.State ?? state.State;
+        return new SayResult(state.State == LiveStatus.WaitingForInput ? state.QuestionSeq : null, NameOf(now));
+    }
+
+    private string? ReadText(string name)
+    {
+        string path = Path.Combine(directory, name);
+        try
+        {
+            return File.Exists(path) && !fence.Escapes(path) && PlainFile.TryReadAllText(path, out string? text, out _) ? text : null;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
+    }
+
+    private static T? Parse<T>(string? text, JsonTypeInfo<T> info)
+        where T : class
+    {
+        if (text is null)
+            return null;
+
+        try
+        {
+            return JsonSerializer.Deserialize(text, info);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+}

@@ -33,10 +33,12 @@ public static class CoordinateCommand
         Option<bool> stream = new("--stream") { Description = "Stream formatted progress lines to stderr." };
         Option<bool> streamRawOption = new("--stream-raw") { Description = "Stream the raw backend JSON to stderr, unformatted (implies --stream)." };
         Option<bool> raw = new("--raw") { Description = "Include the backend's raw response in JSON output." };
+        Option<int?> replyTimeout = LiveRun.ReplyTimeoutOption();
+        Option<bool> noLive = LiveRun.NoLiveOption();
 
         Command command = new("coordinate", "Run the cast's architect headlessly over issues or a brief (docs/PLAN.md §D3).")
         {
-            cast, issues, brief, briefFile, cwd, tier, model, budget, timeout, json, stream, streamRawOption, raw,
+            cast, issues, brief, briefFile, cwd, tier, model, budget, timeout, json, stream, streamRawOption, raw, replyTimeout, noLive,
         };
 
         command.SetAction(async parseResult =>
@@ -57,7 +59,9 @@ public static class CoordinateCommand
                     TimeoutSeconds: parseResult.GetValue(timeout)),
                 parseResult.GetValue(json),
                 streamMode, streamRaw,
-                parseResult.GetValue(raw));
+                parseResult.GetValue(raw),
+                parseResult.GetValue(noLive),
+                parseResult.GetValue(replyTimeout));
         });
 
         return command;
@@ -65,9 +69,11 @@ public static class CoordinateCommand
 
     private static async Task<int> ExecuteAsync(
         string? castName, string? issuesCsv, string? briefText, string? briefFilePath, string? cwdOption,
-        string? tierFlag, ConfigOverrides overrides, bool jsonMode, bool streamMode, bool streamRaw, bool rawMode)
+        string? tierFlag, ConfigOverrides overrides, bool jsonMode, bool streamMode, bool streamRaw, bool rawMode,
+        bool noLive, int? replyTimeout)
     {
         string cwd = Path.GetFullPath(cwdOption ?? Environment.CurrentDirectory);
+        (bool live, int replyTimeoutSeconds) = LiveRun.Resolve(noLive, replyTimeout);
 
         // No bare stdin here: `--issues` is the other way to state the task, and a stdin
         // nobody closes would hang the verb (BriefSource). `--brief-file -` still opts in.
@@ -89,7 +95,9 @@ public static class CoordinateCommand
                 Stream: streamMode,
                 StreamRaw: streamRaw,
                 DiffCapBytes: RunCommand.CliDiffCapBytes,
-                OnStreamLine: streamMode ? SafeConsole.Error : null);
+                OnStreamLine: streamMode ? SafeConsole.Error : null,
+                Live: live,
+                ReplyTimeoutSeconds: replyTimeoutSeconds);
 
             // Everything that can be refused happens before the job directory exists — bad flags, a
             // missing cast, a `gh` that failed — because JobDirectory.Create also prunes the job
@@ -116,7 +124,9 @@ public static class CoordinateCommand
             int? refusedExit = null;
             try
             {
-                result = await CoordinateEngine.RunAsync(plan, prepared, job, cancel.Token);
+                // #124: the architect's questions reach the terminal like a `run`'s; routing a child's to the architect is stage 2.
+                Task<RunResult> run = CoordinateEngine.RunAsync(plan, prepared, job, cancel.Token);
+                result = LiveRun.Prompts(prepared) ? await LiveRun.AnswerWhileAsync(run, job) : await run;
             }
             catch (MachineryRefusedException ex)
             {

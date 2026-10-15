@@ -16,4 +16,7 @@ public sealed record CoordinateRequest(
     int DiffCapBytes,
     Action<string>? OnStreamLine = null,
     // `--stream-raw` on the CLI: echo unformatted raw lines (issue #123).
-    bool StreamRaw = false);
+    bool StreamRaw = false,
+    // #124: the architect's live options, from `--no-live`/`--reply-timeout` and the TTY rule (CLI only for now).
+    bool Live = false,
+    int ReplyTimeoutSeconds = 0);

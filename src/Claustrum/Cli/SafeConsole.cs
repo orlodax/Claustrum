@@ -17,6 +17,19 @@ internal static class SafeConsole
         }
     }
 
+    // A prompt's text, with no line break: the cursor stays after it for the reply.
+    public static void Prompt(string text)
+    {
+        try
+        {
+            Console.Error.Write(text);
+        }
+        catch (IOException)
+        {
+            // Nobody is reading.
+        }
+    }
+
     public static void Out(string line = "") => WriteLine(Console.Out, line);
 
     public static void Error(string line) => WriteLine(Console.Error, line);

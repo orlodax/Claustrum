@@ -7,6 +7,7 @@ using Claustrum.Core.Config;
 using Claustrum.Core.Json;
 using Claustrum.Core.Model;
 using Claustrum.Delegation;
+using Claustrum.Live;
 using Claustrum.Mcp.Json;
 using Claustrum.Roles.Model;
 using ModelContextProtocol;
@@ -36,7 +37,9 @@ public sealed class ClaustrumTools
         "builder/tester's default), 'full' (dangerously skips all permission checks — use only when you mean " +
         "it). A role with blind:true (see list_roles) must be briefed with only the task as stated and how to " +
         "get the diff — never rationale, a plan, or a pasted claustrum-report block; the runner refuses such a " +
-        "brief outright (docs/PLAN.md §B3 blind gate).")]
+        "brief outright (docs/PLAN.md §B3 blind gate). A role that wants to ask the user something is told at " +
+        "once that nobody can answer (this call is blocked), so it decides and records the choice; use " +
+        "delegate_async when the user should be asked.")]
     public static Task<string> DelegateAsync(
         [Description("Role name, e.g. builder, code-reviewer, tester (see list_roles).")] string role,
         [Description("The brief: markdown with H2 sections ## Task/## Scope/## Must still work/## Diff (docs/PLAN.md §B3).")] string brief,
@@ -57,7 +60,7 @@ public sealed class ClaustrumTools
         CancellationToken cancellationToken = default) =>
         McpExceptionBoundary.GuardAsync(async () =>
         {
-            DelegateRequest request = BuildRequest(role, brief, cwd, backend, model, effort, tier, permission, deny, budgetUsd, timeoutSeconds, resumeSession, files, cast, branch);
+            DelegateRequest request = BuildRequest(role, brief, cwd, backend, model, effort, tier, permission, deny, budgetUsd, timeoutSeconds, resumeSession, files, cast, branch, replyTimeoutSeconds: 0);
             RunResult result = await MachineryRefusedException.AsReceiptAsync(DelegateEngine.RunAsync(request, cancellationToken));
             RunResult output = includeRaw ? result : result with { Raw = null };
 
@@ -70,7 +73,9 @@ public sealed class ClaustrumTools
         "longer than the calling host's own tool-call timeout. Only the run is deferred: config, role and model " +
         "resolution happen in this call, so an unknown role, a broken claustrum.json or a tier this role has no " +
         "model for is an error here, with no job created. Poll job_status for progress and job_result for the " +
-        "final RunResult once state is 'done'.")]
+        "final RunResult once state is 'done'. A role may stop to ask the user something: job_status then " +
+        "reports state 'waiting_for_input' and the question; ask the user and answer with job_say. The job's " +
+        "clock is paused while it waits, and after 30 minutes without an answer the role is told to decide alone.")]
     public static string DelegateStart(
         string role, string brief, string? cwd = null, string? backend = null, string? model = null, string? effort = null,
         string? tier = null, string? permission = null, string[]? deny = null, decimal? budgetUsd = null,
@@ -79,7 +84,7 @@ public sealed class ClaustrumTools
         [Description(BranchDescription)] string? branch = null) =>
         McpExceptionBoundary.Guard(() =>
         {
-            DelegateRequest request = BuildRequest(role, brief, cwd, backend, model, effort, tier, permission, deny, budgetUsd, timeoutSeconds, resumeSession, files, cast, branch);
+            DelegateRequest request = BuildRequest(role, brief, cwd, backend, model, effort, tier, permission, deny, budgetUsd, timeoutSeconds, resumeSession, files, cast, branch, DelegateEngine.DefaultReplyTimeoutSeconds);
             // Deliberately CancellationToken.None: the job must outlive this tool call's own
             // request, which is what "returns immediately" means — a client cancelling *this* call
             // cannot reach back into an already-started background job.
@@ -149,8 +154,10 @@ public sealed class ClaustrumTools
 
     [McpServerTool(Name = "job_status")]
     [Description(
-        "Check a delegate_async job's progress: state (running|done|failed), elapsed seconds, and the last " +
-        "captured output line. 'failed' means the job threw after it was started instead of finishing with a " +
+        "Check a delegate_async job's progress: state (running|waiting_for_input|done|failed), elapsed seconds, " +
+        "the last captured output line, and question ({seq, text}, null unless state is 'waiting_for_input'). " +
+        "'waiting_for_input' means the role asked the user something: ask them with your question tool and " +
+        "answer with job_say. 'failed' means the job threw after it was started instead of finishing with a " +
         "RunResult (e.g. a blind-gate rejection) — call job_result for the underlying error. State 'unknown' " +
         "means no such job id.")]
     public static string JobStatus(string jobId)
@@ -158,6 +165,20 @@ public sealed class ClaustrumTools
         JobStatusInfo status = AppServices.JobManager.GetStatus(jobId) ?? new JobStatusInfo("unknown", 0, null);
         return JsonSerializer.Serialize(status, McpJsonContext.Default.JobStatusInfo);
     }
+
+    [McpServerTool(Name = "job_say")]
+    [Description(
+        "Talk to a live delegate_async job: answer the question job_status shows (state 'waiting_for_input'), or, " +
+        "while it runs, send its role a message. Returns {answers_question, state}; an error when the job is " +
+        "unknown, not live, or done. A blind role (code-reviewer, ui-reviewer) never asks, so there is nothing to answer.")]
+    public static string JobSay(
+        string jobId,
+        [Description("The answer or message.")] string text) =>
+        McpExceptionBoundary.Guard(() =>
+        {
+            LiveJob job = LiveJob.Find(jobId) ?? throw new McpException($"job '{jobId}' not found");
+            return JsonSerializer.Serialize(job.Say(text), McpJsonContext.Default.SayResult);
+        });
 
     [McpServerTool(Name = "job_result")]
     [Description("Get a delegate_async job's RunResult once it has finished. Throws if the job id is unknown or has not finished yet (call job_status first if unsure), or rethrows the job's own exception if it failed before producing a RunResult.")]
@@ -173,7 +194,7 @@ public sealed class ClaustrumTools
     private static DelegateRequest BuildRequest(
         string role, string brief, string? cwd, string? backend, string? model, string? effort, string? tier,
         string? permission, string[]? deny, decimal? budgetUsd, int? timeoutSeconds, string? resumeSession, string[]? files, string? cast,
-        string? branch)
+        string? branch, int replyTimeoutSeconds)
     {
         string resolvedCwd = cwd is { Length: > 0 } ? Path.GetFullPath(cwd) : Environment.CurrentDirectory;
         ConfigOverrides overrides = new(Backend: backend, Model: model, Effort: effort, Permission: permission, Deny: deny, BudgetUsd: budgetUsd, TimeoutSeconds: timeoutSeconds);
@@ -202,7 +223,10 @@ public sealed class ClaustrumTools
             CastName: resolvedCastName,
             Branch: branch is { Length: > 0 } ? branch : null,
             AttachmentsMustBeRegular: true,
-            PreRunWarnings: castWarnings);
+            PreRunWarnings: castWarnings,
+            // #124: always live; whether anyone can answer is the reply timeout (0 for the blocked `delegate`).
+            Live: true,
+            ReplyTimeoutSeconds: replyTimeoutSeconds);
     }
 
     [McpServerTool(Name = "list_roles")]

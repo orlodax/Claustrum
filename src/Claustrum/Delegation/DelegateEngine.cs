@@ -18,6 +18,10 @@ public static class DelegateEngine
 {
     public const int DefaultTimeoutSeconds = 1800;
 
+    // #124, owner's decision 2026-10-15: how long a question waits for its human before the role is told to decide alone,
+    // wherever a human can be expected to answer (a terminal, an MCP host's job_say).
+    public const int DefaultReplyTimeoutSeconds = 1800;
+
     // The whole pipeline for a caller that has no job directory to lose: `run` and `delegate`, where
     // Runner mints one itself after the blind gate. ⚠ There is deliberately no
     // `RunAsync(DelegateRequest, JobPaths, …)` beside it — a caller that mints first must Prepare
@@ -102,11 +106,20 @@ public static class DelegateEngine
             StreamRaw: request.StreamRaw,
             Tree: tree,
             PreRunWarnings: request.PreRunWarnings,
-            Live: request.Live,
+            // #124 stage 1: a live session exists for claude only (opencode follows), so a request for another backend is dropped here.
+            Live: request.Live && resolved.Backend == "claude",
             ReplyTimeoutSeconds: request.ReplyTimeoutSeconds);
 
         return new PreparedDelegation(request, resolved, options, budgetUsd, timeoutSeconds, requestPermission);
     }
+
+    /// <summary>
+    /// The checks <see cref="Runner"/> makes before it mints a job (timeout, brief and attachments, blind gate), for a caller
+    /// that mints one itself to watch it run (#124): a refusal throws as it would from <see cref="RunAsync(PreparedDelegation, JobPaths?, CancellationToken)"/>
+    /// and leaves no job directory.
+    /// </summary>
+    public static void Validate(PreparedDelegation prepared) =>
+        Runner.Validate(BuildRunRequest(prepared, prepared.Request.Cwd), prepared.Role, AppServices.Platform);
 
     /// <summary>
     /// The half that needs a job: the concurrency gate a cast role with a numeric max_parallel pays for
