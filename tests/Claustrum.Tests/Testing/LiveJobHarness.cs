@@ -25,11 +25,13 @@ public sealed class LiveJobHarness : IDisposable
     private readonly Runner runner;
     private readonly BackendConfig backend;
 
-    public LiveJobHarness(FakeClaudeScript script)
+    /// <param name="script">What the conversing fake claude does.</param>
+    /// <param name="sharedPlatform">The platform AppServices is overridden with (AppServicesHomeFixture), for a test that drives a front door which finds the job through AppServices; its home then holds the job.</param>
+    public LiveJobHarness(FakeClaudeScript script, HomeRedirectPlatform? sharedPlatform = null)
     {
         FakeClaude.RequirePosixShell();
         Directory.CreateDirectory(Cwd);
-        platform = new HomeRedirectPlatform(Path.Combine(root, "home"));
+        platform = sharedPlatform ?? new HomeRedirectPlatform(Path.Combine(root, "home"));
         string scriptPath = Path.Combine(root, FakeClaude.ScriptName);
         InputLog = script.LiveInputLog ?? Path.Combine(root, "input.log");
         ArgvLog = script.ArgvLog ?? Path.Combine(root, "argv.log");

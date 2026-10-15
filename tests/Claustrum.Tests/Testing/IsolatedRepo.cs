@@ -104,6 +104,9 @@ public sealed class IsolatedRepo : IDisposable
     /// <summary>The built binary started with these arguments in the repository and left running, for a test that signals it.</summary>
     public RunningCli StartCli(params string[] args) => Start(keepStdinOpen: false, newSession: false, args);
 
+    /// <summary>As <see cref="StartCli(string[])"/>, with these variables set in the child (a null value removes one): how a test puts a run in a job tree.</summary>
+    public RunningCli StartCliWithEnv(IReadOnlyDictionary<string, string?> env, params string[] args) => Start(keepStdinOpen: false, newSession: false, args, env);
+
     /// <summary>
     /// As <see cref="StartCli(string[])"/>, as a session and process-group leader of its own (RunningCli's `newSession`), so a
     /// test can signal the whole group the way a terminal does: the backend and git die with it, which is the case
@@ -120,11 +123,11 @@ public sealed class IsolatedRepo : IDisposable
     /// <summary>A directory put in front of PATH for the children that <see cref="StartCli(string[])"/> and its siblings start, or null.</summary>
     public string? PathPrefix { get; set; }
 
-    private RunningCli Start(bool keepStdinOpen, bool newSession, string[] args)
+    private RunningCli Start(bool keepStdinOpen, bool newSession, string[] args, IReadOnlyDictionary<string, string?>? env = null)
     {
         string binary = Path.Combine(AppContext.BaseDirectory, OperatingSystem.IsWindows() ? "claustrum.exe" : "claustrum");
         Assert.True(File.Exists(binary), $"built claustrum binary not found at '{binary}'");
-        return new RunningCli(binary, Repo, Home, PathPrefix is null ? ChildPath() : PathPrefix + Path.PathSeparator + ChildPath(), args, keepStdinOpen, newSession);
+        return new RunningCli(binary, Repo, Home, PathPrefix is null ? ChildPath() : PathPrefix + Path.PathSeparator + ChildPath(), args, keepStdinOpen, newSession, env);
     }
 
     /// <summary>A `claustrum mcp` server over real stdio in this repository, with the same environment the CLI runs get.</summary>

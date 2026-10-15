@@ -18,7 +18,7 @@ public sealed class RunningCli : IDisposable
     private readonly TaskCompletionSource<bool> stdoutClosed = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly TaskCompletionSource<bool> stderrClosed = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-    public RunningCli(string binary, string workingDirectory, string home, string path, IEnumerable<string> args, bool keepStdinOpen = false, bool newSession = false)
+    public RunningCli(string binary, string workingDirectory, string home, string path, IEnumerable<string> args, bool keepStdinOpen = false, bool newSession = false, IReadOnlyDictionary<string, string?>? extraEnv = null)
     {
         (string File, string[] Arguments)? launcher = newSession ? SessionLauncher() : null;
         ProcessStartInfo startInfo = new()
@@ -49,6 +49,8 @@ public sealed class RunningCli : IDisposable
         startInfo.Environment["CLAUSTRUM_SKIP_PROBE"] = "1";
         startInfo.Environment.Remove("CLAUSTRUM_PARENT_JOB"); // #66
         startInfo.Environment["PATH"] = path;
+        foreach ((string key, string? value) in extraEnv ?? new Dictionary<string, string?>())
+            startInfo.Environment[key] = value;
 
         process = new Process { StartInfo = startInfo };
         process.OutputDataReceived += (_, e) => Append(stdout, stdoutClosed, e.Data);
