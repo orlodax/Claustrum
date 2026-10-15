@@ -28,6 +28,8 @@ internal static class PreconditionCases
         "uncommitted-gitignore",
         "skip-worktree-claustrum-json",
         "assume-unchanged-claustrum-json",
+        "skip-worktree-cast",
+        "assume-unchanged-cast",
         "untracked-mcp-json",
         "show-untracked-files-no",
         "subdirectory",
@@ -88,6 +90,15 @@ internal static class PreconditionCases
                 repo.Git("update-index", "--assume-unchanged", "claustrum.json");
                 File.AppendAllText(Path.Combine(root, "claustrum.json"), "\n");
                 return new PreconditionCase(Refused("claustrum.json", "assume-unchanged"), null, root);
+            // A committed cast edited behind the flag: the architect would read the edit, its children HEAD's copy (review 2, 2026-10-15).
+            case "skip-worktree-cast":
+                repo.Git("update-index", "--skip-worktree", ".claustrum/casts/default.json");
+                File.AppendAllText(CastPath(root, "default"), "\n");
+                return new PreconditionCase("default.json (skip-worktree — commit it first)", null, root);
+            case "assume-unchanged-cast":
+                repo.Git("update-index", "--assume-unchanged", ".claustrum/casts/default.json");
+                File.AppendAllText(CastPath(root, "default"), "\n");
+                return new PreconditionCase("default.json (assume-unchanged — commit it first)", null, root);
             case "untracked-mcp-json":
                 File.WriteAllText(Path.Combine(root, ".mcp.json"), "{}\n");
                 return new PreconditionCase("commit or git-ignore .mcp.json (untracked) — an ignored local copy is fine", null, root);
