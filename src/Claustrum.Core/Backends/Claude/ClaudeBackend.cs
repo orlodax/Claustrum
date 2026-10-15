@@ -2,9 +2,11 @@ using System.Globalization;
 using System.Text.Json;
 using Claustrum.Core.Config;
 using Claustrum.Core.Jobs;
+using Claustrum.Core.Live;
 using Claustrum.Core.Model;
 using Claustrum.Core.Platform;
 using Claustrum.Core.Process;
+using Claustrum.Core.Report;
 
 namespace Claustrum.Core.Backends.Claude;
 
@@ -34,6 +36,8 @@ public sealed class ClaudeBackend(IPlatform platform) : IBackend
 
     public string Name => "claude";
 
+    public ILiveProtocol? LiveProtocol => ClaudeLiveProtocol.Instance;
+
     public Task<Doctor> DetectAsync(BackendConfig? config, CancellationToken cancellationToken) =>
         VersionProbe.RunAsync(Name, ["--version"], config, platform, cancellationToken, detectTimeout);
 
@@ -46,6 +50,12 @@ public sealed class ClaudeBackend(IPlatform platform) : IBackend
         // Always stream-json: a single `json` document lands only at exit, which left `jobs follow` (and an
         // MCP delegate) with nothing to show for the whole run. `--stream` now only gates the stderr echo.
         args.AddRange(["--output-format", "stream-json", "--verbose"]);
+
+        // A live session (#124) feeds the brief and every later message as stream-json user turns on a stdin
+        // that stays open; without the flag claude would read stdin once, as the prompt, and stop.
+        if (run.Live)
+            args.AddRange(["--input-format", "stream-json"]);
+
         args.AddRange(["--model", run.Role.Model]);
         args.AddRange(["--append-system-prompt-file", run.SystemPromptFilePath]);
 
@@ -82,7 +92,8 @@ public sealed class ClaudeBackend(IPlatform platform) : IBackend
 
         // On argv the brief showed in every process listing: a `pgrep -f` pattern a brief quoted matched
         // the job running it (#68, measured 2026-10-08). Stdin also lifts the argv length cap.
-        return new ProcessSpec(Name, [.. args], run.Cwd, run.Env, [], StdinText: run.Brief, McpServers: mcp.Servers, Warnings: mcp.Warning is { } warning ? [warning] : null);
+        string stdinText = run.Live ? ClaudeLiveProtocol.Instance.EncodeUserMessage(run.Brief) + "\n" : run.Brief;
+        return new ProcessSpec(Name, [.. args], run.Cwd, run.Env, [], StdinText: stdinText, McpServers: mcp.Servers, Warnings: mcp.Warning is { } warning ? [warning] : null);
     }
 
     public ParsedOutput Parse(string stdout, string stderr, int exitCode)
@@ -159,6 +170,7 @@ public sealed class ClaudeBackend(IPlatform platform) : IBackend
     private static ParsedOutput ParseStream(string text, string stderr, int exitCode)
     {
         JsonElement? lastResult = null;
+        string? reportMessage = null;
         List<ChangedFile> reportedEdits = [];
         bool sawEvent = false;
 
@@ -187,16 +199,28 @@ public sealed class ClaudeBackend(IPlatform platform) : IBackend
                 sawEvent = true;
                 string? type = TryGetString(root, "type");
                 if (type == "result")
+                {
                     lastResult = root.Clone();
+                    string message = FinalMessage(root);
+                    if (ReportExtractor.Extract(message).Status != ReportStatus.Missing)
+                        reportMessage = message;
+                }
                 else if (type == "assistant")
                     CollectToolUseEdits(root, reportedEdits);
             }
         }
 
         // No result line (a killed run): events are noise as a message, so stderr speaks if it has anything.
-        return lastResult is { } result
-            ? BuildFromResult(result, exitCode, reportedEdits)
-            : new ParsedOutput(sawEvent && stderr.Trim().Length > 0 ? stderr : text, null, null, null, [.. reportedEdits], null, IsError: exitCode != 0);
+        if (lastResult is not { } result)
+            return new ParsedOutput(sawEvent && stderr.Trim().Length > 0 ? stderr : text, null, null, null, [.. reportedEdits], null, IsError: exitCode != 0);
+
+        // A live session (#124) has one `result` per turn and the cost is the last one's running total. The text
+        // is the last turn's too, unless a message that crossed the report on stdin made a turn after it: then
+        // the turn that carries the report stays the final message.
+        ParsedOutput parsed = BuildFromResult(result, exitCode, reportedEdits);
+        return reportMessage is not null && ReportExtractor.Extract(parsed.FinalMessage).Status == ReportStatus.Missing
+            ? parsed with { FinalMessage = reportMessage }
+            : parsed;
     }
 
     private static ParsedOutput BuildFromResult(JsonElement root, int exitCode, List<ChangedFile> reportedEdits)
@@ -213,7 +237,7 @@ public sealed class ClaudeBackend(IPlatform platform) : IBackend
     // 2026-09-21 (issue #12): a result document that claude terminated on its own budget flag carries
     // no `result` at all — the text sits in an `errors` array — so reading `result` alone left
     // FinalMessage and Error empty and `doctor --probe` printed "failed (no error message)".
-    private static string FinalMessage(JsonElement root)
+    internal static string FinalMessage(JsonElement root)
     {
         if (TryGetString(root, "result") is { Length: > 0 } result)
             return result;
@@ -242,7 +266,7 @@ public sealed class ClaudeBackend(IPlatform platform) : IBackend
     private static int? TryGetInt(JsonElement parent, string propertyName) =>
         parent.TryGetProperty(propertyName, out JsonElement property) && property.TryGetInt32(out int value) ? value : null;
 
-    private static string? TryGetString(JsonElement parent, string propertyName) =>
+    internal static string? TryGetString(JsonElement parent, string propertyName) =>
         parent.TryGetProperty(propertyName, out JsonElement property) && property.ValueKind == JsonValueKind.String ? property.GetString() : null;
 
     private static void CollectToolUseEdits(JsonElement root, List<ChangedFile> edits)

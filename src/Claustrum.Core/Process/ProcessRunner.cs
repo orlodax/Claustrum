@@ -19,7 +19,8 @@ public sealed class ProcessRunner(IPlatform platform)
         bool envPassthroughAll,
         Action<string>? onStreamLine,
         TimeSpan? timeout,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IProcessLive? live = null)
     {
         ResolvedBinary binary = BinaryLocator.Locate(spec.Exe, spec.Args, backendConfig, platform);
 
@@ -58,26 +59,36 @@ public sealed class ProcessRunner(IPlatform platform)
         await using StreamWriter stderrLog = new(job.StderrLog, append: false) { AutoFlush = true };
 
         Action<string>? guardedStreamLine = onStreamLine is null ? null : Guard(onStreamLine);
-        process.OutputDataReceived += (_, e) => Pump(e.Data, stdout, stdoutLog, guardedStreamLine);
-        process.ErrorDataReceived += (_, e) => Pump(e.Data, stderr, stderrLog, onStreamLine: null);
+        Action<string>? guardedLiveLine = live is null ? null : Guard(live.OnStdoutLine);
+        process.OutputDataReceived += (_, e) => Pump(e.Data, stdout, stdoutLog, guardedStreamLine, guardedLiveLine);
+        process.ErrorDataReceived += (_, e) => Pump(e.Data, stderr, stderrLog, onStreamLine: null, onLiveLine: null);
 
         Stopwatch stopwatch = Stopwatch.StartNew();
         process.Start();
+
+        using PausableDeadline deadline = new(timeout);
+        live?.Attach(deadline);
 
         // Pumps started before stdin is written: a prompt larger than the pipe buffer would otherwise
         // deadlock against a child already blocked writing stdout nobody is draining yet.
         process.BeginOutputReadLine();
         process.BeginErrorReadLine();
 
-        using CancellationTokenSource timeoutSource = timeout is { } t ? new CancellationTokenSource(t) : new CancellationTokenSource();
-        using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutSource.Token);
+        using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, deadline.Token);
+        using CancellationTokenSource liveStop = new();
+        Task liveLoop = Task.CompletedTask;
 
         ProcessTermination termination = ProcessTermination.Completed;
         try
         {
             // Inside the timeout, not before it: a child that never drains its stdin would otherwise
-            // block this write with nothing left to interrupt it.
-            await WriteStdinAsync(process, spec.StdinText, linked.Token);
+            // block this write with nothing left to interrupt it. A live session keeps stdin open for
+            // the conversation and closes it itself; it starts only after the first message is written,
+            // so a human's early message cannot overtake the brief.
+            await WriteStdinAsync(process, spec.StdinText, keepOpen: live is not null, linked.Token);
+            if (live is not null)
+                liveLoop = live.RunAsync(process.StandardInput, liveStop.Token);
+
             await process.WaitForExitAsync(linked.Token);
         }
         catch (OperationCanceledException)
@@ -85,6 +96,11 @@ public sealed class ProcessRunner(IPlatform platform)
             termination = cancellationToken.IsCancellationRequested ? ProcessTermination.Cancelled : ProcessTermination.TimedOut;
             process.Kill(entireProcessTree: true);
             await process.WaitForExitAsync(CancellationToken.None);
+        }
+        finally
+        {
+            if (live is not null)
+                await EndLiveAsync(live, liveStop, liveLoop);
         }
 
         // The terminal's signal can kill the child before our handler cancels the token: a cancel, not a failed backend.
@@ -99,14 +115,18 @@ public sealed class ProcessRunner(IPlatform platform)
     // JSON-RPC pipe can block on it (NOTES.md "MCP child stdin inheritance hung git"). cursor and claude
     // are fed their whole prompt first — `cursor-agent -p` has no prompt-file flag (issue #14), and a
     // claude brief on argv was visible to `pgrep -f` (#68) — so ProcessSpec.StdinText arrives here.
-    private static async Task WriteStdinAsync(System.Diagnostics.Process process, string? stdinText, CancellationToken cancellationToken)
+    // `keepOpen` (a live session, #124) is the one exception: the session closes it when it ends.
+    private static async Task WriteStdinAsync(System.Diagnostics.Process process, string? stdinText, bool keepOpen, CancellationToken cancellationToken)
     {
         try
         {
             if (stdinText is { } text)
                 await process.StandardInput.WriteAsync(text.AsMemory(), cancellationToken);
 
-            process.StandardInput.Close();
+            if (keepOpen)
+                await process.StandardInput.FlushAsync(cancellationToken);
+            else
+                process.StandardInput.Close();
         }
         catch (IOException)
         {
@@ -145,13 +165,30 @@ public sealed class ProcessRunner(IPlatform platform)
         };
     }
 
-    private static void Pump(string? line, StringBuilder buffer, StreamWriter log, Action<string>? onStreamLine)
+    // The session stops when the process is gone (killed or exited), then hears about it: Ended sets live.json
+    // to done and closes what is left of stdin. The loop is awaited so nothing of it runs on after the receipt.
+    private static async Task EndLiveAsync(IProcessLive live, CancellationTokenSource liveStop, Task liveLoop)
+    {
+        await liveStop.CancelAsync();
+        try
+        {
+            await liveLoop;
+        }
+        catch (OperationCanceledException)
+        {
+        }
+
+        live.Ended();
+    }
+
+    private static void Pump(string? line, StringBuilder buffer, StreamWriter log, Action<string>? onStreamLine, Action<string>? onLiveLine)
     {
         if (line is null)
             return;
 
         buffer.AppendLine(line);
         log.WriteLine(line);
+        onLiveLine?.Invoke(line);
         onStreamLine?.Invoke(line);
     }
 }

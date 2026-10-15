@@ -6117,3 +6117,62 @@ A blind review ran the built binary in a pty under `bash -i` and with group sign
   reading and guessing at the user's config; moving `XDG_CONFIG_HOME` would take the auth with it. Left as it is.
 - **Not measured:** `--strict-mcp-config` with no `--mcp-config` at all (a repo with no `.mcp.json`) was exercised against a
   fake `claude` only, never the real binary, since that needs a model call.
+
+## Live sessions (2026-10-15, issue #124)
+
+Stage 1 of #124: a claude role talks with its human. The file contract (`conversation.jsonl`, `inbox/`, `live.json`) is
+`Core/Live/ConversationEntry|InboxMessage|LiveState`; the engine is `LiveSession` (`Core/Live`), driven by `ProcessRunner`
+through `IProcessLive`; claude's wire format is `ClaudeLiveProtocol`; `Runner` switches it on.
+
+- **Probes, claude 2.1.300.** (1) The architect's, 2026-10-15: with `--input-format stream-json --output-format stream-json
+  --verbose` and stdin kept open, the process stays alive after every `result` event; a `{"type":"user","message":{"role":"user",
+  "content":[{"type":"text","text":"…"}]}}` line starts the next turn of the same conversation; closing stdin ends the process with
+  exit 0; each `result`'s `total_cost_usd` is the session's RUNNING total (turn 1 $0.2037, turn 2 $0.2278), so the last one is
+  the bill. (2) Mine, haiku, `--strict-mcp-config`, $0.0066: "ls, then `sleep 20`", and "stop and say hi" written to stdin the moment
+  the `sleep` tool_use appeared (4.6 s). **A message sent mid-turn is neither an interrupt nor dropped**: the `sleep` ran to
+  its end (tool_result at 25.0 s), the model then answered the new message INSIDE the same turn ("Hi! I stopped after the `ls`
+  and the 20-second sleep…", 27.5 s), and the stream carried ONE `result` (`num_turns` 3) for both. So Claustrum writes a human
+  message, and the timeout warning, to stdin at once whether or not the role is mid-turn; claude queues it to its next
+  tool-result boundary. There is no queue of our own, and a mid-turn message does not make an extra `result`.
+- **Turn detection.** On every `result` event the turn's text is its `result` field (`ClaudeBackend.FinalMessage`, so an error
+  result's `errors`/`subtype` fallbacks apply). A `claustrum-report` fence in it (`ReportExtractor`, any status but Missing) means
+  the role is done: the text is a `Message`, `live.json` goes to `done`, stdin is closed, claude exits 0. Anything else is a
+  `Question` (from `Role`), `live.json` goes to `waiting_for_input` with `question_seq`, and the session waits for the inbox. A
+  result with `is_error` or an `error_*` subtype ends the session (a `Notice` with the error): no human reply continues it.
+- **Inbox.** Polled every 500 ms, `*.json` oldest first by file name, ordinal. A message that arrives while a question is open
+  is a `Reply` and closes it; otherwise a `Message`; either is sent as the next user turn, and its file is deleted only after it
+  is recorded and queued (a crash between the two repeats it, never loses it). An unreadable file is discarded with a `Notice`.
+  All conversation writes are single-write appends of one JSON line; `live.json` is a temp file renamed over the old one, tried 5
+  times because Windows refuses a rename while a reader holds the file. A job directory that stops taking writes costs the
+  record, never the run: the session swallows IO errors, because a throw on the pump thread would end the process.
+- **The clock.** `ProcessRunner` no longer owns a bare `CancelAfter`: `PausableDeadline` is that deadline with `Pause`/`Resume`
+  and `Active` (running time so far). The session pauses it when a question opens and resumes it on the reply, the no-answer
+  notice or the end; a run that never goes live never pauses, so non-live timeouts are as before. Measured with a fake claude
+  (`--timeout 3`, reply window 5 s): the job waited 5 s, then finished `success`. The concurrency slot is not touched: the
+  runner call stays in flight, so a waiting role keeps its slot (the owner's decision).
+- **No answer.** After `ReplyTimeoutSeconds` (default 1800) the session records a `Notice` and sends "No answer arrived within
+  <n> minutes. Decide yourself, record the choice and why in open_decisions, and continue." With 0 it never publishes
+  `waiting_for_input`: the `Question` is recorded and "No human is available to answer. …" goes out at once.
+- **Blind roles can only tell** (owner's decision, #124 comment). A report-less turn of a blind role is a `Message`, never a
+  `Question`, answered at once with the fixed `Notice` "This role cannot ask questions: the review is blind…". It never waits.
+  `jobs say` to a blind role is NOT refused by the engine: that is for the front door to decide.
+- **Timeout warning.** Once, when `Active` reaches 85% of the limit (the pause-adjusted clock), a `Notice` "About <m> minutes
+  remain…" goes out as a user turn, the same way as any message. It never fires while waiting (the clock is stopped); a run
+  with no timeout never gets one. This is what stops a timed-out job losing its report (job 20261015-170331-5531b2a9).
+- **Guards the brief did not list.** (a) **One automatic answer per human exchange.** A role that was told "no human" / "blind" /
+  "no answer" and ends another turn without a report ends the session (`Message`, `done`): otherwise a role that never writes the
+  fence, with reply window 0, would be re-prompted until the budget ran out. A human message clears the flag. (b) **Nothing is
+  written after the end.** Once the report is seen, messages still queued are dropped: a line written ahead of the close would
+  start a turn after the report and make the last `result` the wrong one. A message that crossed the report on the wire can still
+  do that; `ClaudeBackend.ParseStream` then keeps the turn that carries the report as `final_message` (cost and usage stay the last
+  `result`'s). (c) **Live needs a report.** `Runner` goes live only for a role with `HasReport` and a backend with a
+  `LiveProtocol` (claude); without a fence there is no way to end a conversation. (d) **The trailer.** The report trailer says
+  "a reply without it is rejected", which would stop any role from asking, so a live run gets its own: a turn without the block
+  is taken as a question; a blind role keeps the old one and is told it cannot ask.
+- **The receipt.** `RunResult.Conversation` is `{path, entries}`, not the entries: the last one repeats `final_message` and most
+  live jobs never ask anything. It is set for every ending, a killed or timed-out job included; null for a non-live run, which
+  otherwise differs from before only by that explicit `"conversation": null`.
+- **Not measured.** The engine was exercised end to end against a fake `claude` script (reply, no human, paused clock, blind,
+  warning, cancel while waiting, report on turn 1, mid-turn message); never through a real multi-turn Claustrum job, which needs
+  paid calls. Known limit: the few milliseconds between claude emitting a `result` and Claustrum reading it are a window in which
+  a message is still taken as mid-turn.
