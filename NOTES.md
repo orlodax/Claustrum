@@ -6176,7 +6176,7 @@ through `IProcessLive`; claude's wire format is `ClaudeLiveProtocol`; `Runner` s
   `result`'s). **A delivered report is the outcome:** once its turn is recorded (`IProcessLive.ReportDelivered`), a timeout or a
   cancel that stops the process afterwards is not reported as one, and the exit code of the child we killed reads 0 (seen once:
   status `timeout`, report `ok`); a Ctrl-C before the report still cancels. (c) **Live needs a report.** `Runner` goes live only for a role with `HasReport` and a backend with a
-  `LiveProtocol` (claude); without a fence there is no way to end a conversation. (d) **The trailer.** The report trailer says
+  `LiveProtocol` (claude, and opencode since stage 3a); without a fence there is no way to end a conversation. (d) **The trailer.** The report trailer says
   "a reply without it is rejected", which would stop any role from asking, so a live run gets its own: a turn without the block
   is taken as a question; a blind role keeps the old one and is told it cannot ask.
 - **The receipt.** `RunResult.Conversation` is `{path, entries}`, not the entries: the last one repeats `final_message` and most
@@ -6274,3 +6274,73 @@ replies with `jobs reply`, or escalates by ending its own turn with the question
 - **Measured by hand, fake claude, no paid call.** `run --detach` (human and `--json`), `jobs wait`, `jobs cancel` (waiting and done
   job), a tree's `run` → 7 → `jobs reply` → 7 → `jobs reply --json` → 0 (`live.json` `reply_timeout_seconds` 1800, an isolated builder
   under a cast with `max_parallel` 2 and a ledger entry), SIGTERM on a waiting `run` (130, `cancelled`), `kill -9` on a host (6).
+
+## Live sessions on opencode (2026-10-15, issue #124 stage 3a)
+
+An opencode role talks with its human the way a claude one does (stage 1), without `opencode serve`: **one process per turn, the
+session resumed.** `opencode run` exits at the end of a turn, so the next turn is another `opencode run --session <id> … "<message>"`
+and the continuity lives in opencode's session. The issue's plan (attach `run` to an `opencode serve` server and post into the
+session) is not needed, and a server is a process to start, find and stop; this is a few lines of argv. Everything in "Live
+sessions" holds unchanged for it (the paused clock, reply timeout and notices, blind tell-only, the conversation log, `live.json` and
+its owner, tree routing and a hosted child, cancel); only the two places that were claude's wire format differ.
+
+- **Probes, opencode 2.0.12, `opencode/deepseek-v4.1-flash-free`, 2026-10-15.** (1) Turn 1 `run --standalone --format json --auto`
+  gives a `sessionID` on every event; turn 2 with `--session <id>` answers from turn 1's context ("You asked me to reply with exactly the
+  word pong"), 2.4 s per turn, and `session export` reports the session's running total, so the existing #125 before/after arithmetic
+  is the bill. (2) **A message that starts with `-` is read as a flag**: `run … --session <id> "- say OK"` printed opencode's help and
+  exited 0, which the engine would have taken for the role's question. `--` before the message fixes it, so a live run passes it on
+  every turn, the first included (`OpencodeBackend.Build`, `run.Live`); a non-live run's argv is byte-identical to before. (3) Not
+  measured: whether a resumed turn without `--agent`/`--model` would keep the first turn's. They are repeated on purpose: the agent
+  carries the permission policy and the report-format prompt, and `OPENCODE_CONFIG_CONTENT` is per process, so dropping them could
+  run turn 2 as opencode's default agent. (4) `opencode models` hangs on this machine, with and without `--standalone`: the free model
+  id came from a direct `run`.
+- **The two shapes.** `ILiveProtocol` is now a marker with two sub-interfaces. `IStreamLiveProtocol` is stage 1's (claude:
+  `EncodeUserMessage`, `ReadTurnEnd`). `IResumeLiveProtocol` has one method, `ReadTurn(stdout, stderr, exit)`, which returns the turn's
+  text, whether the backend failed it, and the session id to resume (`LiveTurn.SessionId`). `OpencodeLiveProtocol` is `Parse` on one
+  turn's output, with one addition: a turn that exits clean but prints no text is an error, because there is nothing to answer.
+  `IBackend.LiveProtocol` is still the one gate (`DelegateEngine`, `Runner`, the TTY rule and the MCP defaults all ask it), so opencode
+  is offered live wherever claude is.
+- **One state machine.** `LiveSession` keeps `EndTurn`, the inbox, the clock and the notices; a per-turn session differs in `Send`
+  (the message is queued for the next process, not written to stdin), in who calls `EndTurn` (`TurnEnded`, when the process has
+  exited, instead of a stdout line) and in three members `IProcessLive` gained: `PerTurn`, `TurnEnded` and `NextTurnAsync`.
+  `NextTurnAsync` waits until the role is to go on (state running, no turn in flight, something queued) and returns the next
+  `ProcessSpec`, or null once the session is done. A question closes the gate (state `waiting_for_input`), a reply, the no-answer notice
+  or a notice from `EndTurn` opens it. `Runner` supplies the process as `backend.Build(run with { Brief = message, ResumeSession = id })`:
+  turn 1 is exactly today's argv (plus `--`), turn n the same argv with `--session` and the message, so the permission policy, model and
+  agent are always the first turn's. Specs it builds are collected so their temp files are deleted with the first one's.
+- **`ProcessRunner` loops over processes.** The logs, the buffers and the clock outlive the process: `stdout.log` and `stderr.log`
+  are opened once and every turn appends, so `jobs follow` and `--stream` read one continuous file; the `PausableDeadline` is created at
+  the first process and shared, so `--timeout` counts running time across turns and not the waiting. A cancel or a timeout while a
+  turn runs kills it as before; **while waiting between turns there is no process to kill**, the loop just ends. `ProcessOutcome` keeps
+  `Stdout`/`Stderr` for the whole run and gains `LastTurn`; the code path for a stream session or a plain run is the same loop with
+  one iteration.
+- **What the receipt says.** `final_message` is the last turn's text (`Runner` parses `LastTurn` for it): parsing every turn run
+  together would put the question and the report in one string. Cost and usage are the whole session's: `parsed.SessionId` is the one
+  the turns shared, and the post-run export gives the total (`after − before` for a `--resume` run, as in #125). A cancel while waiting
+  leaves the pending question as `final_message`. If the export fails, the fallback sums step costs and, for several turns, finds
+  more than one open final step and falls to "cost unknown, charged the cap" (the safe side, never under-billing).
+- **A message that arrives mid-turn waits for the turn's end** (claude takes it mid-turn: a stdin line). It is recorded at once as a
+  `Message`, queued, and sent as the next turn. If that turn ends in a question, the queued message is taken as its answer: no
+  `waiting_for_input`, the next turn starts at once. If the turn ends in the report, the message was never read: the job ends and a
+  `Notice` ("A message sent while the role was working was not delivered…") says so. A reply is not a mid-turn message, and several
+  queued messages go out as one turn, joined by a blank line.
+- **The 85% warning rides the next turn.** A running `opencode run` has no stdin to take it, so the warning is checked when a turn is
+  about to start and added to that turn's message (a `Notice` records it). A role that works one long turn never gets it; that is the
+  case the issue's tester hit, and the per-turn shape cannot fix it. Workaround as before: the brief tells the role its deadline.
+- **A turn that fails ends the job** with that failure and its conversation: a non-zero exit or an `error` event is `IsError`, the
+  `Notice` carries the text, and the receipt is `failed` with the turn's exit code. A turn that ended 0 but named no session id (nothing
+  to resume) ends the job as `Success` with `report_status: missing`; not seen, only reachable by an opencode that prints nothing.
+- **Measured, free model, no paid call.** `claustrum run builder --model opencode:opencode/deepseek-v4.1-flash-free --reply-timeout 300`,
+  job `20261015-221318-64bca215`, a question about a file name then a write and the report: the question was recorded 2.85 s after the
+  process started and the job went `waiting_for_input`; `jobs say "- readme.txt please"` 21.9 s later (clock paused) was recorded
+  at once, turn 2's first event came 2.1 s after it (inbox poll plus process start), the report at +7.5 s; `success`, `report_status: ok`,
+  cost $0 (free model), `readme.txt` written, 32.0 s wall, 10 events of both turns in one `stdout.log`, `conversation` of 3 entries. No
+  `opencode` process left. With a fake `opencode` script (not committed) the same engine paths were driven by hand: a message mid-turn
+  (recorded, turn 2 started 20 ms after turn 1 exited, no `waiting_for_input`), a failing turn 2 (`failed`, exit 1, the notice), SIGTERM
+  while waiting (`cancelled`, the question as `final_message`), `--timeout 4` with a 12 s job (success: the wait was paused), the
+  warning on the next turn (`--timeout 10`, a 9 s first turn), a blind role (the blind notice goes out as turn 2, then the job ends), no
+  answer (`--reply-timeout 3`), a message that crossed the report (the notice), and `run --detach` + `jobs wait` + `jobs reply`.
+- **Known limits.** (1) A turn's text is its `text` parts run together with no separator, as `final_message` always was: a turn that
+  narrates between tool calls reads "Let me look.Which database?". (2) A message is an argv element: Linux refuses one over ~128 KB
+  (`jobs say` allows 1 MiB), as a 128 KB brief already did. (3) The sessions stay in opencode's own database after the job. (4) Windows:
+  nothing here is OS-specific beyond what stage 1 measured, but it was run on Linux only.

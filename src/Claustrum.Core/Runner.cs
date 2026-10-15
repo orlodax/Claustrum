@@ -145,10 +145,11 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
         // yet if this fails, so there is nothing for a `finally` to clean up.
         WorktreeState before;
         ProcessSpec spec;
+        ResolvedRun run;
         try
         {
             before = await WorktreeSnapshot.CaptureAsync(request.Cwd, cancellationToken);
-            ResolvedRun run = new(role, brief, request.Cwd, request.BudgetUsd, request.ResumeSession, request.AttachFiles, request.Stream, job.SystemMd, job.Directory, request.Env, Live: liveProtocol is not null);
+            run = new(role, brief, request.Cwd, request.BudgetUsd, request.ResumeSession, request.AttachFiles, request.Stream, job.SystemMd, job.Directory, request.Env, Live: liveProtocol is not null);
             spec = backend.Build(run);
 
             // The servers the run was given, beside the backend and model (#128).
@@ -180,7 +181,17 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
             return await FinishAsync(job, reservation, NoProcessResult(job, role, RunStatus.Cancelled, new OperationCanceledException(cancellationToken).Message), ran: false, runOptions);
         }
 
-        LiveSession? live = liveProtocol is null ? null : new LiveSession(job, liveProtocol, role.Blind, options.ReplyTimeoutSeconds);
+        // A backend that resumes per turn (#124 stage 3a) is asked for each next process the way it was for the first: the
+        // same run, resuming the session the last turn named, with the message in place of the brief.
+        List<string[]> turnTempFiles = [];
+        ProcessSpec ResumeTurn(string sessionId, string message)
+        {
+            ProcessSpec turnSpec = backend.Build(run with { Brief = message, ResumeSession = sessionId });
+            turnTempFiles.Add(turnSpec.TempFiles);
+            return turnSpec;
+        }
+
+        LiveSession? live = liveProtocol is null ? null : new LiveSession(job, liveProtocol, role.Blind, options.ReplyTimeoutSeconds, resumeTurn: liveProtocol is IResumeLiveProtocol ? ResumeTurn : null);
 
         ProcessOutcome outcome;
         try
@@ -193,6 +204,7 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
             // the unregistered-name branch above — same BackendMissing status either way, so a
             // caller need not distinguish "no such backend" from "backend not on PATH".
             DeleteTempFiles(spec.TempFiles);
+            DeleteTurnTempFiles(turnTempFiles);
             return await FinishAsync(job, reservation, MissingBackendResult(job, role, ex.Message), ran: false, runOptions);
         }
 
@@ -213,6 +225,11 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
             }
 
             ParsedOutput parsed = backend.Parse(outcome.Stdout, outcome.Stderr, outcome.ExitCode);
+
+            // A session that took several turns: the receipt's message is the last turn's, not every turn's text run together
+            // (cost, usage and the session id keep the whole run, as the post-run hook's export is the whole session).
+            if (outcome.LastTurn is { } lastTurn && lastTurn.Stdout.Length != outcome.Stdout.Length)
+                parsed = parsed with { FinalMessage = backend.Parse(lastTurn.Stdout, lastTurn.Stderr, outcome.ExitCode).FinalMessage };
 
             // Issue #125: post-run enrichment for backends that can fetch cost/usage after the
             // process has finished (opencode session export). Runs before the result is built or
@@ -285,6 +302,7 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
         finally
         {
             DeleteTempFiles(spec.TempFiles);
+            DeleteTurnTempFiles(turnTempFiles);
         }
     }
 
@@ -552,6 +570,12 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
             Warnings = [.. result.Warnings, $"cost not reported by backend '{result.Backend}'; "
                 + $"charged the granted cap {BudgetLedger.Dollars(reservation.Cap)} to tree '{reservation.TreeId}'"],
         };
+    }
+
+    private static void DeleteTurnTempFiles(List<string[]> turnTempFiles)
+    {
+        foreach (string[] tempFiles in turnTempFiles)
+            DeleteTempFiles(tempFiles);
     }
 
     private static void DeleteTempFiles(string[] tempFiles)

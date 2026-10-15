@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
+using Claustrum.Core.Backends;
 using Claustrum.Core.IO;
 using Claustrum.Core.Jobs;
 using Claustrum.Core.Json;
@@ -13,12 +14,23 @@ namespace Claustrum.Core.Live;
 // One live job's conversation (#124): turn detection, the inbox, the paused clock, the timeout warning and
 // the blind rule. NOTES.md "Live sessions" has the rules and why; this class only carries them out. Stdout
 // lines arrive on the pump thread and the 500 ms tick on its own task: every state change takes `gate`, and
-// nothing under it blocks on the child (stdin is fed from an outbox by a single writer task).
-public sealed class LiveSession(JobPaths job, ILiveProtocol protocol, bool blind, int replyTimeoutSeconds, TimeProvider? timeProvider = null, TimeSpan? pollInterval = null) : IProcessLive
+// nothing under it blocks on the child (stdin is fed from an outbox by a single writer task). A per-turn
+// protocol (opencode, NOTES.md "Live sessions on opencode") shares every rule; only how a message reaches the
+// role (queued for the next process) and what ends a turn (the process exiting) differ. `resumeTurn` builds that process.
+public sealed class LiveSession(
+    JobPaths job,
+    ILiveProtocol protocol,
+    bool blind,
+    int replyTimeoutSeconds,
+    TimeProvider? timeProvider = null,
+    TimeSpan? pollInterval = null,
+    Func<string, string, ProcessSpec>? resumeTurn = null) : IProcessLive
 {
     public const string BlindNotice = "This role cannot ask questions: the review is blind. Put any doubt in your findings and continue to your report.";
 
     public const string BlindInputNotice = "A message for this blind role was not delivered: blind roles receive no human input.";
+
+    public const string UndeliveredNotice = "A message sent while the role was working was not delivered: the job ended before its next turn.";
 
     // The same cap `jobs say` puts on a message: a bigger inbox file did not come from it.
     public const int MaxInboxBytes = 1024 * 1024;
@@ -32,6 +44,17 @@ public sealed class LiveSession(JobPaths job, ILiveProtocol protocol, bool blind
     private readonly TimeProvider time = timeProvider ?? TimeProvider.System;
     private readonly Lock gate = new();
     private readonly Channel<string> outbox = Channel.CreateUnbounded<string>(new UnboundedChannelOptions { SingleReader = true });
+    private readonly IStreamLiveProtocol? stream = protocol as IStreamLiveProtocol;
+    private readonly IResumeLiveProtocol? resume = protocol as IResumeLiveProtocol;
+
+    // Per-turn only: what the next process will be told, and the signal that wakes NextTurnAsync. A message sent while a
+    // turn runs waits here for the turn to end (the process has no stdin to take it); `queuedHuman` says one of them is
+    // a person's, which answers the role's question without waiting for another.
+    private readonly List<string> queued = [];
+    private readonly Channel<bool> wake = Channel.CreateUnbounded<bool>(new UnboundedChannelOptions { SingleReader = true });
+    private bool turnInFlight = true;
+    private bool queuedHuman;
+    private string? sessionId;
     private PausableDeadline? deadline;
     private LiveStatus state = LiveStatus.Running;
     private DateTimeOffset since;
@@ -63,6 +86,8 @@ public sealed class LiveSession(JobPaths job, ILiveProtocol protocol, bool blind
 
     public bool ReportDelivered => reported;
 
+    public bool PerTurn => resume is not null;
+
     public int Entries
     {
         get
@@ -89,7 +114,7 @@ public sealed class LiveSession(JobPaths job, ILiveProtocol protocol, bool blind
 
     public void OnStdoutLine(string line)
     {
-        if (protocol.ReadTurnEnd(line) is not { } turn)
+        if (stream?.ReadTurnEnd(line) is not { } turn)
             return;
 
         lock (gate)
@@ -99,9 +124,9 @@ public sealed class LiveSession(JobPaths job, ILiveProtocol protocol, bool blind
         }
     }
 
-    public async Task RunAsync(TextWriter stdin, CancellationToken processEnded)
+    public async Task RunAsync(TextWriter? stdin, CancellationToken processEnded)
     {
-        Task writer = WriteLoopAsync(stdin, processEnded);
+        Task writer = stdin is null ? Task.CompletedTask : WriteLoopAsync(stdin, processEnded);
         using PeriodicTimer timer = new(pollInterval ?? TimeSpan.FromMilliseconds(500), time);
         try
         {
@@ -124,6 +149,70 @@ public sealed class LiveSession(JobPaths job, ILiveProtocol protocol, bool blind
                 Finish();
 
             outbox.Writer.TryComplete();
+        }
+    }
+
+    // Per-turn: the process of the turn exited. What it printed is read whole, then the same rules as a stream
+    // session's `result` event apply.
+    public void TurnEnded(int exitCode, string stdout, string stderr)
+    {
+        if (resume is null)
+            return;
+
+        LiveTurn turn = resume.ReadTurn(stdout, stderr, exitCode);
+        lock (gate)
+        {
+            turnInFlight = false;
+            sessionId = turn.SessionId ?? sessionId;
+            if (state != LiveStatus.Done)
+                EndTurn(turn);
+        }
+
+        wake.Writer.TryWrite(true);
+    }
+
+    // Per-turn: waits until the role is to go on (a reply, a notice, a message that arrived mid-turn) and hands the
+    // runner the process for it; null once the session is over. The 85% warning is checked here, because only
+    // between turns is there anything to carry it: a running process has no stdin to take it.
+    public async Task<ProcessSpec?> NextTurnAsync(CancellationToken cancellationToken)
+    {
+        string? message = null;
+        string? session = null;
+        while (message is null)
+        {
+            lock (gate)
+            {
+                if (state == LiveStatus.Done)
+                    return null;
+
+                if (state == LiveStatus.Running && !turnInFlight && queued.Count > 0)
+                {
+                    message = TakeQueued();
+                    session = sessionId;
+                    turnInFlight = true;
+                }
+            }
+
+            if (message is null)
+                await wake.Reader.ReadAsync(cancellationToken);
+        }
+
+        try
+        {
+            if (session is null || resumeTurn is null)
+                throw new InvalidOperationException("the backend named no session to resume");
+
+            return resumeTurn(session, message);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            lock (gate)
+            {
+                Append(ConversationParty.Claustrum, ConversationKind.Notice, $"The next turn could not be started: {ex.Message}");
+                Finish();
+            }
+
+            return null;
         }
     }
 
@@ -156,6 +245,11 @@ public sealed class LiveSession(JobPaths job, ILiveProtocol protocol, bool blind
         }
 
         int question = Append(ConversationParty.Role, ConversationKind.Question, turn.Text);
+
+        // The human spoke while this turn ran (per-turn only): that message is the answer, and it starts the next turn.
+        if (queuedHuman)
+            return;
+
         if (replyTimeoutSeconds <= 0)
         {
             Notify(NoHumanNotice);
@@ -299,11 +393,30 @@ public sealed class LiveSession(JobPaths job, ILiveProtocol protocol, bool blind
 
         if (replying)
             Resume();
+        else
+            queuedHuman = resume is not null;
+    }
+
+    // Everything waiting for the next turn, as the one message it starts with.
+    private string TakeQueued()
+    {
+        List<string> messages = [.. queued];
+        queued.Clear();
+        queuedHuman = false;
+        if (!warned && deadline is { Limit: { } limit } clock && clock.Active >= limit * WarnFraction)
+        {
+            warned = true;
+            string warning = TimeoutWarning(limit - clock.Active);
+            Append(ConversationParty.Claustrum, ConversationKind.Notice, warning);
+            messages.Add(warning);
+        }
+
+        return string.Join("\n\n", messages);
     }
 
     private void WarnBeforeTimeout()
     {
-        if (warned || state != LiveStatus.Running || deadline is not { Limit: { } limit } clock || clock.Active < limit * WarnFraction)
+        if (resume is not null || warned || state != LiveStatus.Running || deadline is not { Limit: { } limit } clock || clock.Active < limit * WarnFraction)
             return;
 
         warned = true;
@@ -322,9 +435,15 @@ public sealed class LiveSession(JobPaths job, ILiveProtocol protocol, bool blind
     {
         closing = true;
         questionSeq = null;
+        if (queuedHuman)
+            Append(ConversationParty.Claustrum, ConversationKind.Notice, UndeliveredNotice);
+
+        queued.Clear();
+        queuedHuman = false;
         SetState(LiveStatus.Done);
         deadline?.Resume();
         outbox.Writer.TryComplete();
+        wake.Writer.TryWrite(true);
     }
 
     private void Notify(string text)
@@ -333,7 +452,16 @@ public sealed class LiveSession(JobPaths job, ILiveProtocol protocol, bool blind
         Send(text);
     }
 
-    private void Send(string text) => outbox.Writer.TryWrite(protocol.EncodeUserMessage(text));
+    private void Send(string text)
+    {
+        if (resume is not null)
+        {
+            queued.Add(text);
+            wake.Writer.TryWrite(true);
+        }
+        else if (stream is not null)
+            outbox.Writer.TryWrite(stream.EncodeUserMessage(text));
+    }
 
     private void SetState(LiveStatus next)
     {
