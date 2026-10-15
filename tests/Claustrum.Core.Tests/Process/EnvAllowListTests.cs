@@ -173,4 +173,32 @@ public sealed class EnvAllowListTests
         Assert.Equal("/home/me/.claude-work", result["CLAUDE_CONFIG_DIR"]);
         Assert.False(result.ContainsKey(BudgetLedger.TreeVariable));
     }
+
+    // #124 stage 2 review F2: whether the tree's architect is live is a fact about that tree's own architect, handed down by
+    // `coordinate` next to the tree id and never forwarded by a member, under the allow-list and under passthroughAll alike.
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void AnInheritedArchitectLiveVariableIsDroppedLikeTheTreeId(bool passthroughAll)
+    {
+        FakePlatform platform = new();
+        platform.EnvironmentVariables[BudgetLedger.ArchitectLiveVariable] = "1";
+        platform.EnvironmentVariables["PATH"] = "/usr/bin";
+
+        Dictionary<string, string> result = EnvAllowList.Build(platform, callerEnv: new Dictionary<string, string>(), passthroughAll);
+
+        Assert.False(result.ContainsKey(BudgetLedger.ArchitectLiveVariable));
+        Assert.True(result.ContainsKey("PATH"));
+    }
+
+    [Fact]
+    public void ACallerSuppliedArchitectLiveVariableIsKept()
+    {
+        FakePlatform platform = new();
+        Dictionary<string, string> callerEnv = new() { [BudgetLedger.ArchitectLiveVariable] = "1" };
+
+        Dictionary<string, string> result = EnvAllowList.Build(platform, callerEnv, passthroughAll: false);
+
+        Assert.Equal("1", result[BudgetLedger.ArchitectLiveVariable]);
+    }
 }
