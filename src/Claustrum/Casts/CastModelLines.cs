@@ -22,18 +22,32 @@ public static class CastModelLines
             ? $"{alias} → {Target(r)} ({BuiltinNote})"
             : $"{alias} → {Target(r)} ({r.Source ?? "free-form, as typed"})";
 
+    /// <summary>The start of every warning about <paramref name="role"/> under cast <paramref name="castName"/>.</summary>
+    public static string WarningPrefix(string castName, string role) => $"cast '{castName}' role '{role}': ";
+
+    /// <summary>
+    /// A user or repo alias whose chain ends in a built-in default: the config does define the alias, so
+    /// "no config defines it" would be false — it names the built-in hop instead.
+    /// </summary>
+    public static string ChainedBuiltinNote(ModelResolution r) =>
+        $"alias '{r.Spec}' ({r.Source}) chains to the built-in default '{r.BuiltinHop}' = {Target(r)}";
+
     /// <summary>Warning text for item 4's silent-builtin-default case, re-used by item 3.</summary>
-    public static string BuiltinDefaultWarning(string castName, string role, string alias, string target, Config config) =>
-        config.RepoPath is { } repo
-            ? $"cast '{castName}' role '{role}': alias '{alias}' resolved to the built-in default {target}; no claustrum.json or user config defines it (looked in {config.UserConfigPath}, {repo})"
-            : $"cast '{castName}' role '{role}': alias '{alias}' resolved to the built-in default {target}; no claustrum.json or user config defines it (looked in {config.UserConfigPath})";
+    public static string BuiltinDefaultWarning(string castName, string role, ModelResolution r, Config config)
+    {
+        if (r.Layer != ConfigLayer.Builtin && r.BuiltinHop is not null)
+            return $"{WarningPrefix(castName, role)}{ChainedBuiltinNote(r)}";
+
+        string looked = config.RepoPath is { } repo ? $"{config.UserConfigPath}, {repo}" : config.UserConfigPath;
+        return $"{WarningPrefix(castName, role)}alias '{r.Spec}' resolved to the built-in default {Target(r)}; no claustrum.json or user config defines it (looked in {looked})";
+    }
 
     /// <summary>
     /// Warning text for item 4's "stored resolution differs from current" case: the alias resolved
     /// to one thing when the cast was created and now resolves to something else.
     /// </summary>
     public static string ResolvedChangedWarning(string castName, string role, string alias, string stored, string current, string source) =>
-        $"cast '{castName}' role '{role}': alias '{alias}' resolved to {stored} when the cast was created, now to {current} ({source})";
+        $"{WarningPrefix(castName, role)}alias '{alias}' resolved to {stored} when the cast was created, now to {current} ({source})";
 
     /// <summary>
     /// Per-role model lines and builtin-fallback warnings for <c>cast create</c>, <c>cast new</c>
@@ -48,11 +62,10 @@ public static class CastModelLines
         void Add(string role, string modelAlias)
         {
             ModelResolution resolution = config.Describe(modelAlias);
-            string target = Target(resolution);
             lines.Add(ModelLine(modelAlias, resolution));
 
             if (resolution.FromBuiltin)
-                warnings.Add(BuiltinDefaultWarning(cast.Name, role, modelAlias, target, config));
+                warnings.Add(BuiltinDefaultWarning(cast.Name, role, resolution, config));
         }
 
         foreach ((string role, CastRoleEntry? entry) in cast.Roles)

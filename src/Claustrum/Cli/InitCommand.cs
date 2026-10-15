@@ -76,7 +76,7 @@ public static class InitCommand
     {
         string cwd = Environment.CurrentDirectory;
         Config config = Config.Load(AppServices.Platform, cwd);
-        IReadOnlyList<string> definedAliases = config.Merged.Models is { } models ? [.. models.Keys] : [];
+        HashSet<string> definedAliases = UserDefinedAliases(config);
         string userPath = config.UserConfigPath;
 
         List<CastQuestion> questions = [];
@@ -89,15 +89,8 @@ public static class InitCommand
             // Options: built-in default target first, then distinct targets from aliases already
             // defined in the user config (not built-in ones).
             HashSet<string> options = [defaultValue];
-            if (config.Merged.Models is not null)
-            {
-                foreach ((_, string value) in config.Merged.Models)
-                {
-                    if (definedAliases.Contains(alias) || value == defaultValue)
-                        continue;
-                    options.Add(value);
-                }
-            }
+            foreach (string defined in definedAliases)
+                options.Add(config.Merged.Models?.GetValueOrDefault(defined) ?? defaultValue);
 
             string prompt = $"{alias}: {builtInClasses.GetValueOrDefault(alias, "model alias")}";
             questions.Add(new CastQuestion(Key: alias, Prompt: prompt, Options: [.. options], AllowNotNeeded: false, AllowFreeForm: true));
@@ -167,24 +160,21 @@ public static class InitCommand
         if (scaffoldEscape is not null)
             Console.WriteLine($".claustrum/: {RefusedStatus(scaffoldEscape)}");
 
-        // --- claustrum.json (repo-level config, no longer writes aliases) ---
+        // --- claustrum.json: never written (2026-10-15). An empty `{}` made every clone pass RequireInitialized
+        // with no user config, defeating the gate; aliases are per-developer.
         string configPath = Path.Combine(cwd, "claustrum.json");
         string? configEscape = Refusal(root, configPath);
-        string? configUnwritable = null;
-        bool wroteConfig = configEscape is null && WriteConfigIfAbsent(configPath, out configUnwritable);
+        string? configUnreadable = configEscape is null ? ConfigRefusal(configPath) : null;
 
         string configStatus;
         if (configEscape is not null)
             configStatus = RefusedStatus(configEscape);
-        else if (configUnwritable is not null)
-            configStatus = $"refused ({configUnwritable})";
-        else if (wroteConfig)
-            configStatus = "written (empty — aliases are per-developer, in user config)";
-        else
-        {
-            // File already existed
+        else if (configUnreadable is not null)
+            configStatus = $"refused ({configUnreadable})";
+        else if (File.Exists(configPath))
             configStatus = "already present, left unchanged";
-        }
+        else
+            configStatus = $"not written (aliases are per-developer, in {userPath})";
         Console.WriteLine($"claustrum.json: {configStatus}");
 
         // --- .gitignore ---
@@ -211,7 +201,7 @@ public static class InitCommand
 
         // --- Sync harnesses ---
         string[] harnesses = all ? ["claude", "opencode", "copilot", "cursor"] : DetectHarnesses(cwd);
-        bool refused = scaffoldEscape is not null || configEscape is not null || configUnwritable is not null || gitignoreEscape is not null || gitignoreUnreadable is not null;
+        bool refused = scaffoldEscape is not null || configEscape is not null || configUnreadable is not null || gitignoreEscape is not null || gitignoreUnreadable is not null;
         foreach (string harness in harnesses)
             refused |= SyncHarness(harness, cwd, config);
 
@@ -244,7 +234,10 @@ public static class InitCommand
         Dictionary<string, string> answers;
         try
         {
-            string json = File.ReadAllText(answersPath);
+            // PlainFile, not File.ReadAllText: a FIFO there would block forever.
+            if (!PlainFile.TryReadAllText(answersPath, out string? json, out string? readRefusal))
+                return $"'{answersPath}': {readRefusal}";
+
             answers = JsonSerializer.Deserialize(json, InitQuestionsJsonContext.Default.DictionaryStringString)
                 ?? throw new CastException($"'{answersPath}' does not contain a JSON object");
         }
@@ -257,15 +250,12 @@ public static class InitCommand
             return $"'{answersPath}': {ex.Message}";
         }
 
-        // Validate: backend part must be a registered backend name; unknown alias key = error.
+        // Validate every answer, defined already or not: backend part must be a registered backend name;
+        // unknown alias key = error. (Defined-ness is the merge's business — MergeIntoUserConfig skips those.)
         foreach ((string alias, string value) in answers)
         {
             if (!BuiltInDefaults().ContainsKey(alias))
                 return $"unknown alias '{alias}' in answers (valid keys: {string.Join(", ", BuiltInDefaults().Keys)})";
-
-            // Only error about aliases that are already defined — we skip those anyway.
-            if (config.Merged.Models?.ContainsKey(alias) == true)
-                continue;
 
             // Validate the value: must be "backend:model-id"
             int colon = value.IndexOf(':');
@@ -284,15 +274,7 @@ public static class InitCommand
     // Returns null on success, or an error message.
     private static string? MergeIntoUserConfig(string userPath, Dictionary<string, string> answers, Config config, IPlatform platform)
     {
-        // Determine which aliases are defined by the user layer (not built-in, not repo).
-        // We need to know which ones were set by the user config:
-        // The origins map tells us whether a key came from the User layer.
-        HashSet<string> userDefined = [];
-        foreach ((string key, ConfigLayer layer) in config.Origins)
-        {
-            if (key.StartsWith("models.", StringComparison.Ordinal) && layer == ConfigLayer.User)
-                userDefined.Add(key["models.".Length..]);
-        }
+        HashSet<string> userDefined = UserDefinedAliases(config);
 
         // Filter to only missing aliases
         Dictionary<string, string> toWrite = [];
@@ -338,8 +320,9 @@ public static class InitCommand
 
         // Merge
         Dictionary<string, string> models = new(existingDoc.Models ?? []);
+        // TryAdd: a repo claustrum.json can shadow a user alias in Origins, but the file's own entry is never overwritten.
         foreach ((string alias, string value) in toWrite)
-            models[alias] = value;
+            models.TryAdd(alias, value);
 
         ConfigDocument updated = existingDoc with { Models = models };
 
@@ -436,12 +419,7 @@ public static class InitCommand
     // Ask missing aliases interactively on the terminal (synchronous, like cast new's AskUntilSupported).
     private static string? AskAndWriteMissingAliasesInteractive(string userPath, Config config)
     {
-        HashSet<string> userDefined = [];
-        foreach ((string key, ConfigLayer layer) in config.Origins)
-        {
-            if (key.StartsWith("models.", StringComparison.Ordinal) && layer == ConfigLayer.User)
-                userDefined.Add(key["models.".Length..]);
-        }
+        HashSet<string> userDefined = UserDefinedAliases(config);
 
         Dictionary<string, string> answers = [];
         foreach ((string alias, string defaultValue) in BuiltInDefaults())
@@ -476,14 +454,23 @@ public static class InitCommand
         ["fast"] = "claude:haiku",
     };
 
-    private static int CountMissingAliases(Config config)
+    // "Defined" means defined in the user config. Merged.Models always holds the built-ins, so asking it makes
+    // every alias look answered (2026-10-15, F3): the origin layer is the test, here and nowhere else.
+    private static HashSet<string> UserDefinedAliases(Config config)
     {
-        HashSet<string> userDefined = [];
+        HashSet<string> defined = [];
         foreach ((string key, ConfigLayer layer) in config.Origins)
         {
             if (key.StartsWith("models.", StringComparison.Ordinal) && layer == ConfigLayer.User)
-                userDefined.Add(key["models.".Length..]);
+                defined.Add(key["models.".Length..]);
         }
+
+        return defined;
+    }
+
+    private static int CountMissingAliases(Config config)
+    {
+        HashSet<string> userDefined = UserDefinedAliases(config);
 
         int count = 0;
         foreach (string alias in BuiltInDefaults().Keys)
@@ -558,25 +545,21 @@ public static class InitCommand
         return refused.Count > 0;
     }
 
-    private static bool WriteConfigIfAbsent(string path, out string? unwritable)
+    // An existing claustrum.json is only checked for being a regular file: a pipe or device is never opened.
+    private static string? ConfigRefusal(string path)
     {
-        if (File.Exists(path))
-        {
-            try
-            {
-                using FileStream? existing = PlainFile.OpenRead(path, out unwritable);
-            }
-            catch (Exception e) when (e is UnauthorizedAccessException or IOException)
-            {
-                unwritable = $"cannot be read: {e.Message}";
-            }
-            return false;
-        }
+        if (!File.Exists(path))
+            return null;
 
-        // #122: the repo's claustrum.json no longer carries aliases — those go to the user config.
-        // Write an empty object so the file exists (initializing the repo layer) but contains no models.
-        string emptyJson = "{}\n";
-        return PlainFile.TryWriteAllText(path, emptyJson, FileMode.Append, out unwritable);
+        try
+        {
+            using FileStream? existing = PlainFile.OpenRead(path, out string? refusal);
+            return refusal;
+        }
+        catch (Exception e) when (e is UnauthorizedAccessException or IOException)
+        {
+            return $"cannot be read: {e.Message}";
+        }
     }
 
     private static bool EnsureGitignoreEntries(string path, out string? unreadable)

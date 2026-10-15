@@ -54,7 +54,7 @@ public static class CastApplication
 
         List<string> warnings = [];
         if (resolution.FromBuiltin)
-            warnings.Add(CastModelLines.BuiltinDefaultWarning(cast.Name, role, alias, target, config));
+            warnings.Add(CastModelLines.BuiltinDefaultWarning(cast.Name, role, resolution, config));
         if (castRole.Resolved is { } stored && stored != target)
             warnings.Add(CastModelLines.ResolvedChangedWarning(cast.Name, role, alias, stored, target, resolution.Source ?? ""));
 

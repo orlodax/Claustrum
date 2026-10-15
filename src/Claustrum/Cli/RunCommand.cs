@@ -60,8 +60,9 @@ public static class RunCommand
 
         command.SetAction(async parseResult =>
         {
+            // Presence, not value: a bare `--stream` parses to a null value and must still mean 'readable'.
             string? streamValue = parseResult.GetValue(stream);
-            bool streamMode = streamValue is not null;
+            bool streamMode = parseResult.GetResult(stream) is not null;
             bool streamRaw = streamValue == "raw";
             await ExecuteAsync(
                 parseResult.GetRequiredValue(role),
@@ -137,11 +138,18 @@ public static class RunCommand
                 Branch: branch is { Length: > 0 } ? branch : null,
                 PreRunWarnings: castWarnings);
 
+            // Prepared here, not inside RunAsync(request), so the warnings reach stderr before the backend starts
+            // — in --json mode too, where PrintHuman never runs (F14).
+            PreparedDelegation prepared = DelegateEngine.Prepare(request);
+            string[] printedWarnings = prepared.Options.PreRunWarnings ?? [];
+            foreach (string warning in printedWarnings)
+                SafeConsole.Error($"warning: {warning}");
+
             RunResult result;
             int? refusedExit = null;
             try
             {
-                result = await DelegateEngine.RunAsync(request, cancel.Token);
+                result = await DelegateEngine.RunAsync(prepared, job: null, cancel.Token);
             }
             catch (MachineryRefusedException ex)
             {
@@ -158,7 +166,7 @@ public static class RunCommand
             if (jsonMode)
                 SafeConsole.Out(JsonSerializer.Serialize(output, ClaustrumJsonContext.Default.RunResult));
             else
-                PrintHuman(output, exitCode);
+                PrintHuman(output, exitCode, printedWarnings);
 
             return exitCode;
         }
@@ -217,7 +225,7 @@ public static class RunCommand
         _ => throw new ArgumentOutOfRangeException(nameof(status), status, null),
     };
 
-    private static void PrintHuman(RunResult result, int exitCode)
+    private static void PrintHuman(RunResult result, int exitCode, string[] printedWarnings)
     {
         SafeConsole.Out($"status: {result.Status} (exit {exitCode})");
 
@@ -243,7 +251,8 @@ public static class RunCommand
         }
 
         // A "work left uncommitted" one says the branch is missing work; --json readers have warnings[].
-        foreach (string warning in result.Warnings)
+        // The ones printed before the run are not printed again.
+        foreach (string warning in result.Warnings.Where(warning => !printedWarnings.Contains(warning)))
             SafeConsole.Error($"warning: {warning}");
 
         if (result.Error is { Length: > 0 } error)

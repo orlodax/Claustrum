@@ -45,8 +45,9 @@ public static class CoordinateCommand
 
         command.SetAction(async parseResult =>
         {
+            // Presence, not value: a bare `--stream` parses to a null value and must still mean 'readable'.
             string? streamValue = parseResult.GetValue(stream);
-            bool streamMode = streamValue is not null;
+            bool streamMode = parseResult.GetResult(stream) is not null;
             bool streamRaw = streamValue == "raw";
             await ExecuteAsync(
                 parseResult.GetValue(cast),
@@ -107,7 +108,9 @@ public static class CoordinateCommand
 
             // Before the run, not with its receipt (#74 G1): a local edit the architect's worktree will not see
             // matters while the run can still be stopped. stderr, so `--json`'s stdout stays one document.
-            foreach (string warning in plan.Warnings)
+            // The cast and built-in-fallback warnings go out the same way, in --json mode too (F14).
+            string[] printedWarnings = prepared.Options.PreRunWarnings ?? [];
+            foreach (string warning in plan.Warnings.Concat(printedWarnings))
                 SafeConsole.Error($"warning: {warning}");
 
             // The job exists before the run does: its id is the budget tree every child the architect
@@ -145,7 +148,7 @@ public static class CoordinateCommand
                 await WriteTreeCostAsync(job, Console.Error, capped);
             }
             else
-                await PrintHumanAsync(output, exitCode, job, capped);
+                await PrintHumanAsync(output, exitCode, job, capped, printedWarnings);
 
             return exitCode;
         }
@@ -173,7 +176,7 @@ public static class CoordinateCommand
         return [.. numbers];
     }
 
-    private static async Task PrintHumanAsync(RunResult result, int exitCode, JobPaths job, bool capped)
+    private static async Task PrintHumanAsync(RunResult result, int exitCode, JobPaths job, bool capped, string[] printedWarnings)
     {
         SafeConsole.Out($"status: {result.Status} (exit {exitCode})");
         SafeConsole.Out($"job:    {job.Id}");
@@ -202,8 +205,9 @@ public static class CoordinateCommand
             SafeConsole.Out(result.FinalMessage);
         }
 
-        // A refused commit of the architect's leftovers is a warning on the receipt, as for `run`.
-        foreach (string warning in result.Warnings)
+        // A refused commit of the architect's leftovers is a warning on the receipt, as for `run`; the ones
+        // printed before the run are not printed again.
+        foreach (string warning in result.Warnings.Where(warning => !printedWarnings.Contains(warning)))
             SafeConsole.Error($"warning: {warning}");
 
         if (result.Error is { Length: > 0 } error)
