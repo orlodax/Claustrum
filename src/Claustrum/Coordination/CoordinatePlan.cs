@@ -45,7 +45,7 @@ public sealed record CoordinatePlan(
         Cwd: Request.Cwd,
         Tier: Tier,
         Overrides: Overrides,
-        ResumeSession: null,
+        ResumeSession: Request.Resume?.SessionId,
         AttachFiles: [],
         Env: TreeEnv(),
         Stream: Request.Stream,
@@ -59,7 +59,7 @@ public sealed record CoordinatePlan(
         OnStreamLine: Request.OnStreamLine,
         // Request.Overrides, not the resolved ones: only a real --model is "this run", while the
         // resolved value is the cast's own model on every invocation that did not override it.
-        SystemAppendix: CoordinationBrief.RenderSystemAppendix(Cast, CastName, Request.Cwd, Request.Overrides.Model, Isolated),
+        SystemAppendix: CoordinationBrief.RenderSystemAppendix(Cast, CastName, Request.Cwd, Request.Overrides.Model, Isolated, Request.Resume?.TreeId),
         Isolate: Isolated,
         PreRunWarnings: CastWarnings,
         // #122: the cast is per-developer and git-ignored — if it's not tracked in HEAD, the
@@ -67,7 +67,12 @@ public sealed record CoordinatePlan(
         // file name the children are told (`--cast <CastName>`), not the document's own `name`.
         WorktreeCastCopy: Isolated ? Cast with { Name = CastName } : null,
         Live: Request.Live,
-        ReplyTimeoutSeconds: Request.ReplyTimeoutSeconds);
+        ReplyTimeoutSeconds: Request.ReplyTimeoutSeconds,
+        // #124 stage 3b: a resumed architect continues its session on the branch it was on (checked out in a new worktree, so it stays
+        // isolated), and records what a further resume of it needs.
+        Branch: Isolated ? Request.Resume?.Branch : null,
+        ParentJobId: Request.Resume?.JobId,
+        Coordinate: new CoordinateOrigin(CastName, Request.TierFlag, Request.Overrides, Request.Resume?.TreeId));
 
     /// <summary>
     /// Config, role render, model alias and permission resolved on top of the plan — the rest of what
@@ -104,6 +109,12 @@ public sealed record CoordinatePlan(
         return prepared with { Request = prepared.Request with { Brief = brief } };
     }
 
+    /// <summary>
+    /// The budget tree the architect's children join: this job's own id, or — resumed — the tree of the job it continues, so the cap and the
+    /// ledger carry on. Null for a fresh plan, whose tree is its own job id, known once the job is minted.
+    /// </summary>
+    public string? ContinuedTree => Request.Resume?.TreeId;
+
     // What makes every `claustrum run` the architect issues a member of this job's budget tree: the
     // backend inherits these, and a member never forwards them onward (EnvAllowList's ⚠ — caller env
     // wins over the allow-list, which is why they are set here and not on the allow-list). Prepare adds
@@ -112,9 +123,9 @@ public sealed record CoordinatePlan(
     // the children write to. The coordinate process itself is deliberately NOT given
     // CLAUSTRUM_PARENT_JOB: a member reserves the tree's cap for its whole life, leaving its own
     // children $0 (NOTES.md "coordinate: a spawned architect…").
-    private static Dictionary<string, string> TreeEnv()
+    private Dictionary<string, string> TreeEnv()
     {
-        Dictionary<string, string> env = new(StringComparer.Ordinal) { [BudgetLedger.TreeVariable] = DelegateRequest.JobIdToken };
+        Dictionary<string, string> env = new(StringComparer.Ordinal) { [BudgetLedger.TreeVariable] = ContinuedTree ?? DelegateRequest.JobIdToken };
         if (AppServices.Platform.GetEnvironmentVariable("CLAUSTRUM_HOME") is { Length: > 0 } home)
             env["CLAUSTRUM_HOME"] = home;
 

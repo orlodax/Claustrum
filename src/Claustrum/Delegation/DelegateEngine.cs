@@ -1,8 +1,10 @@
+using System.Text.Json;
 using Claustrum.Casts;
 using Claustrum.Core;
 using Claustrum.Core.Backends;
 using Claustrum.Core.Config;
 using Claustrum.Core.Git;
+using Claustrum.Core.IO;
 using Claustrum.Core.Jobs;
 using Claustrum.Core.Model;
 using Claustrum.Roles;
@@ -132,6 +134,33 @@ public static class DelegateEngine
     /// <see cref="DelegateRequest.JobIdToken"/> here, at the last moment.
     /// </summary>
     public static async Task<RunResult> RunAsync(PreparedDelegation prepared, JobPaths? job, CancellationToken cancellationToken)
+    {
+        RunResult result = await DispatchAsync(prepared, job, cancellationToken);
+        if (result.Status == RunStatus.NeedsInput)
+            RecordResumable(prepared.Request, job, result);
+
+        return result;
+    }
+
+    // #124 stage 3b: a job that came back asking can be continued with `jobs answer` / `coordinate --resume`, which rebuild the run from
+    // this record and the receipt. The brief and the appendix are the two big parts a continuation replaces or re-renders, so they are not kept.
+    // A write that fails costs the record, not the receipt: `jobs answer` then says the job has none.
+    private static void RecordResumable(DelegateRequest request, JobPaths? job, RunResult result)
+    {
+        try
+        {
+            JobPaths? paths = job ?? JobDirectory.Open(AppServices.Platform, result.JobId);
+            if (paths is null)
+                return;
+
+            AtomicFile.WriteAllText(paths.ResumeJson, JsonSerializer.Serialize(request with { Brief = "", SystemAppendix = null }, DelegationJsonContext.Default.DelegateRequest));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+        }
+    }
+
+    private static async Task<RunResult> DispatchAsync(PreparedDelegation prepared, JobPaths? job, CancellationToken cancellationToken)
     {
         DelegateRequest request = prepared.Request;
         if (!request.Isolate && request.Branch is null && request.MaxParallel is null or < 1)
@@ -507,7 +536,8 @@ public static class DelegateEngine
         AttachFiles: prepared.Request.AttachFiles,
         Env: prepared.Request.Env,
         Stream: prepared.Request.Stream,
-        AttachmentsMustBeRegular: prepared.Request.AttachmentsMustBeRegular);
+        AttachmentsMustBeRegular: prepared.Request.AttachmentsMustBeRegular,
+        ParentJobId: prepared.Request.ParentJobId);
 
     // The CLI's --permission option already validates against the known set (AcceptOnlyFromAmong)
     // before this ever runs; an MCP caller sending an invalid string is exactly the case this should

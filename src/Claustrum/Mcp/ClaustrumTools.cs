@@ -38,8 +38,8 @@ public sealed class ClaustrumTools
         "it). A role with blind:true (see list_roles) must be briefed with only the task as stated and how to " +
         "get the diff — never rationale, a plan, or a pasted claustrum-report block; the runner refuses such a " +
         "brief outright (docs/PLAN.md §B3 blind gate). A role that wants to ask the user something is told at " +
-        "once that nobody can answer (this call is blocked), so it decides and records the choice; use " +
-        "delegate_async when the user should be asked.")]
+        "once that nobody can answer (this call is blocked), so it decides and records the choice, or stops with status " +
+        "'needs_input' and its questions in the result (answer those with job_answer); use delegate_async when the user should be asked.")]
     public static Task<string> DelegateAsync(
         [Description("Role name, e.g. builder, code-reviewer, tester (see list_roles).")] string role,
         [Description("The brief: markdown with H2 sections ## Task/## Scope/## Must still work/## Diff (docs/PLAN.md §B3).")] string brief,
@@ -150,7 +150,8 @@ public sealed class ClaustrumTools
         "answer with job_say. 'abandoned' means the claustrum process running the job is gone and left no result: " +
         "nobody will answer it. 'failed' means the job threw after it was started instead of finishing with a " +
         "RunResult (e.g. a blind-gate rejection) — call job_result for the underlying error. State 'unknown' " +
-        "means no such job id.")]
+        "means no such job id. A 'done' job also reports status (its RunResult's) and, when status is 'needs_input' — the role stopped " +
+        "because it could not ask live — its questions ([{key, prompt, options, allow_free_form}]): ask the user and continue it with job_answer.")]
     public static string JobStatus(string jobId)
     {
         JobStatusInfo status = AppServices.JobManager.GetStatus(jobId) ?? new JobStatusInfo("unknown", 0, null);
@@ -170,6 +171,47 @@ public sealed class ClaustrumTools
         {
             LiveJob job = LiveJob.Find(jobId) ?? throw new McpException($"job '{jobId}' not found");
             return JsonSerializer.Serialize(job.Say(text), McpJsonContext.Default.SayResult);
+        });
+
+    [McpServerTool(Name = "job_answer")]
+    [Description(
+        "Continue a finished job whose status is 'needs_input' (job_status or job_result shows its questions): the role could not ask live, so it " +
+        "stopped and asked in its report. Resumes its backend session as a NEW job linked to it, with the answers as the message, and returns at once " +
+        "{job_id, parent_job_id, log_path, warnings}; poll job_status and job_result on the new id as for delegate_async. Give exactly one of answers " +
+        "(a map from each question's key to the answer) or text (a free-text reply). A coordinate job's architect is resumed on its branch, under the " +
+        "same cast and budget tree. An error when the job is unknown, not finished, did not stop with needs_input, runs a blind role (it never asks) " +
+        "or ran on a backend that keeps no session (api: start a new run with the answers in its brief). A live job's open question is answered with job_say instead.")]
+    public static Task<string> JobAnswerAsync(
+        string jobId,
+        [Description("Question key -> answer, for the questions the job asked.")] Dictionary<string, string>? answers = null,
+        [Description("A free-text reply, instead of answers.")] string? text = null,
+        CancellationToken cancellationToken = default) =>
+        McpExceptionBoundary.GuardAsync(async () =>
+        {
+            bool coordinate = LiveJob.Find(jobId)?.ReadResume()?.Coordinate is not null;
+            AnswerTarget target = JobAnswering.Open(jobId, coordinate);
+            string brief = JobAnswering.Compose(target.Result, answers, text);
+
+            if (!coordinate)
+            {
+                DelegateRequest request = JobAnswering.Continue(target, brief) with { Live = true, ReplyTimeoutSeconds = DelegateEngine.DefaultReplyTimeoutSeconds };
+                (string resumedId, string resumedLog) = AppServices.JobManager.Start(request, CancellationToken.None);
+                return JsonSerializer.Serialize(new JobAnswerResult(resumedId, jobId, resumedLog, []), McpJsonContext.Default.JobAnswerResult);
+            }
+
+            // The architect, as `coordinate` starts it over MCP: planned on this call so a refusal is answered here, then run as a background job.
+            CoordinateRequest resume = CoordinateEngine.ResumeRequest(target, brief, tierFlag: null, new ConfigOverrides(), McpDiffCapBytes) with
+            {
+                Stream = true,
+                Live = true,
+                ReplyTimeoutSeconds = DelegateEngine.DefaultReplyTimeoutSeconds,
+            };
+            CoordinatePlan plan = await CoordinateEngine.PlanAsync(resume, new GhIssueSource(AppServices.Platform), cancellationToken);
+            PreparedDelegation prepared = plan.Prepare();
+            (string architectId, string architectLog) = AppServices.JobManager.Start(
+                (job, token) => MachineryRefusedException.AsReceiptAsync(CoordinateEngine.RunAsync(plan, prepared, job, token)), CancellationToken.None);
+
+            return JsonSerializer.Serialize(new JobAnswerResult(architectId, jobId, architectLog, plan.Warnings), McpJsonContext.Default.JobAnswerResult);
         });
 
     [McpServerTool(Name = "job_result")]

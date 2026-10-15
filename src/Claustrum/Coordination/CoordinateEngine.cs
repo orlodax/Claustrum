@@ -34,8 +34,9 @@ public static class CoordinateEngine
         Config.RequireInitialized(AppServices.Platform, request.Cwd);
 
         // Flags first, cast second, gh last: a mistyped invocation should name the flags, not the
-        // repo state, and the only step that costs a network round trip goes after both.
-        string? brief = RequireOneTaskSource(request);
+        // repo state, and the only step that costs a network round trip goes after both. A resume
+        // (#124 stage 3b) states no task: the human's answers are the message.
+        string? brief = request.Resume is null ? RequireOneTaskSource(request) : null;
 
         // Runner validates the same thing, but only from inside DelegateEngine.RunAsync — by which
         // point both doors have minted the job directory a refused invocation must not leave behind.
@@ -57,7 +58,7 @@ public static class CoordinateEngine
         bool isolated = gitRoot is not null;
         string[] warnings = gitRoot is null ? [] : await ArchitectWorktree.RequireReadyAsync(request.Cwd, gitRoot, castName, cancellationToken);
 
-        string task = brief ?? IssueImporter.RenderTask(await LoadIssuesAsync(request, issues, cancellationToken));
+        string task = request.Resume?.Answers ?? brief ?? IssueImporter.RenderTask(await LoadIssuesAsync(request, issues, cancellationToken));
 
         // The architect's tier/model/budget precedence, resolved here and kept on the plan: doing it
         // in ToDelegateRequest re-read the cast file *after* the job directory had been minted, so a
@@ -73,6 +74,35 @@ public static class CoordinateEngine
     }
 
     /// <summary>
+    /// The request that continues the coordinate job <paramref name="target"/> (#124 stage 3b, `coordinate --resume` and MCP job_answer): its cast and
+    /// architect flags as they were, the architect flags typed now winning field by field, its budget tree carried on and its session and
+    /// branch resumed with <paramref name="answers"/> as the message. The caller adds what is its own (streaming, the live options).
+    /// </summary>
+    internal static CoordinateRequest ResumeRequest(AnswerTarget target, string answers, string? tierFlag, ConfigOverrides flags, int diffCapBytes)
+    {
+        if (target.Request.Coordinate is not { } origin || target.Result.SessionId is not { Length: > 0 } session)
+            throw new CliUsageException($"job '{target.JobId}' is not a coordinate job with a session to resume");
+
+        ConfigOverrides overrides = origin.Overrides with
+        {
+            Model = flags.Model ?? origin.Overrides.Model,
+            BudgetUsd = flags.BudgetUsd ?? origin.Overrides.BudgetUsd,
+            TimeoutSeconds = flags.TimeoutSeconds ?? origin.Overrides.TimeoutSeconds,
+        };
+
+        return new CoordinateRequest(
+            Cwd: target.Request.Cwd,
+            CastName: origin.CastName,
+            Issues: [],
+            Brief: null,
+            TierFlag: tierFlag ?? origin.TierFlag,
+            Overrides: overrides,
+            Stream: false,
+            DiffCapBytes: diffCapBytes,
+            Resume: new CoordinateResume(target.JobId, origin.TreeId ?? target.JobId, session, target.Result.Branch, answers));
+    }
+
+    /// <summary>
     /// The architect's run, plus what surrounds it: this process recorded as the job's owner before the architect starts (the detached
     /// children of its tree watch it, #124 stage 2 review F1), the children still running settled when it ends, and its own cost written
     /// to the ledger of the tree it handed down (issue #21). Both front doors go through here — the MCP one
@@ -82,6 +112,12 @@ public static class CoordinateEngine
     {
         DateTimeOffset startedAt = DateTimeOffset.UtcNow;
         AtomicFile.WriteAllText(job.OwnerJson, JsonSerializer.Serialize(OwnerRecord.ForCurrentProcess(), LiveJsonContext.Default.OwnerRecord));
+
+        // A resumed architect's children join the tree of the job it continues (#124 stage 3b), whose own receipt is long written: its hosts
+        // would read that tree as ended, so the continued job points at this one as the tree's live root before any child exists.
+        string treeId = plan.ContinuedTree ?? job.Id;
+        if (plan.Request.Resume is { } resumed && JobDirectory.Open(AppServices.Platform, resumed.JobId) is { } continued)
+            AtomicFile.WriteAllText(continued.SuccessorMarker, job.Id);
 
         // Whatever ends the architect, a throw included, its detached children must not outlive it. Runner wrote result.json
         // before this ran, so a settle that cancelled anything rewrites it: `jobs show` and MCP job_result read the disk.
@@ -93,7 +129,7 @@ public static class CoordinateEngine
         }
         finally
         {
-            settled = TreeSettler.CancelRemaining(job.Id);
+            settled = TreeSettler.CancelRemaining(treeId);
         }
 
         if (settled.Length > 0)
@@ -122,7 +158,7 @@ public static class CoordinateEngine
             // ran and reported none (cursor and copilot never do).
             decimal? cost = result.CostUsd ?? prepared.BudgetUsd;
             await BudgetLedger.RecordFinishedAsync(
-                AppServices.Platform, job.Id, job.Id, prepared.Request.Role, prepared.BudgetUsd, cost, startedAt);
+                AppServices.Platform, treeId, job.Id, prepared.Request.Role, prepared.BudgetUsd, cost, startedAt);
 
             return result;
         }
@@ -134,7 +170,7 @@ public static class CoordinateEngine
             // written by Runner before this ran, and is not rewritten.
             return result with
             {
-                Warnings = [.. result.Warnings, $"budget ledger for tree '{job.Id}' not updated with the architect's own cost: {ex.Message}"],
+                Warnings = [.. result.Warnings, $"budget ledger for tree '{treeId}' not updated with the architect's own cost: {ex.Message}"],
             };
         }
     }

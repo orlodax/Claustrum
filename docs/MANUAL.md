@@ -56,7 +56,7 @@ malformed job id (every `jobs` verb takes only `yyyyMMdd-HHmmss-xxxxxxxx`), a re
 uninitialized repo) · `3` backend not found · `4` timeout · `5` budget · `6` abandoned (`jobs wait`, `jobs reply`, `jobs cancel`,
 and a tree's `run`: the process running a job is gone, with no receipt; under `--json` the one document is then a RunResult
 with `status: failed` and an `error` saying so) · `7` needs input (a tree's `run` or `jobs reply`: a child
-asked its architect a question and still waits, *Questions inside a tree*) · `130` cancelled. Once the job directory exists (queued for a `max_parallel` slot, waiting for a `--branch`
+asked its architect a question and still waits, *Questions inside a tree*; and any finished run whose report said `needs_input`, *When nobody can answer live*) · `130` cancelled. Once the job directory exists (queued for a `max_parallel` slot, waiting for a `--branch`
 lock, adding its worktree, or running), the first Ctrl-C (SIGINT), SIGQUIT, SIGTERM or SIGHUP (the terminal closing) ends the run
 with a `cancelled` receipt: exit 130, the document on stdout under `--json`, `result.json` on disk
 (#94). A cancel while queued or adding leaves no worktree, directory or branch (#108: the job directory is made
@@ -158,9 +158,10 @@ claustrum run <role> [--brief <text> | --brief-file <path|->]
 claustrum coordinate [--cast <name>] (--issues 12,13 | --brief <text> | --brief-file <path|->)
     [--cwd <dir>] [--tier …] [--model <architect model>] [--budget <usd>] [--timeout <sec>]
     [--json] [--stream | --stream-raw] [--raw] [--reply-timeout <sec>] [--no-live]
+claustrum coordinate --resume <job> (--answers <file> | --brief <text> | --brief-file <path|->) [--tier …] [--model …] [--budget <usd>] [--timeout <sec>]
 ```
 
-Runs the cast's **architect** headlessly (§11). `--issues` needs `gh` authenticated and a GitHub
+Runs the cast's **architect** headlessly (§11). `--resume` continues one that stopped with `needs_input` (*When nobody can answer live*). `--issues` needs `gh` authenticated and a GitHub
 remote; a failure there is exit 2 and nothing is spent. It never reads a bare stdin: `--brief-file -`
 is the only way to pipe. Its `--budget` caps the architect's own run; the cast's `budget_usd` caps
 the children.
@@ -199,7 +200,7 @@ part into a named skip. A repo MCP config that is not a regular file is reported
 file` and never read. The probe needs a `claustrum.json` at the git root whose aliases reach the
 backend, or it skips with "no model alias … resolves to this backend".
 
-### `claustrum jobs list | show <id> | logs <id> [--stderr] | follow [<id>] [--raw] | say <id> <text> | wait <id> [--timeout <s>] [--json] | reply <id> <text> [--json] | cancel <id> | clean [--cwd] | budget <tree> [--reset]`
+### `claustrum jobs list | show <id> | logs <id> [--stderr] | follow [<id>] [--raw] | say <id> <text> | wait <id> [--timeout <s>] [--json] | reply <id> <text> [--json] | answer <id> (--answers <file> | <text>) [--json] | cancel <id> | clean [--cwd] | budget <tree> [--reset]`
 
 - `list`: recent jobs, newest first — id, status, `role/backend`.
 - `show`: the receipt (`result.json`), or the request if it has not finished.
@@ -217,6 +218,7 @@ backend, or it skips with "no model alias … resolves to this backend".
   before writing `result.json` is followed until Ctrl-C: there is nothing to tell follow it ended.
   A live job's conversation is printed beside the stream (`? `, `> `, `! `, below), and on a terminal
   an open question is asked on the spot.
+- `answer <id>`: continues a finished job that stopped with `needs_input` (*When nobody can answer live*, below).
 - `say <id> <text>` and `wait <id>`: the way into a live job, below. `reply <id> <text>` is `say` and then the wait a tree's `run`
   makes (*Questions inside a tree*). `cancel <id>` ends a detached job: it leaves a marker in the job directory, which the host
   polls (every 250 ms) and answers by ending the job `cancelled`, with its receipt, as Ctrl-C ends an in-process run; `cancel` waits
@@ -280,6 +282,45 @@ the role is told to decide alone and record the choice in `open_decisions`. `--r
 `--no-live` turns the channel off: the run is exactly what it was before it existed. Blind roles (`code-reviewer`,
 `ui-reviewer`) can only tell, not ask: a human answer could carry the rationale the blind gate withholds, so their doubts
 go into their findings. Only claude is live today; for any other backend the flags are accepted and change nothing.
+
+#### When nobody can answer live
+
+A live conversation needs a backend that can hold one (claude and opencode) and someone to answer. Where either is
+missing — **copilot, cursor and api**, which have no live protocol; a run with reply timeout 0 (no terminal, MCP `delegate`); a
+child in a tree whose architect is not live — the role cannot ask by ending a turn, and the fallback applies: the role stops with
+`"status": "needs_input"` and `"questions": [{"key", "prompt", "options", "allow_free_form"}]` in its `claustrum-report` instead of
+guessing at a decision that is the human's. Blind roles never do this; their doubts go in `findings`.
+
+- **The receipt says so.** `status: needs_input`, `error: null`, the questions in `result.json` (`questions[]`), and exit code
+  **7** — the code a tree child's early return uses too, so read the document, not the number: an early return is
+  `{"status":"needs_input","job_id","question":{seq,text}}` and the job is still waiting (`jobs reply`); a finished run is a
+  whole RunResult with `questions[]` and nothing waiting (`jobs answer`). Human mode prints `needs input: <id>`, one `? [key] prompt`
+  per question with its options, and the command to answer with. A report that says `needs_input` with no readable question
+  still ends `needs_input` (answer in free text); the receipt's `warnings[]` says so. Over MCP, `job_status` shows `status` and
+  `questions` for a done job, and `job_result` the whole receipt.
+- **`claustrum jobs answer <id> (--answers <file> | <text>) [--json]`.** Continues a finished `needs_input` job: its backend session
+  is resumed (`run --resume <session_id>`) as a **new job** with the same role, cast, backend, model and cwd, and the job's branch when
+  it was isolated (a new worktree on that branch, as `run --branch`); the new request carries `parent_job_id`. The message is the
+  answers: `--answers` is a JSON object, question `key` → string answer (an unknown key, or a value outside the options of a
+  question that does not allow free form, is refused; a question left out is handed back to the role to decide and record in
+  `open_decisions`), or the text is taken as one free-form reply. It prints the new job's result as `run` does and exits with its
+  status's code, so a role that asks again gives 7 again. It runs under the live rules of any `run`: on a terminal the new job is live. Exit 2, saying which rule, for a job that is unknown, not finished, not
+  `needs_input`, a blind role, a coordinate job (use `coordinate --resume`), a backend that keeps no session (api: start a new run with
+  the answers in its brief) or a receipt with no session id. MCP: `job_answer {job_id, answers | text}`, which returns the new job's
+  id at once (poll it like `delegate_async`).
+- **`claustrum coordinate --resume <job> (--answers <file> | --brief <text> | --brief-file <path>)`.** The same for a coordinate job:
+  its architect session is resumed on the job's branch (`claustrum/<job>`, checked out in a new worktree — refused, naming the
+  holder, while the old one still holds its children's worktrees: run `jobs clean --cwd <it>` first), under the same cast and the
+  same **budget tree**: the children are accounted in the first job's ledger (`jobs budget <first job>` lists both architect runs),
+  and the job left a `successor` marker so the tree's detached hosts watch the running architect, not the finished one. `--cast`,
+  `--issues` and `--cwd` are refused (the job's own are used); `--tier`, `--model`, `--budget` and `--timeout` override the original's.
+  MCP `job_answer` does this for a coordinate job.
+- **Progress notes.** A role on any backend may print a line `claustrum-note: <text>`. Claustrum appends it to the job's
+  `conversation.jsonl` as a `message` from the role (the file is created if the run is not live) and `jobs follow` shows it as
+  `· <text>`. One-way: nothing answers it. The job's `conversation` field then points at the file. A repeat of a note is recorded once, at
+  most 200 per job. Only a JSON event's assistant text is read (not a tool's output), so on a backend whose output arrives as one document at
+  the end (cursor, api), notes appear when the run ends. **A live run's notes are not recorded in `conversation.jsonl`**: the
+  session owns that file's numbering; they remain in the stream and `stdout.log`.
 
 #### Questions inside a tree
 
@@ -457,12 +498,14 @@ One JSON document, `schema_version: "1"`, snake_case, additive changes only:
 | Field | Source | Notes |
 |---|---|---|
 | `job_id` | runner | `yyyyMMdd-HHmmss-8hex`; also the directory name under the jobs home |
-| `status` | runner | `success`, `failed`, `timeout`, `cancelled`, `backend_missing`, `budget_exceeded` |
+| `status` | runner | `success`, `failed`, `timeout`, `cancelled`, `backend_missing`, `budget_exceeded`, `needs_input` (the report asked the human something; exit 7) |
 | `error` | runner | **read it whenever `status` is not `success`** — it says which refusal or failure |
 | `backend`, `model`, `role` | resolved request | what actually ran |
 | `final_message` | backend | the agent's last message, report fence included |
 | `report` | extracted | `{data: <parsed JSON>, raw_text}` from the `claustrum-report` fence |
 | `report_status` | extracted | `ok`, `missing` (no fence), `unparsed` (fence, invalid JSON — `raw_text` kept) |
+| `questions[{key, prompt, options[], allow_free_form}]` | report | only for `needs_input`; `null` otherwise |
+| `conversation` | runner | `{path, entries}` of the job's `conversation.jsonl`: a live job's, or a run's `claustrum-note:` lines; `null` when there is none |
 | `changed_files[{path, kind}]` | **git**, before/after snapshots | `A`/`M`/`D`; right even when the harness does not list edits. An isolated run whose branch moved reports the branch's delta from the commit it started on instead — what the runner or the role committed, plus anything left uncommitted; empty when the run's worktree was no longer its own (`warnings[]` says so) |
 | `diff`, `diff_truncated` | git | `git diff HEAD` on those paths plus `--no-index` for new files (an isolated run whose branch moved: `git diff <starting commit>`); 200 KB cap (64 KB via MCP) |
 | `worktree`, `branch` | runner | for any isolated run (`max_parallel > 1` or `--branch`): where it ran, and the branch — `claustrum/<job_id>`, or the `--branch` name |
@@ -478,9 +521,11 @@ with `diff: null`.
 
 ### Report schemas per role
 
-Every role must end its final message with exactly one fenced block tagged `claustrum-report`:
+Every role must end its final message with exactly one fenced block tagged `claustrum-report`. A non-blind role (builder, tester,
+architect, demo-author) may also give `status: needs_input` with `questions[{key, prompt, options[], allow_free_form}]`, the
+questions-as-data fallback of *When nobody can answer live*; the two reviewers, which are blind, never do (their doubts are findings):
 
-- **builder**: `{status: done|partial|blocked, summary, files_changed[{path, why}], behaviour_to_cover[], open_decisions[], shaky[], departed_from_brief[]}` — `shaky` is what the coordinator reads first.
+- **builder**: `{status: done|partial|blocked|needs_input, summary, files_changed[{path, why}], behaviour_to_cover[], open_decisions[], shaky[], departed_from_brief[]}` — `shaky` is what the coordinator reads first.
 - **code-reviewer / ui-reviewer**: `{status, findings[{severity, verdict: CONFIRMED|PLAUSIBLE, file, line, scenario, steps, evidence}], would_change_if_broader[]}`, most severe first; an empty list is a legitimate clean result.
 - **tester**: `{status, commands_run[], passed, failed[{test, root_cause, fault_in: test|code}], skipped[]}`.
 - **architect**: `{status, summary, delegations[{role, tier, job_id, status}], branch, closes[], findings_open[], open_decisions[], shaky[]}` — for a spawned architect this block is the entire result the caller sees.
@@ -990,7 +1035,7 @@ warns when binary and working directory straddle that line.
 `backend.json` (backend, model, and for claude the `mcp_servers` the run had, with `mcp.json`, the copy it loaded),
 `stdout.log`, `stderr.log`, `result.json`, and for a live job `conversation.jsonl`, `live.json` (the session's
 state and the open question's `seq`) and `inbox/` (messages waiting to be consumed). A detached job adds `host-request.json`
-(what the host runs), `host.json` (the host's pid and start time, and the tree it was started in), `host.log` (its console output) and, once `jobs cancel` asks, `cancel`; a `coordinate` job adds `owner.json` (its process, which its detached children watch). `jobs.keep_last` (200) prunes old ones when a new job is
+(what the host runs), `host.json` (the host's pid and start time, and the tree it was started in), `host.log` (its console output) and, once `jobs cancel` asks, `cancel`; a `coordinate` job adds `owner.json` (its process, which its detached children watch). A job that ended `needs_input` adds `resume.json` (the request `jobs answer` and `coordinate --resume` rebuild the run from) and, once `coordinate --resume` continues a coordinate job, `successor` (the job that took over its tree). A run that printed `claustrum-note:` lines has a `conversation.jsonl` without being live. `jobs.keep_last` (200) prunes old ones when a new job is
 created. Budget ledgers live beside them under `budget/<tree>/`.
 
 ## 15. Troubleshooting

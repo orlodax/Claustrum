@@ -50,7 +50,11 @@ public sealed record DelegateRequest(
     [property: JsonIgnore] Cast? WorktreeCastCopy = null,
     // #124: set by the front doors (CLI TTY rule, MCP delegate vs delegate_async); copied into RunOptions by Prepare.
     bool Live = false,
-    int ReplyTimeoutSeconds = 0)
+    int ReplyTimeoutSeconds = 0,
+    // #124 stage 3b: the `needs_input` job this one continues (`jobs answer`, `coordinate --resume`); copied into request.json.
+    string? ParentJobId = null,
+    // Set only on `coordinate`'s architect: what a resume of it needs beyond this request (CoordinateOrigin).
+    CoordinateOrigin? Coordinate = null)
 {
     /// <summary>
     /// The exact token <see cref="SystemAppendix"/> and <see cref="Env"/> values may carry in place of

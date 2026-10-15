@@ -8,8 +8,9 @@ using Claustrum.Live;
 namespace Claustrum.Delegation;
 
 // State: running | waiting_for_input (a live job's question is open, and Question carries it; #124) | abandoned (a live job
-// whose claustrum process is gone, no result.json) | done | failed | unknown.
-public sealed record JobStatusInfo(string State, double ElapsedSeconds, string? LastLine, QuestionInfo? Question = null);
+// whose claustrum process is gone, no result.json) | done | failed | unknown. A done job also says how it ended (Status, the RunResult's
+// own word: "needs_input" among them) and, when it stopped to ask, what (Questions; stage 3b).
+public sealed record JobStatusInfo(string State, double ElapsedSeconds, string? LastLine, QuestionInfo? Question = null, string? Status = null, ReportQuestion[]? Questions = null);
 
 // Backs MCP delegate_async/job_status/job_result (docs/PLAN.md §A6). In-memory only, so it covers
 // jobs started via delegate_async in this MCP server's own lifetime; job_status/job_result still
@@ -60,7 +61,8 @@ public sealed class JobManager
                 (state, question) = (waiting.State, waiting.Question);
 
             double elapsed = (DateTimeOffset.UtcNow - entry.StartedAt).TotalSeconds;
-            return new JobStatusInfo(state, elapsed, JobLog.LastLine(entry.Job.StdoutLog), question);
+            RunResult? finished = entry.Task.IsCompletedSuccessfully ? entry.Task.Result : null;
+            return new JobStatusInfo(state, elapsed, JobLog.LastLine(entry.Job.StdoutLog), question, StatusName(finished), finished?.Questions);
         }
 
         // A job this process never started: its result.json says done; a live one (live.json) says what its session is doing (#124).
@@ -69,7 +71,10 @@ public sealed class JobManager
 
         string resultPath = Path.Combine(JobDirectory.ResolveRoot(AppServices.Platform), jobId, "result.json");
         if (File.Exists(resultPath))
-            return new JobStatusInfo("done", 0, null);
+        {
+            RunResult? receipt = LiveJob.Find(jobId)?.ReadResult();
+            return new JobStatusInfo("done", 0, null, Status: StatusName(receipt), Questions: receipt?.Questions);
+        }
 
         if (LiveJob.Find(jobId) is not { } live || live.ReadState() is null)
             return null;
@@ -102,6 +107,9 @@ public sealed class JobManager
     // deterministically without either flaky timing or actually spawning a backend process.
     public static async Task<RunResult?> ResolveTaskAsync(Task<RunResult> task) =>
         task.IsCompleted ? await task : null;
+
+    private static string? StatusName(RunResult? result) =>
+        result is null ? null : JsonSerializer.Serialize(result.Status, ClaustrumJsonContext.Default.RunStatus).Trim('"');
 
     // The disk fallbacks name a directory under the jobs store, so the id must be one plain name: a separator, or on Windows a drive
     // (`C:x`), would leave the store (review of #124 stage 2, F6). The strict yyyyMMdd-HHmmss-xxxxxxxx shape is the `jobs` verbs' rule.

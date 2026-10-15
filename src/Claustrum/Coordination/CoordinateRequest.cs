@@ -19,4 +19,13 @@ public sealed record CoordinateRequest(
     bool StreamRaw = false,
     // #124: the architect's live options, from `--no-live`/`--reply-timeout` and the TTY rule (CLI only for now).
     bool Live = false,
-    int ReplyTimeoutSeconds = 0);
+    int ReplyTimeoutSeconds = 0,
+    // `coordinate --resume` / MCP job_answer (#124 stage 3b): the architect of a finished `needs_input` coordinate job, continued.
+    CoordinateResume? Resume = null);
+
+/// <summary>
+/// The coordinate job being continued and what the continuation reuses: its budget tree (<see cref="TreeId"/>, the first job of the
+/// chain, so the cap and the ledger carry on), its architect's backend session and work branch (null when it ran in place), and the
+/// human's answers as the next message.
+/// </summary>
+public sealed record CoordinateResume(string JobId, string TreeId, string SessionId, string? Branch, string Answers);

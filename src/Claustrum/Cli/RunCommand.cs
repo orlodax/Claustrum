@@ -3,6 +3,7 @@ using System.ComponentModel;
 using System.Text.Json;
 using Claustrum.Casts;
 using Claustrum.Core;
+using Claustrum.Core.Backends;
 using Claustrum.Core.Config;
 using Claustrum.Core.Jobs;
 using Claustrum.Core.Json;
@@ -161,56 +162,7 @@ public static class RunCommand
                 Live: live,
                 ReplyTimeoutSeconds: replyTimeoutSeconds);
 
-            // Prepared here, not inside RunAsync(request), so the warnings reach stderr before the backend starts
-            // — in --json mode too, where PrintHuman never runs (F14).
-            PreparedDelegation prepared = DelegateEngine.Prepare(request);
-            string[] printedWarnings = prepared.Options.PreRunWarnings ?? [];
-            foreach (string warning in printedWarnings)
-                SafeConsole.Error($"warning: {warning}");
-
-            // #124 stage 2: a detached job, or a tree's child that can ask (a blind role never does), is minted here and run by
-            // `jobs host`. Everything that can be refused was refused above, and Validate repeats Runner's own checks, before the mint.
-            if (detach || (routed && prepared.Options.Live && !prepared.Role.Blind))
-            {
-                DelegateEngine.Validate(prepared);
-                JobPaths hosted = JobDirectory.Create(AppServices.Platform);
-                await StartHostAsync(request, hosted, prepared);
-                if (detach)
-                {
-                    cancel.Settled();
-                    SafeConsole.Out(jsonMode ? JsonSerializer.Serialize(StartedResult.For(hosted.Id), LiveJsonContext.Default.StartedResult) : hosted.Id);
-                    return ExitCodes.Ok;
-                }
-
-                return await DetachedRun.WaitAsync(LiveJob.At(hosted), answeredSeq: null, jsonMode, rawMode, printedWarnings, cancel);
-            }
-
-            // #124: a terminal run shows the conversation and asks the human, so it needs the job's directory before the run
-            // starts. Runner mints its own only after the checks Validate repeats, so a refusal still leaves nothing behind.
-            JobPaths? job = null;
-            if (LiveRun.Prompts(prepared))
-            {
-                DelegateEngine.Validate(prepared);
-                job = JobDirectory.Create(AppServices.Platform);
-            }
-
-            RunResult result;
-            int? refusedExit = null;
-            try
-            {
-                Task<RunResult> run = DelegateEngine.RunAsync(prepared, job, cancel.Token);
-                result = job is null ? await run : await LiveRun.AnswerWhileAsync(run, job);
-            }
-            catch (MachineryRefusedException ex)
-            {
-                // #104: a usage refusal (exit 2), whose failed receipt is still the document --json readers parse.
-                (result, refusedExit) = (ex.Receipt, ExitCodes.Usage);
-            }
-
-            // The receipt is on disk: a Windows console close need wait no longer.
-            cancel.Settled();
-
-            return Present(result, refusedExit, jsonMode, rawMode, printedWarnings);
+            return await RunPreparedAsync(request, routed, jsonMode, rawMode, detach, cancel);
         }
         // Everything else (ConfigException, RoleRenderException, CliUsageException,
         // BlindGateException, BackendNotFoundException, ...) is intentionally not caught here —
@@ -222,6 +174,65 @@ public static class RunCommand
             cancel.Settled();
             return Cancelled(ex);
         }
+    }
+
+    /// <summary>
+    /// Everything `run` does once its request is built: prepare it, then run it detached, hosted for a tree's architect, with the terminal
+    /// asking, or plain, and print the receipt. <paramref name="routed"/> is a tree child whose architect can answer (#124 stage 2). Shared
+    /// with `jobs answer`, which is `run` with the request of a job that stopped to ask. Cancellation is left to the caller.
+    /// </summary>
+    internal static async Task<int> RunPreparedAsync(DelegateRequest request, bool routed, bool jsonMode, bool rawMode, bool detach, CancelSignalHandler cancel)
+    {
+        // Prepared here, not inside RunAsync(request), so the warnings reach stderr before the backend starts
+        // — in --json mode too, where PrintHuman never runs (F14).
+        PreparedDelegation prepared = DelegateEngine.Prepare(request);
+        string[] printedWarnings = prepared.Options.PreRunWarnings ?? [];
+        foreach (string warning in printedWarnings)
+            SafeConsole.Error($"warning: {warning}");
+
+        // #124 stage 2: a detached job, or a tree's child that can ask (a blind role never does), is minted here and run by
+        // `jobs host`. Everything that can be refused was refused above, and Validate repeats Runner's own checks, before the mint.
+        if (detach || (routed && prepared.Options.Live && !prepared.Role.Blind))
+        {
+            DelegateEngine.Validate(prepared);
+            JobPaths hosted = JobDirectory.Create(AppServices.Platform);
+            await StartHostAsync(request, hosted, prepared);
+            if (detach)
+            {
+                cancel.Settled();
+                SafeConsole.Out(jsonMode ? JsonSerializer.Serialize(StartedResult.For(hosted.Id), LiveJsonContext.Default.StartedResult) : hosted.Id);
+                return ExitCodes.Ok;
+            }
+
+            return await DetachedRun.WaitAsync(LiveJob.At(hosted), answeredSeq: null, jsonMode, rawMode, printedWarnings, cancel);
+        }
+
+        // #124: a terminal run shows the conversation and asks the human, so it needs the job's directory before the run
+        // starts. Runner mints its own only after the checks Validate repeats, so a refusal still leaves nothing behind.
+        JobPaths? job = null;
+        if (LiveRun.Prompts(prepared))
+        {
+            DelegateEngine.Validate(prepared);
+            job = JobDirectory.Create(AppServices.Platform);
+        }
+
+        RunResult result;
+        int? refusedExit = null;
+        try
+        {
+            Task<RunResult> run = DelegateEngine.RunAsync(prepared, job, cancel.Token);
+            result = job is null ? await run : await LiveRun.AnswerWhileAsync(run, job);
+        }
+        catch (MachineryRefusedException ex)
+        {
+            // #104: a usage refusal (exit 2), whose failed receipt is still the document --json readers parse.
+            (result, refusedExit) = (ex.Receipt, ExitCodes.Usage);
+        }
+
+        // The receipt is on disk: a Windows console close need wait no longer.
+        cancel.Settled();
+
+        return Present(result, refusedExit, jsonMode, rawMode, printedWarnings);
     }
 
     // The host failing to start leaves a minted job that nothing will ever run: it gets the failed receipt a waiter polls for.
@@ -297,6 +308,7 @@ public static class RunCommand
         RunStatus.Cancelled => ExitCodes.Cancelled,
         RunStatus.BackendMissing => ExitCodes.BackendMissing,
         RunStatus.BudgetExceeded => ExitCodes.Budget,
+        RunStatus.NeedsInput => ExitCodes.NeedsInput,
         _ => throw new ArgumentOutOfRangeException(nameof(status), status, null),
     };
 
@@ -325,6 +337,9 @@ public static class RunCommand
             SafeConsole.Out(result.FinalMessage);
         }
 
+        if (result.Status == RunStatus.NeedsInput)
+            PrintQuestions(result, $"claustrum jobs answer {result.JobId} --answers <file> | \"<text>\"");
+
         // A "work left uncommitted" one says the branch is missing work; --json readers have warnings[].
         // The ones printed before the run are not printed again.
         foreach (string warning in result.Warnings.Where(warning => !printedWarnings.Contains(warning)))
@@ -332,6 +347,25 @@ public static class RunCommand
 
         if (result.Error is { Length: > 0 } error)
             SafeConsole.Error($"error: {error}");
+    }
+
+    /// <summary>
+    /// What a job that stopped with `needs_input` asked, one `?` block per question, and the command that answers it (#124 stage 3b).
+    /// A role's text, so each line goes through the stream sanitizer like the conversation's.
+    /// </summary>
+    internal static void PrintQuestions(RunResult result, string answerWith)
+    {
+        SafeConsole.Out();
+        SafeConsole.Out($"needs input: {result.JobId}");
+        foreach (ReportQuestion question in result.Questions ?? [])
+        {
+            foreach (string line in ConversationLines.Render("?", $"[{question.Key}] {question.Prompt}"))
+                SafeConsole.Out(line);
+            if (question.Options.Length > 0)
+                SafeConsole.Out($"    options: {StreamText.Sanitize(string.Join(" | ", question.Options))}{(question.AllowFreeForm ? " (or free text)" : "")}");
+        }
+
+        SafeConsole.Out($"answer with: {answerWith}");
     }
 
     private static char KindLetter(ChangeKind kind) => kind switch

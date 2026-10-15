@@ -8,6 +8,7 @@ using Claustrum.Core.Jobs;
 using Claustrum.Core.Json;
 using Claustrum.Core.Live;
 using Claustrum.Core.Model;
+using Claustrum.Delegation;
 using Claustrum.Roles;
 using Claustrum.Roles.Sync;
 
@@ -120,6 +121,12 @@ internal sealed class LiveJob
         Report: null,
         ReportStatus: ReportStatus.Missing,
         Warnings: []);
+
+    /// <summary>The request a `needs_input` job left for `jobs answer` (resume.json), or null when it has none or it cannot be read.</summary>
+    public DelegateRequest? ReadResume() => Parse(ReadText("resume.json"), DelegationJsonContext.Default.DelegateRequest);
+
+    /// <summary>The coordinate job that took over this one's tree (`coordinate --resume`), or null.</summary>
+    public string? ReadSuccessor() => ReadText("successor")?.Trim() is { } id && JobDirectory.IsJobId(id) ? id : null;
 
     /// <summary>The receipt, or null while result.json is missing or unreadable (it is written non-atomically).</summary>
     public RunResult? ReadResult() => Parse(ReadText("result.json"), ClaustrumJsonContext.Default.RunResult);
