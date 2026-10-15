@@ -44,26 +44,20 @@ public static class RunCommand
         Option<string[]> file = new("--file") { Description = "Attach a file (repeatable)." };
         Option<string[]> env = new("--env") { Description = "Extra env var K=V (repeatable)." };
         Option<bool> json = new("--json") { Description = "Emit exactly one RunResult JSON document on stdout." };
-        Option<string?> stream = new("--stream")
-        {
-            Description = "Stream output to stderr: 'readable' (default) formats progress lines, 'raw' echoes the raw backend JSON.",
-            Arity = ArgumentArity.ZeroOrOne,
-        };
-        stream.AcceptOnlyFromAmong("readable", "raw");
+        Option<bool> stream = new("--stream") { Description = "Stream formatted progress lines to stderr." };
+        Option<bool> streamRawOption = new("--stream-raw") { Description = "Stream the raw backend JSON to stderr, unformatted (implies --stream)." };
         Option<bool> raw = new("--raw") { Description = "Include the backend's raw response in JSON output." };
 
         Command command = new("run", "Delegate a task to a role.")
         {
             role, brief, briefFile, cwd, backend, model, effort, tier, permission,
-            deny, budget, timeout, resume, file, env, cast, branch, json, stream, raw,
+            deny, budget, timeout, resume, file, env, cast, branch, json, stream, streamRawOption, raw,
         };
 
         command.SetAction(async parseResult =>
         {
-            // Presence, not value: a bare `--stream` parses to a null value and must still mean 'readable'.
-            string? streamValue = parseResult.GetValue(stream);
-            bool streamMode = parseResult.GetResult(stream) is not null;
-            bool streamRaw = streamValue == "raw";
+            bool streamRaw = parseResult.GetValue(streamRawOption);
+            bool streamMode = streamRaw || parseResult.GetValue(stream);
             // A block lambda that only awaited dropped the exit code: every run exited 0 (2026-10-15, 72 tests).
             return await ExecuteAsync(
                 parseResult.GetRequiredValue(role),

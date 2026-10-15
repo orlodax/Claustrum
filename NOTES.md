@@ -281,6 +281,12 @@ from the cwd's `.claustrum/casts/` and is fenced there by the cwd fence (#103, #
 `~/.config/` for the cast would break that fence and read casts outside the repo, which the whole
 design exists to prevent.
 
+**A user config with no cast is not "stop and ask".** The #122 issue text said "or the repo has no cast ⇒ stop
+and ask"; the owner approved **not** doing that (2026-10-15): with a user config present and no cast, `run` goes on
+with the user's aliases and the built-in role defaults.
+
+## Env allow-list is dead without clearing ProcessStartInfo.Environment (2026-09-13)
+
 `ProcessStartInfo.Environment` is pre-populated by .NET with a copy of the *current* process's own
 environment as soon as `UseShellExecute` is `false` — this is documented .NET behaviour, not a
 Claustrum default. `ProcessRunner.RunAsync` was only ever adding the allow-listed entries on top of

@@ -40,7 +40,7 @@ public sealed record DelegateRequest(
     // #121: cast-resolution warnings (built-in fallback, stored Δ) that DelegateEngine.Prepare
     // folds into RunOptions.PreRunWarnings and from there into result.json's warnings[] and stderr.
     string[]? PreRunWarnings = null,
-    // `--stream raw` on the CLI: echo unformatted raw lines to stderr (issue #123).
+    // `--stream-raw` on the CLI: echo unformatted raw lines to stderr (issue #123).
     bool StreamRaw = false,
     // #122: `coordinate`'s cast, set when the cast was not tracked in HEAD — RunIsolatedAsync copies
     // it into the worktree after creation so the architect can load it. Only set by CoordinatePlan;

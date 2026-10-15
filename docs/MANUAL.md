@@ -84,7 +84,7 @@ claustrum run <role> [--brief <text> | --brief-file <path|->]
     [--cwd <dir>] [--backend <name>] [--model <alias|backend:id>] [--effort <e>] [--tier high|xhigh|max]
     [--permission readonly|shell|edit|edit+shell|full] [--deny <pattern>]…
     [--budget <usd>] [--timeout <sec>] [--resume <session>] [--file <path>]… [--env K=V]…
-    [--cast <name>] [--branch <name>] [--json] [--stream] [--raw]
+    [--cast <name>] [--branch <name>] [--json] [--stream | --stream-raw] [--raw]
 ```
 
 - The brief is mandatory: `--brief`, `--brief-file`, or `--brief-file -` for stdin.
@@ -94,12 +94,15 @@ claustrum run <role> [--brief <text> | --brief-file <path|->]
 - `--cast` defaults to `.claustrum/casts/default.json` when that file exists. A cast role with a
   numeric `max_parallel` — 1 included — caps how many of its runs go at once; above 1, **every**
   builder run gets its own worktree and branch (§9).
-  When the model came from the cast (no `--model` or `--backend` flag), `run` warns via
-  `warnings[]` in the result and on stderr if the alias silently fell through to a built-in
-  default (`no claustrum.json or user config defines it`), or if the alias's stored `resolved`
-  value no longer matches what it resolves to now — so an alias that once meant one model and
-  now means another is never invisible. An explicit `--model`/`--backend` flag suppresses both
-  warnings for that role.
+  Two kinds of warning reach `warnings[]` in the result and stderr. The **cast** warnings fire only
+  when the model came from the cast (no `--model` or `--backend` flag): the alias silently fell
+  through to a built-in default (`no claustrum.json or user config defines it`), or its stored
+  `resolved` value no longer matches what it resolves to now — so an alias that once meant one model
+  and now means another is never invisible. An explicit `--model`/`--backend` flag suppresses
+  those two. The **role-level** warning (`role '<r>': model '<m>' resolved to the built-in default …;
+  <user config> does not define it`) fires whenever the role's final model — flags, cast, `roles`
+  config and the tier's class — reached a built-in default through an alias, flag or no flag, unless a
+  cast warning already said so for that role; a `--model backend:id` names no alias and never triggers it.
 - `--branch <name>` runs isolated in a new worktree checked out on that **existing local branch**,
   whatever the cast's `max_parallel` — e.g. `--branch claustrum/<job id>` to send a reviewed
   builder's branch back for a fix (§9). Two runs on one branch run one after the other: the second
@@ -125,9 +128,9 @@ claustrum run <role> [--brief <text> | --brief-file <path|->]
   operation, clear the mark) and retry. A trash directory that would not delete, or a registration git still lists
   after the rename (`<path> freed, but … (trash at …; `claustrum jobs clean` removes it)`), is a `warnings` entry on
   the receipt, never a failure: the free completed. Nothing is ever forced.
-- `--stream` / `--stream readable` echoes formatted progress lines to **stderr** as the job runs
-  (`HH:mm:ss LABEL  detail…`); `--stream raw` echoes the raw backend JSON unchanged (today's
-  behaviour). stdout always carries only the final document. `--raw` adds the backend's untouched
+- `--stream` echoes formatted progress lines to **stderr** as the job runs
+  (`HH:mm:ss LABEL  detail…`); `--stream-raw` (implies streaming) echoes the raw backend JSON
+  unchanged. Both are plain flags and parse in any position. stdout always carries only the final document. `--raw` adds the backend's untouched
   response under `raw`.
 - Without `--json`, stdout gets `status:`, then `branch:`/`worktree:`/`commit:` when the run was
   isolated, the changed files and the final message; every warning goes to stderr as
@@ -138,7 +141,7 @@ claustrum run <role> [--brief <text> | --brief-file <path|->]
 ```
 claustrum coordinate [--cast <name>] (--issues 12,13 | --brief <text> | --brief-file <path|->)
     [--cwd <dir>] [--tier …] [--model <architect model>] [--budget <usd>] [--timeout <sec>]
-    [--json] [--stream] [--raw]
+    [--json] [--stream | --stream-raw] [--raw]
 ```
 
 Runs the cast's **architect** headlessly (§11). `--issues` needs `gh` authenticated and a GitHub
@@ -160,8 +163,8 @@ ignored local copy is fine`); or `.claustrum/worktrees/`, `.claustrum/briefs/` a
 harness config with a local edit — `skip-worktree`/`assume-unchanged` included, the usual way to keep
 a token local — is not refused: the worktree gets `HEAD`'s copy, and `coordinate` says so on stderr
 as `warning: …` before the run starts. The same refusals come back as the MCP tool's own error, the
-warnings in its `warnings` array. `--stream` / `--stream readable` formats progress to stderr;
-`--stream raw` echoes the raw JSON. Without `--json`, stdout adds `branch:`, `worktree:` and `commit:`
+warnings in its `warnings` array. `--stream` formats progress to stderr;
+`--stream-raw` echoes the raw JSON. Without `--json`, stdout adds `branch:`, `worktree:` and `commit:`
 after `logs:`, and every warning on the receipt goes to stderr as `warning: …`.
 
 ### `claustrum roles list | show <name>`
@@ -238,12 +241,13 @@ Scaffolds the current directory: writes model aliases to the **user config**
 (`~/.config/claustrum/config.json`, or `%APPDATA%\claustrum\config.json` on Windows) when
 `--answers <file>` is given — a JSON object mapping alias (`frontier-reasoning`,
 `frontier-coding`, `standard-coding`, `cheap-coding`, `fast`) to `backend:model-id`. Only
-missing aliases are written; existing ones are never overwritten. Without `--answers`, missing
+missing aliases are written; existing ones are never overwritten, and every other key in the file
+(including ones Claustrum does not know) is kept. The file is replaced atomically (a temp file beside it, then a rename). Without `--answers`, missing
 aliases are asked on the terminal; with redirected stdin it prints a message and exits 2.
 
 `init questions --json` prints one question per missing built-in alias with options
-(including the built-in default), the same shape as `CastQuestion`. "Missing" means not defined in
-the user config. `init` writes no repo `claustrum.json` (it reports `claustrum.json: not written …`
+(including the built-in default), the same snake_case shape as `CastQuestion`, plus `user_config_path`. "Missing" means defined neither in
+the user config nor in the repo `claustrum.json`. `init` writes no repo `claustrum.json` (it reports `claustrum.json: not written …`
 when absent, `already present, left unchanged` when there): aliases are per-developer in the user config.
 
 Also creates `.claustrum/casts/` and git-ignores `.claustrum/{casts,briefs,worktrees,locks}/`,
@@ -894,7 +898,7 @@ created. Budget ledgers live beside them under `budget/<tree>/`.
 | exit 2, `blind role: brief carries rationale` | the reviewer's brief has `## Context`/`## Plan`/`## Rationale` or a pasted report | remove it; add requirement or code, never reasoning |
 | exit 2, `this repo isn't initialized: no user config at <path> and no claustrum.json at <path>; run \`claustrum init\`` | neither the user config file (`~/.config/claustrum/config.json`) nor the repo's `claustrum.json` exists | run `claustrum init` to set up model aliases and scaffold |
 | exit 2, `cast '<x>' not found` / `coordinate needs a cast` | no `.claustrum/casts/<x>.json` in the cwd | `cast create`/`cast new`, or `--cast` the right name |
-| exit 2, `coordinate runs the architect in a worktree, which sees only committed files — commit (or un-ignore) <path> (<state>) first` | the cast, `claustrum.json` or a role file under `.claustrum/roles/` (`<role>/role.json`, `<role>/ROLE.md`, `<role>/parts/*.md`) differs from `HEAD` — modified, staged, untracked or ignored — or hides a local edit (`skip-worktree`, `assume-unchanged`), and the architect's worktree would not see it | commit it (un-ignore a cast the repo ignores; `git update-index --no-skip-worktree`/`--no-assume-unchanged <path>` first for a hidden edit), then rerun; nothing was spent |
+| exit 2, `coordinate runs the architect in a worktree, which sees only committed files — commit (or un-ignore) <path> (<state>) first` | the cast, `claustrum.json` or a role file under `.claustrum/roles/` (`<role>/role.json`, `<role>/ROLE.md`, `<role>/parts/*.md`) differs from `HEAD` — modified, staged, untracked or ignored — or hides a local edit (`skip-worktree`, `assume-unchanged`), and the architect's worktree would not see it | commit it (a cast that is untracked or ignored is fine once a committed `.gitignore` rule ignores `.claustrum/casts/` — `claustrum init` writes it; `git update-index --no-skip-worktree`/`--no-assume-unchanged <path>` first for a hidden edit), then rerun; nothing was spent |
 | exit 2, `… — .gitignore (<state> — the worktree gets HEAD's ignore rules; commit it first)` | the file holding Claustrum's `.claustrum/` ignore rules has an uncommitted change, related to them or not: the worktree gets `HEAD`'s copy, so what was checked is not what it will see | commit it (or revert the edit), then rerun |
 | exit 2, `… — commit or git-ignore .mcp.json (untracked) — an ignored local copy is fine` | a harness config `claustrum init` writes (`.mcp.json`, `opencode.json`, `opencode.jsonc`) is in no commit, so the architect's harness would start without it | commit it, or git-ignore it if it is meant to stay local (the architect then runs without it) |
 | `warning: .mcp.json (<state>): the architect's worktree gets HEAD's copy — your local edit stays out of it` (stderr before the run; MCP `warnings`) | a committed harness config has a local edit — plain, or hidden by `skip-worktree`/`assume-unchanged` — and the architect and its children read the committed one | nothing, if the committed copy works; otherwise commit the edit, or stop the run and move the setting somewhere committed |

@@ -47,6 +47,8 @@ public static partial class ArchitectWorktree
     /// </summary>
     public static async Task<string[]> RequireReadyAsync(string cwd, string gitRoot, string castName, CancellationToken cancellationToken)
     {
+        CastStore.RequireFileName(castName);
+
         // The worktree is the whole repository: from a subdirectory, children given its root as --cwd
         // would look for the cast where the operator never put it.
         if (!string.Equals(Path.TrimEndingDirectorySeparator(Path.GetFullPath(cwd)), Path.TrimEndingDirectorySeparator(gitRoot), StringComparison.Ordinal))
@@ -57,7 +59,7 @@ public static partial class ArchitectWorktree
         }
 
         await RefuseTrackedLinksAsync(gitRoot, cancellationToken);
-        (string[] unignored, string[] ruleFiles, bool castsIgnored) = await MachineryIgnoresAsync(cwd, gitRoot, cancellationToken);
+        (string[] unignored, string[] ruleFiles, bool castsIgnored) = await MachineryIgnoresAsync(cwd, gitRoot, castName, cancellationToken);
 
         // #122: the cast is judged by its own git state (CheckCastState), apart from the paths below; the
         // casts rule is required only when it is untracked, so it is not in the generic `unignored` refusal (2026-10-15).
@@ -201,7 +203,7 @@ public static partial class ArchitectWorktree
     // can differ in the worktree — `.git/info/exclude` and the global excludes file are shared by every
     // worktree. A `!` pattern is a match that un-ignores. Unignored lists the directories NO rule ignores
     // (an inverse: the casts one is reported apart, as CastsIgnored, the cast's git state deciding if it matters).
-    private static async Task<(string[] Unignored, string[] RuleFiles, bool CastsIgnored)> MachineryIgnoresAsync(string cwd, string gitRoot, CancellationToken cancellationToken)
+    private static async Task<(string[] Unignored, string[] RuleFiles, bool CastsIgnored)> MachineryIgnoresAsync(string cwd, string gitRoot, string castName, CancellationToken cancellationToken)
     {
         // F1 (2026-10-09): asked about the shapes Claustrum really writes there — a whitelist `.gitignore`
         // (`*`, `!*/`, `!*.md`) ignores a file named `probe` and un-ignores a worktree directory and a brief.
@@ -231,7 +233,7 @@ public static partial class ArchitectWorktree
             (BriefsDirectory, $"{BriefsDirectory}1-builder.md"),
             (LocksDirectory, $"{LocksDirectory}default__builder.1.lock"),
         ];
-        string castsProbe = $"{CastsDirectory}default.json";
+        string castsProbe = $"{CastsDirectory}{castName}.json";
 
         string output;
         try

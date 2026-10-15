@@ -4,6 +4,7 @@ namespace Claustrum.Casts;
 
 // JSON shape for `claustrum init questions --json`. Defined here so serialization works
 // through the source generator. Also handles the --answers file type for convenience.
+[JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.SnakeCaseLower, WriteIndented = true)]
 [JsonSerializable(typeof(InitQuestionsResult))]
 [JsonSerializable(typeof(Dictionary<string, string>))]
 public sealed partial class InitQuestionsJsonContext : JsonSerializerContext;

@@ -46,5 +46,6 @@ end-to-end, run `claustrum coordinate --cast <name> --issues <n,m> --json` (or `
 headlessly on the cast's model, delegates builders → blind reviewer → tester (→ demo-author,
 for a browser-facing feature) itself, and leaves its work on branch `claustrum/<job_id>`;
 `claustrum jobs budget <job_id>` shows what the tree spent. `coordinate` no longer needs the
-cast committed — an untracked or git-ignored cast works. If `architect.mode` is `host`, you
+cast committed — an untracked or git-ignored cast works, provided the `.gitignore` rule for
+`.claustrum/casts/` (`claustrum init` writes it) is committed. If `architect.mode` is `host`, you
 are the architect: adopt the synced `architect` role and delegate with `--cast` yourself.
