@@ -425,9 +425,10 @@ always injects with `--append-system-prompt-file`. There is no JSON schema file,
 not know (a `$schema`, say) is ignored rather than refused.
 
 **Model grammar**: `[backend:]<model-id>`; a bare name is looked up as an alias (recursively,
-depth 3), then handed to the backend as an id. `claustrum init` writes only two aliases
-(`frontier-coding: claude:opus`, `cheap-coding: opencode:openrouter/deepseek/deepseek-v4-flash`);
-the built-ins fill the rest with `claude:*`. What each backend accepts as an id:
+depth 3), then handed to the backend as an id. `claustrum init` asks what each alias that neither your
+user config nor the repo's `claustrum.json` defines should map to, and writes the answers to the user
+config; an alias nobody defines falls back to a built-in `claude:*` default, and every run that lands on
+one says so in `warnings[]`. What each backend accepts as an id:
 
 | Backend | Model id form | Verified ids |
 |---|---|---|
