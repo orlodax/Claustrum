@@ -5,7 +5,7 @@ namespace Claustrum.Casts;
 // architect role headlessly on Model). Model/Tier are optional so a cast written before M4 —
 // `{"mode":"host"}` — still loads; they play the part Cast.Roles plays for every other role
 // (CastApplication.Resolve), because the architect is never a member of that dictionary.
-public sealed record CastArchitect(string Mode, string? Model = null, string? Tier = null)
+public sealed record CastArchitect(string Mode, string? Model = null, string? Tier = null, string? Resolved = null)
 {
     public const string Host = "host";
     public const string Spawned = "spawned";

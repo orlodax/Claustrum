@@ -11,7 +11,7 @@ public static class CastApplication
     // default.json applied itself), null when no cast was in play at all. RoleConcurrencyGate keys
     // its slot pool on it: docs/PLAN.md §D4 caps per cast, and a pool keyed on the role alone is
     // shared by every cast in the repo.
-    public static (string Tier, ConfigOverrides Overrides, CastBudget? CastBudget, int? MaxParallel, string? CastName) Resolve(
+    public static CastApplicationResult Resolve(
         string cwd, string role, string? castName, string? tierFlag, ConfigOverrides overrides)
     {
         Cast? cast = castName is { Length: > 0 } ? CastStore.Load(cwd, castName) : CastStore.TryLoadDefault(cwd);
@@ -19,10 +19,45 @@ public static class CastApplication
         // The architect's model/tier live in cast.Architect, not in cast.Roles (Cast.ArchitectRole),
         // so `claustrum run architect --cast x` and `coordinate` resolve through this one path.
         CastRoleEntry? castRole = role == Cast.ArchitectRole
-            ? cast is null ? null : new CastRoleEntry(cast.Architect.Model, Backend: null, cast.Architect.Tier)
+            ? cast is null ? null : new CastRoleEntry(cast.Architect.Model, Backend: null, cast.Architect.Tier, Resolved: cast.Architect.Resolved)
             : cast?.Roles.GetValueOrDefault(role);
-        (string tier, ConfigOverrides resolvedOverrides) = CastResolution.ApplyRole(tierFlag, overrides, castRole);
+        (string tier, ConfigOverrides merged) = CastResolution.ApplyRole(tierFlag, overrides, castRole);
 
-        return (tier, resolvedOverrides, cast is null ? null : new CastBudget(cast.BudgetUsd), castRole?.MaxParallel, cast?.Name);
+        string[] warnings = DescribeWarnings(cwd, cast, role, castRole, overrides);
+
+        return new CastApplicationResult
+        {
+            Tier = tier,
+            Overrides = merged,
+            CastBudget = cast is null ? null : new CastBudget(cast.BudgetUsd),
+            MaxParallel = castRole?.MaxParallel,
+            CastName = cast?.Name,
+            Warnings = warnings,
+        };
+    }
+
+    // #121: never silently run a model the cast's alias only resolved to by falling through to a
+    // built-in default, nor one whose stored `resolved` no longer matches today's config. Runs only
+    // when the model came from the cast (no --model or --backend flag filled it first): an explicit
+    // flag wins and its run gets no cast-caused warning.
+    // Config loaded here is a second load (one per run, one per DescribeWarnings call), which is
+    // fine — the alternative (reading the config before DelegateEngine.Prepare loads its own) would
+    // pull the loaded instance out of a shared slot and complicate thread safety for negligible gain.
+    private static string[] DescribeWarnings(string cwd, Cast? cast, string role, CastRoleEntry? castRole, ConfigOverrides overrides)
+    {
+        if (cast is null || overrides.Model is not null || overrides.Backend is not null || castRole?.Model is not { } alias)
+            return [];
+
+        Config config = Config.Load(AppServices.Platform, cwd);
+        ModelResolution resolution = config.Describe(alias);
+        string target = $"{resolution.Backend}:{resolution.ModelId}";
+
+        List<string> warnings = [];
+        if (resolution.FromBuiltin)
+            warnings.Add(CastModelLines.BuiltinDefaultWarning(cast.Name, role, alias, target, config));
+        if (castRole.Resolved is { } stored && stored != target)
+            warnings.Add(CastModelLines.ResolvedChangedWarning(cast.Name, role, alias, stored, target, resolution.Source ?? ""));
+
+        return [.. warnings];
     }
 }

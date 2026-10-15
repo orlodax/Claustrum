@@ -19,28 +19,40 @@ public sealed class Config
     // overrides too, not just the four file/env layers (review finding #2).
     public required Dictionary<string, ConfigLayer> Origins { get; init; }
 
+    // The paths of the two file layers (or the ones that would have been used — a layer never sets a
+    // key when its file is absent). Exposed so Describe's source strings and #121's "looked in …"
+    // messages name real paths instead of re-walking the git root for every caller (CLI and MCP).
+    public string UserConfigPath { get; init; } = "";
+
+    /// <summary>The repo's <c>claustrum.json</c>, or null when there is no git root or no such file.</summary>
+    public string? RepoConfigPath { get; init; }
+
     // A null cwd loads no repo layer: `sync --global` is the user's config alone (#53, as #99 made it the library alone).
     public static Config Load(IPlatform platform, string? cwd)
     {
         Dictionary<string, ConfigLayer> origins = [];
         ConfigDocument merged = TrackDefaults(BuiltInDefaults(), ConfigLayer.Builtin, origins);
 
-        string userPath = UserConfigPath(platform);
+        string userPath = UserConfigFilePath(platform);
         if (platform.FileExists(userPath))
             merged = MergeLayer(merged, ReadDocument(platform, userPath), ConfigLayer.User, origins);
 
         string? gitRoot = cwd is null ? null : GitRootLocator.Find(cwd, platform);
+        string? repoPath = null;
         if (gitRoot is not null)
         {
-            string repoPath = Path.Combine(gitRoot, "claustrum.json");
-            if (platform.FileExists(repoPath))
+            string candidate = Path.Combine(gitRoot, "claustrum.json");
+            if (platform.FileExists(candidate))
+            {
+                repoPath = candidate;
                 merged = MergeLayer(merged, ReadDocument(platform, repoPath), ConfigLayer.Repo, origins);
+            }
         }
 
         if (ReadEnvLayer(platform) is { } envLayer)
             merged = MergeLayer(merged, envLayer, ConfigLayer.Env, origins);
 
-        return new Config { Merged = merged, Origins = origins };
+        return new Config { Merged = merged, Origins = origins, UserConfigPath = userPath, RepoConfigPath = repoPath };
     }
 
     // Model class -> alias -> "[backend:]model-id" (docs/PLAN.md A7); role.json's Permission
@@ -113,12 +125,36 @@ public sealed class Config
     // silently capping real resolution at 2 hops.
     public (string Backend, string ModelId) ResolveModel(string spec)
     {
+        (string backend, string modelId, _, _) = ChaseModel(spec);
+        return (backend, modelId);
+    }
+
+    // #121: expose what an alias — or any bare 'backend:model-id' spec — to the CLI and MCP callers,
+    // the same chase ResolveModel uses, with the first-hop layer and the "did any hop fall through to
+    // a built-in default?" flag that DescribeWarnings and the cast models table need.
+    public ModelResolution Describe(string spec)
+    {
+        (string backend, string modelId, ConfigLayer? layer, bool fromBuiltin) = ChaseModel(spec);
+        return new ModelResolution(spec, backend, modelId, layer, SourceFor(layer), fromBuiltin);
+    }
+
+    // Shared by ResolveModel and Describe: the §A7 alias chase to depth 3, plus (for Describe alone)
+    // the first hop's layer and whether any hop came from the built-in defaults. ResolveModel
+    // discards those extra fields.
+    private (string Backend, string ModelId, ConfigLayer? FirstLayer, bool FromBuiltin) ChaseModel(string spec)
+    {
         HashSet<string> seen = [spec];
         string current = spec;
+        ConfigLayer? firstLayer = null;
+        bool fromBuiltin = false;
         for (int hop = 0; hop < 3; hop++)
         {
             if (Merged.Models is null || !Merged.Models.TryGetValue(current, out string? next))
-                return SplitBackendModel(current);
+                return (SplitBackendModel(current).Backend, SplitBackendModel(current).ModelId, firstLayer, fromBuiltin);
+
+            ConfigLayer layer = Origins.GetValueOrDefault($"models.{current}", ConfigLayer.Builtin);
+            firstLayer ??= layer;
+            fromBuiltin |= layer == ConfigLayer.Builtin;
 
             if (!seen.Add(next))
                 throw new ConfigException($"model alias '{spec}' has a cycle at '{next}'");
@@ -129,7 +165,8 @@ public sealed class Config
         if (Merged.Models is not null && Merged.Models.ContainsKey(current))
             throw new ConfigException($"model alias '{spec}' did not resolve within 3 levels");
 
-        return SplitBackendModel(current);
+        (string backend, string modelId) = SplitBackendModel(current);
+        return (backend, modelId, firstLayer, fromBuiltin);
     }
 
     private static (string Backend, string ModelId) SplitBackendModel(string value)
@@ -137,6 +174,17 @@ public sealed class Config
         int colon = value.IndexOf(':');
         return colon < 0 ? ("claude", value) : (value[..colon], value[(colon + 1)..]);
     }
+
+    private string? SourceFor(ConfigLayer? layer) => layer switch
+    {
+        null => null,
+        ConfigLayer.Builtin => "built-in default",
+        ConfigLayer.User => UserConfigPath,
+        ConfigLayer.Repo => RepoConfigPath,
+        ConfigLayer.Env => "environment",
+        ConfigLayer.Flag => "flag",
+        _ => throw new ArgumentOutOfRangeException(nameof(layer), layer, null),
+    };
 
     // One alias per class in roles/library.json, so `claustrum run <role>` resolves a real model
     // without `--model` and without a `claustrum.json` (builder brief item 2); claustrum.json's
@@ -242,7 +290,7 @@ public sealed class Config
         return new JobsSettings(incoming.KeepLast);
     }
 
-    private static string UserConfigPath(IPlatform platform) => platform.Os == ClaustrumOs.Windows
+    private static string UserConfigFilePath(IPlatform platform) => platform.Os == ClaustrumOs.Windows
         ? Path.Combine(platform.GetEnvironmentVariable("APPDATA") ?? Path.Combine(platform.HomeDirectory, "AppData", "Roaming"), "claustrum", "config.json")
         : Path.Combine(platform.HomeDirectory, ".config", "claustrum", "config.json");
 

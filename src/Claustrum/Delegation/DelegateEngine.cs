@@ -79,7 +79,8 @@ public static class DelegateEngine
             BackendConfig: backendConfig,
             EnvPassthroughAll: config.Merged.Defaults?.EnvPassthrough == "all",
             OnStreamLine: request.OnStreamLine,
-            Tree: tree);
+            Tree: tree,
+            PreRunWarnings: request.PreRunWarnings);
 
         return new PreparedDelegation(request, resolved, options, budgetUsd, timeoutSeconds, requestPermission);
     }

@@ -36,7 +36,10 @@ public sealed record DelegateRequest(
     // which alone still decides a cap — `coordinate`'s architect, which takes no slot.
     bool Isolate = false,
     // Set by the MCP tools: their `files` are read as regular files only (RunRequest.AttachmentsMustBeRegular).
-    bool AttachmentsMustBeRegular = false)
+    bool AttachmentsMustBeRegular = false,
+    // #121: cast-resolution warnings (built-in fallback, stored Δ) that DelegateEngine.Prepare
+    // folds into RunOptions.PreRunWarnings and from there into result.json's warnings[] and stderr.
+    string[]? PreRunWarnings = null)
 {
     /// <summary>
     /// The exact token <see cref="SystemAppendix"/> and <see cref="Env"/> values may carry in place of

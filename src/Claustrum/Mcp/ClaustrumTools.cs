@@ -176,7 +176,7 @@ public sealed class ClaustrumTools
     {
         string resolvedCwd = cwd is { Length: > 0 } ? Path.GetFullPath(cwd) : Environment.CurrentDirectory;
         ConfigOverrides overrides = new(Backend: backend, Model: model, Effort: effort, Permission: permission, Deny: deny, BudgetUsd: budgetUsd, TimeoutSeconds: timeoutSeconds);
-        (string resolvedTier, ConfigOverrides resolvedOverrides, CastBudget? castBudget, int? maxParallel, string? resolvedCastName) = CastApplication.Resolve(resolvedCwd, role, cast, tier, overrides);
+        (string resolvedTier, ConfigOverrides resolvedOverrides, CastBudget? castBudget, int? maxParallel, string? resolvedCastName, string[] castWarnings) = CastApplication.Resolve(resolvedCwd, role, cast, tier, overrides);
 
         return new DelegateRequest(
             Role: role,
@@ -193,7 +193,8 @@ public sealed class ClaustrumTools
             MaxParallel: maxParallel,
             CastName: resolvedCastName,
             Branch: branch is { Length: > 0 } ? branch : null,
-            AttachmentsMustBeRegular: true);
+            AttachmentsMustBeRegular: true,
+            PreRunWarnings: castWarnings);
     }
 
     [McpServerTool(Name = "list_roles")]
@@ -255,9 +256,19 @@ public sealed class ClaustrumTools
         McpExceptionBoundary.Guard(() =>
         {
             string cwd = Environment.CurrentDirectory;
-            Cast cast = CastBuilder.FromAnswers(name, AppServices.RoleLibrary.Version, AppServices.RoleLibrary.ListRoles(), answers);
-            CastHarnessCheck.Require(cast, AppServices.RoleLibrary, AppServices.Backends, Config.Load(AppServices.Platform, cwd), cwd);
+            Config config = Config.Load(AppServices.Platform, cwd);
+            Cast cast = CastBuilder.WithResolved(
+                CastBuilder.FromAnswers(name, AppServices.RoleLibrary.Version, AppServices.RoleLibrary.ListRoles(), answers), config);
+            CastHarnessCheck.Require(cast, AppServices.RoleLibrary, AppServices.Backends, config, cwd);
             CastStore.Save(cwd, cast);
+
+            // #121: also print per-role lines and builtin warnings to the MCP server's stderr
+            // (which the host may surface as text, as the JSON returned here carries `resolved`).
+            (string[] lines, string[] warnings) = CastModelLines.ForCast(cast, config);
+            foreach (string line in lines)
+                Console.Error.WriteLine(line);
+            foreach (string warning in warnings)
+                Console.Error.WriteLine($"warning: {warning}");
 
             return JsonSerializer.Serialize(cast, CastJsonContext.Default.Cast);
         });
