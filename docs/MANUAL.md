@@ -129,8 +129,10 @@ claustrum run <role> [--brief <text> | --brief-file <path|->]
   after the rename (`<path> freed, but … (trash at …; `claustrum jobs clean` removes it)`), is a `warnings` entry on
   the receipt, never a failure: the free completed. Nothing is ever forced.
 - `--stream` echoes formatted progress lines to **stderr** as the job runs
-  (`HH:mm:ss LABEL  detail…`); `--stream-raw` (implies streaming) echoes the raw backend JSON
-  unchanged. Both are plain flags and parse in any position. stdout always carries only the final document. `--raw` adds the backend's untouched
+  (`HH:mm:ss LABEL  detail…`; whitespace folded to one space, control characters shown as `\x1b`-style
+  escapes, so model text cannot move the cursor or retitle the terminal; claude's final `result` adds a
+  `total $…` line); `--stream-raw` (implies streaming) echoes the raw backend JSON unchanged. Both are
+  plain flags and parse in any position. stdout always carries only the final document. `--raw` adds the backend's untouched
   response under `raw`.
 - Without `--json`, stdout gets `status:`, then `branch:`/`worktree:`/`commit:` when the run was
   isolated, the changed files and the final message; every warning goes to stderr as
@@ -190,7 +192,9 @@ backend, or it skips with "no model alias … resolves to this backend".
 - `logs`: the captured stdout (readable while the job runs); `--stderr` for the other stream.
 - `follow [<id>]`: follow a job's output as it runs. With an id, prints a header line (job id,
   role, `backend:model`), then streams the job's `stdout.log` from the start, formatted per its
-  backend's stream formatter (`HH:mm:ss LABEL  detail…`). Polls every ~500 ms. When the job finishes
+  backend's stream formatter (`HH:mm:ss LABEL  detail…`, sanitized as above). A line that has no time of
+  its own and was already in the log when the follow began (claude's stream has none) shows `--:--:--`;
+  lines that arrive afterwards show their arrival time. Polls every ~500 ms. When the job finishes
   and `result.json` appears, prints a summary line (`status`, cost, duration, `backend:model`,
   warnings count) and exits 0. Without an id, follows every job that starts after the command, each
   line prefixed with the short job id, until Ctrl-C (exit 130). `--raw` shows unformatted lines.

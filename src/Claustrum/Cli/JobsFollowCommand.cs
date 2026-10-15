@@ -11,6 +11,7 @@ namespace Claustrum.Cli;
 public static class JobsFollowCommand
 {
     private const int PollIntervalMs = 500;
+    private const int ReadChunkBytes = 64 * 1024;
 
     public static Command Build()
     {
@@ -103,7 +104,7 @@ public static class JobsFollowCommand
                         continue;
 
                     trackers[id] = new JobTracker(dir, rawMode);
-                    SafeConsole.Error($"following {id}  {SummarizeJob(dir, id)}");
+                    SafeConsole.Error($"following {StreamText.Sanitize(id)}  {SummarizeJob(dir, id)}");
                 }
             }
 
@@ -133,6 +134,14 @@ public static class JobsFollowCommand
         public long Position;
         public string Partial = "";
         public bool Done;
+
+        // One decoder per followed file: a multibyte character split across two polls is completed
+        // by the next read instead of becoming two U+FFFD.
+        public Decoder Decoder { get; } = Encoding.UTF8.GetDecoder();
+
+        // Bytes already in the log when the follow began are a replay: a line with no time of its own
+        // prints `--:--:--` instead of a made-up one. Lines past this offset are live.
+        public long ReplayEnd { get; } = LogLength(Path.Combine(directory, "stdout.log"));
         private bool formatterResolved = rawMode;
         private int summaryAttempts;
 
@@ -163,7 +172,7 @@ public static class JobsFollowCommand
 
         // Until backend.json names the formatter the log is held back; a finished job without one is raw.
         if (job.TryResolveFormatter() || finished)
-            (job.Position, job.Partial) = PrintTail(Path.Combine(job.Directory, "stdout.log"), job.Position, job.Partial, job.Formatter, prefix);
+            PrintTail(job, prefix);
 
         if (!finished)
             return false;
@@ -178,124 +187,144 @@ public static class JobsFollowCommand
         return true;
     }
 
-    // Read new data from the log, format lines (optionally with a job-id prefix for the all-jobs mode),
-    // return the new file position and any held-back partial line.
-    private static (long Position, string Partial) PrintTail(
-        string logPath, long lastPosition, string partialLine, IStreamFormatter? formatter, string? prefix)
+    private static long LogLength(string logPath)
     {
-        if (!File.Exists(logPath))
-            return (0, partialLine);
-
-        long length;
         try
         {
-            length = new FileInfo(logPath).Length;
+            return new FileInfo(logPath).Length;
         }
         catch (IOException)
         {
-            return (lastPosition, partialLine);
+            return 0;
+        }
+    }
+
+    // Read what the log gained in bounded chunks, format its complete lines (optionally with a job-id
+    // prefix for the all-jobs mode) and hold the trailing partial line back for the next poll.
+    private static void PrintTail(JobTracker job, string? prefix)
+    {
+        string logPath = Path.Combine(job.Directory, "stdout.log");
+        if (!File.Exists(logPath))
+        {
+            job.Position = 0;
+            return;
         }
 
-        if (length <= lastPosition)
-            return (length, partialLine);
+        long length = LogLength(logPath);
+        if (length <= job.Position)
+        {
+            // A shrunk log restarts the stream, and the decoder's half-character with it.
+            if (length < job.Position)
+                job.Decoder.Reset();
 
-        long newLength = length;
-        byte[] buffer = new byte[newLength - lastPosition];
-        int read = 0;
+            job.Position = length;
+            return;
+        }
 
         try
         {
             using FileStream fs = new(logPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-            fs.Seek(lastPosition, SeekOrigin.Begin);
+            fs.Seek(job.Position, SeekOrigin.Begin);
 
-            while (read < buffer.Length)
+            byte[] buffer = new byte[ReadChunkBytes];
+            char[] chars = new char[Encoding.UTF8.GetMaxCharCount(ReadChunkBytes)];
+
+            while (job.Position < length)
             {
-                int n = fs.Read(buffer, read, buffer.Length - read);
-                if (n == 0)
+                // A chunk never straddles the replay boundary, so each one is wholly replay or wholly live.
+                long limit = job.Position < job.ReplayEnd ? Math.Min(length, job.ReplayEnd) : length;
+                int read = fs.Read(buffer, 0, (int)Math.Min(buffer.Length, limit - job.Position));
+                if (read == 0)
                     break;
-                read += n;
+
+                job.Position += read;
+                int count = job.Decoder.GetChars(buffer, 0, read, chars, 0);
+                PrintLines(job, new string(chars, 0, count), replayed: job.Position <= job.ReplayEnd, prefix);
             }
         }
         catch (IOException)
         {
-            return (lastPosition, partialLine);
+            // Position only moves with the bytes consumed, so the next poll resumes where this stopped.
         }
+    }
 
-        string text = Encoding.UTF8.GetString(buffer, 0, read);
-        string combined = partialLine + text;
+    private static void PrintLines(JobTracker job, string text, bool replayed, string? prefix)
+    {
+        string combined = job.Partial + text;
 
-        // Find the last newline: everything after it is a partial line to hold back.
+        // Everything after the last newline is a partial line to hold back.
         int lastNewline = combined.LastIndexOf('\n');
         if (lastNewline < 0)
-            return (newLength, combined); // No complete line yet.
-
-        string complete = combined[..lastNewline];
-        string newPartial = combined[(lastNewline + 1)..];
-        string[] lines = complete.Split('\n');
-
-        foreach (string line in lines)
         {
-            string? output = FormatSafely(formatter, line.TrimEnd('\r'));
+            job.Partial = combined;
+            return;
+        }
+
+        job.Partial = combined[(lastNewline + 1)..];
+
+        foreach (string line in combined[..lastNewline].Split('\n'))
+        {
+            string? output = FormatSafely(job.Formatter, line.TrimEnd('\r'), replayed);
             if (output is null)
                 continue;
 
-            SafeConsole.Error(prefix is null ? output : $"{prefix} {output}");
+            SafeConsole.Error(prefix is null ? output : $"{StreamText.Sanitize(prefix)} {output}");
         }
-
-        return (newLength, newPartial);
     }
 
-    // A formatter that chokes on a line must not take the follow down: that line goes out raw.
-    private static string? FormatSafely(IStreamFormatter? formatter, string line)
+    // A formatter that chokes on a line must not take the follow down: that line goes out sanitized.
+    private static string? FormatSafely(IStreamFormatter? formatter, string line, bool replayed)
     {
         if (formatter is null)
             return line;
 
         try
         {
-            return formatter.FormatLine(line);
+            return formatter.FormatLine(line, replayed);
         }
         catch (Exception)
         {
-            return line;
+            return StreamText.Sanitize(line);
         }
     }
 
-    // Build a header line for a job.
+    // Build a header line for a job: id, role, backend:model. Every part is read from job files, so each
+    // goes through the terminal sanitizer.
     private static string SummarizeJob(string jobDir, string jobId)
     {
-        // Try backend.json first (written at job start).
         string backend = "";
         string model = "";
+        string role = "";
+
+        // backend.json is written at job start, request.json before it; result.json fills whatever is still missing.
         using (JsonDocument? doc = TryReadObject(Path.Combine(jobDir, "backend.json")))
         {
             backend = doc is null ? "" : GetString(doc.RootElement, "backend") ?? "";
             model = doc is null ? "" : GetString(doc.RootElement, "model") ?? "";
         }
 
-        // Fall back to request.json when the run has not yet produced backend.json.
-        string role = "";
-        if (backend.Length == 0)
-        {
-            using JsonDocument? doc = TryReadObject(Path.Combine(jobDir, "request.json"));
+        using (JsonDocument? doc = TryReadObject(Path.Combine(jobDir, "request.json")))
             role = doc is null ? "" : GetString(doc.RootElement, "role") ?? "";
-        }
 
-        // Fall back to result.json as a last resort.
-        if (backend.Length == 0)
+        if (backend.Length == 0 || role.Length == 0)
         {
             using JsonDocument? doc = TryReadObject(Path.Combine(jobDir, "result.json"));
             if (doc is not null)
             {
-                backend = GetString(doc.RootElement, "backend") ?? "";
-                model = GetString(doc.RootElement, "model") ?? "";
-                role = GetString(doc.RootElement, "role") ?? "";
+                if (backend.Length == 0)
+                {
+                    backend = GetString(doc.RootElement, "backend") ?? "";
+                    model = GetString(doc.RootElement, "model") ?? "";
+                }
+
+                if (role.Length == 0)
+                    role = GetString(doc.RootElement, "role") ?? "";
             }
         }
 
-        string line = $"job {jobId}";
-        if (role.Length > 0) line += $"  role {role}";
-        if (backend.Length > 0) line += $"  {backend}:{model}";
+        string line = $"job {StreamText.Sanitize(jobId)}";
+        if (role.Length > 0) line += $"  {StreamText.Sanitize(role)}";
+        if (backend.Length > 0) line += $"  {StreamText.Sanitize(backend)}:{StreamText.Sanitize(model)}";
 
         return line;
     }
@@ -309,15 +338,15 @@ public static class JobsFollowCommand
 
         JsonElement root = doc.RootElement;
 
-        string status = GetString(root, "status") ?? "?";
+        string status = StreamText.Sanitize(GetString(root, "status") ?? "?");
         string cost = root.TryGetProperty("cost_usd", out JsonElement c) && c.ValueKind == JsonValueKind.Number && c.TryGetDecimal(out decimal costVal)
             ? BudgetLedger.Dollars(costVal)
             : "-";
         double? duration = root.TryGetProperty("duration_seconds", out JsonElement d) && d.ValueKind == JsonValueKind.Number && d.TryGetDouble(out double durVal)
             ? durVal
             : null;
-        string backend = GetString(root, "backend") ?? "";
-        string model = GetString(root, "model") ?? "";
+        string backend = StreamText.Sanitize(GetString(root, "backend"));
+        string model = StreamText.Sanitize(GetString(root, "model"));
         int warnings = root.TryGetProperty("warnings", out JsonElement w) && w.ValueKind == JsonValueKind.Array
             ? w.GetArrayLength()
             : 0;

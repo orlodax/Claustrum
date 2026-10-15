@@ -118,7 +118,7 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
             return await FinishAsync(job, reservation, MissingBackendResult(job, role, $"backend '{role.Backend}' is not registered"), ran: false, options);
 
         // Record the resolved backend and model for `jobs follow` (issue #123).
-        RecordBackendAsync(job, backend, role);
+        RecordBackend(job, backend, role);
 
         // Wrap OnStreamLine with the backend's stream formatter when --stream is active
         // and not in raw mode.
@@ -158,6 +158,14 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
         // F5: a resumed session's export is cumulative, so the figure before this run is the baseline.
         PostRunContext postRunContext = new(spec, request.ResumeSession, job.Directory, runOptions.BackendConfig, runOptions.EnvPassthroughAll, Stdout: "");
         PreRunBaseline? baseline = backend is IPostRunHook preRun ? await PreRunBaselineAsync(preRun, postRunContext, cancellationToken) : null;
+
+        // The baseline export swallows its own cancellation, so a cancel that landed there is seen here:
+        // it ends like a cancel in the before-snapshot, not with a backend started on a cancelled run.
+        if (cancellationToken.IsCancellationRequested)
+        {
+            DeleteTempFiles(spec.TempFiles);
+            return await FinishAsync(job, reservation, NoProcessResult(job, role, RunStatus.Cancelled, new OperationCanceledException(cancellationToken).Message), ran: false, runOptions);
+        }
 
         ProcessOutcome outcome;
         try
@@ -529,7 +537,7 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
 
     // Written at job start so `jobs follow` can pick the right stream formatter while the job
     // is still running (issue #123). Uses Utf8JsonWriter directly (no separate DTO type needed).
-    private static void RecordBackendAsync(JobPaths job, IBackend backend, ResolvedRole role)
+    private static void RecordBackend(JobPaths job, IBackend backend, ResolvedRole role)
     {
         using MemoryStream buffer = new();
         using (Utf8JsonWriter writer = new(buffer))

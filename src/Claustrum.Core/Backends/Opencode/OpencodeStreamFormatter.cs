@@ -1,4 +1,3 @@
-using System.Globalization;
 using System.Text.Json;
 
 namespace Claustrum.Core.Backends.Opencode;
@@ -10,7 +9,9 @@ public sealed class OpencodeStreamFormatter(string cwd) : IStreamFormatter
 {
     private decimal runningCost;
 
-    public string? FormatLine(string rawLine)
+    public string? FormatLine(string rawLine) => FormatLine(rawLine, replayed: false);
+
+    public string? FormatLine(string rawLine, bool replayed)
     {
         // ParseOnce, then decide — no throw path for the common no-parse events.
         JsonDocument document;
@@ -20,16 +21,16 @@ public sealed class OpencodeStreamFormatter(string cwd) : IStreamFormatter
         }
         catch (JsonException)
         {
-            return rawLine;
+            return Passthrough(rawLine);
         }
 
         using JsonDocument _ = document;
         JsonElement root = document.RootElement;
 
-        // Not an object with a string `type`: not an event we know the shape of, so the raw line
-        // goes out and no property access below can throw on the pump thread.
+        // Not an object with a string `type`: not an event we know the shape of, so the sanitized
+        // line goes out and no property access below can throw on the pump thread.
         if (root.ValueKind != JsonValueKind.Object || GetString(root, "type") is not { } type)
-            return rawLine;
+            return Passthrough(rawLine);
 
         long? timestampMs = root.TryGetProperty("timestamp", out JsonElement tsProp)
             && tsProp.ValueKind == JsonValueKind.Number
@@ -41,36 +42,39 @@ public sealed class OpencodeStreamFormatter(string cwd) : IStreamFormatter
         if (type == "error")
         {
             string message = ExtractErrorMessage(root, rawLine);
-            return FormatLine(timestampMs, "ERROR", message);
+            return FormatLine(timestampMs, replayed, "ERROR", StreamText.Sanitize(message));
         }
 
-        // step_finish: track cost, print nothing.
-        if (type == "step_finish" && root.TryGetProperty("part", out JsonElement finishPart)
-            && finishPart.ValueKind == JsonValueKind.Object
-            && finishPart.TryGetProperty("cost", out JsonElement costProp)
-            && costProp.ValueKind == JsonValueKind.Number
-            && costProp.TryGetDecimal(out decimal stepCost))
+        // step_finish: track cost, print nothing (with or without a numeric cost).
+        if (type == "step_finish")
         {
-            runningCost += stepCost;
+            if (root.TryGetProperty("part", out JsonElement finishPart)
+                && finishPart.ValueKind == JsonValueKind.Object
+                && finishPart.TryGetProperty("cost", out JsonElement costProp)
+                && costProp.ValueKind == JsonValueKind.Number
+                && costProp.TryGetDecimal(out decimal stepCost))
+                runningCost += stepCost;
+
             return null;
         }
 
-        // step_start, heartbeat, etc.: print nothing.
-        if (type is "step_start" or "heartbeat")
-            return null;
-
-        // text: fold newlines, cut at ~140 chars.
-        if (type == "text" && root.TryGetProperty("part", out JsonElement textPart)
-            && GetString(textPart, "text") is { } text)
-            return FormatLine(timestampMs, "SAYS", FoldText(text));
+        // text: fold whitespace, cut at ~140 chars; a part with no text prints nothing.
+        if (type == "text")
+            return root.TryGetProperty("part", out JsonElement textPart)
+                && StreamText.Sanitize(GetString(textPart, "text"), StreamText.TextLimit) is { Length: > 0 } text
+                    ? FormatLine(timestampMs, replayed, "SAYS", text)
+                    : null;
 
         // tool_use: the interesting one.
         if (type == "tool_use" && root.TryGetProperty("part", out JsonElement toolPart) && toolPart.ValueKind == JsonValueKind.Object)
-            return FormatToolUse(toolPart, timestampMs);
+            return FormatToolUse(toolPart, timestampMs, replayed);
 
-        // Unknown event type: pass through.
-        return rawLine;
+        // step_start, heartbeat and every type this formatter does not know: print nothing.
+        return null;
     }
+
+    // Not an event we know the shape of: still untrusted text, so it goes out sanitized, never as-is.
+    private static string? Passthrough(string rawLine) => StreamText.Sanitize(rawLine) is { Length: > 0 } line ? line : null;
 
     private static string? GetString(JsonElement parent, string propertyName) =>
         parent.ValueKind == JsonValueKind.Object
@@ -79,7 +83,7 @@ public sealed class OpencodeStreamFormatter(string cwd) : IStreamFormatter
             ? property.GetString()
             : null;
 
-    private string? FormatToolUse(JsonElement part, long? timestampMs)
+    private string? FormatToolUse(JsonElement part, long? timestampMs, bool replayed)
     {
         if (GetString(part, "tool") is not { } tool)
             return null;
@@ -106,90 +110,23 @@ public sealed class OpencodeStreamFormatter(string cwd) : IStreamFormatter
                         inputText = pat;
                 }
 
-                string label = ToolLabel(tool);
-                string detail = inputText ?? "";
-                return FormatLine(timestampMs, label, detail);
+                return FormatLine(timestampMs, replayed, ToolLabel(tool), StreamText.Sanitize(inputText));
             }
 
             // Failed tool call: show ✗ error.
             string message = state.TryGetProperty("error", out JsonElement errorProp)
                 ? (errorProp.ValueKind == JsonValueKind.String ? errorProp.GetString() ?? "" : "")
                 : $"{tool} failed";
-            return FormatLine(timestampMs, "\u2717", message);
+            return FormatLine(timestampMs, replayed, "\u2717", StreamText.Sanitize(message, StreamText.TextLimit));
         }
 
         return null;
     }
 
-    private static string ToolLabel(string tool) => tool.Length <= 5
-        ? tool.ToUpperInvariant()
-        : tool[..5].ToUpperInvariant();
-
-    // Fold consecutive whitespace to one space, trim, cut at ~140 chars.
-    private static string FoldText(string text)
+    private static string ToolLabel(string tool)
     {
-        ReadOnlySpan<char> span = text.AsSpan().Trim();
-        if (span.Length == 0)
-            return "";
-
-        int written = 0;
-        bool inSpace = false;
-        char[]? rented = null;
-        int cap = Math.Min(span.Length, 145);
-        Span<char> buffer = cap <= 256 ? stackalloc char[256] : (rented = System.Buffers.ArrayPool<char>.Shared.Rent(cap));
-
-        try
-        {
-            foreach (char ch in span)
-            {
-                if (ch is '\r' or '\n')
-                {
-                    if (!inSpace)
-                    {
-                        inSpace = true;
-                        if (written < buffer.Length)
-                            buffer[written++] = ' ';
-                    }
-                    continue;
-                }
-
-                if (char.IsWhiteSpace(ch))
-                {
-                    if (!inSpace)
-                    {
-                        inSpace = true;
-                        if (written < buffer.Length)
-                            buffer[written++] = ' ';
-                    }
-                    continue;
-                }
-
-                inSpace = false;
-                if (written < buffer.Length)
-                    buffer[written++] = ch;
-
-                if (written >= 140)
-                    break;
-            }
-
-            // Trim trailing space.
-            int trimmed = written;
-            while (trimmed > 0 && buffer[trimmed - 1] == ' ')
-                trimmed--;
-
-            string result = buffer[..Math.Min(trimmed, 140)].ToString();
-
-            // Add ellipsis if truncated.
-            if (trimmed >= 140 && span.Length > 140)
-                result += "…";
-
-            return result;
-        }
-        finally
-        {
-            if (rented is not null)
-                System.Buffers.ArrayPool<char>.Shared.Return(rented);
-        }
+        string label = StreamText.Sanitize(tool);
+        return (label.Length <= 5 ? label : label[..5]).ToUpperInvariant();
     }
 
     // Show path relative to cwd when possible; always keep it short.
@@ -216,17 +153,13 @@ public sealed class OpencodeStreamFormatter(string cwd) : IStreamFormatter
         return path;
     }
 
-    private string FormatLine(long? timestampMs, string label, string detail)
+    private string FormatLine(long? timestampMs, bool replayed, string label, string detail)
     {
-        string time = timestampMs is { } ms
-            ? DateTimeOffset.FromUnixTimeMilliseconds(ms).ToLocalTime().ToString("HH:mm:ss", CultureInfo.InvariantCulture)
-            : DateTime.Now.ToString("HH:mm:ss", CultureInfo.InvariantCulture);
-
         string cost = runningCost > 0
             ? $" (${runningCost:F6})"
             : "";
 
-        return $"{time} {label,-5} {detail}{cost}";
+        return $"{StreamText.Time(timestampMs, replayed)} {label,-5} {detail}{cost}";
     }
 
     // Two genuinely captured error shapes (see OpencodeBackend.ExtractErrorMessage).
