@@ -1976,7 +1976,16 @@ publishes nothing). The tag is the version: `v0.1.0` → `-p:Version=0.1.0`, der
   `orlodax`, repository `Claustrum`, workflow file `release.yml` (file name only), no environment,
   package glob `Claustrum`. Nothing to rotate. Renaming `release.yml` or the repository breaks the
   policy match. A `workflow_dispatch` run never logs in or pushes. Until the first successful
-  publish the policy may be only temporarily active (7 days, renewable on nuget.org).
+  publish the policy may be only temporarily active (7 days, renewable on nuget.org). First
+  publish: v0.1.0, 2026-10-15; nuget.org's flat container served it after ~3.5 min, and
+  `dotnet tool install` found it ~1.5 min after that.
+- **The tool package's runtime floor is `10.0.0` (2026-10-15, #118).** v0.1.0 shipped
+  `tools/net10.0/any/claustrum.runtimeconfig.json` pinned to `10.0.13`, the newest patch the CI SDK
+  knew, so the tool refused to start on a machine with 10.0.12. `PackAsTool` runs an inner publish
+  that, with `PublishAot=true`, counts as self-contained and so turns on `TargetLatestRuntimePatch`.
+  The pack step passes `-p:TargetLatestRuntimePatch=false` (measured from a clean `obj/`: floor
+  `10.0.0`; a stale `obj/` keeps the old runtimeconfig and fakes a failure). It is not set in the
+  csproj, where it would also compile the AOT binaries against the unpatched 10.0.0 runtime pack.
 
 ## Reading a live job log needs FileShare.ReadWrite (2026-09-22, PR #26 windows leg)
 
