@@ -15,4 +15,6 @@ public sealed record ResolvedRole(
     PermissionPolicy Permission,
     bool Blind,
     bool HasReport,
-    string[]? Warnings = null);
+    string[]? Warnings = null,
+    // roles.<role>.user_mcp (#128): the claude backend keeps the operator's user-level MCP servers.
+    bool UserMcp = false);

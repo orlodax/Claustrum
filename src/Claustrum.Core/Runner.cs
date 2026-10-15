@@ -144,6 +144,13 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
             before = await WorktreeSnapshot.CaptureAsync(request.Cwd, cancellationToken);
             ResolvedRun run = new(role, brief, request.Cwd, request.BudgetUsd, request.ResumeSession, request.AttachFiles, request.Stream, job.SystemMd, job.Directory, request.Env);
             spec = backend.Build(run);
+
+            // The servers the run was given, beside the backend and model (#128).
+            if (spec.McpServers is not null)
+                RecordBackend(job, backend, role, spec.McpServers);
+
+            if (spec.Warnings is { Length: > 0 } buildWarnings)
+                runOptions = runOptions with { PreRunWarnings = [.. runOptions.PreRunWarnings ?? [], .. buildWarnings] };
         }
         catch (OperationCanceledException ex) when (cancellationToken.IsCancellationRequested)
         {
@@ -537,7 +544,7 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
 
     // Written at job start so `jobs follow` can pick the right stream formatter while the job
     // is still running (issue #123). Uses Utf8JsonWriter directly (no separate DTO type needed).
-    private static void RecordBackend(JobPaths job, IBackend backend, ResolvedRole role)
+    private static void RecordBackend(JobPaths job, IBackend backend, ResolvedRole role, string[]? mcpServers = null)
     {
         using MemoryStream buffer = new();
         using (Utf8JsonWriter writer = new(buffer))
@@ -545,6 +552,14 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
             writer.WriteStartObject();
             writer.WriteString("backend", backend.Name);
             writer.WriteString("model", role.Model);
+            if (mcpServers is not null)
+            {
+                writer.WriteStartArray("mcp_servers");
+                foreach (string server in mcpServers)
+                    writer.WriteStringValue(server);
+                writer.WriteEndArray();
+            }
+
             writer.WriteEndObject();
         }
 
