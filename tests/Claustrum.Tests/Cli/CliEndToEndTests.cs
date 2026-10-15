@@ -20,6 +20,11 @@ public sealed partial class CliEndToEndTests : IDisposable
     private readonly string cwd = Directory.CreateTempSubdirectory("claustrum-e2e-").FullName;
     private readonly string home = Directory.CreateTempSubdirectory("claustrum-e2e-home-").FullName;
 
+    // #122: this is a developer's machine, set up once. UninitializedMachineEndToEndTests has the one without.
+    private readonly string userConfig;
+
+    public CliEndToEndTests() => userConfig = UserConfig.Write(home);
+
     public void Dispose()
     {
         // cwd holds a real git repo in several of these: git's read-only loose objects defeat a
@@ -723,6 +728,7 @@ public sealed partial class CliEndToEndTests : IDisposable
         Assert.Contains("  probe:   skipped (CLAUSTRUM_SKIP_PROBE set)", stdout, StringComparison.Ordinal);
     }
 
+    // #122: init asks about the model aliases and writes the answers to the user config; the repo gets no claustrum.json.
     [Fact]
     public async Task InitScaffoldsClaustrumDirectoryAndClaudeSyncOnAFreshRepoAsync()
     {
@@ -732,10 +738,11 @@ public sealed partial class CliEndToEndTests : IDisposable
         Assert.True(Directory.Exists(Path.Combine(cwd, ".claustrum", "casts")));
         Assert.True(Directory.Exists(Path.Combine(cwd, ".claustrum", "briefs")));
         Assert.True(Directory.Exists(Path.Combine(cwd, ".claustrum", "worktrees")));
-        Assert.True(File.Exists(Path.Combine(cwd, "claustrum.json")));
-        Assert.Contains("cheap-coding", File.ReadAllText(Path.Combine(cwd, "claustrum.json")), StringComparison.Ordinal);
+        Assert.False(File.Exists(Path.Combine(cwd, "claustrum.json")), "init no longer writes a repo claustrum.json");
         Assert.True(File.Exists(Path.Combine(cwd, ".claude", "agents", "builder.md")));
-        Assert.Contains(".claustrum/worktrees/", File.ReadAllText(Path.Combine(cwd, ".gitignore")), StringComparison.Ordinal);
+        string gitignore = File.ReadAllText(Path.Combine(cwd, ".gitignore"));
+        Assert.Contains(".claustrum/worktrees/", gitignore, StringComparison.Ordinal);
+        Assert.Contains(".claustrum/casts/", gitignore, StringComparison.Ordinal);
         Assert.Contains("claude:", stdout, StringComparison.Ordinal);
     }
 
@@ -816,13 +823,16 @@ public sealed partial class CliEndToEndTests : IDisposable
         (int firstExit, string firstStdout, _) = await RunAsync("init");
         Assert.Equal(Ok, firstExit);
         int writtenFirstRun = int.Parse(ClaudeSyncLinePattern().Match(firstStdout).Groups[1].Value, CultureInfo.InvariantCulture);
-        string configBefore = File.ReadAllText(Path.Combine(cwd, "claustrum.json"));
+        string gitignoreBefore = File.ReadAllText(Path.Combine(cwd, ".gitignore"));
+        string userConfigBefore = File.ReadAllText(userConfig);
 
         (int exitCode, string stdout, _) = await RunAsync("init");
 
         Assert.Equal(Ok, exitCode);
-        Assert.Equal(configBefore, File.ReadAllText(Path.Combine(cwd, "claustrum.json")));
-        Assert.Contains("already present", stdout, StringComparison.Ordinal);
+        Assert.False(File.Exists(Path.Combine(cwd, "claustrum.json")));
+        Assert.Equal(userConfigBefore, File.ReadAllText(userConfig));
+        Assert.Equal(gitignoreBefore, File.ReadAllText(Path.Combine(cwd, ".gitignore")));
+        Assert.Contains(".gitignore: already up to date", stdout, StringComparison.Ordinal);
         Assert.Contains($"claude: 0 written, {writtenFirstRun} skipped", stdout, StringComparison.Ordinal);
     }
 
@@ -866,6 +876,9 @@ public sealed partial class CliEndToEndTests : IDisposable
         foreach (string arg in args)
             startInfo.ArgumentList.Add(arg);
         startInfo.Environment["CLAUSTRUM_HOME"] = home;
+        // The user config (#122) is read from HOME, or APPDATA on Windows: both are the scratch home, so a developer's own file never decides a run.
+        startInfo.Environment["HOME"] = home;
+        startInfo.Environment["APPDATA"] = home;
         // #66: removed before extraEnv, so only a test that asks for a tree gets one (a gate run inside
         // a Claustrum job tree otherwise enrols every child in that tree's budget ledger).
         startInfo.Environment.Remove("CLAUSTRUM_PARENT_JOB");

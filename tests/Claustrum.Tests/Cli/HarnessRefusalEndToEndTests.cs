@@ -15,7 +15,7 @@ public sealed class HarnessRefusalEndToEndTests : IDisposable
 {
     private const string Sources = "--backend/--model, the cast or claustrum.json";
 
-    private readonly ClaustrumCli cli = new();
+    private readonly ClaustrumCli cli = ClaustrumCli.Initialized();
     private readonly string emptyPath;
 
     public HarnessRefusalEndToEndTests() => emptyPath = Directory.CreateDirectory(Path.Combine(cli.Home, "empty-path")).FullName;

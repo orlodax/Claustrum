@@ -12,13 +12,14 @@ public sealed class CastApplicationTests : IDisposable
     [Fact]
     public void NoCastFileAndNoCastNameLeavesOverridesAndDefaultsTierToHigh()
     {
-        (string tier, ConfigOverrides overrides, CastBudget? budget, int? maxParallel, string? castNameOut) = CastApplication.Resolve(cwd, "builder", castName: null, tierFlag: null, new ConfigOverrides());
+        CastApplicationResult applied = CastApplication.Resolve(cwd, "builder", castName: null, tierFlag: null, new ConfigOverrides());
 
-        Assert.Equal("high", tier);
-        Assert.Null(overrides.Model);
-        Assert.Null(budget);
-        Assert.Null(maxParallel);
-        Assert.Null(castNameOut);
+        Assert.Equal("high", applied.Tier);
+        Assert.Null(applied.Overrides.Model);
+        Assert.Null(applied.CastBudget);
+        Assert.Null(applied.MaxParallel);
+        Assert.Null(applied.CastName);
+        Assert.Empty(applied.Warnings);
     }
 
     [Fact]
@@ -29,12 +30,12 @@ public sealed class CastApplicationTests : IDisposable
             new Dictionary<string, CastRoleEntry?> { ["builder"] = new CastRoleEntry(Model: "claude:opus", Backend: null, Tier: "xhigh") },
             BudgetUsd: 7m));
 
-        (string tier, ConfigOverrides overrides, CastBudget? budget, int? maxParallel, _) = CastApplication.Resolve(cwd, "builder", castName: null, tierFlag: null, new ConfigOverrides());
+        CastApplicationResult applied = CastApplication.Resolve(cwd, "builder", castName: null, tierFlag: null, new ConfigOverrides());
 
-        Assert.Equal("xhigh", tier);
-        Assert.Equal("claude:opus", overrides.Model);
-        Assert.Equal(7m, budget!.Value.Value);
-        Assert.Null(maxParallel);
+        Assert.Equal("xhigh", applied.Tier);
+        Assert.Equal("claude:opus", applied.Overrides.Model);
+        Assert.Equal(7m, applied.CastBudget!.Value.Value);
+        Assert.Null(applied.MaxParallel);
     }
 
     [Fact]
@@ -43,9 +44,9 @@ public sealed class CastApplicationTests : IDisposable
         CastStore.Save(cwd, new Cast("staging", "1.0.0", new CastArchitect("host"),
             new Dictionary<string, CastRoleEntry?> { ["builder"] = new CastRoleEntry(Model: "claude:haiku", Backend: null, Tier: null) }, null));
 
-        (_, ConfigOverrides overrides, _, _, _) = CastApplication.Resolve(cwd, "builder", castName: "staging", tierFlag: null, new ConfigOverrides());
+        CastApplicationResult applied = CastApplication.Resolve(cwd, "builder", castName: "staging", tierFlag: null, new ConfigOverrides());
 
-        Assert.Equal("claude:haiku", overrides.Model);
+        Assert.Equal("claude:haiku", applied.Overrides.Model);
     }
 
     [Fact]
@@ -56,12 +57,12 @@ public sealed class CastApplicationTests : IDisposable
             new Dictionary<string, CastRoleEntry?> { ["builder"] = new CastRoleEntry(Model: null, Backend: null, Tier: null, MaxParallel: 3) },
             BudgetUsd: null));
 
-        (_, _, _, int? maxParallel, string? castNameOut) = CastApplication.Resolve(cwd, "builder", castName: null, tierFlag: null, new ConfigOverrides());
+        CastApplicationResult applied = CastApplication.Resolve(cwd, "builder", castName: null, tierFlag: null, new ConfigOverrides());
 
-        Assert.Equal(3, maxParallel);
+        Assert.Equal(3, applied.MaxParallel);
 
         // RoleConcurrencyGate keys its slot pool on this: per cast, not per role (docs/PLAN.md §D4).
-        Assert.Equal("default", castNameOut);
+        Assert.Equal("default", applied.CastName);
     }
 
     [Fact]
@@ -69,13 +70,13 @@ public sealed class CastApplicationTests : IDisposable
     {
         CastStore.Save(cwd, new Cast("default", "1.0.0", new CastArchitect("host"), [], null));
 
-        (string tier, ConfigOverrides overrides, CastBudget? budget, int? maxParallel, _) = CastApplication.Resolve(cwd, "tester", castName: null, tierFlag: null, new ConfigOverrides());
+        CastApplicationResult applied = CastApplication.Resolve(cwd, "tester", castName: null, tierFlag: null, new ConfigOverrides());
 
-        Assert.Equal("high", tier);
-        Assert.Null(overrides.Model);
-        Assert.NotNull(budget);
-        Assert.Null(budget!.Value.Value);
-        Assert.Null(maxParallel);
+        Assert.Equal("high", applied.Tier);
+        Assert.Null(applied.Overrides.Model);
+        Assert.NotNull(applied.CastBudget);
+        Assert.Null(applied.CastBudget!.Value.Value);
+        Assert.Null(applied.MaxParallel);
     }
 
     // The architect is never a key of Cast.Roles (Cast.ArchitectRole's own doc comment): its
@@ -88,10 +89,10 @@ public sealed class CastApplicationTests : IDisposable
             "default", "1.0.0", new CastArchitect(CastArchitect.Spawned, Model: "claude:opus", Tier: "xhigh"),
             [], null));
 
-        (string tier, ConfigOverrides overrides, _, _, _) = CastApplication.Resolve(cwd, Cast.ArchitectRole, castName: null, tierFlag: null, new ConfigOverrides());
+        CastApplicationResult applied = CastApplication.Resolve(cwd, Cast.ArchitectRole, castName: null, tierFlag: null, new ConfigOverrides());
 
-        Assert.Equal("xhigh", tier);
-        Assert.Equal("claude:opus", overrides.Model);
+        Assert.Equal("xhigh", applied.Tier);
+        Assert.Equal("claude:opus", applied.Overrides.Model);
     }
 
     // docs/PLAN.md §D1's precedence: an explicit --model/--tier still wins over the cast's own value,
@@ -103,10 +104,10 @@ public sealed class CastApplicationTests : IDisposable
             "default", "1.0.0", new CastArchitect(CastArchitect.Spawned, Model: "claude:opus", Tier: "xhigh"),
             [], null));
 
-        (string tier, ConfigOverrides overrides, _, _, _) = CastApplication.Resolve(
+        CastApplicationResult applied = CastApplication.Resolve(
             cwd, Cast.ArchitectRole, castName: null, tierFlag: "max", new ConfigOverrides(Model: "claude:haiku"));
 
-        Assert.Equal("max", tier);
-        Assert.Equal("claude:haiku", overrides.Model);
+        Assert.Equal("max", applied.Tier);
+        Assert.Equal("claude:haiku", applied.Overrides.Model);
     }
 }

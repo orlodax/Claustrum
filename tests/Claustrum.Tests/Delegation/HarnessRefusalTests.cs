@@ -120,9 +120,9 @@ public sealed class HarnessRefusalTests(AppServicesHomeFixture fixture) : IDispo
             "default", "1.0.0", new CastArchitect(CastArchitect.Host),
             new Dictionary<string, CastRoleEntry?> { ["demo-author"] = new CastRoleEntry(Model: "cursor:some-model", Backend: null, Tier: null) },
             BudgetUsd: null));
-        (string tier, ConfigOverrides overrides, _, _, _) = CastApplication.Resolve(cwd, "demo-author", castName: null, tierFlag: null, new ConfigOverrides());
+        CastApplicationResult applied = CastApplication.Resolve(cwd, "demo-author", castName: null, tierFlag: null, new ConfigOverrides());
 
-        RoleRenderException exception = Assert.Throws<RoleRenderException>(() => DelegateEngine.Prepare(Request("demo-author", overrides) with { Tier = tier }));
+        RoleRenderException exception = Assert.Throws<RoleRenderException>(() => DelegateEngine.Prepare(Request("demo-author", applied.Overrides) with { Tier = applied.Tier }));
 
         Assert.Contains("runs on claude only", exception.Message, StringComparison.Ordinal);
         Assert.Contains("'cursor'", exception.Message, StringComparison.Ordinal);

@@ -15,7 +15,7 @@ public sealed class RoleOverrideLinkEndToEndTests : IDisposable
     private static readonly StringComparison pathComparison =
         OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
 
-    private readonly ClaustrumCli cli = new();
+    private readonly ClaustrumCli cli = ClaustrumCli.Initialized();
     private readonly string scratch = Directory.CreateTempSubdirectory("claustrum-role-link-e2e-").FullName;
     private readonly string outside;
     private readonly string secret;

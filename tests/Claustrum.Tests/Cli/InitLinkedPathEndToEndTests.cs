@@ -18,7 +18,7 @@ public sealed class InitLinkedPathEndToEndTests : IDisposable
     private static readonly StringComparer pathComparer =
         OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
 
-    private readonly ClaustrumCli cli = new();
+    private readonly ClaustrumCli cli = ClaustrumCli.Initialized();
     private readonly string scratch = Directory.CreateTempSubdirectory("claustrum-init-link-e2e-").FullName;
     private readonly string outside;
 
@@ -252,11 +252,12 @@ public sealed class InitLinkedPathEndToEndTests : IDisposable
         CliResult second = await InitAsync();
 
         Assert.Equal(ExitCodes.Ok, first.ExitCode);
-        Assert.Contains("claustrum.json: written", Lines(first));
+        Assert.Contains(Lines(first), line => line.StartsWith("claustrum.json: not written (aliases are per-developer, in ", StringComparison.Ordinal));
+        Assert.False(File.Exists(InRepo("claustrum.json")), "init writes no repo claustrum.json (#122)");
         Assert.Contains(".gitignore: updated", Lines(first));
         Assert.Contains("AGENTS.md: pointer appended", Lines(first));
         Assert.Equal(ExitCodes.Ok, second.ExitCode);
-        Assert.Contains("claustrum.json: already present, left unchanged", Lines(second));
+        Assert.Contains(Lines(second), line => line.StartsWith("claustrum.json: not written (aliases are per-developer, in ", StringComparison.Ordinal));
         Assert.Contains(".gitignore: already up to date", Lines(second));
         Assert.Contains("AGENTS.md: unchanged", Lines(second));
         Assert.DoesNotContain("refused", Lf(first.Stdout) + Lf(second.Stdout), StringComparison.Ordinal);

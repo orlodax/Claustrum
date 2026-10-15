@@ -100,6 +100,16 @@ $outputs = Join-Path $work "out"
 New-Item -ItemType Directory -Path $tmp | Out-Null
 New-Item -ItemType Directory -Path $outputs | Out-Null
 
+# Since #122 the gated commands refuse a machine with no user config. The init rows run against a
+# throwaway home (HOME, and APPDATA on Windows) so they never write the developer's real user config;
+# every later row (paid, needs the real home's backend credentials) finds a committed repo
+# claustrum.json instead, which counts as initialized.
+$smokeHome = Join-Path $work "home"
+$smokeAnswers = Join-Path $work "answers.json"
+$smokeModels = '{"frontier-reasoning":"claude:opus","frontier-coding":"claude:opus","standard-coding":"claude:sonnet","cheap-coding":"claude:haiku","fast":"claude:haiku"}'
+New-Item -ItemType Directory -Path $smokeHome | Out-Null
+Set-Content -Path $smokeAnswers -Value $smokeModels
+
 # 1. `backends doctor <name>` for every name `backends list` prints. found: False is a SKIP, not a
 # failure — the whole point of the loop is that one script runs on any subset of the five.
 function Invoke-DoctorCheck([string]$Name) {
@@ -138,13 +148,19 @@ function Invoke-AllDoctorChecks {
 
 # 2. `claustrum init` has no --cwd: it scaffolds Environment.CurrentDirectory (Cli/InitCommand.cs).
 function Invoke-ClaustrumInit {
+    $savedHome = $env:HOME
+    $savedAppData = $env:APPDATA
+    $env:HOME = $smokeHome
+    $env:APPDATA = $smokeHome
     Push-Location $tmp
     try {
-        $output = [string](& $claustrum init 2>&1 | Out-String)
+        $output = [string](& $claustrum init --answers $smokeAnswers 2>&1 | Out-String)
         return [pscustomobject]@{ ExitCode = $LASTEXITCODE; Output = $output }
     }
     finally {
         Pop-Location
+        $env:HOME = $savedHome
+        $env:APPDATA = $savedAppData
     }
 }
 
@@ -152,13 +168,16 @@ function Invoke-InitCheck {
     $init = Invoke-ClaustrumInit
     $missing = [System.Collections.Generic.List[string]]::new()
 
-    if (-not (Test-Path (Join-Path $tmp "claustrum.json"))) { $missing.Add("claustrum.json") }
+    # init writes the aliases to the user config and never a repo claustrum.json (#122).
+    $userConfig = if ($IsWindows) { Join-Path $smokeHome "claustrum/config.json" } else { Join-Path $smokeHome ".config/claustrum/config.json" }
+    if (-not (Test-Path $userConfig)) { $missing.Add("user config") }
+    if (Test-Path (Join-Path $tmp "claustrum.json")) { $missing.Add("claustrum.json must not be written") }
     if (-not (Test-Path (Join-Path $tmp ".claustrum/casts"))) { $missing.Add(".claustrum/casts/") }
     if (-not (Test-Path (Join-Path $tmp ".claude/agents/builder.md"))) { $missing.Add(".claude/agents/builder.md") }
 
     $gitignore = Join-Path $tmp ".gitignore"
     $gitignoreText = if (Test-Path $gitignore) { [string](Get-Content -Raw $gitignore) } else { "" }
-    foreach ($entry in ".claustrum/worktrees/", ".claustrum/locks/", ".claustrum/briefs/") {
+    foreach ($entry in ".claustrum/casts/", ".claustrum/worktrees/", ".claustrum/locks/", ".claustrum/briefs/") {
         if (-not $gitignoreText.Contains($entry)) { $missing.Add(".gitignore lacks $entry") }
     }
 
@@ -186,7 +205,7 @@ function Invoke-InitRerunCheck {
     $init = Invoke-ClaustrumInit
     $after = Get-RepoSnapshot
 
-    $unchanged = if ($init.Output.Contains("already present, left unchanged")) { "yes" } else { "no" }
+    $unchanged = if ($init.Output.Contains("claustrum.json: not written")) { "yes" } else { "no" }
     $upToDate = if ($init.Output.Contains("already up to date")) { "yes" } else { "no" }
     $snapshot = if ($before -eq $after) { "identical" } else { "differs" }
 
@@ -496,6 +515,9 @@ try {
     Invoke-AllDoctorChecks
     Invoke-InitCheck
     Invoke-InitRerunCheck
+    Set-Content -Path (Join-Path $tmp "claustrum.json") -Value ('{"models":' + $smokeModels + '}')
+    git -C $tmp add -A | Out-Null
+    git -C $tmp commit -q -m "smoke: init output and repo config" | Out-Null
     Invoke-AllRunChecks
     Invoke-MaxParallelChecks
     Invoke-CoordinateCheck

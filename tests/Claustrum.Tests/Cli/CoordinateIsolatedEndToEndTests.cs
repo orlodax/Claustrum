@@ -169,7 +169,7 @@ public sealed class CoordinateIsolatedEndToEndTests : IDisposable
     [Fact]
     public async Task OutsideAGitRepositoryTheArchitectRunsInPlaceWithTheNoGitTextAsync()
     {
-        using ClaustrumCli plain = new();
+        using ClaustrumCli plain = ClaustrumCli.Initialized();
         Directory.CreateDirectory(plain.CastsDirectory);
         File.WriteAllText(Path.Combine(plain.CastsDirectory, "default.json"), /*lang=json,strict*/
             """{"name":"default","library":"1.0.0","architect":{"mode":"spawned","model":"nonexistent:x"},"roles":{},"budget_usd":null}""");

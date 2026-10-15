@@ -39,6 +39,12 @@ public sealed record FakeClaudeScript
     public string? Summary { get; init; }
 
     public bool Fail { get; init; }
+
+    /// <summary>
+    /// stream-json events printed one per line before the reply, which then carries `"type":"result"` as claude's last line does
+    /// (POSIX shells only; the lines may not hold a single quote).
+    /// </summary>
+    public string[] StreamLines { get; init; } = [];
 }
 
 /// <summary>
@@ -80,13 +86,17 @@ public static class FakeClaude
         return "{\"backends\":{\"claude\":{\"path\":\"" + escaped + "\"}}}";
     }
 
+    /// <summary>The last line the script prints, the one the receipt is parsed from.</summary>
+    public static string ReplyLine(FakeClaudeScript script) => ReplyJson(script);
+
     private static string ReplyJson(FakeClaudeScript script)
     {
         string result = script.Summary is { } summary
             ? $"done\\n```claustrum-report\\n{{\\\"summary\\\":\\\"{summary}\\\"}}\\n```"
             : "done";
         string isError = script.Fail ? "true" : "false";
-        return "{\"result\":\"" + result + "\",\"total_cost_usd\":0.01,\"is_error\":" + isError + "}";
+        string type = script.StreamLines.Length > 0 ? "\"type\":\"result\"," : "";
+        return "{" + type + "\"result\":\"" + result + "\",\"total_cost_usd\":0.01,\"is_error\":" + isError + "}";
     }
 
     private static string PosixText(FakeClaudeScript script)
@@ -105,6 +115,9 @@ public static class FakeClaude
             text.Append(command).Append('\n');
 
         text.Append(script.MarkerLog is { } end ? $"echo end >> '{end}'\n" : "");
+        foreach (string streamLine in script.StreamLines)
+            text.Append($"printf '%s\\n' '{streamLine}'\n");
+
         // Not `echo`: dash (Ubuntu's /bin/sh) expands the reply's `\n` escapes, the JSON breaks and the report is lost (CI, 2026-10-08).
         text.Append($"printf '%s\\n' '{ReplyJson(script)}'\n");
         text.Append(script.Fail ? "exit 1\n" : "");

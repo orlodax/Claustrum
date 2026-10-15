@@ -33,8 +33,8 @@ public sealed partial class GeneratedSkillMatchesCliTests : IDisposable
         // The extractor is the weak link: an over-eager regex change that stops matching would make
         // the assertions below vacuous, so pin the count the skill actually documents today (M4
         // added `coordinate --cast ... --issues ...` and `jobs budget <job_id>` to the "Coordinating"
-        // section).
-        Assert.Equal(5, commands.Length);
+        // section; #122 added `init`, `init questions --json` and `init --answers <file>`).
+        Assert.Equal(8, commands.Length);
 
         RootCommand root = CliRoot.Build();
         foreach (string command in commands)

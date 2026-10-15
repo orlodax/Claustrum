@@ -153,6 +153,71 @@ public sealed class ProcessRunnerTests
         }
     }
 
+    // #123 review fix: the stream callback runs on a thread-pool thread inside OutputDataReceived, where an exception ends the whole
+    // process. A callback that chokes costs its line, never the run - the first failure is said once on stderr, the rest dropped.
+    [Fact]
+    public async Task AStreamCallbackThatThrowsCostsOnlyItsLineNotTheRunAsync()
+    {
+        JobPaths job = CreateTempJob();
+        try
+        {
+            (string exe, string[] args) = PrintLinesCommand(job.Directory, "one", "two", "three");
+            ProcessSpec spec = new(exe, args, Path.GetTempPath(), [], []);
+            int calls = 0;
+
+            ProcessOutcome outcome = await new ProcessRunner(new RealPlatform()).RunAsync(
+                spec, backendConfig: null, job, envPassthroughAll: false, onStreamLine: _ => { Interlocked.Increment(ref calls); throw new InvalidOperationException("formatter choked"); },
+                TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+
+            Assert.Equal(0, outcome.ExitCode);
+            Assert.Equal(ProcessTermination.Completed, outcome.Termination);
+            Assert.Equal(["one", "two", "three"], outcome.Stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+            Assert.Equal(3, calls);
+        }
+        finally
+        {
+            Directory.Delete(job.Directory, recursive: true);
+        }
+    }
+
+    // F15: a stream line that is JSON but no event object, or an event with fields of the wrong type, goes through the real
+    // callback path (formatter inside ProcessRunner's guard) without ending the run or losing a line of the log.
+    [Fact]
+    public async Task NonObjectJsonAndWrongTypedFieldsGoThroughTheFormatterCallbackWithoutEndingTheRunAsync()
+    {
+        JobPaths job = CreateTempJob();
+        try
+        {
+            string[] lines = ["[1,2,3]", "\"just a string\"", "42", "null", /*lang=json,strict*/ "{\"type\":5}", /*lang=json,strict*/ "{\"type\":\"assistant\",\"message\":[]}", /*lang=json,strict*/ "{\"type\":\"text\",\"part\":{\"text\":5}}", "plain text"];
+            (string exe, string[] args) = PrintLinesCommand(job.Directory, lines);
+            ProcessSpec spec = new(exe, args, Path.GetTempPath(), [], []);
+            Core.Backends.Claude.ClaudeStreamFormatter claude = new("");
+            Core.Backends.Opencode.OpencodeStreamFormatter opencode = new("");
+            System.Collections.Concurrent.ConcurrentQueue<string> echoed = [];
+
+            ProcessOutcome outcome = await new ProcessRunner(new RealPlatform()).RunAsync(
+                spec, backendConfig: null, job, envPassthroughAll: false,
+                onStreamLine: line =>
+                {
+                    // Not the guard's catch: each formatter must itself return, or this test's own count would fall short.
+                    if (claude.FormatLine(line) is { } fromClaude)
+                        echoed.Enqueue(fromClaude);
+                    if (opencode.FormatLine(line) is { } fromOpencode)
+                        echoed.Enqueue(fromOpencode);
+                },
+                TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+
+            Assert.Equal(0, outcome.ExitCode);
+            Assert.Equal(lines, outcome.Stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+            Assert.Equal(lines, File.ReadAllLines(job.StdoutLog).Select(line => line.Trim()));
+            Assert.NotEmpty(echoed);
+        }
+        finally
+        {
+            Directory.Delete(job.Directory, recursive: true);
+        }
+    }
+
     // ProcessRunner.stdoutLog is opened with AutoFlush = true (NOTES.md/the field's own comment)
     // specifically so JobManager.GetStatus's "last output line" has something to report while a job is
     // still running — this proves the log file actually grows mid-run rather than only appearing whole
@@ -227,6 +292,14 @@ public sealed class ProcessRunnerTests
     // "a " (trailing space) and fails Assert.Equal("a", firstLine). `timeout /t 1` also doesn't work
     // here — it refuses "Input redirection is not supported" when stdin is redirected, which
     // ProcessRunner always does; `ping -n 2 127.0.0.1 >nul` is the one-second sleep that survives it.
+    // The lines go through a file the child prints, not through the command line: quotes and brackets need no shell escaping on either OS.
+    private static (string Exe, string[] Args) PrintLinesCommand(string directory, params string[] lines)
+    {
+        string file = Path.Combine(directory, "lines.txt");
+        File.WriteAllLines(file, lines);
+        return OperatingSystem.IsWindows() ? ("cmd", ["/c", "type", file]) : ("cat", [file]);
+    }
+
     private static (string Exe, string[] Args) GrowingOutputCommand() => OperatingSystem.IsWindows()
         ? ("cmd", ["/c", "echo a&ping -n 2 127.0.0.1 >nul&echo b"])
         : ("sh", ["-c", "echo a; sleep 1; echo b"]);

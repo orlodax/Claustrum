@@ -51,20 +51,20 @@ internal static class PreconditionCases
                 return new PreconditionCase(Refused("claustrum.json", "uncommitted changes"), null, root);
             case "modified-cast":
                 File.AppendAllText(CastPath(root, "default"), "\n");
-                return new PreconditionCase(Refused(".claustrum/casts/default.json", "uncommitted changes"), null, root);
+                return new PreconditionCase(TrackedCastRefused("default"), null, root);
             case "untracked-cast":
                 File.Copy(CastPath(root, "default"), CastPath(root, "other"));
-                return new PreconditionCase(Refused(".claustrum/casts/other.json", "untracked"), "other", root);
+                return new PreconditionCase(CastWithoutRule("other", "untracked"), "other", root);
             case "ignored-cast":
                 File.WriteAllText(Path.Combine(root, ".gitignore"), IsolatedRepo.MachineryIgnoreRules + ".claustrum/casts/other.json\n");
                 repo.Git("add", ".gitignore");
                 repo.Git("commit", "-q", "-m", "rules");
                 File.Copy(CastPath(root, "default"), CastPath(root, "other"));
-                return new PreconditionCase(Refused(".claustrum/casts/other.json", "ignored"), "other", root);
+                return new PreconditionCase(CastWithoutRule("other", "ignored"), "other", root);
             case "staged-new-cast":
                 File.Copy(CastPath(root, "default"), CastPath(root, "other"));
                 repo.Git("add", ".claustrum/casts/other.json");
-                return new PreconditionCase(Refused(".claustrum/casts/other.json", "uncommitted changes"), "other", root);
+                return new PreconditionCase(TrackedCastRefused("other"), "other", root);
             case "untracked-role-file":
                 Directory.CreateDirectory(Path.Combine(root, ".claustrum", "roles", "tester"));
                 File.WriteAllText(Path.Combine(root, ".claustrum", "roles", "tester", "ROLE.md"), "x\n");
@@ -94,7 +94,7 @@ internal static class PreconditionCases
             case "show-untracked-files-no":
                 repo.Git("config", "status.showUntrackedFiles", "no");
                 File.Copy(CastPath(root, "default"), CastPath(root, "other"));
-                return new PreconditionCase(Refused(".claustrum/casts/other.json", "untracked"), "other", root);
+                return new PreconditionCase(CastWithoutRule("other", "untracked"), "other", root);
             case "subdirectory":
                 // With a cast of its own, or the cast lookup would answer first: the case the refusal exists for.
                 string sub = Path.Combine(root, "sub");
@@ -105,6 +105,15 @@ internal static class PreconditionCases
                 throw new ArgumentOutOfRangeException(nameof(name), name, "unknown precondition case");
         }
     }
+
+    // #122: a cast is judged by its own git state. Untracked or ignored, it needs a committed rule ignoring `.claustrum/casts/`
+    // (what `claustrum init` writes), or the architect's `git add -A` would commit the copy it is handed; the message names init.
+    private static string CastWithoutRule(string castName, string state) =>
+        $"the cast '{castName}' is {state}, but no committed .gitignore rule ignores .claustrum/casts/; run `claustrum init` and commit .gitignore first";
+
+    // Tracked with a local change (or staged new): the worktree would get HEAD's copy, so it is committed first. The path is the
+    // cast's own, spelled by the OS, so only its tail is matched.
+    private static string TrackedCastRefused(string castName) => $"{castName}.json (uncommitted changes — commit it first)";
 
     private static string Refused(string file, string state) => $"commit (or un-ignore) {file} ({state}) first";
 
