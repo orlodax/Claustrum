@@ -1,10 +1,13 @@
+using System.Text.Json;
 using Claustrum.Casts;
 using Claustrum.Cli;
 using Claustrum.Core.Config;
 using Claustrum.Core.Git;
+using Claustrum.Core.IO;
 using Claustrum.Core.Jobs;
 using Claustrum.Core.Model;
 using Claustrum.Delegation;
+using Claustrum.Live;
 
 namespace Claustrum.Coordination;
 
@@ -69,14 +72,31 @@ public static class CoordinateEngine
     }
 
     /// <summary>
-    /// The architect's run, plus the one thing that happens after it: its own cost written to the
-    /// ledger of the tree it handed down (issue #21). Both front doors go through here — the MCP one
+    /// The architect's run, plus what surrounds it: this process recorded as the job's owner before the architect starts (the detached
+    /// children of its tree watch it, #124 stage 2 review F1), the children still running settled when it ends, and its own cost written
+    /// to the ledger of the tree it handed down (issue #21). Both front doors go through here — the MCP one
     /// as the JobManager callback — so the coordinator is accounted whichever door started it.
     /// </summary>
     public static async Task<RunResult> RunAsync(CoordinatePlan plan, PreparedDelegation prepared, JobPaths job, CancellationToken cancellationToken)
     {
         DateTimeOffset startedAt = DateTimeOffset.UtcNow;
-        RunResult result = await DelegateEngine.RunAsync(plan.BindUserPrompt(prepared, job.Id), job, cancellationToken);
+        AtomicFile.WriteAllText(job.OwnerJson, JsonSerializer.Serialize(OwnerRecord.ForCurrentProcess(), LiveJsonContext.Default.OwnerRecord));
+
+        // Whatever ends the architect, a throw included, its detached children must not outlive it. The warnings ride the returned
+        // result only, as the ledger's below: result.json was written by Runner before this ran, and is not rewritten.
+        string[] settled;
+        RunResult result;
+        try
+        {
+            result = await DelegateEngine.RunAsync(plan.BindUserPrompt(prepared, job.Id), job, cancellationToken);
+        }
+        finally
+        {
+            settled = TreeSettler.CancelRemaining(job.Id);
+        }
+
+        if (settled.Length > 0)
+            result = result with { Warnings = [.. result.Warnings, .. settled.Select(TreeSettler.WarningFor)] };
 
         // Only a capped cast has a ledger at all (DelegateEngine builds no JobTreeBudget without a
         // cap, so its children write no entry either). The architect is deliberately not a *member*

@@ -4,7 +4,8 @@
   `claustrum run <role> --brief-file <path> --json`, adding `--cast <name>` when a cast is in play
   and `--tier xhigh` or `--tier max` for a heavier tier. It returns when the role is done — or, in your
   tree, asks you a question (exit `7`, `"status": "needs_input"`: see "A child may stop to ask you") — and prints
-  exactly one JSON document.
+  exactly one JSON document. Before your final report, settle every child that returned `7`, by replying or by
+  `claustrum jobs cancel <job_id>`.
 - **When the `claustrum` MCP server is connected**, the `delegate` tool is the same call
   (`role`, `brief`, `cwd`, `tier`, `cast`, …) and blocks the same way. Where a long run would exceed
   your host's own tool-call timeout, use `delegate_async` instead, then poll `job_status` and read

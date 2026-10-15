@@ -20,7 +20,7 @@ public static class JobsSayCommand
 
     private static int Execute(string id, string text)
     {
-        LiveJob job = LiveJob.Find(id)
+        LiveJob job = LiveJob.Find(JobId.Require(id))
             ?? throw new CliUsageException($"job '{id}' not found under {JobDirectory.ResolveRoot(AppServices.Platform)}");
 
         SayResult sent = job.Say(text);

@@ -109,11 +109,15 @@ public static class RunCommand
         if (detach && streamMode)
             throw new CliUsageException("--detach and --stream cannot be combined: a detached job's output is read with `claustrum jobs follow <id>`");
 
-        // #124 stage 2: in a job tree the architect answers, so a child that may ask is hosted detached and `run` returns early on its
-        // question. --stream needs this process to stay in the room, so it keeps the child in-process, where nobody can answer.
-        bool routed = LiveRun.InTree && !streamMode;
+        // #124 stage 2: in a job tree whose architect is live, the architect answers, so a child that may ask is hosted detached and
+        // `run` returns early on its question. --stream needs this process to stay in the room, so it keeps the child in-process, where
+        // nobody can answer. A tree whose architect is not live (`--no-live`, a backend with no live protocol, an id exported by hand)
+        // routes nothing: the child runs in-process as before and is told at once that no human is available.
+        bool inTree = LiveRun.InTree;
+        bool architectLive = LiveRun.ArchitectLive;
+        bool routed = inTree && architectLive && !streamMode;
         string cwd = Path.GetFullPath(cwdOption ?? Environment.CurrentDirectory);
-        (bool live, int replyTimeoutSeconds) = LiveRun.Resolve(noLive, replyTimeout, answeredByArchitect: routed);
+        (bool live, int replyTimeoutSeconds) = LiveRun.Resolve(noLive, replyTimeout, answeredByArchitect: routed, architectCannotAnswer: inTree && !architectLive);
 
         // Before the handler: it swallows the first signal, and a stdin read blocked here listens on no token.
         string brief = ResolveBrief(briefText, briefFilePath);
@@ -236,14 +240,15 @@ public static class RunCommand
 
     /// <summary>
     /// Prints a finished run and returns its exit code, for the in-process `run` and for everything that reads a detached job's
-    /// receipt back (a tree's `run`, `jobs reply`): --json is the one RunResult document, otherwise the summary. <paramref name="refusedExit"/>
-    /// is the usage exit a machinery refusal (#104) ends with in place of its status's.
+    /// receipt back (a tree's `run`, `jobs reply`): --json is the one RunResult document, otherwise the summary. <paramref name="exitOverride"/>
+    /// is the exit code a run ends with in place of its status's: the usage exit of a machinery refusal (#104), the abandoned one of a
+    /// job whose process is gone, the cancelled one of a Ctrl-C that could not reach the job.
     /// </summary>
-    internal static int Present(RunResult result, int? refusedExit, bool jsonMode, bool rawMode, string[] printedWarnings)
+    internal static int Present(RunResult result, int? exitOverride, bool jsonMode, bool rawMode, string[] printedWarnings)
     {
         RunResult output = rawMode ? result : result with { Raw = null };
 
-        int exitCode = refusedExit ?? ExitCodeFor(output.Status);
+        int exitCode = exitOverride ?? ExitCodeFor(output.Status);
         if (jsonMode)
             SafeConsole.Out(JsonSerializer.Serialize(output, ClaustrumJsonContext.Default.RunResult));
         else

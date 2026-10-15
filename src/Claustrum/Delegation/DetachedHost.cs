@@ -1,17 +1,28 @@
 using System.Text.Json;
+using Claustrum.Cli;
 using Claustrum.Core;
 using Claustrum.Core.Jobs;
 using Claustrum.Core.Json;
 using Claustrum.Core.Model;
+using Claustrum.Live;
 
 namespace Claustrum.Delegation;
 
 // #124 stage 2: the body of `claustrum jobs host <id>`. Runs the job another process minted, from the request it left in the
 // job directory, exactly as that process would have in-process: the same Prepare, the same DelegateEngine.RunAsync (slot, worktree,
-// budget admission, Runner). What differs is who can cancel it: a signal, or the marker `jobs cancel` leaves.
+// budget admission, Runner). What differs is who can cancel it: a signal, the marker `jobs cancel` leaves, or the end of the
+// coordinate job it belongs to (TreeRootWatch).
 internal static class DetachedHost
 {
+    public const string RootEndedNotice = "The coordinate job that started this one has ended; this job was cancelled.";
+
     private const int CancelPollMs = 250;
+
+    // The root is checked every twelve marker polls (3 s), the first time at once: a host started under a root already gone ends at the start.
+    private const int RootCheckEveryPolls = 12;
+
+    // How long the Notice is given to reach conversation.jsonl before the cancel (the session reads its inbox every 500 ms).
+    private static readonly TimeSpan noticeWait = TimeSpan.FromSeconds(3);
 
     /// <summary>
     /// Runs the job to its receipt. Never throws for a failed job: whatever stops it before Runner writes result.json is written
@@ -51,24 +62,56 @@ internal static class DetachedHost
     }
 
     // The marker is polled, not signalled: a Windows process with no console cannot be sent Ctrl-C, and one poll serves both systems.
+    // The root of the job's tree is polled on the same timer, a twelfth as often.
     private static async Task WatchForCancelAsync(JobPaths job, CancellationTokenSource cancel, CancellationToken stop)
     {
+        TreeRootWatch? tree = TreeRootWatch.ForEnvironment();
         using PeriodicTimer timer = new(TimeSpan.FromMilliseconds(CancelPollMs));
         try
         {
-            do
+            for (int poll = 0; ; poll++)
             {
                 if (File.Exists(job.CancelRequest))
                 {
                     await cancel.CancelAsync();
                     return;
                 }
+
+                if (tree is not null && poll % RootCheckEveryPolls == 0 && tree.HasEnded())
+                {
+                    await CancelForEndedRootAsync(job, cancel, stop);
+                    return;
+                }
+
+                if (!await timer.WaitForNextTickAsync(stop))
+                    return;
             }
-            while (await timer.WaitForNextTickAsync(stop));
         }
         catch (OperationCanceledException)
         {
         }
+    }
+
+    // The Notice first, so the conversation says why; then the cancel, which ends the job with its receipt like any other.
+    private static async Task CancelForEndedRootAsync(JobPaths job, CancellationTokenSource cancel, CancellationToken stop)
+    {
+        SafeConsole.Error(RootEndedNotice);
+        try
+        {
+            if (LiveJob.At(job).Notify(RootEndedNotice) is { } inboxFile)
+            {
+                // The session deletes the file once the notice is recorded; a session that cannot (or a job that ends first) costs the wait, not the cancel.
+                DateTime due = DateTime.UtcNow + noticeWait;
+                while (File.Exists(inboxFile) && DateTime.UtcNow < due)
+                    await Task.Delay(100, stop);
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or CliUsageException)
+        {
+            SafeConsole.Error($"warning: the notice could not be recorded: {ex.Message}");
+        }
+
+        await cancel.CancelAsync();
     }
 
     // A receipt Runner already wrote stands: this only fills the gap when it never got that far.

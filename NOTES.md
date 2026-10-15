@@ -6238,14 +6238,39 @@ replies with `jobs reply`, or escalates by ending its own turn with the question
 - **Not hosted, on purpose.** A blind role never asks, so it runs in-process as before; `--stream` needs the process in the room, so a
   tree's `--stream` run stays in-process with the TTY rule's reply timeout (0 without a terminal: the child is told nobody can answer);
   `--no-live` and a backend with no live protocol are not live, so there is nothing to return early for.
-- **Known limits.** (1) A child outlives its architect: `Kill(entireProcessTree)` follows parent pids and the host was reparented to
-  init, so a cancelled `coordinate` does not stop its detached children; they end on their own timeout (a waiting one: the 1800 s window,
-  then it decides alone). (2) A `.claustrum` link that leaves the repo is refused in the host after the mint: the receipt is `failed`
-  (exit 1 for the waiter), where in-process it is exit 2. (3) `--file <(cmd)` is read by the host after `run` exited, so it fails
-  there. (4) A waiting child holds its slot and its budget reservation, as the owner decided; measured 2026-10-15, a sibling `run` in the
-  same tree was refused with "nothing left … while 1 running job(s) hold $4.96". (5) Windows: the host start, `CreateNoWindow` and the
-  marker poll are written to the documented behaviour and **not measured on Windows**; a parent in a job object that kills its
-  children on close takes the host too (no `CREATE_BREAKAWAY_FROM_JOB`).
+- **Routing needs a live architect** (review of #124 stage 2, F2). A child returns early with exit 7 only when its tree says the architect
+  can answer: `coordinate` sets `CLAUSTRUM_ARCHITECT_LIVE` next to `CLAUSTRUM_PARENT_JOB` (`1` when its prepared run is live and its role has
+  a report, `0` otherwise), and `LiveRun.ArchitectLive` reads exactly `1`. The child never infers it from the tree id: a tree id exported by
+  hand, `coordinate --no-live` and an architect on a backend without a live protocol route nothing, and the child runs in-process as
+  before with reply timeout 0 (the role is told at once that no human is available), terminal or not, unless `--reply-timeout` says
+  otherwise. Like the tree id the variable is not forwarded by a member (`EnvAllowList`, also under `env_passthrough: "all"`).
+- **A host watches its tree's root** (F1). `coordinate` records its process in `owner.json` (pid and start time, first thing in
+  `CoordinateEngine.RunAsync`, so both doors do it); a host whose environment carries `CLAUSTRUM_PARENT_JOB` reads it at start and checks
+  every 3 s (the first check at once) that the root's `result.json` is absent and that process alive (`ProcessIdentity`). A tree id that
+  names no job, or a job with no `owner.json` (an id exported by hand), is not a root, and nothing is cancelled for it. When the root is
+  gone the host queues the Notice "The coordinate job that started this one has ended; this job was cancelled." as a `notice` inbox
+  message (the session appends it and sends the role nothing: only the session owns `seq`), waits up to 3 s for it to be consumed, then
+  cancels the run's token, so the job ends `cancelled` with its receipt. Measured with a fake claude, `kill -9` on a coordinate with a
+  child waiting: Notice at +0.4 s, receipt at +1 s, no host left.
+- **`coordinate` settles its children** (F1, the other end). When the architect's run returns, whatever its status, `coordinate` finds the
+  detached jobs of its tree in the store (the `tree` field of `host.json`, written by the launcher from its own `CLAUSTRUM_PARENT_JOB`;
+  never from memory) that have no receipt and a live host, writes their `cancel` marker and lists each in the returned receipt's
+  `warnings`. It does not wait for their receipts, and the warnings ride the returned result only, as the ledger's do: `result.json`
+  was written by Runner before this runs.
+- **Also from that review.** (F3) A machinery refusal in the host writes a `refused` marker in the job directory *before* its receipt, so
+  the waiter that finds the receipt already finds it and exits 2 as in-process. (F4) Under `--json` a tree's `run` and `jobs reply` print
+  exactly one document: needs_input, the RunResult, or a RunResult synthesized for a job whose own never comes (abandoned: `failed`, exit
+  6; unreadable `result.json`: `failed`, exit 1; Ctrl-C that could not write the cancel marker: `cancelled`, exit 130). (F5) `host.json`,
+  `host-request.json` and `owner.json` are written temp-file-then-rename. (F6) `JobDirectory.IsJobId` (`^[0-9]{8}-[0-9]{6}-[0-9a-f]{8}\z`,
+  ASCII classes, no `IgnoreCase`) gates every job id a user types, before any `Path.Combine`: on Windows `C:x` replaces the store root.
+  Exit 2; MCP `job_status`/`job_result` answer "not found".
+- **Known limits.** (1) `--file <(cmd)` is read by the host after `run` exited, so it fails there. (2) A waiting child holds its slot and
+  its budget reservation, as the owner decided; measured 2026-10-15, a sibling `run` in the same tree was refused with "nothing left …
+  while 1 running job(s) hold $4.96". (3) Windows: the host start, `CreateNoWindow` and the marker poll are written to the documented
+  behaviour and **not measured on Windows**; a parent in a job object that kills its children on close takes the host too (no
+  `CREATE_BREAKAWAY_FROM_JOB`). (4) The root watch is a poll: a host lives up to ~3 s past its root, and a root pruned from the store by
+  `jobs.keep_last` is judged by its cached owner alone. (5) A child started in the instant between `JobDirectory.Create` and the
+  `host.json` write is not found by `coordinate`'s sweep; its own watch is what stops it.
 - **Measured by hand, fake claude, no paid call.** `run --detach` (human and `--json`), `jobs wait`, `jobs cancel` (waiting and done
   job), a tree's `run` → 7 → `jobs reply` → 7 → `jobs reply --json` → 0 (`live.json` `reply_timeout_seconds` 1800, an isolated builder
   under a cast with `max_parallel` 2 and a ledger entry), SIGTERM on a waiting `run` (130, `cancelled`), `kill -9` on a host (6).

@@ -23,4 +23,11 @@ public sealed record JobPaths(string Id, string Directory, string RequestJson, s
     public string HostLog => Path.Combine(Directory, "host.log");
 
     public string CancelRequest => Path.Combine(Directory, "cancel");
+
+    // The `claustrum` process that runs a job it runs itself and that other jobs hang from (`coordinate`, #124 stage 2 review F1):
+    // the detached children of its tree watch it, and cancel themselves once it is gone.
+    public string OwnerJson => Path.Combine(Directory, "owner.json");
+
+    // Written before the receipt of a run refused for its machinery (#104), so a waiter that sees the receipt knows to exit 2.
+    public string RefusedMarker => Path.Combine(Directory, "refused");
 }

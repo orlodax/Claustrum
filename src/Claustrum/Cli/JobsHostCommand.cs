@@ -21,7 +21,7 @@ public static class JobsHostCommand
 
     private static async Task<int> ExecuteAsync(string id)
     {
-        JobPaths job = JobDirectory.Open(AppServices.Platform, id)
+        JobPaths job = JobDirectory.Open(AppServices.Platform, JobId.Require(id))
             ?? throw new CliUsageException($"job '{id}' not found under {JobDirectory.ResolveRoot(AppServices.Platform)}");
 
         HostDetach.Apply(job.HostLog);

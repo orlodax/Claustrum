@@ -389,7 +389,11 @@ public static class DelegateEngine
     {
         string error = $"refused: {escaping} resolves outside the working directory ({SyncRoot.Resolve(escaping)}); `.claustrum` is a link that leaves it, "
             + "and a run's worktree and lock files are never created through one";
-        return new MachineryRefusedException(await Runner.RefuseAsync(job ?? JobDirectory.Create(AppServices.Platform), role, RunStatus.Failed, error));
+        JobPaths refused = job ?? JobDirectory.Create(AppServices.Platform);
+
+        // Before the receipt: a tree's `run` waits on a detached host, and the waiter that finds the receipt must already find this (exit 2, as in-process).
+        File.WriteAllText(refused.RefusedMarker, error);
+        return new MachineryRefusedException(await Runner.RefuseAsync(refused, role, RunStatus.Failed, error));
     }
 
     // The gate asks before it creates each path (the directory, every slot file it tries), so a link that appeared

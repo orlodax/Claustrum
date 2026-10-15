@@ -21,6 +21,13 @@ public static class BudgetLedger
     /// </summary>
     public const string TreeVariable = "CLAUSTRUM_PARENT_JOB";
 
+    /// <summary>
+    /// Set by `coordinate` next to the tree variable: "1" when its architect holds a live session, so a child's question can reach it
+    /// (`jobs reply`), anything else (or absent) when nobody would answer. A child never infers it (#124 stage 2 review F2); like the
+    /// tree variable it is handed down by a coordinator and never forwarded by a member (EnvAllowList).
+    /// </summary>
+    public const string ArchitectLiveVariable = "CLAUSTRUM_ARCHITECT_LIVE";
+
     private const string UnknownRole = "unknown";
     private const string LiveExtension = ".live";
 

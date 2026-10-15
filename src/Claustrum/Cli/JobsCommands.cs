@@ -100,7 +100,7 @@ public static class JobsCommands
 
     private static int Show(string id)
     {
-        string directory = Path.Combine(JobDirectory.ResolveRoot(AppServices.Platform), id);
+        string directory = Path.Combine(JobDirectory.ResolveRoot(AppServices.Platform), JobId.Require(id));
         string resultPath = Path.Combine(directory, "result.json");
         string requestPath = Path.Combine(directory, "request.json");
 
@@ -123,7 +123,7 @@ public static class JobsCommands
 
     private static int Logs(string id, bool showStderr)
     {
-        string directory = Path.Combine(JobDirectory.ResolveRoot(AppServices.Platform), id);
+        string directory = Path.Combine(JobDirectory.ResolveRoot(AppServices.Platform), JobId.Require(id));
         string logPath = Path.Combine(directory, showStderr ? "stderr.log" : "stdout.log");
 
         if (!File.Exists(logPath))
