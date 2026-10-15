@@ -41,7 +41,11 @@ public sealed record DelegateRequest(
     // folds into RunOptions.PreRunWarnings and from there into result.json's warnings[] and stderr.
     string[]? PreRunWarnings = null,
     // `--stream raw` on the CLI: echo unformatted raw lines to stderr (issue #123).
-    bool StreamRaw = false)
+    bool StreamRaw = false,
+    // #122: `coordinate`'s cast, set when the cast was not tracked in HEAD — RunIsolatedAsync copies
+    // it into the worktree after creation so the architect can load it. Only set by CoordinatePlan;
+    // null for all other paths (CLI `run`, MCP `delegate`).
+    Cast? WorktreeCastCopy = null)
 {
     /// <summary>
     /// The exact token <see cref="SystemAppendix"/> and <see cref="Env"/> values may carry in place of

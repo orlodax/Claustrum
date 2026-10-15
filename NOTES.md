@@ -255,7 +255,31 @@ the recorded origin is the *last* layer that added anything to that role's deny 
 set of contributing layers. Good enough to answer "did my config file touch this," not "which layers
 built this list" — revisit if `doctor` needs the latter.
 
-## Env allow-list is dead without clearing ProcessStartInfo.Environment (2026-09-13)
+## Casts and aliases are per-developer (2026-10-15, issue #122)
+
+Three decisions the owner settled on 2026-10-15:
+
+1. **Casts are per-developer, stored in git-ignored `.claustrum/casts/`.** Not committed and shared
+   across the team. A teammate who needs the same roles configures their own cast through the
+   `/claustrum` questionnaire or by copying a teammate's cast file. This avoids the tension between
+   "the cast is shared" and "each developer uses different backends/models" (one uses Claude, one
+   uses opencode) — a cast per machine is simpler than filtering role entries per environment.
+2. **Model aliases (`frontier-coding → claude:opus`, etc.) are the owner's choice and live in the
+   **user config** (`~/.config/claustrum/config.json`).** `claustrum init` asks and writes them
+   there, never to the repo's `claustrum.json`. This keeps the repo config thin (roles, backends,
+   defaults) and the per-developer choice out of the committed tree. A repo `claustrum.json` is
+   still loaded as the repo layer when present — it can define `backends.*.path`, `defaults.*` and
+   `roles.*` settings; model aliases on it are a local convenience that another developer does not
+   inherit.
+3. **Exit 2 everywhere when uninitialized.** `run`, `delegate`/`delegate_async`, `cast questions`,
+   `cast new`/`create`, `cast_questions`/`cast_create`, and `coordinate` all refuse with exit 2
+   and a message naming the two missing files. `init`, `roles`, `backends`, `jobs`, `sync`, `mcp`,
+   `cast list`/`show`/`use` are not gated — they work without a user config or a `claustrum.json`.
+
+Rejected: `~/.config/claustrum/casts/<repo-id>/` as the cast home, because `CastStore` reads casts
+from the cwd's `.claustrum/casts/` and is fenced there by the cwd fence (#103, #105) — crossing to
+`~/.config/` for the cast would break that fence and read casts outside the repo, which the whole
+design exists to prevent.
 
 `ProcessStartInfo.Environment` is pre-populated by .NET with a copy of the *current* process's own
 environment as soon as `UseShellExecute` is `false` — this is documented .NET behaviour, not a

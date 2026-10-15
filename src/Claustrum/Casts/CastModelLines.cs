@@ -24,7 +24,7 @@ public static class CastModelLines
 
     /// <summary>Warning text for item 4's silent-builtin-default case, re-used by item 3.</summary>
     public static string BuiltinDefaultWarning(string castName, string role, string alias, string target, Config config) =>
-        config.RepoConfigPath is { } repo
+        config.RepoPath is { } repo
             ? $"cast '{castName}' role '{role}': alias '{alias}' resolved to the built-in default {target}; no claustrum.json or user config defines it (looked in {config.UserConfigPath}, {repo})"
             : $"cast '{castName}' role '{role}': alias '{alias}' resolved to the built-in default {target}; no claustrum.json or user config defines it (looked in {config.UserConfigPath})";
 

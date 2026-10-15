@@ -31,6 +31,10 @@ public static partial class ArchitectWorktree
     // G5: `jobs clean` knows a probe left by a hard kill by this prefix (TryRemoveStrayProbeAsync).
     private const string ProbePrefix = "probe-";
 
+    // #122: a committed .gitignore rule must ignore .claustrum/casts/ before an untracked/ignored
+    // cast is accepted — otherwise the architect's own git add -A would commit the copied cast.
+    private const string CastsDirectory = ".claustrum/casts/";
+
     private const int NamedCap = 5;
 
     /// <summary>
@@ -54,9 +58,17 @@ public static partial class ArchitectWorktree
 
         await RefuseTrackedLinksAsync(gitRoot, cancellationToken);
         (string[] unignored, string[] ruleFiles) = await MachineryIgnoresAsync(cwd, gitRoot, cancellationToken);
+
+        // #122: the cast is accepted at any git state as long as committed rules cover it:
+        // untracked or ignored is OK when a committed .gitignore rule ignores .claustrum/casts/;
+        // tracked and identical to HEAD is the same as before; tracked with local changes is refused.
+        // So we exclude the cast path *from* the paths array below — it has its own check below.
+        string castPath = OnDiskPath(gitRoot, CastStore.PathFor(cwd, castName));
+        Difference[] castDifferences = [.. await UncommittedAsync(gitRoot, [castPath], cancellationToken)];
+        string? castProblem = CheckCastState(cwd, castName, castDifferences, unignored.Contains(CastsDirectory));
+
         string[] paths =
         [
-            OnDiskPath(gitRoot, CastStore.PathFor(cwd, castName)),
             OnDiskPath(gitRoot, Path.Combine(gitRoot, "claustrum.json")),
             ".claustrum/roles",
             .. ruleFiles,
@@ -90,6 +102,8 @@ public static partial class ArchitectWorktree
             committed.Add($"commit or git-ignore {Named(harness)} — an ignored local copy is fine");
 
         List<string> problems = [];
+        if (castProblem is not null)
+            problems.Add(castProblem);
         if (committed.Count > 0)
             problems.Add($"coordinate runs the architect in a worktree, which sees only committed files — {string.Join("; ", committed)}");
         if (unignored.Length > 0)
@@ -214,6 +228,7 @@ public static partial class ArchitectWorktree
 
         (string Directory, string Probe)[] probes =
         [
+            (CastsDirectory, $"{CastsDirectory}default.json"),
             (WorktreesDirectory, $"{WorktreesDirectory}{probeName}/"),
             (BriefsDirectory, $"{BriefsDirectory}1-builder.md"),
             (LocksDirectory, $"{LocksDirectory}default__builder.1.lock"),
@@ -388,6 +403,26 @@ public static partial class ArchitectWorktree
     // a Windows source's drive colon stays inside <source>.
     [GeneratedRegex(@"^(?<source>.+?):\d+:(?<pattern>.*)$")]
     private static partial Regex CheckIgnoreRule();
+
+    // #122: cast git-state check. Untracked or ignored is OK when a committed .gitignore rule ignores
+    // .claustrum/casts/; tracked and identical to HEAD (no differences) is the same as before; tracked
+    // with local changes is refused (commit it, or untrack it and let it be ignored).
+    private static string? CheckCastState(string cwd, string castName, Difference[] differences, bool castsIgnoredByRule)
+    {
+        if (differences.Length == 0)
+            return null; // tracked and identical — fine.
+
+        // All differences are the same kind; pick the first one.
+        Difference d = differences[0];
+        if (d.State is "untracked" or "ignored")
+        {
+            if (!castsIgnoredByRule)
+                return $"coordinate runs the architect in a worktree, which sees only committed files — the cast '{castName}' is {d.State}, but no committed .gitignore rule ignores .claustrum/casts/; run `claustrum init` and commit .gitignore first";
+            return null; // Untracked/ignored with a committed gitignore rule covering it — OK (#122).
+        }
+
+        return $"{CastStore.PathFor(cwd, castName)} ({d.State} — commit it first)";
+    }
 
     // RoleLibrary.LoadRole's `<role>/role.json` and `<role>/ROLE.md`, ReadPart's `<role>/parts/<part>.<harness|default>.md`.
     [GeneratedRegex(@"^\.claustrum/roles/[^/]+/(role\.json|ROLE\.md|parts/[^/]+\.md)$", RegexOptions.IgnoreCase)]

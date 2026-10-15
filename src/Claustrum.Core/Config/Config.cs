@@ -27,6 +27,29 @@ public sealed class Config
     /// <summary>The repo's <c>claustrum.json</c>, or null when there is no git root or no such file.</summary>
     public string? RepoConfigPath { get; init; }
 
+    /// <summary>The candidate repo path (<c>&lt;git root&gt;/claustrum.json</c>), or null when there is no git root — unlike <see cref="RepoConfigPath"/> which is set only when the file exists. Used for messages that need the path regardless.</summary>
+    public string? RepoPath { get; init; }
+
+    /// <summary>True when the user config file exists <b>or</b> the repo's <c>claustrum.json</c> exists: the minimal requirement for every command that needs configuration (exit 2 otherwise, with a message naming both paths).</summary>
+    public static void RequireInitialized(IPlatform platform, string? cwd)
+    {
+        string userPath = UserConfigFilePath(platform);
+        if (platform.FileExists(userPath))
+            return;
+
+        string? gitRoot = cwd is null ? null : GitRootLocator.Find(cwd, platform);
+        if (gitRoot is not null)
+        {
+            string repoPath = Path.Combine(gitRoot, "claustrum.json");
+            if (platform.FileExists(repoPath))
+                return;
+
+            throw new ConfigException($"this repo isn't initialized: no user config at {userPath} and no claustrum.json at {repoPath}; run `claustrum init`");
+        }
+
+        throw new ConfigException($"this repo isn't initialized: no user config at {userPath} and no claustrum.json at <no git root>; run `claustrum init`");
+    }
+
     // A null cwd loads no repo layer: `sync --global` is the user's config alone (#53, as #99 made it the library alone).
     public static Config Load(IPlatform platform, string? cwd)
     {
@@ -39,12 +62,13 @@ public sealed class Config
 
         string? gitRoot = cwd is null ? null : GitRootLocator.Find(cwd, platform);
         string? repoPath = null;
+        string? repoCandidate = null;
         if (gitRoot is not null)
         {
-            string candidate = Path.Combine(gitRoot, "claustrum.json");
-            if (platform.FileExists(candidate))
+            repoCandidate = Path.Combine(gitRoot, "claustrum.json");
+            if (platform.FileExists(repoCandidate))
             {
-                repoPath = candidate;
+                repoPath = repoCandidate;
                 merged = MergeLayer(merged, ReadDocument(platform, repoPath), ConfigLayer.Repo, origins);
             }
         }
@@ -52,7 +76,7 @@ public sealed class Config
         if (ReadEnvLayer(platform) is { } envLayer)
             merged = MergeLayer(merged, envLayer, ConfigLayer.Env, origins);
 
-        return new Config { Merged = merged, Origins = origins, UserConfigPath = userPath, RepoConfigPath = repoPath };
+        return new Config { Merged = merged, Origins = origins, UserConfigPath = userPath, RepoConfigPath = repoPath, RepoPath = repoCandidate };
     }
 
     // Model class -> alias -> "[backend:]model-id" (docs/PLAN.md A7); role.json's Permission

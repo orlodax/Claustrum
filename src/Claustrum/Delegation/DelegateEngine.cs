@@ -35,6 +35,11 @@ public static class DelegateEngine
     /// </summary>
     public static PreparedDelegation Prepare(DelegateRequest request)
     {
+        // #122 item 1: refuse before anything else if neither the user config nor the repo's
+        // claustrum.json exists — exit 2 before Config.Load itself does the same thing more
+        // opaquely, and before any job directory is minted.
+        Config.RequireInitialized(AppServices.Platform, request.Cwd);
+
         // Config first, then the harness the role's tier model resolves to, then Render — Render
         // must already know the harness it will run on (M1 review finding #2), not a placeholder
         // rendered against regardless of the real target.
@@ -52,6 +57,24 @@ public static class DelegateEngine
             rendered = rendered with { SystemBody = InsertAppendix(rendered.SystemBody, appendix) };
 
         ResolvedRole resolved = config.Resolve(rendered, request.Overrides);
+
+        // #122 item 2: warn when no cast is active and the role's model class resolved through a
+        // built-in default — the user config defines no alias for it. Never emit both this warning
+        // and the cast one for the same role: the cast check only runs when a cast is active.
+        if (request.CastBudget is null && request.Overrides.Model is null && request.Overrides.Backend is null)
+        {
+            string modelSpec = rendered.ModelClass;
+            RoleSettings? roleSettings = config.Merged.Roles?.GetValueOrDefault(request.Role);
+            if (roleSettings?.Model is { } m)
+                modelSpec = m;
+
+            ModelResolution noCastResolution = config.Describe(modelSpec);
+            if (noCastResolution.FromBuiltin)
+            {
+                string msg = $"role '{request.Role}': model '{modelSpec}' resolved to the built-in default {noCastResolution.Backend}:{noCastResolution.ModelId}; {config.UserConfigPath} does not define it";
+                request = request with { PreRunWarnings = [.. request.PreRunWarnings ?? [], msg] };
+            }
+        }
 
         // docs/PLAN.md §D4: inside a job tree (CLAUSTRUM_PARENT_JOB, §D2) the cast's budget_usd is the
         // whole tree's, so it goes to the ledger instead of straight to this one run — Runner clamps
@@ -280,6 +303,14 @@ public static class DelegateEngine
             worktree = request.Branch is { } existing
                 ? await JobWorktree.CheckOutBranchAsync(request.Cwd, job.Id, existing, JobDirectory.ResolveRoot(AppServices.Platform), cancellationToken)
                 : await JobWorktree.AddAsync(request.Cwd, job.Id, cancellationToken);
+
+            // #122: when the cast is per-developer (untracked/ignored by .gitignore), the worktree
+            // cut from HEAD doesn't hold it. Copy it in so the architect (and every child it starts
+            // with `claustrum run … --cast <name>` from that worktree) can find it. The committed
+            // .gitignore rule that RequireReadyAsync now requires guarantees `git add -A` / commit
+            // never picks up the copied file.
+            if (request.WorktreeCastCopy is { } castToCopy && !CastStore.Exists(worktree.Path, castToCopy.Name))
+                CastStore.Save(worktree.Path, castToCopy);
 
             // #55: an api run's inlined AGENTS.md/CLAUDE.md are the branch's, fenced at the worktree, which must be
             // exactly the job's directory under the main checkout (a link planted at or above it inlines nothing).

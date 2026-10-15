@@ -177,7 +177,13 @@ public sealed class ClaustrumTools
     {
         string resolvedCwd = cwd is { Length: > 0 } ? Path.GetFullPath(cwd) : Environment.CurrentDirectory;
         ConfigOverrides overrides = new(Backend: backend, Model: model, Effort: effort, Permission: permission, Deny: deny, BudgetUsd: budgetUsd, TimeoutSeconds: timeoutSeconds);
-        (string resolvedTier, ConfigOverrides resolvedOverrides, CastBudget? castBudget, int? maxParallel, string? resolvedCastName, string[] castWarnings) = CastApplication.Resolve(resolvedCwd, role, cast, tier, overrides);
+        CastApplicationResult appResult = CastApplication.Resolve(resolvedCwd, role, cast, tier, overrides);
+        string resolvedTier = appResult.Tier;
+        ConfigOverrides resolvedOverrides = appResult.Overrides;
+        CastBudget? castBudget = appResult.CastBudget;
+        int? maxParallel = appResult.MaxParallel;
+        string? resolvedCastName = appResult.CastName;
+        string[] castWarnings = appResult.Warnings;
 
         return new DelegateRequest(
             Role: role,
@@ -244,6 +250,7 @@ public sealed class ClaustrumTools
         McpExceptionBoundary.GuardAsync(async () =>
         {
             string cwd = Environment.CurrentDirectory;
+            Config.RequireInitialized(AppServices.Platform, cwd);
             Config config = Config.Load(AppServices.Platform, cwd);
             CastQuestionnaireResult result = await CastQuestionnaire.BuildAsync(AppServices.RoleLibrary, AppServices.Backends, config, cwd, cancellationToken);
 
@@ -258,6 +265,7 @@ public sealed class ClaustrumTools
         McpExceptionBoundary.Guard(() =>
         {
             string cwd = Environment.CurrentDirectory;
+            Config.RequireInitialized(AppServices.Platform, cwd);
             Config config = Config.Load(AppServices.Platform, cwd);
             Cast cast = CastBuilder.WithResolved(
                 CastBuilder.FromAnswers(name, AppServices.RoleLibrary.Version, AppServices.RoleLibrary.ListRoles(), answers), config);
