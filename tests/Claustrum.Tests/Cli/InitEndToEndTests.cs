@@ -55,9 +55,9 @@ public sealed class InitEndToEndTests : IDisposable
 
     private static string[] KeysOf(JsonElement element) => [.. element.EnumerateObject().Select(property => property.Name)];
 
-    // The questionnaire's property casing is not part of what is pinned here; the keys and the path are.
+    // `init questions --json` is snake_case like every other document Claustrum writes (2026-10-15, review of #127): the name is matched exactly.
     private static JsonElement Property(JsonElement element, string name) =>
-        element.EnumerateObject().Single(property => string.Equals(property.Name, name, StringComparison.OrdinalIgnoreCase)).Value;
+        element.EnumerateObject().Single(property => property.Name == name).Value;
 
     private async Task<(string[] Keys, string UserConfigPath)> QuestionsAsync()
     {
@@ -65,7 +65,7 @@ public sealed class InitEndToEndTests : IDisposable
         Assert.Equal(ExitCodes.Ok, result.ExitCode);
         using JsonDocument document = JsonDocument.Parse(result.Stdout);
         string[] keys = [.. Property(document.RootElement, "questions").EnumerateArray().Select(question => Property(question, "key").GetString()!)];
-        return (keys, Property(document.RootElement, "userConfigPath").GetString()!);
+        return (keys, Property(document.RootElement, "user_config_path").GetString()!);
     }
 
     // ---- init questions ---------------------------------------------------------------------------------------------
@@ -109,8 +109,8 @@ public sealed class InitEndToEndTests : IDisposable
         using JsonDocument document = JsonDocument.Parse(result.Stdout);
         JsonElement cheap = Property(document.RootElement, "questions").EnumerateArray().Single(question => Property(question, "key").GetString() == "cheap-coding");
         Assert.Equal(["claude:haiku"], Property(cheap, "options").EnumerateArray().Select(option => option.GetString()));
-        Assert.True(Property(cheap, "allowFreeForm").GetBoolean());
-        Assert.False(Property(cheap, "allowNotNeeded").GetBoolean());
+        Assert.True(Property(cheap, "allow_free_form").GetBoolean());
+        Assert.False(Property(cheap, "allow_not_needed").GetBoolean());
     }
 
     // An alias the user config defines but a repo claustrum.json overrides is still the user's: nothing to ask about.
@@ -124,6 +124,33 @@ public sealed class InitEndToEndTests : IDisposable
         (string[] keys, _) = await QuestionsAsync();
 
         Assert.Empty(keys);
+    }
+
+    [Fact]
+    public async Task EveryPropertyNameOfTheQuestionnaireJsonIsSnakeCaseAsync()
+    {
+        CliResult result = await cli.RunAsync(["init", "questions", "--json"], "", null);
+
+        using JsonDocument document = JsonDocument.Parse(result.Stdout);
+        List<string> names = [];
+        Collect(document.RootElement, names);
+        Assert.NotEmpty(names);
+        Assert.All(names, name => Assert.Matches("^[a-z]+(_[a-z]+)*$", name));
+        Assert.Contains("user_config_path", names);
+        Assert.Contains("allow_free_form", names);
+
+        static void Collect(JsonElement element, List<string> into)
+        {
+            if (element.ValueKind == JsonValueKind.Object)
+                foreach (JsonProperty property in element.EnumerateObject())
+                {
+                    into.Add(property.Name);
+                    Collect(property.Value, into);
+                }
+            else if (element.ValueKind == JsonValueKind.Array)
+                foreach (JsonElement item in element.EnumerateArray())
+                    Collect(item, into);
+        }
     }
 
     [Fact]
@@ -284,6 +311,76 @@ public sealed class InitEndToEndTests : IDisposable
         Assert.Equal(3.5m, defaults.GetProperty("budget_usd").GetDecimal());
         Assert.Equal("all", defaults.GetProperty("env_passthrough").GetString());
         Assert.Equal(7, config.GetProperty("jobs").GetProperty("keep_last").GetInt32());
+    }
+
+    // Merged at the JSON level (2026-10-15, review of #127): re-serializing the typed document dropped what Claustrum does not model.
+    [Fact]
+    public async Task KeysClaustrumDoesNotModelSurviveTheMergeAtEveryLevelAsync()
+    {
+        cli.WriteUserConfig(/*lang=json,strict*/ """
+            {
+              "$schema": "https://example.invalid/claustrum.schema.json",
+              "note": "mine, do not touch",
+              "models": { "fast": "claude:sonnet", "my-own-alias": "claude:opus" },
+              "future_section": { "deep": [1, 2, { "x": null }] }
+            }
+            """);
+        string answers = WriteAnswers(CompleteAnswers());
+
+        CliResult result = await InitAsync("--answers", answers);
+
+        Assert.Equal(ExitCodes.Ok, result.ExitCode);
+        JsonElement config = ReadUserConfig();
+        Assert.Equal("https://example.invalid/claustrum.schema.json", config.GetProperty("$schema").GetString());
+        Assert.Equal("mine, do not touch", config.GetProperty("note").GetString());
+        Assert.Equal("claude:opus", config.GetProperty("models").GetProperty("my-own-alias").GetString());
+        Assert.Equal("claude:sonnet", config.GetProperty("models").GetProperty("fast").GetString());
+        Assert.Equal("claude:haiku", config.GetProperty("models").GetProperty("cheap-coding").GetString());
+        Assert.Equal(3, config.GetProperty("future_section").GetProperty("deep").GetArrayLength());
+        Assert.Equal(JsonValueKind.Null, config.GetProperty("future_section").GetProperty("deep")[2].GetProperty("x").ValueKind);
+    }
+
+    [Fact]
+    public async Task TheMergedUserConfigIsWrittenWholeWithNoTemporaryFileLeftBesideItAsync()
+    {
+        cli.WriteUserConfig(/*lang=json,strict*/ """{"models":{"fast":"claude:sonnet"}}""");
+        string answers = WriteAnswers(CompleteAnswers());
+
+        CliResult result = await InitAsync("--answers", answers);
+
+        Assert.Equal(ExitCodes.Ok, result.ExitCode);
+        Assert.Equal(["config.json"], Directory.GetFileSystemEntries(Path.GetDirectoryName(cli.UserConfigPath)!).Select(Path.GetFileName));
+        Assert.EndsWith("\n", File.ReadAllText(cli.UserConfigPath), StringComparison.Ordinal);
+        Assert.Equal(aliases.Order(StringComparer.Ordinal), KeysOf(ReadUserConfig().GetProperty("models")).Order(StringComparer.Ordinal));
+    }
+
+    // The write goes to a temp file and a rename: when it cannot be made, the user's file is the old one, whole, and nothing is left beside it.
+    [Fact]
+    [System.Runtime.Versioning.UnsupportedOSPlatform("windows")]
+    public async Task AWriteThatFailsLeavesTheExistingUserConfigByteIdenticalAndNoTemporaryFileAsync()
+    {
+        if (OperatingSystem.IsWindows() || Environment.IsPrivilegedProcess)
+            Assert.Skip("needs a read-only directory the process cannot write into (POSIX, not root).");
+
+        string path = cli.WriteUserConfig(/*lang=json,strict*/ """{"$schema":"keep","models":{"fast":"claude:sonnet"}}""");
+        string before = File.ReadAllText(path);
+        string directory = Path.GetDirectoryName(path)!;
+        string answers = WriteAnswers(CompleteAnswers());
+        UnixFileMode original = File.GetUnixFileMode(directory);
+        File.SetUnixFileMode(directory, UnixFileMode.UserRead | UnixFileMode.UserExecute);
+        try
+        {
+            CliResult result = await InitAsync("--answers", answers);
+
+            Assert.NotEqual(ExitCodes.Ok, result.ExitCode);
+            Assert.Contains(path, result.Stderr, StringComparison.Ordinal);
+            Assert.Equal(before, File.ReadAllText(path));
+            Assert.Equal(["config.json"], Directory.GetFileSystemEntries(directory).Select(Path.GetFileName));
+        }
+        finally
+        {
+            File.SetUnixFileMode(directory, original);
+        }
     }
 
     // Regression (review 2, 2026-10-15): the agents were rendered with the config loaded BEFORE the answers were written, so a

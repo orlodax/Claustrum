@@ -127,12 +127,73 @@ public sealed partial class OpencodeStreamFormatterTests
     }
 
     [Fact]
-    public void ALineThatIsNotJsonAndAnUnknownEventTypeAreReturnedRaw()
+    public void ALineThatIsNotJsonIsPassedThroughAndAnUnknownEventTypePrintsNothing()
     {
         OpencodeStreamFormatter formatter = new("");
 
         Assert.Equal("plain text", formatter.FormatLine("plain text"));
-        Assert.Equal(/*lang=json,strict*/ """{"type":"future_event","x":1}""", formatter.FormatLine(/*lang=json,strict*/ """{"type":"future_event","x":1}"""));
+        Assert.Null(formatter.FormatLine(/*lang=json,strict*/ """{"type":"future_event","x":1}"""));
+        Assert.Null(formatter.FormatLine(/*lang=json,strict*/ """{"type":"future_event","x":1}""", replayed: true));
+    }
+
+    // The event's own time wins; with none, a replay prints dashes and a live line the clock.
+    [Fact]
+    public void ALineWithATimestampShowsItAndOneWithoutShowsDashesOnReplayAndTheClockLive()
+    {
+        OpencodeStreamFormatter formatter = new("");
+        string stamped = /*lang=json,strict*/ """{"type":"text","timestamp":1760518800000,"part":{"text":"hi"}}""";
+        string bare = /*lang=json,strict*/ """{"type":"text","part":{"text":"hi"}}""";
+        string expected = DateTimeOffset.FromUnixTimeMilliseconds(1760518800000).ToLocalTime().ToString("HH:mm:ss", CultureInfo.InvariantCulture);
+
+        Assert.Equal(expected + " SAYS  hi", formatter.FormatLine(stamped, replayed: true));
+        Assert.Equal("--:--:-- SAYS  hi", formatter.FormatLine(bare, replayed: true));
+        Assert.Matches(@"^\d{2}:\d{2}:\d{2} SAYS  hi$", formatter.FormatLine(bare, replayed: false));
+    }
+
+    // ---- nothing a model, a tool or a file says reaches the terminal as a control byte ---------------------------------------
+
+    private static void AssertNoControlCharacters(string text) =>
+        Assert.False(text.Any(character => character is < ' ' or '\u007f' or (>= '\u0080' and <= '\u009f')), "a control character reached the output");
+
+    [Fact]
+    public void ControlCharactersInModelTextAreVisibleEscapesAndTheLinesAreFolded()
+    {
+        string line = /*lang=json,strict*/ """{"type":"text","part":{"text":"a\u001b[2Jb\u0007c\u009bd\u007fe\nnext"}}""";
+
+        string said = Bare(new OpencodeStreamFormatter("").FormatLine(line));
+
+        Assert.Equal("SAYS  a\\x1b[2Jb\\x07c\\u009bd\\x7fe next", said);
+        AssertNoControlCharacters(said);
+    }
+
+    [Theory]
+    [InlineData(/*lang=json,strict*/ """{"type":"tool_use","part":{"tool":"bash","state":{"status":"completed","input":{"command":"echo safe\n\u001b[1Arm -rf /\r\necho end"}}}}""", "BASH  echo safe \\x1b[1Arm -rf / echo end")]
+    [InlineData(/*lang=json,strict*/ """{"type":"tool_use","part":{"tool":"edit","state":{"status":"completed","input":{"filePath":"/x/\u001b]0;pwned\u0007.cs"}}}}""", "EDIT  /x/\\x1b]0;pwned\\x07.cs")]
+    [InlineData(/*lang=json,strict*/ """{"type":"tool_use","part":{"tool":"grep","state":{"status":"pending","input":{"pattern":"a\u009bb"}}}}""", "GREP  a\\u009bb")]
+    [InlineData(/*lang=json,strict*/ """{"type":"tool_use","part":{"tool":"bash","state":{"status":"error","error":"boom\u001b[31m\nnext"}}}""", "✗     boom\\x1b[31m next")]
+    [InlineData(/*lang=json,strict*/ """{"type":"error","error":{"message":"bad\u001b[2J\nthing"}}""", "ERROR bad\\x1b[2J thing")]
+    public void ControlCharactersInAToolTargetCommandOrErrorAreEscapedAndMultiLineFoldsToOne(string line, string expected)
+    {
+        string printed = new OpencodeStreamFormatter("").FormatLine(line)!;
+
+        Assert.Equal(expected, Bare(printed));
+        AssertNoControlCharacters(printed);
+    }
+
+    [Fact]
+    public void AToolNameWithControlCharactersIsEscapedInItsLabelToo()
+    {
+        string printed = new OpencodeStreamFormatter("").FormatLine(/*lang=json,strict*/ """{"type":"tool_use","part":{"tool":"\u001b[1mx","state":{"status":"completed","input":{}}}}""")!;
+
+        AssertNoControlCharacters(printed);
+    }
+
+    [Theory]
+    [InlineData("plain \u001b[2J text", "plain \\x1b[2J text")]
+    [InlineData("\u009b31m", "\\u009b31m")]
+    public void APassedThroughLineIsSanitizedToo(string raw, string expected)
+    {
+        Assert.Equal(expected, new OpencodeStreamFormatter("").FormatLine(raw));
     }
 
     // F15 (2026-10-15): JSON that is no event object, and events with fields of the wrong type, must not throw on the pump thread.

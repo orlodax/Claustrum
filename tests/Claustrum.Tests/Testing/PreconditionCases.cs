@@ -21,7 +21,7 @@ internal static class PreconditionCases
         "staged-claustrum-json",
         "modified-cast",
         "untracked-cast",
-        "ignored-cast",
+        "rule-for-another-cast",
         "staged-new-cast",
         "untracked-role-file",
         "whitelist-gitignore",
@@ -57,12 +57,14 @@ internal static class PreconditionCases
             case "untracked-cast":
                 File.Copy(CastPath(root, "default"), CastPath(root, "other"));
                 return new PreconditionCase(CastWithoutRule("other", "untracked"), "other", root);
-            case "ignored-cast":
-                File.WriteAllText(Path.Combine(root, ".gitignore"), IsolatedRepo.MachineryIgnoreRules + ".claustrum/casts/other.json\n");
+            // The ignore probe asks about the cast actually used (2026-10-15, review of #127): a committed rule for the default cast
+            // does not cover "other", which the architect's `git add -A` would commit.
+            case "rule-for-another-cast":
+                File.WriteAllText(Path.Combine(root, ".gitignore"), IsolatedRepo.MachineryIgnoreRules + ".claustrum/casts/default.json\n");
                 repo.Git("add", ".gitignore");
                 repo.Git("commit", "-q", "-m", "rules");
                 File.Copy(CastPath(root, "default"), CastPath(root, "other"));
-                return new PreconditionCase(CastWithoutRule("other", "ignored"), "other", root);
+                return new PreconditionCase(CastWithoutRule("other", "untracked"), "other", root);
             case "staged-new-cast":
                 File.Copy(CastPath(root, "default"), CastPath(root, "other"));
                 repo.Git("add", ".claustrum/casts/other.json");

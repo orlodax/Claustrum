@@ -59,6 +59,28 @@ public sealed class CoordinateCastEndToEndTests : IDisposable
         Assert.True(File.Exists(Path.Combine(repo.Repo, ".claustrum", "casts", "default.json")), "the operator's own cast is untouched");
     }
 
+    // The architect's children are told `--cast <file name>`: a cast copied from a teammate under another file name still says
+    // the teammate's `name` inside, and the copy under THAT name left every child run looking for a file that was not there.
+    [Fact]
+    public async Task AnUntrackedCastIsHandedToTheWorktreeUnderItsFileNameWhateverItsJsonNameSaysAsync()
+    {
+        FakeClaude.RequirePosixShell();
+        repo.WriteCoordinateCast();
+        string castsDirectory = Path.Combine(repo.Repo, ".claustrum", "casts");
+        File.WriteAllText(
+            Path.Combine(castsDirectory, "team.json"),
+            File.ReadAllText(Path.Combine(castsDirectory, "default.json")).Replace("\"name\":\"default\"", "\"name\":\"someone-elses\"", StringComparison.Ordinal));
+        File.Delete(Path.Combine(castsDirectory, "default.json"));
+        repo.Script(new FakeClaudeScript { Commands = ["ls .claustrum/casts > casts-seen.txt"], Summary = "integrated" });
+
+        (CliResult process, JsonElement? parsed) = await repo.CoordinateAsync("--cast", "team");
+
+        Assert.True(process.ExitCode == ExitCodes.Ok, process.Stderr);
+        JsonElement result = parsed ?? throw new InvalidOperationException(process.Stdout);
+        string seen = repo.Git("show", $"claustrum/{Str(result, "job_id")}:casts-seen.txt").Replace("\r\n", "\n", StringComparison.Ordinal).Trim();
+        Assert.Equal("team.json", seen);
+    }
+
     [Fact]
     public async Task AnUntrackedCastWithNoCastsRuleIsRefusedNamingInitAndMintsNoJobAsync()
     {

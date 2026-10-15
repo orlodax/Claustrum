@@ -123,7 +123,10 @@ public sealed class McpStdioServerTests : IDisposable
         startInfo.ArgumentList.Add("mcp");
         startInfo.ArgumentList.Add("--cwd");
         startInfo.ArgumentList.Add(work);
+        UserConfig.Write(home); // #122: a developer's machine has one, and delegate refuses an uninitialized one
         startInfo.Environment["CLAUSTRUM_HOME"] = home;
+        startInfo.Environment["HOME"] = home;
+        startInfo.Environment["APPDATA"] = home;
         startInfo.Environment["CLAUSTRUM_SKIP_PROBE"] = "1";
         startInfo.Environment.Remove("CLAUSTRUM_PARENT_JOB"); // #66
         startInfo.Environment["PATH"] = GitDirectory();

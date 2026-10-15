@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Globalization;
 using System.Text;
 using Claustrum.Core.Backends;
@@ -245,6 +246,23 @@ public sealed class OpencodePostRunTests : IDisposable
         Assert.Equal(new PostRunResult(null, null, "opencode session export failed (boom): cost unknown, charged the cap"), result);
     }
 
+    // A lone text-only step sums to nothing: the old words claimed a step sum that was not there (review of #127, 2026-10-15).
+    [Fact]
+    public async Task AFailedExportAfterAOneStepTextOnlyRunSaysTheCostIsUnknownNotAStepSumAsync()
+    {
+        IPostRunHook hook = BackendAnswering(new Reply("", Stderr: "boom", ExitCode: 3));
+        string stdout = """
+            {"type":"step_start","sessionID":"ses_one","part":{"id":"prt_1","type":"step-start"}}
+            {"type":"text","sessionID":"ses_one","part":{"id":"prt_2","type":"text","text":"just words"}}
+            """;
+
+        PostRunResult? result = await hook.PostRunAsync(Parsed(), Context(stdout: stdout), baseline: null, TestContext.Current.CancellationToken);
+
+        Assert.NotNull(result);
+        Assert.Null(result.CostUsd);
+        Assert.Equal("opencode session export failed (boom): cost unknown, charged the cap", result.Warning);
+    }
+
     [Fact]
     public async Task AFailedExportWithNoStreamToFallBackOnIsCostUnknownAsync()
     {
@@ -330,6 +348,27 @@ public sealed class OpencodePostRunTests : IDisposable
         Assert.NotNull(result);
         Assert.Contains("BackendNotFoundException", result.Warning, StringComparison.Ordinal);
         Assert.EndsWith("cost unknown, charged the cap", result.Warning, StringComparison.Ordinal);
+    }
+
+    // The reads share the export's deadline (review of #127): a grandchild that inherited the stderr pipe (an MCP/LSP server from the run's
+    // config) outlives the export, and a bare ReadToEnd waited for it. Here the grandchild holds the pipe for 5 s; the caller's
+    // cancellation, which the reads now honour, ends the export in about a second.
+    [Fact]
+    public async Task AGrandchildHoldingTheExportsPipeDoesNotHoldTheExportPastItsDeadlineAsync()
+    {
+        IPostRunHook hook = BackendAnswering(new Reply(Fixture("export.json")));
+        string path = Path.Combine(scratch, "opencode");
+        File.WriteAllText(path, File.ReadAllText(path).Replace("#!/bin/sh\n", "#!/bin/sh\nsleep 5 >/dev/null </dev/null &\n", StringComparison.Ordinal));
+        using CancellationTokenSource cancel = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        cancel.CancelAfter(TimeSpan.FromSeconds(1));
+        Stopwatch watch = Stopwatch.StartNew();
+
+        PostRunResult? result = await hook.PostRunAsync(Parsed(), Context(), baseline: null, cancel.Token);
+
+        Assert.True(watch.Elapsed < TimeSpan.FromSeconds(4), $"the export waited {watch.Elapsed.TotalSeconds:F1}s for a grandchild's pipe");
+        Assert.NotNull(result);
+        Assert.Contains("cancelled", result.Warning, StringComparison.Ordinal);
+        Assert.Null(result.CostUsd);
     }
 
     // The two exports are the session's own: the run's env (and `--env` entries) reach the process, and nothing else does.
