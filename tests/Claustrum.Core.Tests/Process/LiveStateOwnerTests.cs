@@ -20,10 +20,15 @@ public sealed class LiveStateOwnerTests
     [Fact]
     public void ADeadPidIsNotAlive()
     {
-        System.Diagnostics.ProcessStartInfo info = OperatingSystem.IsWindows() ? new("cmd", ["/c", "exit 0"]) : new("sh", ["-c", "exit 0"]);
+        // The child waits on its stdin until its start time is read: a child that exited at once was already gone on macOS CI
+        // when StartTime was asked for (Win32Exception, 2026-10-15).
+        System.Diagnostics.ProcessStartInfo info = OperatingSystem.IsWindows() ? new("cmd", ["/c", "more"]) : new("sh", ["-c", "cat"]);
         info.CreateNoWindow = true;
+        info.RedirectStandardInput = true;
+        info.RedirectStandardOutput = true;
         using System.Diagnostics.Process child = System.Diagnostics.Process.Start(info) ?? throw new InvalidOperationException("no child");
         DateTimeOffset started = child.StartTime.ToUniversalTime();
+        child.StandardInput.Close();
         child.WaitForExit();
 
         Assert.False(Owned(child.Id, started).IsOwnerAlive());
