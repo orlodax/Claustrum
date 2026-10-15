@@ -65,10 +65,11 @@ public sealed class McpStdioServerTests : IDisposable
 
         Assert.NotNull(response);
         string[] names = [.. response!["result"]!["tools"]!.AsArray().Select(tool => tool!["name"]!.GetValue<string>())];
-        Assert.Equal(11, names.Length);
+        Assert.Equal(12, names.Length);
         Assert.Contains("delegate", names);
         Assert.Contains("job_status", names);
         Assert.Contains("coordinate", names);
+        Assert.Contains("job_say", names);
     }
 
     // #63 over the wire: the schema a host reads says `branch` exists, on both delegating tools.
