@@ -239,7 +239,7 @@ public sealed class ProcessRunnerTests
 
             string firstLine = await PollForFirstLineAsync(job.StdoutLog, TimeSpan.FromSeconds(10));
             Assert.Equal("a", firstLine);
-            // The process is still asleep (it prints "b" only after a 1s sleep): the log has grown to
+            // The process is still asleep (it prints "b" only after a 5 s sleep): the log has grown to
             // exactly its first line, proof this was read mid-run and not after the process exited.
             Assert.False(run.IsCompleted, "the process finished before the mid-run read — the test proves nothing");
 
@@ -300,9 +300,11 @@ public sealed class ProcessRunnerTests
         return OperatingSystem.IsWindows() ? ("cmd", ["/c", "type", file]) : ("cat", [file]);
     }
 
+    // Five seconds between the lines, not one: a loaded windows-latest runner finished the old 1 s gap before the
+    // mid-run read (CI, 2026-10-15), and the test then proves nothing.
     private static (string Exe, string[] Args) GrowingOutputCommand() => OperatingSystem.IsWindows()
-        ? ("cmd", ["/c", "echo a&ping -n 2 127.0.0.1 >nul&echo b"])
-        : ("sh", ["-c", "echo a; sleep 1; echo b"]);
+        ? ("cmd", ["/c", "echo a&ping -n 6 127.0.0.1 >nul&echo b"])
+        : ("sh", ["-c", "echo a; sleep 5; echo b"]);
 
     private static (string Exe, string[] Args) SleepCommand(int seconds) => OperatingSystem.IsWindows()
         ? ("cmd", ["/c", "ping", "-n", (seconds + 1).ToString(), "127.0.0.1"])
