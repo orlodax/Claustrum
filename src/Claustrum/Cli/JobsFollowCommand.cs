@@ -3,6 +3,8 @@ using System.Text;
 using System.Text.Json;
 using Claustrum.Core.Backends;
 using Claustrum.Core.Jobs;
+using Claustrum.Core.Live;
+using Claustrum.Live;
 
 namespace Claustrum.Cli;
 
@@ -73,8 +75,25 @@ public static class JobsFollowCommand
         SafeConsole.Error(SummarizeJob(jobDir, jobId));
 
         JobTracker job = new(jobDir, rawMode);
-        while (!Poll(job, prefix: null))
-            await Task.Delay(PollIntervalMs, ct);
+
+        // #124: on a terminal, a live job's open question is asked here and the typed line goes out as `jobs say` would.
+        if (TerminalInput.IsInteractive && job.Channel is { } channel)
+            job.Prompter = new QuestionPrompter(channel);
+
+        try
+        {
+            while (!Poll(job, prefix: null))
+            {
+                // A typed line wakes the poll at once; a cancel still ends it, whatever the terminal read is doing.
+                Task delay = Task.Delay(PollIntervalMs, ct);
+                await (job.Prompter?.Pending is { } pending ? Task.WhenAny(delay, pending) : delay);
+                ct.ThrowIfCancellationRequested();
+            }
+        }
+        finally
+        {
+            job.Prompter?.Abandon();
+        }
 
         return ExitCodes.Ok;
     }
@@ -135,6 +154,11 @@ public static class JobsFollowCommand
         public string Partial = "";
         public bool Done;
 
+        // #124: null when the job is not reachable as a live one (its directory is a link out of the store).
+        public LiveJob? Channel { get; } = LiveJob.Find(Path.GetFileName(directory));
+        public ConversationPrinter Conversation { get; } = new();
+        public QuestionPrompter? Prompter { get; set; }
+
         // One decoder per followed file: a multibyte character split across two polls is completed
         // by the next read instead of becoming two U+FFFD.
         public Decoder Decoder { get; } = Encoding.UTF8.GetDecoder();
@@ -172,7 +196,10 @@ public static class JobsFollowCommand
 
         // Until backend.json names the formatter the log is held back; a finished job without one is raw.
         if (job.TryResolveFormatter() || finished)
+        {
             PrintTail(job, prefix);
+            PrintConversation(job, prefix, finished);
+        }
 
         if (!finished)
             return false;
@@ -185,6 +212,20 @@ public static class JobsFollowCommand
 
         SafeConsole.Error("━━━ incomplete (unparsable result.json)");
         return true;
+    }
+
+    // #124: the conversation of a live job, after the stream lines of the same poll (a question ends a turn, so the lines
+    // that led to it were written first; the stream has no times of its own to order them by). A job that is not live has
+    // no conversation.jsonl and prints nothing here. A finished job is never asked.
+    private static void PrintConversation(JobTracker job, string? prefix, bool finished)
+    {
+        if (job.Channel is not { } channel)
+            return;
+
+        IReadOnlyList<ConversationEntry> entries = channel.ReadConversation();
+        job.Conversation.Print(entries, prefix);
+        if (!finished)
+            job.Prompter?.Poll(channel.ReadState(), entries);
     }
 
     private static long LogLength(string logPath)
@@ -336,8 +377,13 @@ public static class JobsFollowCommand
         if (doc is null)
             return false;
 
-        JsonElement root = doc.RootElement;
+        SafeConsole.Error(FormatSummary(doc.RootElement));
+        return true;
+    }
 
+    // The `━━━ status  cost …` line a finished job ends on, shared with `jobs wait`.
+    internal static string FormatSummary(JsonElement root)
+    {
         string status = StreamText.Sanitize(GetString(root, "status") ?? "?");
         string cost = root.TryGetProperty("cost_usd", out JsonElement c) && c.ValueKind == JsonValueKind.Number && c.TryGetDecimal(out decimal costVal)
             ? BudgetLedger.Dollars(costVal)
@@ -357,8 +403,7 @@ public static class JobsFollowCommand
         if (warnings > 0)
             summary += $"  {warnings} warning{(warnings == 1 ? "" : "s")}";
 
-        SafeConsole.Error(summary);
-        return true;
+        return summary;
     }
 
     // Resolve the stream formatter for a job by reading backend.json. Resolved is false while the file

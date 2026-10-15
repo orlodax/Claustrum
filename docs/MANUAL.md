@@ -38,7 +38,8 @@ same operations as tools. `sync` writes the registration for each host (§12).
 |---|---|---|
 | `delegate` | `claustrum run` | the receipt (diff capped at 64 KB) |
 | `delegate_async` | `claustrum run` in the background | `{job_id, log_path}` |
-| `job_status` | — | `{state: queued\|running\|done, elapsed_seconds, last_line}` |
+| `job_status` | — | `{state: running\|waiting_for_input\|done\|failed, elapsed_seconds, last_line, question: {seq, text} \| null}` |
+| `job_say` | `claustrum jobs say` | `{answers_question, state}` — answers the open question, or messages the running role (§3, *Talking to a running job*) |
 | `job_result` | `claustrum jobs show` | the receipt, once done (throws before) |
 | `coordinate` | `claustrum coordinate` | `{job_id, log_path, warnings}` — always async; poll `job_status` |
 | `list_roles`, `list_backends`, `doctor` | `roles list`, `backends list`, `backends doctor` | summaries |
@@ -85,6 +86,7 @@ claustrum run <role> [--brief <text> | --brief-file <path|->]
     [--permission readonly|shell|edit|edit+shell|full] [--deny <pattern>]…
     [--budget <usd>] [--timeout <sec>] [--resume <session>] [--file <path>]… [--env K=V]…
     [--cast <name>] [--branch <name>] [--json] [--stream | --stream-raw] [--raw]
+    [--reply-timeout <sec>] [--no-live]
 ```
 
 - The brief is mandatory: `--brief`, `--brief-file`, or `--brief-file -` for stdin.
@@ -143,7 +145,7 @@ claustrum run <role> [--brief <text> | --brief-file <path|->]
 ```
 claustrum coordinate [--cast <name>] (--issues 12,13 | --brief <text> | --brief-file <path|->)
     [--cwd <dir>] [--tier …] [--model <architect model>] [--budget <usd>] [--timeout <sec>]
-    [--json] [--stream | --stream-raw] [--raw]
+    [--json] [--stream | --stream-raw] [--raw] [--reply-timeout <sec>] [--no-live]
 ```
 
 Runs the cast's **architect** headlessly (§11). `--issues` needs `gh` authenticated and a GitHub
@@ -185,7 +187,7 @@ part into a named skip. A repo MCP config that is not a regular file is reported
 file` and never read. The probe needs a `claustrum.json` at the git root whose aliases reach the
 backend, or it skips with "no model alias … resolves to this backend".
 
-### `claustrum jobs list | show <id> | logs <id> [--stderr] | follow [<id>] [--raw] | clean [--cwd] | budget <tree> [--reset]`
+### `claustrum jobs list | show <id> | logs <id> [--stderr] | follow [<id>] [--raw] | say <id> <text> | wait <id> [--timeout <s>] [--json] | clean [--cwd] | budget <tree> [--reset]`
 
 - `list`: recent jobs, newest first — id, status, `role/backend`.
 - `show`: the receipt (`result.json`), or the request if it has not finished.
@@ -201,6 +203,9 @@ backend, or it skips with "no model alias … resolves to this backend".
   Works while the job's terminal is gone: open a second terminal and run
   `claustrum jobs follow <job id>` to watch progress from there. A job whose claustrum process died
   before writing `result.json` is followed until Ctrl-C: there is nothing to tell follow it ended.
+  A live job's conversation is printed beside the stream (`? `, `> `, `! `, below), and on a terminal
+  an open question is asked on the spot.
+- `say <id> <text>` and `wait <id>`: the way into a live job, below.
 - `clean`: removes the **worktrees** of finished isolated jobs; their branches stay, with the work
   committed on them. It never forces: a clean worktree is renamed to a `.trash-*` sibling, its own registration
   deleted and the trash deleted, and the sweep first deletes any `.trash-*` an earlier interrupted free left,
@@ -223,6 +228,35 @@ backend, or it skips with "no model alias … resolves to this backend".
   mid-check leaves behind, is deleted (`removed stray probe directory <name>`); a non-empty one is
   never touched.
 - `budget <tree>`: the ledger of one tree (§10); `--reset` deletes it, refused while a member runs.
+
+### Talking to a running job
+
+A claude role need not finish in one breath. When its turn ends without a `claustrum-report` block, that turn
+is a message to the human: the session stays open, the human's reply goes in as the next turn, and the job's clock
+stands still while it waits (it keeps its concurrency slot). Everything said lands in the job directory's
+`conversation.jsonl` and reads as one line per entry: `? ` a role's question, `> ` the human's reply or message,
+`! ` a Claustrum notice (a timeout warning, "no answer"). Text from the role is sanitized like the stream's. Three
+front doors, one channel:
+
+- **The terminal.** `run` and `coordinate` with stdin and stderr both terminals are live with a reply timeout of
+  1800 s: the question is printed on stderr as `? …` and a `reply> ` prompt reads one line from the terminal itself
+  (`/dev/tty`, `CONIN$`; never stdin, which may have carried the brief). An empty line means "not now". Ctrl-C still
+  ends the run `cancelled`, with its receipt, prompt or not. `jobs follow <id>` on a terminal prints the same
+  conversation and asks the same way.
+- **Another shell.** `claustrum jobs say <id> "…"` queues one message: the answer while a question is open, a message
+  to the running role otherwise (exit 2 when the job has no `live.json`, i.e. is not live, or is done). `jobs wait <id>`
+  blocks until the job is waiting or finished: it prints the question as `? text` then `(question N)`, or the summary
+  line `jobs follow` ends on (exit 0 for either, 4 on `--timeout`, 130 on Ctrl-C). `--json` prints
+  `{"state", "question": {"seq", "text"} | null, "result_status"}` instead, for a script or an architect to branch on.
+- **MCP.** `job_status` reports `state: waiting_for_input` and the `question`; the host asks its user with its own
+  question tool and answers with `job_say`. `delegate_async` runs live with a 1800 s reply timeout; `delegate`, which
+  blocks its host, runs with 0.
+
+When nobody answers — `--reply-timeout 0` (the default with no terminal), or the timeout passing without a reply —
+the role is told to decide alone and record the choice in `open_decisions`. `--reply-timeout <s>` sets the wait and
+`--no-live` turns the channel off: the run is exactly what it was before it existed. Blind roles (`code-reviewer`,
+`ui-reviewer`) can only tell, not ask: a human answer could carry the rationale the blind gate withholds, so their doubts
+go into their findings. Only claude is live today; for any other backend the flags are accepted and change nothing.
 
 ### `claustrum cast questions [--json] | create --answers <file> [--name n] | new [--name n] | list | show <name> | use <name>`
 
@@ -904,7 +938,8 @@ warns when binary and working directory straddle that line.
 `~/.claustrum/jobs/<job id>/` (`CLAUSTRUM_HOME` overrides the root): `request.json`, `system.md`
 (the exact system body the role got — the first place to look when a role misbehaves),
 `backend.json` (backend, model, and for claude the `mcp_servers` the run had, with `mcp.json`, the copy it loaded),
-`stdout.log`, `stderr.log`, `result.json`. `jobs.keep_last` (200) prunes old ones when a new job is
+`stdout.log`, `stderr.log`, `result.json`, and for a live job `conversation.jsonl`, `live.json` (the session's
+state and the open question's `seq`) and `inbox/` (messages waiting to be consumed). `jobs.keep_last` (200) prunes old ones when a new job is
 created. Budget ledgers live beside them under `budget/<tree>/`.
 
 ## 15. Troubleshooting

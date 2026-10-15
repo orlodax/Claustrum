@@ -3,10 +3,12 @@ using System.Text.Json;
 using Claustrum.Core.Jobs;
 using Claustrum.Core.Json;
 using Claustrum.Core.Model;
+using Claustrum.Live;
 
 namespace Claustrum.Delegation;
 
-public sealed record JobStatusInfo(string State, double ElapsedSeconds, string? LastLine);
+// State: running | waiting_for_input (a live job's question is open, and Question carries it; #124) | done | failed | unknown.
+public sealed record JobStatusInfo(string State, double ElapsedSeconds, string? LastLine, QuestionInfo? Question = null);
 
 // Backs MCP delegate_async/job_status/job_result (docs/PLAN.md §A6). In-memory only, so it covers
 // jobs started via delegate_async in this MCP server's own lifetime; job_status/job_result still
@@ -50,12 +52,26 @@ public sealed class JobManager
                 TaskStatus.Faulted or TaskStatus.Canceled => "failed",
                 _ => "running",
             };
+
+            // The task decides when a job is done; live.json only adds that a running one is waiting for its human.
+            QuestionInfo? question = null;
+            if (state == "running" && LiveJob.At(entry.Job).Observe() is { State: "waiting_for_input" } waiting)
+                (state, question) = (waiting.State, waiting.Question);
+
             double elapsed = (DateTimeOffset.UtcNow - entry.StartedAt).TotalSeconds;
-            return new JobStatusInfo(state, elapsed, JobLog.LastLine(entry.Job.StdoutLog));
+            return new JobStatusInfo(state, elapsed, JobLog.LastLine(entry.Job.StdoutLog), question);
         }
 
+        // A job this process never started: its result.json says done; a live one (live.json) says what its session is doing (#124).
         string resultPath = Path.Combine(JobDirectory.ResolveRoot(AppServices.Platform), jobId, "result.json");
-        return File.Exists(resultPath) ? new JobStatusInfo("done", 0, null) : null;
+        if (File.Exists(resultPath))
+            return new JobStatusInfo("done", 0, null);
+
+        if (LiveJob.Find(jobId) is not { } live || live.ReadState() is null)
+            return null;
+
+        JobWaitResult observed = live.Observe();
+        return new JobStatusInfo(observed.State == "waiting_for_input" ? observed.State : "running", 0, null, observed.Question);
     }
 
     public async Task<RunResult?> GetResultAsync(string jobId)

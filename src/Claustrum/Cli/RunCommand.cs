@@ -2,6 +2,7 @@ using System.CommandLine;
 using System.Text.Json;
 using Claustrum.Casts;
 using Claustrum.Core.Config;
+using Claustrum.Core.Jobs;
 using Claustrum.Core.Json;
 using Claustrum.Core.Model;
 using Claustrum.Delegation;
@@ -47,11 +48,13 @@ public static class RunCommand
         Option<bool> stream = new("--stream") { Description = "Stream formatted progress lines to stderr." };
         Option<bool> streamRawOption = new("--stream-raw") { Description = "Stream the raw backend JSON to stderr, unformatted (implies --stream)." };
         Option<bool> raw = new("--raw") { Description = "Include the backend's raw response in JSON output." };
+        Option<int?> replyTimeout = LiveRun.ReplyTimeoutOption();
+        Option<bool> noLive = LiveRun.NoLiveOption();
 
         Command command = new("run", "Delegate a task to a role.")
         {
             role, brief, briefFile, cwd, backend, model, effort, tier, permission,
-            deny, budget, timeout, resume, file, env, cast, branch, json, stream, streamRawOption, raw,
+            deny, budget, timeout, resume, file, env, cast, branch, json, stream, streamRawOption, raw, replyTimeout, noLive,
         };
 
         command.SetAction(async parseResult =>
@@ -80,7 +83,9 @@ public static class RunCommand
                 parseResult.GetValue(branch),
                 parseResult.GetValue(json),
                 streamMode, streamRaw,
-                parseResult.GetValue(raw));
+                parseResult.GetValue(raw),
+                parseResult.GetValue(noLive),
+                parseResult.GetValue(replyTimeout));
         });
 
         return command;
@@ -89,9 +94,11 @@ public static class RunCommand
     private static async Task<int> ExecuteAsync(
         string roleName, string? briefText, string? briefFilePath, string? cwdOption, string? tierFlag,
         ConfigOverrides overrides, string? resumeSession, string[] attachFiles, string[] envEntries,
-        string? castName, string? branch, bool jsonMode, bool streamMode, bool streamRaw, bool rawMode)
+        string? castName, string? branch, bool jsonMode, bool streamMode, bool streamRaw, bool rawMode,
+        bool noLive, int? replyTimeout)
     {
         string cwd = Path.GetFullPath(cwdOption ?? Environment.CurrentDirectory);
+        (bool live, int replyTimeoutSeconds) = LiveRun.Resolve(noLive, replyTimeout);
 
         // Before the handler: it swallows the first signal, and a stdin read blocked here listens on no token.
         string brief = ResolveBrief(briefText, briefFilePath);
@@ -131,7 +138,9 @@ public static class RunCommand
                 CastName: resolvedCastName,
                 OnStreamLine: streamMode ? SafeConsole.Error : null,
                 Branch: branch is { Length: > 0 } ? branch : null,
-                PreRunWarnings: castWarnings);
+                PreRunWarnings: castWarnings,
+                Live: live,
+                ReplyTimeoutSeconds: replyTimeoutSeconds);
 
             // Prepared here, not inside RunAsync(request), so the warnings reach stderr before the backend starts
             // — in --json mode too, where PrintHuman never runs (F14).
@@ -140,11 +149,21 @@ public static class RunCommand
             foreach (string warning in printedWarnings)
                 SafeConsole.Error($"warning: {warning}");
 
+            // #124: a terminal run shows the conversation and asks the human, so it needs the job's directory before the run
+            // starts. Runner mints its own only after the checks Validate repeats, so a refusal still leaves nothing behind.
+            JobPaths? job = null;
+            if (LiveRun.Prompts(prepared))
+            {
+                DelegateEngine.Validate(prepared);
+                job = JobDirectory.Create(AppServices.Platform);
+            }
+
             RunResult result;
             int? refusedExit = null;
             try
             {
-                result = await DelegateEngine.RunAsync(prepared, job: null, cancel.Token);
+                Task<RunResult> run = DelegateEngine.RunAsync(prepared, job, cancel.Token);
+                result = job is null ? await run : await LiveRun.AnswerWhileAsync(run, job);
             }
             catch (MachineryRefusedException ex)
             {

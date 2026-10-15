@@ -1,5 +1,6 @@
 using System.Text.Json.Serialization;
 using Claustrum.Delegation;
+using Claustrum.Live;
 
 namespace Claustrum.Mcp.Json;
 
@@ -18,4 +19,5 @@ namespace Claustrum.Mcp.Json;
 [JsonSerializable(typeof(DelegateAsyncResult))]
 [JsonSerializable(typeof(CoordinateStartResult))]
 [JsonSerializable(typeof(JobStatusInfo))]
+[JsonSerializable(typeof(SayResult))]
 public sealed partial class McpJsonContext : JsonSerializerContext;

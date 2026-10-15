@@ -38,6 +38,11 @@ permission?, cast?, ...}`, still with the brief written to a file first if you a
 have one. With no `--cast`/`cast` given, a repo's `.claustrum/casts/default.json` applies
 itself automatically if present.
 
+A role can stop to ask the user something. When `job_status` (after `delegate_async`) shows
+`state: waiting_for_input`, its `question` is what the role asked: put it to the user with the
+host's question mechanism and send the answer with `job_say {job_id, text}`. The blocking
+`delegate` cannot be answered: the role is told nobody is there, decides, and records the choice.
+
 ## Coordinating (a spawned architect)
 If the cast's `architect.mode` is `spawned`, or the user asks Claustrum to coordinate issues
 end-to-end, run `claustrum coordinate --cast <name> --issues <n,m> --json` (or `--brief-file

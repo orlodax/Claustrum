@@ -65,7 +65,9 @@ public sealed record CoordinatePlan(
         // #122: the cast is per-developer and git-ignored — if it's not tracked in HEAD, the
         // worktree cut from HEAD won't have it. Pass it so RunIsolatedAsync copies it in, under the
         // file name the children are told (`--cast <CastName>`), not the document's own `name`.
-        WorktreeCastCopy: Isolated ? Cast with { Name = CastName } : null);
+        WorktreeCastCopy: Isolated ? Cast with { Name = CastName } : null,
+        Live: Request.Live,
+        ReplyTimeoutSeconds: Request.ReplyTimeoutSeconds);
 
     /// <summary>
     /// Config, role render, model alias and permission resolved on top of the plan — the rest of what
