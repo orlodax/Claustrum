@@ -324,7 +324,12 @@ public sealed class TreeRoutingEndToEndTests : IDisposable
             await run.SendSigintAsync(DetachedRepo.Ct);
             int exit = await run.WaitForExitAsync(exitLimit, DetachedRepo.Ct);
 
-            Assert.Equal(ExitCodes.Cancelled, exit);
+            // macOS CI exited 1 here once (2026-10-15) with no way to see why: say everything the run left.
+            string receipt = Path.Combine(fixture.JobDir(id), "result.json");
+            Assert.True(
+                exit == ExitCodes.Cancelled,
+                $"exit {exit}\nstdout: {run.Stdout}\nstderr: {run.Stderr}\nresult.json: {(File.Exists(receipt) ? File.ReadAllText(receipt) : "(none)")}"
+                + $"\ncancel marker: {(File.Exists(Path.Combine(fixture.JobDir(id), "cancel")) ? "exists" : "absent")}; outside: [{string.Join(", ", Directory.GetFileSystemEntries(outside))}]");
             JsonElement result = OneDocument(run.Stdout);
             Assert.Equal("cancelled", result.GetProperty("status").GetString());
             Assert.Equal(id, result.GetProperty("job_id").GetString());
