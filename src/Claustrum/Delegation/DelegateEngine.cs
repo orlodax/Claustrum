@@ -79,6 +79,7 @@ public static class DelegateEngine
             BackendConfig: backendConfig,
             EnvPassthroughAll: config.Merged.Defaults?.EnvPassthrough == "all",
             OnStreamLine: request.OnStreamLine,
+            StreamRaw: request.StreamRaw,
             Tree: tree,
             PreRunWarnings: request.PreRunWarnings);
 

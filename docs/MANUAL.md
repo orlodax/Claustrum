@@ -125,8 +125,10 @@ claustrum run <role> [--brief <text> | --brief-file <path|->]
   operation, clear the mark) and retry. A trash directory that would not delete, or a registration git still lists
   after the rename (`<path> freed, but … (trash at …; `claustrum jobs clean` removes it)`), is a `warnings` entry on
   the receipt, never a failure: the free completed. Nothing is ever forced.
-- `--stream` echoes the backend's output to **stderr** while it runs; stdout still carries only
-  the final document. `--raw` adds the backend's untouched response under `raw`.
+- `--stream` / `--stream readable` echoes formatted progress lines to **stderr** as the job runs
+  (`HH:mm:ss LABEL  detail…`); `--stream raw` echoes the raw backend JSON unchanged (today's
+  behaviour). stdout always carries only the final document. `--raw` adds the backend's untouched
+  response under `raw`.
 - Without `--json`, stdout gets `status:`, then `branch:`/`worktree:`/`commit:` when the run was
   isolated, the changed files and the final message; every warning goes to stderr as
   `warning: …`, and the error as `error: …`.
@@ -157,7 +159,8 @@ ignored local copy is fine`); or `.claustrum/worktrees/`, `.claustrum/briefs/` a
 harness config with a local edit — `skip-worktree`/`assume-unchanged` included, the usual way to keep
 a token local — is not refused: the worktree gets `HEAD`'s copy, and `coordinate` says so on stderr
 as `warning: …` before the run starts. The same refusals come back as the MCP tool's own error, the
-warnings in its `warnings` array. Without `--json`, stdout adds `branch:`, `worktree:` and `commit:`
+warnings in its `warnings` array. `--stream` / `--stream readable` formats progress to stderr;
+`--stream raw` echoes the raw JSON. Without `--json`, stdout adds `branch:`, `worktree:` and `commit:`
 after `logs:`, and every warning on the receipt goes to stderr as `warning: …`.
 
 ### `claustrum roles list | show <name>`
@@ -176,11 +179,19 @@ part into a named skip. A repo MCP config that is not a regular file is reported
 file` and never read. The probe needs a `claustrum.json` at the git root whose aliases reach the
 backend, or it skips with "no model alias … resolves to this backend".
 
-### `claustrum jobs list | show <id> | logs <id> [--stderr] | clean [--cwd] | budget <tree> [--reset]`
+### `claustrum jobs list | show <id> | logs <id> [--stderr] | follow [<id>] [--raw] | clean [--cwd] | budget <tree> [--reset]`
 
 - `list`: recent jobs, newest first — id, status, `role/backend`.
 - `show`: the receipt (`result.json`), or the request if it has not finished.
 - `logs`: the captured stdout (readable while the job runs); `--stderr` for the other stream.
+- `follow [<id>]`: follow a job's output as it runs. With an id, prints a header line (job id,
+  role, `backend:model`), then streams the job's `stdout.log` from the start, formatted per its
+  backend's stream formatter (`HH:mm:ss LABEL  detail…`). Polls every ~500 ms. When the job finishes
+  and `result.json` appears, prints a summary line (`status`, cost, duration, `backend:model`,
+  warnings count) and exits 0. Without an id, follows every job that starts after the command, each
+  line prefixed with the short job id, until Ctrl-C (exit 130). `--raw` shows unformatted lines.
+  Works while the job's terminal is gone: open a second terminal and run
+  `claustrum jobs follow <job id>` to watch progress from there.
 - `clean`: removes the **worktrees** of finished isolated jobs; their branches stay, with the work
   committed on them. It never forces: a clean worktree is renamed to a `.trash-*` sibling, its own registration
   deleted and the trash deleted, and the sweep first deletes any `.trash-*` an earlier interrupted free left,

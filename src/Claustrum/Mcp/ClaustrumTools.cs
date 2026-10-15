@@ -125,6 +125,7 @@ public sealed class ClaustrumTools
                 // every line as it arrives, so job_status has a last line to relay for the whole run
                 // instead of an empty stdout.log until exit (claude's Parse auto-detects the JSONL).
                 Stream: true,
+                StreamRaw: false,
                 DiffCapBytes: McpDiffCapBytes);
 
             // Planned on this call, not inside the job: a usage error, a missing cast or a failed
@@ -188,6 +189,7 @@ public sealed class ClaustrumTools
             AttachFiles: files ?? [],
             Env: [],
             Stream: false,
+            StreamRaw: false,
             DiffCapBytes: McpDiffCapBytes,
             CastBudget: castBudget,
             MaxParallel: maxParallel,

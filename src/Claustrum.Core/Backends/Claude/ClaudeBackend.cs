@@ -20,6 +20,8 @@ public sealed class ClaudeBackend(IPlatform platform) : IBackend
 {
     private static readonly TimeSpan detectTimeout = TimeSpan.FromSeconds(10);
 
+    public IStreamFormatter? CreateStreamFormatter(string cwd) => new ClaudeStreamFormatter(cwd);
+
     // --permission-prompts none is passed for every level, including Full, so a headless run never
     // blocks on a prompt regardless of mode. ReadOnly's --allowedTools additionally lets a blind
     // code-reviewer read the diff it was asked to review (git/gh are read-only queries, not edits).
