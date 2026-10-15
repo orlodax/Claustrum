@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using Claustrum.Core.Config;
 using Claustrum.Core.Jobs;
+using Claustrum.Core.Live;
 using Claustrum.Core.Model;
 
 namespace Claustrum.Core.Json;
@@ -22,4 +23,7 @@ namespace Claustrum.Core.Json;
 [JsonSerializable(typeof(JsonElement))]
 [JsonSerializable(typeof(ConfigDocument))]
 [JsonSerializable(typeof(BudgetLedgerEntry))]
+[JsonSerializable(typeof(ConversationEntry))]
+[JsonSerializable(typeof(InboxMessage))]
+[JsonSerializable(typeof(LiveState))]
 public sealed partial class ClaustrumJsonContext : JsonSerializerContext;
