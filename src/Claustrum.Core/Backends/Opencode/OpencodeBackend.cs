@@ -96,7 +96,10 @@ public sealed class OpencodeBackend(IPlatform platform) : IBackend, IPostRunHook
         if (scan.ErrorMessage is not null)
             finalMessage = finalMessage.Length == 0 ? scan.ErrorMessage : $"{finalMessage}\n\n{scan.ErrorMessage}";
 
-        return new ParsedOutput(finalMessage, scan.SessionId, cost, usage, [], scan.LastEvent, IsError: exitCode != 0 || scan.ErrorMessage is not null);
+        // #126: the provider's refusal, when the error event is one, and the tool calls that ran to completion (an errored one did nothing).
+        return new ParsedOutput(
+            finalMessage, scan.SessionId, cost, usage, [], scan.LastEvent, IsError: exitCode != 0 || scan.ErrorMessage is not null,
+            ErrorKind: scan.ErrorKind, ErrorDetail: scan.ErrorMessage, ToolCallsCompleted: scan.ToolCalls.Values.Count(completed => completed));
     }
 
     private sealed record StepScan(
@@ -107,7 +110,9 @@ public sealed class OpencodeBackend(IPlatform platform) : IBackend, IPostRunHook
         bool ToolAfterLastStart,
         bool FinishAfterLastStart,
         string? ErrorMessage,
-        JsonElement? LastEvent);
+        JsonElement? LastEvent,
+        ErrorKind? ErrorKind,
+        Dictionary<string, bool> ToolCalls);
 
     private static StepScan Scan(string trimmed)
     {
@@ -118,6 +123,8 @@ public sealed class OpencodeBackend(IPlatform platform) : IBackend, IPostRunHook
         bool toolAfterLastStart = false;
         bool finishAfterLastStart = false;
         string? errorMessage = null;
+        ErrorKind? errorKind = null;
+        Dictionary<string, bool> toolCalls = [];
         JsonElement? lastEvent = null;
         int nextOrder = 0;
 
@@ -151,6 +158,7 @@ public sealed class OpencodeBackend(IPlatform platform) : IBackend, IPostRunHook
                 if (type == "error")
                 {
                     errorMessage = ExtractErrorMessage(root, line);
+                    errorKind = ClassifyError(root);
                     continue;
                 }
 
@@ -181,6 +189,9 @@ public sealed class OpencodeBackend(IPlatform platform) : IBackend, IPostRunHook
                 else if (type == "tool_use")
                 {
                     toolAfterLastStart = true;
+
+                    // Keyed by call id like every handler here: the last event for a call is the one that counts.
+                    toolCalls[partId] = !ToolErrored(part);
                 }
                 else if (type == "step_finish")
                 {
@@ -190,8 +201,23 @@ public sealed class OpencodeBackend(IPlatform platform) : IBackend, IPostRunHook
             }
         }
 
-        return new StepScan(sessionId, textParts, stepFinishes, stepStarts, toolAfterLastStart, finishAfterLastStart, errorMessage, lastEvent);
+        return new StepScan(sessionId, textParts, stepFinishes, stepStarts, toolAfterLastStart, finishAfterLastStart, errorMessage, lastEvent, errorKind, toolCalls);
     }
+
+    // #126: v2.0.12's `error: {type, message, status}`, the same object ExtractErrorMessage reads; v1's `{name, data}` carries no type or status
+    // and is Other. A tool call whose state is `error` ran nothing: the 402 of 2026-10-15 is a `subagent` call whose own request was refused.
+    // Every other state (completed, a call caught pending or running) counts as work, so a shape this parser has not seen errs towards no retry.
+    private static ErrorKind ClassifyError(JsonElement root)
+    {
+        if (!root.TryGetProperty("error", out JsonElement error) || error.ValueKind != JsonValueKind.Object)
+            return ErrorKind.Other;
+
+        int? status = TryGetInt(error, "status");
+        return ProviderErrors.Classify(status, GetString(error, "type"));
+    }
+
+    private static bool ToolErrored(JsonElement part) =>
+        part.TryGetProperty("state", out JsonElement state) && state.ValueKind == JsonValueKind.Object && GetString(state, "status") == "error";
 
     // Two genuinely captured shapes, one per major version, so both are read: v2.0.12 writes
     // `error: {type, message}` (2026-09-22), v1.18.31 wrote `error: {name, data: {message, ref}}`

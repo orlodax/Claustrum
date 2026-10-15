@@ -13,6 +13,9 @@ public static class CastBuilder
     public const string NotNeeded = "not needed";
     public const string NoCap = "no cap";
 
+    /// <summary>The fallback answer that names none (#126); an unanswered one means the same.</summary>
+    public const string NoFallback = "none";
+
     /// <summary>The architect answer that names a model to spawn on: `spawned on claude:opus`.</summary>
     public const string SpawnedOn = "spawned on ";
 
@@ -22,6 +25,8 @@ public static class CastBuilder
     public static Cast FromAnswers(string name, string library, IReadOnlyList<string> roleNames, IReadOnlyDictionary<string, string> answers)
     {
         CastArchitect architect = ParseArchitectAnswer(answers.GetValueOrDefault(Cast.ArchitectRole));
+        if (architect.Mode == CastArchitect.Spawned)
+            architect = architect with { Fallback = ParseFallbackAnswer(answers.GetValueOrDefault(CastQuestionnaire.FallbackKey(Cast.ArchitectRole))) };
 
         int? maxParallel = ParseMaxParallelAnswer(answers.GetValueOrDefault(CastQuestionnaire.MaxParallelKey));
 
@@ -34,6 +39,10 @@ public static class CastBuilder
                 continue;
 
             CastRoleEntry? entry = ParseRoleAnswer(answers.GetValueOrDefault(role));
+
+            // A fallback answer to a role "not needed" has nothing to stand in for and is dropped, as is the architect's when it is `host`.
+            if (entry is not null)
+                entry = entry with { Fallback = ParseFallbackAnswer(answers.GetValueOrDefault(CastQuestionnaire.FallbackKey(role))) };
 
             // Only builder carries max_parallel: it is the one role a cast fans out (docs/PLAN.md
             // §D4). A cast whose builder was answered "not needed" has no entry to hang it on.
@@ -69,6 +78,9 @@ public static class CastBuilder
             ? null
             : new CastRoleEntry(Model: answer, Backend: null, Tier: null);
 
+    private static string? ParseFallbackAnswer(string? answer) =>
+        string.IsNullOrWhiteSpace(answer) || answer.Trim().Equals(NoFallback, StringComparison.OrdinalIgnoreCase) ? null : answer.Trim();
+
     // 1 is kept as 1: it is a cap too, and only a numeric max_parallel is gated (#58). Storing it as
     // null — the rule until 2026-10-08 — left every questionnaire cast with no cap at all. An
     // unanswered question still means null, "no cap", like a hand-written cast without the key.
@@ -95,24 +107,25 @@ public static class CastBuilder
 
     // #121: record what each role's alias (or free-form spec) resolved to at creation time, so
     // `run` can warn later when the config has moved it. Calls Config.Describe for every role and
-    // the architect that carries a model. A free-form 'backend:model-id' resolves to itself, which
-    // is why its Resolved field matches the string the user typed.
+    // the architect that carries a model, and (#126) for each fallback. A free-form 'backend:model-id'
+    // resolves to itself, which is why its Resolved field matches the string the user typed.
     public static Cast WithResolved(Cast cast, Config config)
     {
         Dictionary<string, CastRoleEntry?> roles = [];
         foreach ((string role, CastRoleEntry? entry) in cast.Roles)
         {
-            if (entry?.Model is not { } alias)
+            roles[role] = entry is null ? null : entry with
             {
-                roles[role] = entry;
-                continue;
-            }
-            roles[role] = entry with { Resolved = Target(config.Describe(alias)) };
+                Resolved = entry.Model is { } alias ? Target(config.Describe(alias)) : entry.Resolved,
+                ResolvedFallback = entry.Fallback is { } fallback ? Target(config.Describe(fallback)) : entry.ResolvedFallback,
+            };
         }
 
-        CastArchitect architect = cast.Architect.Model is { } architectAlias
-            ? cast.Architect with { Resolved = Target(config.Describe(architectAlias)) }
-            : cast.Architect;
+        CastArchitect architect = cast.Architect with
+        {
+            Resolved = cast.Architect.Model is { } architectAlias ? Target(config.Describe(architectAlias)) : cast.Architect.Resolved,
+            ResolvedFallback = cast.Architect.Fallback is { } architectFallback ? Target(config.Describe(architectFallback)) : cast.Architect.ResolvedFallback,
+        };
 
         return cast with { Roles = roles, Architect = architect };
     }

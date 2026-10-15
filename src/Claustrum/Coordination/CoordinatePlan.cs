@@ -29,7 +29,10 @@ public sealed record CoordinatePlan(
     string[] CastWarnings,
     // #74 G1: what that worktree will lack and does not refuse (a harness config's local edit); each door
     // hands them to its caller before the run — not on the RunResult, which is the architect's receipt.
-    string[] Warnings)
+    string[] Warnings,
+    // #126: the cast's fallback for a spawned architect (null when a --model flag chose it), and what it resolved to at creation.
+    string? Fallback = null,
+    string? FallbackResolved = null)
 {
     /// <summary>
     /// The architect's delegation, complete except for the job id — the one thing that cannot exist
@@ -74,16 +77,24 @@ public sealed record CoordinatePlan(
         ParentJobId: Request.Resume?.JobId,
         Coordinate: new CoordinateOrigin(CastName, Request.TierFlag, Request.Overrides, Request.Resume?.TreeId),
         WorktreeOf: Isolated ? Request.Resume?.WorktreeOf : null,
-        Pin: Request.Resume?.Pin);
+        Pin: Request.Resume?.Pin,
+        Fallback: Fallback,
+        FallbackResolved: FallbackResolved);
 
     /// <summary>
     /// Config, role render, model alias and permission resolved on top of the plan — the rest of what
     /// can be refused with no job directory on disk (issue #23). Both front doors call this *before*
     /// <see cref="JobDirectory.Create"/>, and pass the result to <see cref="CoordinateEngine.RunAsync"/>.
     /// </summary>
-    public PreparedDelegation Prepare()
+    public PreparedDelegation Prepare() => PrepareRequest(ToDelegateRequest());
+
+    /// <summary>
+    /// <see cref="Prepare"/> for a request derived from this plan's: the architect's retry on its cast's fallback (#126), whose backend
+    /// may not hold a live session even though the first one did, and whose children must be told so.
+    /// </summary>
+    public static PreparedDelegation PrepareRequest(DelegateRequest request)
     {
-        PreparedDelegation prepared = DelegateEngine.Prepare(ToDelegateRequest());
+        PreparedDelegation prepared = DelegateEngine.Prepare(request);
 
         // #124 stage 2 review F2: whether the architect holds a live session is known only now (the backend has to have a live protocol and
         // the role a report), and it is what lets a child route its question to it. Handed down next to the tree id; a child never infers it.

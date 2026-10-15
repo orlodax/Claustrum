@@ -11,6 +11,11 @@ public static class CastQuestionnaire
 {
     public const string MaxParallelKey = "builder_max_parallel";
 
+    public const string FallbackSuffix = "_fallback";
+
+    /// <summary>The key of a role's optional fallback question (#126), asked after all the others: `code-reviewer` → `code-reviewer_fallback`.</summary>
+    public static string FallbackKey(string role) => $"{role}{FallbackSuffix}";
+
     public static async Task<CastQuestionnaireResult> BuildAsync(RoleLibrary roleLibrary, BackendRegistry backends, Config config, string cwd, CancellationToken cancellationToken)
     {
         HashSet<string> availableBackends = [];
@@ -104,8 +109,24 @@ public static class CastQuestionnaire
             AllowNotNeeded: false,
             AllowFreeForm: true));
 
+        // #126: last, so a script that answers the questions as they were (`cast new < answers`) still lines up, with 'none' for every fallback
+        // the input stops short of (CastCommands.AskUntilSupported). The architect's first, then each role's, in the order of their own questions.
+        AddQuestion(FallbackQuestion(Cast.ArchitectRole, HarnessesOf(Cast.ArchitectRole), OptionsFor, " It only applies when the architect is spawned."));
+        foreach (string role in roleLibrary.ListRoles().Where(role => role != Cast.ArchitectRole))
+            AddQuestion(FallbackQuestion(role, HarnessesOf(role), OptionsFor, " Skipped when the role is 'not needed'."));
+
         return new CastQuestionnaireResult([.. questions], CastStore.ListNames(cwd), models);
     }
+
+    // #126: optional. 'none' first, because it is what most roles want; the model options are the role's own.
+    private static CastQuestion FallbackQuestion(string role, string[] harnesses, Func<string[], string[]> optionsFor, string note) => new(
+        Key: FallbackKey(role),
+        Prompt: $"{role} fallback (optional): which model plays {role} instead if its provider refuses the one chosen above before it starts "
+            + "(credits, key, unknown model, connection)? Retried once, only when nothing was done, and the receipt says so. A claustrum.json alias, "
+            + $"or a free-form 'backend:model-id'. It runs on {string.Join(", ", harnesses)} only.{note}",
+        Options: [CastBuilder.NoFallback, .. optionsFor(harnesses)],
+        AllowNotNeeded: false,
+        AllowFreeForm: true);
 
     private static string LayerName(ConfigLayer? layer) => layer?.ToString().ToLowerInvariant() ?? "";
 

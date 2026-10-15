@@ -6416,3 +6416,90 @@ The blind review of stages 3a/3b (branch `feature/casts-and-live-jobs`, HEAD `1a
   written to documented behaviour only. (3) A continuation that was cancelled after its backend started keeps the claim, so that job
   cannot be answered again (its session is the way on: `run --resume`). (4) `answered.json` is per job and the chain walk of `jobs clean` follows
   it up to 64 hops.
+
+
+## A cast can name a fallback model (2026-10-16, issue #126)
+
+**The case.** 2026-10-15: `code-reviewer: opencode:openrouter/deepseek/deepseek-v4-pro` in the cast, job `20261015-164125-2f5f1b1d`,
+`failed` after 15 s with OpenRouter's `{"type":"provider.quota","status":402,"message":"This request would exceed your available credits
+given your current in-flight requests. Retry after in-flight requests settle, or add credits."}`, before reviewing anything. The receipt said
+`status: failed`, as for any failure; the host agent spotted the 402 in `stdout.log` and re-ran by hand with `--model frontier-coding`. The
+owner's words: «deepseek pro on opencode - fallback to opus in claude if not possible (and tell me, and why)». The six events of that
+`stdout.log`, in order (the shape every claim below was checked against, and the test fixture):
+
+```text
+step_start  prt_…                         the first step
+text        "I'll start by understanding the scope of this branch …"
+tool_use    tool:"subagent"  state.status:"error"  error:"Subagent failed (…): This request would exceed your available credits …"
+step_finish reason:tool-calls  cost:0.00537  tokens.input:12364
+step_start  prt_…                         the second step, to hand the errored tool result back to the model
+error       {"type":"provider.quota","message":"…","status":402}
+```
+
+- **The schema.** `fallback` on a cast role entry and on `architect` (an alias or `backend:model-id`, the grammar of `model`), `resolved_fallback`
+  recorded by `CastBuilder.WithResolved` as `resolved` is (#121). A cast without them loads unchanged (both null). `cast questions` asks
+  `architect_fallback` and then `<role>_fallback` for each role, options `none` first and then the role's own aliases; an answer for a role that is
+  `not needed`, or for a `host` architect, is dropped. ⚠ **They come last, after `budget`, not beside their roles**: a script that pipes answers into
+  `cast new` was written for the questions as they were, and interleaved follow-ups would have shifted every later line one slot (the lesson of
+  `AskUntilSupported`, 2026-10-02). End of input at a fallback means `none`; at any other question it is still the #46 refusal. `CastHarnessCheck` checks a fallback against the role's
+  harnesses like the primary, in `cast create`, `cast new` (asked again on a terminal) and `cast_create`. `CastApplication.Resolve` hands the fallback
+  to the request **only when no `--model`/`--backend` flag chose the model**: the human chose that one, and nothing stands in for it.
+- **`error_kind` is the parser's, and narrow.** `ProviderErrors.Classify(status, type)`: the HTTP status first (402/429 quota, 401/403 auth, 404 model not
+  found, 408/425/502/503/504/529 transport), the error's own `type` name otherwise (`provider.quota`, `provider.auth`, `provider.no-route`, …), never the
+  message — `unknown`/"Agent not found" must not pass for a missing model. Anything unplaced is `other`, which is never retried. opencode: the `error` event
+  (`error.type`, `error.status`; v1's `{name, data}` carries neither and is `other`). claude: the `result` event's `api_error_status` (recorded in
+  `tests/fixtures/claude/error.txt`: 404, an unknown model, $0), `terminal_reason: "api_error"` with no status as `provider_transport`, and — only to place a
+  result that has no status — the SDK's `error` on the assistant message (`authentication_failed`, `billing_error`/`rate_limit`, `server_error`). Not
+  provoked with a paid call: the claude shapes are the recorded fixture plus the documented SDK names. The other backends report `other` on a failure.
+- **"Before any work" is one predicate, `ProviderErrors.BeforeAnyWork`:** no changed file (in a tree that was actually read — a worktree `mismatch` says
+  nothing about changes), a single turn (a live session that went on past its first turn had a human in it: `outcome.LastTurn` for opencode, more than
+  one `result` event for claude), and the backend **counted its tool calls and none completed**. A backend that cannot count says `null` and the run is
+  never "before any work". ⚠ **Steps are not bounded, on purpose.** The brief for #126 said "at most its first step"; the real 402 above has a second
+  `step_start`, because opencode feeds the errored tool result back to the model before the provider is asked again. Bounding steps would have refused the
+  one case this exists for. What counts as work is a tool call that did not error: opencode `part.state.status` other than `error` (a call caught
+  pending or running counts), claude a `tool_use` with no errored `tool_result`. The text a first step wrote is not work: it was going to be redone.
+  The receipt carries the answer as `before_any_work` (true/false/null), beside `error_kind` and `error_detail` (the provider's words alone, the receipt's
+  `error` being the role's text before it plus the error).
+- **The retry, `FallbackRetry`, runs in `DelegateEngine.RunAsync`** — so `run`, MCP `delegate`/`delegate_async` and the detached host all have it — and
+  once the first job is over, its slot and branch lock released: a cast with `max_parallel: 1` would otherwise wait on itself. It applies when the request has
+  a fallback, is not itself a retry (`fallback_of`), resumes no session (`--resume`, `jobs answer`, `coordinate --resume`: a session only its own backend
+  can read) and the receipt `Qualifies` (`failed`, provider-side `error_kind`, `before_any_work`, not yet retried). It builds the retry's request from the
+  first's with the model replaced and `backend` cleared, runs `Prepare` and `DelegateEngine.Validate` on it (**the blind gate again, same brief, nothing
+  added**), mints the job, **rewrites the first receipt with `retried_as` atomically before the retry starts** (so a follower can switch to it at once), and
+  runs it through the same dispatch (slot, worktree, admission). Its request.json and receipt carry `fallback_of`, stamped in `Runner.FinishAsync` so a
+  refusal's receipt has it too. A fallback that cannot be used (`ConfigException`, a role that does not run on that harness, a blind-gate refusal, the
+  budget spent) leaves the first receipt as it was plus a warning, rewritten the same way. Never a second retry.
+- **Budget.** The first job's cost is charged as it always is. The retry's per-run cap is `budget − first.cost_usd` (a spent budget declines the retry);
+  inside a tree the ledger admits it against what is left like any sibling job. The real 402 cost $0.0054 (the errored step was billed).
+- **`coordinate`'s architect retries one level up** (`CoordinateEngine.RunAsync` → `RunJobAsync` twice), because its job id *is* its tree: the retry is a
+  whole coordinate job with its own owner, settle, branch, worktree and ledger entry, rooted at its own id, its brief's `Working directory:` line bound
+  to its own worktree. ⚠ **Departure from "same tree":** the failed architect's tree holds only its own few cents, and the retry's tree starts with the
+  cast's full `budget_usd`; reusing the first's tree would have needed the system appendix, the env and the ledger rebuilt around a borrowed id for
+  a refusal that cost almost nothing. `CoordinatePlan.PrepareRequest` is the plan's `Prepare` for the derived request, so the children are told whether the
+  retried architect (a different backend) holds a live session.
+- **Followers.** The returned receipt is the retry's. A caller waiting on the first job's directory follows `retried_as` (`LiveJob.ReadRetry`): `run`'s
+  terminal prompt (`LiveRun.AnswerWhileAsync`), the tree child's wait on its detached host (`DetachedRun.WaitAsync`, which for a run that may be retried
+  waits up to 3 s for `retried_as` to appear after the receipt, since the rewrite lands a few milliseconds later), `job_status` of a `delegate_async` job
+  (`JobManager.GetStatus`, so a retry's question shows under the id the caller holds) and `coordinate`'s printout. **Not followed:** `jobs wait|follow|say <first id>`
+  and MCP `job_say` on the first id, which see a finished failed job whose receipt says `retried_as`. The MCP `job_result` of a `delegate_async` id answers with the
+  retry's receipt for as long as the server lives, then with the first's from disk.
+- **Docs.** MANUAL §6 (receipt fields), §8 (the field, the follow-up question, when a retry happens and when it does not), §15.
+
+**Measured 2026-10-16, no paid call:** `claustrum` Debug build, a fake `opencode` that replays the six events above and a fake `claude` that answers or
+fails on cue, a throwaway repo with `code-reviewer: pro (fallback opus)`. (1) The real 402: `failed` → one retry on `claude:opus`, `success`, `warnings[]`
+= `code-reviewer: opencode:openrouter/deepseek/deepseek-v4-pro failed before starting (provider_quota: This request would exceed your available credits
+…); ran on claude:opus instead (job …)`, request.json `fallback_of` = the first id, the first receipt `retried_as` + `error_kind: provider_quota` +
+`before_any_work: true`; the same with `--no-live` and with the live session. (2) `--model pro`: failed once, no retry, 1 job. (3) The same events with a completed
+`read` before the error: `before_any_work: false`, no retry. (4) The retry itself failing with a 401: `provider_auth`, returned as is, 2 jobs, no third.
+(5) A tree-routed builder (`CLAUSTRUM_PARENT_JOB`, `CLAUSTRUM_ARCHITECT_LIVE=1`): the detached host retried, the waiting `run` printed the retry's receipt.
+(6) `coordinate` with a spawned architect on `pro` (fallback `opus`): the printout, tree and branch were the retry's. (7) `cast create` with `*_fallback`
+answers and a fallback on the wrong harness (`ui-reviewer`) refused naming it.
+
+(8) `cast new` fed the old eight answers on a pipe saved the cast with every fallback `null`. `dotnet test -c Release` on this slice: 3229 tests, 3179 passed,
+49 skipped, 1 failed — `CastQuestionnaireTests.AsksExactlyTheEightQuestionsInPipelineOrderDemoAuthorIncluded`, which pins the question list the fallbacks are
+now added to (deliberate). Seven more failed until the fallbacks moved last and their prompts said `It runs on …` like the others; the README's cast snippet
+(pinned by `ReadmeCastExampleTests` to what `CastStore` writes) gained the two new fields.
+
+**Not done / limits.** No test was written (the tester's). The claude classification was never seen against a real 402/401 from claude itself. A
+retried live job's conversation is a second job's `conversation.jsonl`. The retried architect's tree is its own (above). `jobs clean` removes the first
+job's worktree like any finished job's.

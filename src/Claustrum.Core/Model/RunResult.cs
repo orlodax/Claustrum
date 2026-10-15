@@ -37,4 +37,13 @@ public sealed record RunResult(
     // A live job only (#124): its conversation.jsonl, kept for jobs that end without a report as well.
     ConversationSummary? Conversation = null,
     // A `needs_input` run only (#124 stage 3b): what its report asked, for `jobs answer` and the MCP front door to relay.
-    ReportQuestion[]? Questions = null);
+    ReportQuestion[]? Questions = null,
+    // #126, `failed` runs only. ErrorKind: why, when the backend's output says (provider_quota, provider_auth, model_not_found,
+    // provider_transport, or other), with ErrorDetail the provider's own words. BeforeAnyWork: true when the run changed nothing and
+    // completed no tool call (ProviderErrors.BeforeAnyWork), null when the backend could not tell.
+    ErrorKind? ErrorKind = null,
+    string? ErrorDetail = null,
+    bool? BeforeAnyWork = null,
+    // A cast's fallback (#126): the job this one is the retry of, and the retry that stands in for this one (its receipt is the one to read).
+    string? FallbackOf = null,
+    string? RetriedAs = null);

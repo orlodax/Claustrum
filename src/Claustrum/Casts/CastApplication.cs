@@ -19,11 +19,12 @@ public static class CastApplication
         // The architect's model/tier live in cast.Architect, not in cast.Roles (Cast.ArchitectRole),
         // so `claustrum run architect --cast x` and `coordinate` resolve through this one path.
         CastRoleEntry? castRole = role == Cast.ArchitectRole
-            ? cast is null ? null : new CastRoleEntry(cast.Architect.Model, Backend: null, cast.Architect.Tier, Resolved: cast.Architect.Resolved)
+            ? cast is null ? null : new CastRoleEntry(cast.Architect.Model, Backend: null, cast.Architect.Tier, Resolved: cast.Architect.Resolved, Fallback: cast.Architect.Fallback, ResolvedFallback: cast.Architect.ResolvedFallback)
             : cast?.Roles.GetValueOrDefault(role);
         (string tier, ConfigOverrides merged) = CastResolution.ApplyRole(tierFlag, overrides, castRole);
 
         string[] warnings = DescribeWarnings(cwd, cast, role, castRole, overrides);
+        bool chosenByCast = overrides.Model is null && overrides.Backend is null;
 
         return new CastApplicationResult
         {
@@ -33,6 +34,8 @@ public static class CastApplication
             MaxParallel = castRole?.MaxParallel,
             CastName = cast?.Name,
             Warnings = warnings,
+            Fallback = chosenByCast ? castRole?.Fallback : null,
+            FallbackResolved = chosenByCast ? castRole?.ResolvedFallback : null,
         };
     }
 
