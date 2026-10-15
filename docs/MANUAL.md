@@ -108,6 +108,9 @@ claustrum run <role> [--brief <text> | --brief-file <path|->]
   <user config> does not define it`) fires whenever the role's final model — flags, cast, `roles`
   config and the tier's class — reached a built-in default through an alias, flag or no flag, unless a
   cast warning already said so for that role; a `--model backend:id` names no alias and never triggers it.
+- A cast role's `fallback` (§8) answers a provider that refuses the role's model before it starts: the run is retried
+  once, as a new job, on the fallback, and the receipt returned is the retry's, with `warnings[]` saying why. An
+  explicit `--model`/`--backend` is never retried — you chose that model.
 - `--branch <name>` runs isolated in a new worktree checked out on that **existing local branch**,
   whatever the cast's `max_parallel` — e.g. `--branch claustrum/<job id>` to send a reviewed
   builder's branch back for a fix (§9). Two runs on one branch run one after the other: the second
@@ -515,6 +518,9 @@ One JSON document, `schema_version: "1"`, snake_case, additive changes only:
 | `job_id` | runner | `yyyyMMdd-HHmmss-8hex`; also the directory name under the jobs home |
 | `status` | runner | `success`, `failed`, `timeout`, `cancelled`, `backend_missing`, `budget_exceeded`, `needs_input` (the report asked the human something; exit 7) |
 | `error` | runner | **read it whenever `status` is not `success`** — it says which refusal or failure |
+| `error_kind`, `error_detail` | backend | `failed` runs only: why, when the backend's output says — `provider_quota` (out of credits, a rate limit: 402/429, `provider.quota`), `provider_auth` (401/403), `model_not_found` (404, `provider.no-route`), `provider_transport` (408/5xx, no answer at all), or `other`. `error_detail` is the provider's own words, without the text the role wrote before it failed. Read for **opencode** and **claude**; the other backends report `other` on a failure and `null` while it succeeds. `null` on every run that did not fail |
+| `before_any_work` | runner | `failed` runs only: `true` when the run changed no file, was a single turn and completed no tool call (a call that errored did nothing); `false` when it did work; `null` when the backend cannot count its tool calls. With a provider-side `error_kind` it is what lets a cast's fallback take over |
+| `fallback_of`, `retried_as` | runner | a cast's fallback (§8): the retry's receipt names the job it replaced in `fallback_of`; the replaced job's receipt stays as it was (`failed`, its own `error_kind`) plus `retried_as: <the retry's job id>`. `jobs show <id>` of a retried job tells you where to look |
 | `backend`, `model`, `role` | resolved request | what actually ran |
 | `final_message` | backend | the agent's last message, report fence included |
 | `report` | extracted | `{data: <parsed JSON>, raw_text}` from the `claustrum-report` fence |
@@ -618,7 +624,7 @@ per-developer, git-ignored:
   "architect": { "mode": "host" | "spawned", "model": "<alias|backend:id>" | null, "tier": "high|xhigh|max" | null },
   "roles": {
     "builder":       { "model": "standard-coding", "backend": null, "tier": null, "max_parallel": 2 },
-    "code-reviewer": { "model": "frontier-coding", "backend": null, "tier": "xhigh", "max_parallel": null },
+    "code-reviewer": { "model": "cheap-coding", "fallback": "frontier-coding", "backend": null, "tier": "xhigh", "max_parallel": null },
     "demo-author":   null,
     "tester":        { "model": "standard-coding", "backend": null, "tier": null, "max_parallel": null },
     "ui-reviewer":   null },
@@ -634,6 +640,22 @@ per-developer, git-ignored:
 - `budget_usd: null` disables the cap (`cast show` prints it as `"budget_usd": null`); a per-call
   `--budget` still applies.
 - Per-call `--model`/`--backend`/`--tier` flags override the cast for that call.
+- Each role entry and a spawned `architect` may carry an optional `fallback`: an alias or a
+  `backend:model-id`, the same grammar as `model`, with `resolved_fallback` recorded at creation as `resolved` is.
+  When the role's model is refused **by its provider before the role did anything** — out of credits (402,
+  `provider.quota`), a key the provider rejects, a model it cannot route, or a connection that never answered
+  (`error_kind`, §6) — `run`, `delegate`, `delegate_async` and `coordinate`'s architect retry **once**, as a new
+  job, on the fallback, with the same brief (the blind gate is checked again), role, tier, permission, cast and tree. The returned receipt is the
+  retry's, with `fallback_of` and a warning: `code-reviewer: opencode:openrouter/deepseek/deepseek-v4-pro failed
+  before starting (provider_quota: <the provider's words>); ran on claude:opus instead (job <the first job>)`.
+  The first job's receipt keeps `status: failed` and gains `retried_as`. Not retried: a run an explicit
+  `--model`/`--backend` chose, a run that changed a file or completed a tool call, a live session past its first
+  turn, a continuation (`jobs answer`, `--resume`, `coordinate --resume`) whose session only its own backend can
+  read, a job that is itself a retry (never a second one), a failure of another kind (a timeout, the role's own
+  error, `other`). The first job's cost is charged as usual; the retry gets what is left of the run's `--budget`
+  and is admitted by the tree's ledger like any sibling. A fallback that cannot be used (it does not resolve, the
+  budget is spent) leaves the first receipt as it was plus a warning saying so. A `coordinate` architect's retry is a
+  whole new coordinate job: its own tree, branch and ledger entry, rooted at its own id.
 - Each role entry and `architect` may carry an optional `resolved` field,
   `"backend:model-id"` — what the alias resolved to when the cast was created or last
   edited. Filled automatically by `cast create`/`cast new`/`cast_create`; saved before
@@ -648,7 +670,7 @@ per-developer, git-ignored:
 
 **The questionnaire** is owned by the tool so it is identical in every host: `claustrum cast
 questions --json` returns one question per library role, then the builders' parallel cap and the
-budget, with their live options (the aliases in `claustrum.json` that land on a harness the role
+budget, then each role's optional fallback, with their live options (the aliases in `claustrum.json` that land on a harness the role
 lists; `not needed` where allowed; free-form `backend:id`; `no cap` for the budget). The returned
 JSON also includes a `models` array: one entry per alias in the merged config with its current
 `target` (`backend:model-id`), the `layer` it came from (`builtin|user|repo|env`) and a
@@ -663,13 +685,14 @@ shows `(built-in default — no claustrum.json or user config defines it)` as it
 | `code-reviewer`, `tester`, `ui-reviewer`, `demo-author` | model for the role — claude aliases only for `ui-reviewer` and `demo-author` | free form, `not needed` (for `demo-author`, that is the "no demo" switch) |
 | `builder_max_parallel` | `1`, `2`, `3`, … | free form |
 | `budget` | USD, or `no cap` | free form |
+| `architect_fallback`, `builder_fallback`, `code-reviewer_fallback`, … | asked last, one per role: the same aliases as the role's own question, or `none` (the default, and what `cast new` takes when its input ends first, so a script written before fallbacks still works). Dropped when the role is `not needed`, or the architect is `host` | free form |
 
 Answer them with `claustrum cast new` on a terminal, `claustrum cast create --answers file.json`
 from a script, or `/claustrum` in a chat host (the synced skill asks with the host's own picker,
 then calls `cast_create`). An empty option list means no `claustrum.json` alias lands on an installed
 backend the role runs on — on a machine without `claude`, the demo-author and ui-reviewer have none;
 `cast questions` and `cast new` say so and still offer `not needed`. All three refuse an answer that
-puts a role on a harness it does not list, naming the role and its harnesses (`cast new` asks again
+puts a role — or its fallback — on a harness it does not list, naming the role and its harnesses (`cast new` asks again
 on a terminal, and exits 2 when its input is piped, rather than shifting later answers). Because
 they load `claustrum.json` to resolve aliases, a malformed one makes `cast create`/`cast_create`
 fail even when no answer uses an alias.
@@ -1071,6 +1094,7 @@ created. Budget ledgers live beside them under `budget/<tree>/`.
 | `Error: Model "opus" … is not available` (copilot, cursor) | the built-in `claude:*` alias reached a non-claude backend | alias the class to `copilot:auto` / `cursor:auto` |
 | `api backend model must be 'openrouter:<model>' or 'anthropic:<model>'` | `--backend api` without a provider-prefixed model | `--model api:anthropic:<id>` |
 | `report_status: missing` | the role never wrote its report fence | read `final_message`; the run still counts, the report does not |
+| `status: failed`, `error_kind: provider_quota` (or `provider_auth`, `model_not_found`, `provider_transport`) | the model's provider refused the request — no credits (OpenRouter's `402 provider.quota`), a key it rejects, a model it cannot route, no answer — and `error_detail` is its message | fix it at the provider, or give the role a `fallback` in the cast (§8): a refusal before any work is then retried once on it. `retried_as` on the receipt means that already happened: read the retry's |
 | `status: failed`, "… slots … stayed unavailable" | waited past `--timeout` for a `max_parallel` slot | start fewer at once, or raise `--timeout` |
 | `status: failed`, "`--branch <name>`: …" | the branch does not exist locally, another checkout holds it (the main checkout, a running job, a dirty finished worktree, a job unknown under this `CLAUSTRUM_HOME`), git would not check it out or did not within 5 minutes (a slow smudge filter or post-checkout hook), or another run on the branch outlasted `--timeout` | read `error`: it names the holder, or quotes git; switch that checkout off the branch, let the job finish, commit/discard its changes, or run `claustrum jobs clean` under the home that ran the job; after a slow checkout, `left behind: …` names anything the undo could not remove (a cancelled add records `git worktree add was cancelled; left behind: …` as the receipt's `error`: `error: …` on stderr in human mode, inside the document under `--json`) — `git worktree remove -f -f <path>` removes a worktree git left locked |
 | `status: failed`, "`--branch <name>`: its previous worktree <path> holds a populated submodule, which git will not remove — …" | the finished job's worktree on that branch is clean but has a submodule checked out, and git refuses to remove any worktree that does | a commit made inside that submodule and pushed nowhere lives only in that worktree's git directory, so push or copy it first; then `git worktree remove --force "<path>"` and rerun |

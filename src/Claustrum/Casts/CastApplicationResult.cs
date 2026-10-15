@@ -15,4 +15,9 @@ public sealed record CastApplicationResult
     // CastApplication.Resolve was asked about — empty when the model came from a flag instead of the
     // cast, when the role has no cast entry, or when no warning applies.
     public string[] Warnings { get; init; } = [];
+
+    // #126: the cast's fallback model for this role, and what it resolved to when the cast was made. Null when the cast names none, and
+    // when --model/--backend chose the model: the human chose that one, so nothing stands in for it.
+    public string? Fallback { get; init; }
+    public string? FallbackResolved { get; init; }
 }

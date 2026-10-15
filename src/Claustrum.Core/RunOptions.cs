@@ -30,4 +30,6 @@ public sealed record RunOptions(
     // #124: keep a claude session open as a conversation (Claustrum.Core.Live). ReplyTimeoutSeconds is how
     // long an open question waits for the human; 0 tells the role at once that nobody is there to answer.
     bool Live = false,
-    int ReplyTimeoutSeconds = 0);
+    int ReplyTimeoutSeconds = 0,
+    // #126: the job this run retries on its cast's fallback; stamped on every receipt it leaves, a refusal's included.
+    string? FallbackOf = null);

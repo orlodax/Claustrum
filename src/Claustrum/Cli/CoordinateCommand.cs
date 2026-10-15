@@ -161,6 +161,10 @@ public static class CoordinateCommand
             // The receipt is on disk: a Windows console close need wait no longer.
             cancel.Settled();
 
+            // #126: an architect retried on its cast's fallback is a job of its own, and the job, the tree and the logs printed below are its.
+            if (result.JobId != job.Id && JobDirectory.Open(AppServices.Platform, result.JobId) is { } retried)
+                job = retried;
+
             RunResult output = rawMode ? result : result with { Raw = null };
 
             // A resumed architect's children are accounted in the tree it continues (#124 stage 3b); a fresh one's tree is its own id.

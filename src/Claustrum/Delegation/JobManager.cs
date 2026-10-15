@@ -56,13 +56,18 @@ public sealed class JobManager
             };
 
             // The task decides when a job is done; live.json only adds that a running one is waiting for its human.
+            // #126: a job retried on its cast's fallback is followed to the retry, whose question and last line are the ones that matter.
+            LiveJob watched = LiveJob.At(entry.Job);
+            if (watched.ReadRetry() is { } retry)
+                watched = retry;
+
             QuestionInfo? question = null;
-            if (state == "running" && LiveJob.At(entry.Job).Observe() is { State: "waiting_for_input" } waiting)
+            if (state == "running" && watched.Observe() is { State: "waiting_for_input" } waiting)
                 (state, question) = (waiting.State, waiting.Question);
 
             double elapsed = (DateTimeOffset.UtcNow - entry.StartedAt).TotalSeconds;
             RunResult? finished = entry.Task.IsCompletedSuccessfully ? entry.Task.Result : null;
-            return new JobStatusInfo(state, elapsed, JobLog.LastLine(entry.Job.StdoutLog), question, StatusName(finished), finished?.Questions);
+            return new JobStatusInfo(state, elapsed, JobLog.LastLine(watched.LogPath), question, StatusName(finished), finished?.Questions);
         }
 
         // A job this process never started: its result.json says done; a live one (live.json) says what its session is doing (#124).

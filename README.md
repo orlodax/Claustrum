@@ -87,19 +87,21 @@ committable and shared:
 
 ```json
 { "name": "default", "library": "1.0.0",
-  "architect": { "mode": "host", "model": null, "tier": null, "resolved": null },
+  "architect": { "mode": "host", "model": null, "tier": null, "resolved": null, "fallback": null, "resolved_fallback": null },
   "roles": {
-    "builder":       { "model": "opencode:openrouter/deepseek/deepseek-v4-pro", "backend": null, "tier": null, "max_parallel": 3, "resolved": null },
-    "code-reviewer": { "model": "claude:opus", "backend": null, "tier": "xhigh", "max_parallel": null, "resolved": null },
+    "builder":       { "model": "opencode:openrouter/deepseek/deepseek-v4-pro", "backend": null, "tier": null, "max_parallel": 3, "resolved": null, "fallback": "claude:sonnet", "resolved_fallback": null },
+    "code-reviewer": { "model": "claude:opus", "backend": null, "tier": "xhigh", "max_parallel": null, "resolved": null, "fallback": null, "resolved_fallback": null },
     "demo-author":   null,
-    "tester":        { "model": "opencode:openrouter/deepseek/deepseek-v4-flash", "backend": null, "tier": null, "max_parallel": null, "resolved": null },
+    "tester":        { "model": "opencode:openrouter/deepseek/deepseek-v4-flash", "backend": null, "tier": null, "max_parallel": null, "resolved": null, "fallback": null, "resolved_fallback": null },
     "ui-reviewer":   null },
   "budget_usd": 10 }
 ```
 
 `claustrum cast create` writes this shape; `tier` and `backend` are hand edits it leaves `null`. A
 document without `roles` or `architect` is refused on load — don't hand-write a flat one. A role set
-to `null` is "not needed".
+to `null` is "not needed". A role's optional `fallback` names the model that plays it instead when its
+provider refuses the first one before the role did anything (out of credits, a rejected key, an unknown
+model, no connection): the run is retried once there, and the receipt says so (`docs/MANUAL.md` §8).
 
 `/claustrum` in any chat asks one question per library role — architect (host or spawned), builder,
 reviewers, demo-author and tester (or "not needed") — then the builders' parallel cap and a budget

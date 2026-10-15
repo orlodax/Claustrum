@@ -123,7 +123,8 @@ public static class DelegateEngine
             PreRunWarnings: request.PreRunWarnings,
             // #124: a live session needs a backend that holds a conversation (LiveProtocol); a request for any other is dropped here.
             Live: request.Live && AppServices.Backends.TryGet(resolved.Backend, out IBackend? liveBackend) && liveBackend.LiveProtocol is not null,
-            ReplyTimeoutSeconds: request.ReplyTimeoutSeconds);
+            ReplyTimeoutSeconds: request.ReplyTimeoutSeconds,
+            FallbackOf: request.FallbackOf);
 
         return new PreparedDelegation(request, resolved, options, budgetUsd, timeoutSeconds, requestPermission);
     }
@@ -165,9 +166,20 @@ public static class DelegateEngine
     /// then Runner.
     /// A <paramref name="job"/> of null lets Runner mint one after its own blind gate (the CLI `run`
     /// ordering); anything a caller minted itself is handed straight on, and its id fills
-    /// <see cref="DelegateRequest.JobIdToken"/> here, at the last moment.
+    /// <see cref="DelegateRequest.JobIdToken"/> here, at the last moment. A run that its provider refused before it did any work is
+    /// retried once on the cast's fallback (#126, <see cref="FallbackRetry"/>); the receipt returned is then the retry's.
     /// </summary>
     public static async Task<RunResult> RunAsync(PreparedDelegation prepared, JobPaths? job, CancellationToken cancellationToken)
+    {
+        RunResult first = await RunOnceAsync(prepared, job, cancellationToken);
+        return await FallbackRetry.RunAsync(prepared, first, Prepare, (retry, retryJob) => RunOnceAsync(retry, retryJob, cancellationToken));
+    }
+
+    /// <summary>
+    /// <see cref="RunAsync(PreparedDelegation, JobPaths?, CancellationToken)"/> without the fallback: one job, for a front door that retries
+    /// itself because a retry there is more than another dispatch (`coordinate`'s architect).
+    /// </summary>
+    internal static async Task<RunResult> RunOnceAsync(PreparedDelegation prepared, JobPaths? job, CancellationToken cancellationToken)
     {
         // #124 stage 3 review F2: a continuation takes the one answer its parent job has. Its job is minted here, after the checks Runner
         // would make before minting one (so a refusal leaves nothing behind), because the claim names it.
@@ -629,7 +641,8 @@ public static class DelegateEngine
         Env: prepared.Request.Env,
         Stream: prepared.Request.Stream,
         AttachmentsMustBeRegular: prepared.Request.AttachmentsMustBeRegular,
-        ParentJobId: prepared.Request.ParentJobId);
+        ParentJobId: prepared.Request.ParentJobId,
+        FallbackOf: prepared.Request.FallbackOf);
 
     // The CLI's --permission option already validates against the known set (AcceptOnlyFromAmong)
     // before this ever runs; an MCP caller sending an invalid string is exactly the case this should

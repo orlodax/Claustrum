@@ -142,7 +142,8 @@ public static class CastCommands
 
     // A role answer is checked as it is typed, so a free-form one on the wrong harness is asked again
     // rather than failing the whole questionnaire at the end. Non-role keys (budget, max_parallel)
-    // and the architect's host/spawned grammar are left to CastBuilder and the final Require.
+    // and the architect's host/spawned grammar are left to CastBuilder and the final Require. A
+    // `<role>_fallback` answer (#126) is checked against that role's harnesses like the role's own.
     // Piped input is never re-asked: the next line was written for the next question, and asking
     // again shifted every later answer one slot (review, 2026-10-02: ui-reviewer saved as "2").
     private static string AskUntilSupported(string key, Config config, string cwd)
@@ -151,11 +152,14 @@ public static class CastCommands
         {
             Console.Write($"{key}> ");
 
-            // End of input before the last question is no answer: saving blanks wrote an all-null cast (#46).
-            string answer = Console.ReadLine() ?? throw new CastException($"cast not saved: input ended before the answer to '{key}'");
-            bool isRole = key != Cast.ArchitectRole && AppServices.RoleLibrary.ListRoles().Contains(key, StringComparer.Ordinal);
-            bool notNeeded = answer.Trim().Equals(CastBuilder.NotNeeded, StringComparison.OrdinalIgnoreCase);
-            if (!isRole || notNeeded || CastHarnessCheck.Problem(key, answer.Trim(), AppServices.RoleLibrary, AppServices.Backends, config, cwd) is not { } problem)
+            // End of input before the last question is no answer: saving blanks wrote an all-null cast (#46). A fallback (#126) is optional and
+            // asked last, so there it means 'none' — what a script written before fallbacks existed has to say for them.
+            bool fallback = key.EndsWith(CastQuestionnaire.FallbackSuffix, StringComparison.Ordinal);
+            string answer = Console.ReadLine() ?? (fallback ? CastBuilder.NoFallback : throw new CastException($"cast not saved: input ended before the answer to '{key}'"));
+            string role = fallback ? key[..^CastQuestionnaire.FallbackSuffix.Length] : key;
+            bool isRole = (fallback || role != Cast.ArchitectRole) && AppServices.RoleLibrary.ListRoles().Contains(role, StringComparer.Ordinal);
+            bool skipped = answer.Trim().Equals(fallback ? CastBuilder.NoFallback : CastBuilder.NotNeeded, StringComparison.OrdinalIgnoreCase);
+            if (!isRole || skipped || CastHarnessCheck.Problem(role, answer.Trim(), AppServices.RoleLibrary, AppServices.Backends, config, cwd, fallback) is not { } problem)
                 return answer;
 
             if (Console.IsInputRedirected)

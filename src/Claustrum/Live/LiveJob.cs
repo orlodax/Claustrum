@@ -34,6 +34,9 @@ internal sealed class LiveJob
 
     public string Id { get; }
 
+    /// <summary>The job's stdout.log.</summary>
+    public string LogPath => Path.Combine(directory, "stdout.log");
+
     /// <summary>The job, or null when no such job exists (or its directory is a link that leaves the jobs store).</summary>
     public static LiveJob? Find(string id)
     {
@@ -155,6 +158,12 @@ internal sealed class LiveJob
 
     /// <summary>The receipt, or null while result.json is missing or unreadable (it is written non-atomically).</summary>
     public RunResult? ReadResult() => Parse(ReadText("result.json"), ClaustrumJsonContext.Default.RunResult);
+
+    /// <summary>
+    /// The job that stands in for this one once its cast's fallback took over (#126: its receipt's <c>retried_as</c>), or null. A caller
+    /// watching this job for a question or an end follows to it.
+    /// </summary>
+    public LiveJob? ReadRetry() => ReadResult()?.RetriedAs is { } retry ? Find(retry) : null;
 
     /// <summary>
     /// Asks the job's detached host to end the job `cancelled`, with its receipt (the host polls for the marker this leaves). Refused

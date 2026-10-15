@@ -59,7 +59,12 @@ public sealed record DelegateRequest(
     // where it began. Only with Branch; DelegateEngine.RunIsolatedAsync reuses, recreates or refuses that path.
     string? WorktreeOf = null,
     // F5: what the continued job ran as; Prepare keeps the run on it whatever today's configuration resolves.
-    ResumePin? Pin = null)
+    ResumePin? Pin = null,
+    // #126: the cast's fallback for this role (CastApplicationResult.Fallback) and what it resolved to when the cast was made, null for a
+    // run whose model a flag chose. FallbackOf is set only on the retry itself — the first job's id — and is what keeps a retry from being retried.
+    string? Fallback = null,
+    string? FallbackResolved = null,
+    string? FallbackOf = null)
 {
     /// <summary>
     /// The exact token <see cref="SystemAppendix"/> and <see cref="Env"/> values may carry in place of

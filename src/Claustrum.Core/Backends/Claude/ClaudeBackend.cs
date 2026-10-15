@@ -174,6 +174,12 @@ public sealed class ClaudeBackend(IPlatform platform) : IBackend
         List<ChangedFile> reportedEdits = [];
         bool sawEvent = false;
 
+        // #126: a tool call is work unless it came back as an errored result (denied, not found: it did nothing), so one still open when
+        // the stream stops counts. Several `result` events are a live session's turns: a human spoke, and the count is not trusted.
+        HashSet<string> toolCalls = [];
+        int results = 0;
+        string? assistantError = null;
+
         foreach (string rawLine in text.Split('\n'))
         {
             string line = rawLine.Trim();
@@ -200,13 +206,20 @@ public sealed class ClaudeBackend(IPlatform platform) : IBackend
                 string? type = TryGetString(root, "type");
                 if (type == "result")
                 {
+                    results++;
                     lastResult = root.Clone();
                     string message = FinalMessage(root);
                     if (ReportExtractor.Extract(message).Status != ReportStatus.Missing)
                         reportMessage = message;
                 }
                 else if (type == "assistant")
+                {
                     CollectToolUseEdits(root, reportedEdits);
+                    CollectToolCalls(root, toolCalls);
+                    assistantError = TryGetString(root, "error") ?? assistantError;
+                }
+                else if (type == "user")
+                    ForgetErroredToolCalls(root, toolCalls);
             }
         }
 
@@ -218,6 +231,10 @@ public sealed class ClaudeBackend(IPlatform platform) : IBackend
         // is the last turn's too, unless a message that crossed the report on stdin made a turn after it: then
         // the turn that carries the report stays the final message.
         ParsedOutput parsed = BuildFromResult(result, exitCode, reportedEdits);
+        parsed = parsed with { ToolCallsCompleted = results == 1 ? toolCalls.Count : null };
+        if (parsed.ErrorKind == ErrorKind.Other && assistantError is not null)
+            parsed = parsed with { ErrorKind = ClassifyAssistantError(assistantError) };
+
         return reportMessage is not null && ReportExtractor.Extract(parsed.FinalMessage).Status == ReportStatus.Missing
             ? parsed with { FinalMessage = reportMessage }
             : parsed;
@@ -231,8 +248,60 @@ public sealed class ClaudeBackend(IPlatform platform) : IBackend
         bool isError = root.TryGetProperty("is_error", out JsonElement errorProp) && errorProp.ValueKind == JsonValueKind.True;
         Usage? usage = root.TryGetProperty("usage", out JsonElement usageProp) ? ParseUsage(usageProp) : null;
 
-        return new ParsedOutput(finalMessage, sessionId, cost, usage, [.. reportedEdits], root, isError || exitCode != 0);
+        // #126: an `is_error` result with an `api_error_status` is the provider refusing (recorded 2026-09-13, tests/fixtures/claude/error.txt:
+        // 404, an unknown model, for $0). A failure with no such status is Other, and a `terminal_reason` of api_error without one is the
+        // connection (no HTTP answer to carry a status). Its text is the provider's own words. ToolCallsCompleted is the stream's to fill.
+        ErrorKind? kind = null;
+        string? detail = null;
+        if (isError)
+        {
+            string? terminal = TryGetString(root, "terminal_reason");
+            kind = root.TryGetProperty("api_error_status", out JsonElement statusProp) && statusProp.ValueKind == JsonValueKind.Number && statusProp.TryGetInt32(out int status)
+                ? ProviderErrors.Classify(status, null)
+                : terminal == "api_error" ? ErrorKind.ProviderTransport : ErrorKind.Other;
+            detail = finalMessage.Length > 0 ? finalMessage : null;
+        }
+
+        return new ParsedOutput(finalMessage, sessionId, cost, usage, [.. reportedEdits], root, isError || exitCode != 0, kind, detail);
     }
+
+    // The SDK's documented `error` on an assistant message, read only to place a failure the result left as Other (no HTTP status on it).
+    private static ErrorKind ClassifyAssistantError(string error) => error switch
+    {
+        "authentication_failed" => ErrorKind.ProviderAuth,
+        "billing_error" or "rate_limit" => ErrorKind.ProviderQuota,
+        "server_error" => ErrorKind.ProviderTransport,
+        _ => ErrorKind.Other,
+    };
+
+    private static void CollectToolCalls(JsonElement root, HashSet<string> toolCalls)
+    {
+        foreach (JsonElement item in ContentItems(root))
+        {
+            if (TryGetString(item, "type") == "tool_use" && TryGetString(item, "id") is { } id)
+                toolCalls.Add(id);
+        }
+    }
+
+    private static void ForgetErroredToolCalls(JsonElement root, HashSet<string> toolCalls)
+    {
+        foreach (JsonElement item in ContentItems(root))
+        {
+            if (TryGetString(item, "type") == "tool_result"
+                && TryGetString(item, "tool_use_id") is { } id
+                && item.TryGetProperty("is_error", out JsonElement isError)
+                && isError.ValueKind == JsonValueKind.True)
+                toolCalls.Remove(id);
+        }
+    }
+
+    private static IEnumerable<JsonElement> ContentItems(JsonElement root) =>
+        root.TryGetProperty("message", out JsonElement message)
+        && message.ValueKind == JsonValueKind.Object
+        && message.TryGetProperty("content", out JsonElement content)
+        && content.ValueKind == JsonValueKind.Array
+            ? content.EnumerateArray().Where(item => item.ValueKind == JsonValueKind.Object)
+            : [];
 
     // 2026-09-21 (issue #12): a result document that claude terminated on its own budget flag carries
     // no `result` at all — the text sits in an `errors` array — so reading `result` alone left

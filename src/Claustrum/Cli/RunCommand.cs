@@ -160,7 +160,9 @@ public static class RunCommand
                 Branch: branch is { Length: > 0 } ? branch : null,
                 PreRunWarnings: castWarnings,
                 Live: live,
-                ReplyTimeoutSeconds: replyTimeoutSeconds);
+                ReplyTimeoutSeconds: replyTimeoutSeconds,
+                Fallback: castResult.Fallback,
+                FallbackResolved: castResult.FallbackResolved);
 
             return await RunPreparedAsync(request, routed, jsonMode, rawMode, detach, cancel);
         }
@@ -204,7 +206,7 @@ public static class RunCommand
                 return ExitCodes.Ok;
             }
 
-            return await DetachedRun.WaitAsync(LiveJob.At(hosted), answeredSeq: null, jsonMode, rawMode, printedWarnings, cancel);
+            return await DetachedRun.WaitAsync(LiveJob.At(hosted), answeredSeq: null, jsonMode, rawMode, printedWarnings, cancel, retryPossible: request.Fallback is { Length: > 0 });
         }
 
         // #124: a terminal run shows the conversation and asks the human, so it needs the job's directory before the run

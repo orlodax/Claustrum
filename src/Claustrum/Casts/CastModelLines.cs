@@ -59,23 +59,28 @@ public static class CastModelLines
         List<string> lines = [];
         List<string> warnings = [];
 
-        void Add(string role, string modelAlias)
+        void Add(string role, string modelAlias, string prefix = "")
         {
             ModelResolution resolution = config.Describe(modelAlias);
-            lines.Add(ModelLine(modelAlias, resolution));
+            lines.Add(prefix + ModelLine(modelAlias, resolution));
 
             if (resolution.FromBuiltin)
                 warnings.Add(BuiltinDefaultWarning(cast.Name, role, resolution, config));
         }
 
+        // #126: a fallback's line says so, since the role it stands in for is not named on any of these lines.
         foreach ((string role, CastRoleEntry? entry) in cast.Roles)
         {
             if (entry?.Model is { } roleAlias)
                 Add(role, roleAlias);
+            if (entry?.Fallback is { } fallbackAlias)
+                Add($"{role} fallback", fallbackAlias, "fallback: ");
         }
 
         if (cast.Architect.Model is { } architectAlias)
             Add(Cast.ArchitectRole, architectAlias);
+        if (cast.Architect.Fallback is { } architectFallback)
+            Add($"{Cast.ArchitectRole} fallback", architectFallback, "fallback: ");
 
         return ([.. lines], [.. warnings]);
     }

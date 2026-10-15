@@ -39,7 +39,9 @@ public sealed class ClaustrumTools
         "get the diff — never rationale, a plan, or a pasted claustrum-report block; the runner refuses such a " +
         "brief outright (docs/PLAN.md §B3 blind gate). A role that wants to ask the user something is told at " +
         "once that no human is available (this call is blocked): it decides what it can and records the choice, and stops with status " +
-        "'needs_input' and its questions in the result for what is the user's (answer those with job_answer); use delegate_async when the user should be asked.")]
+        "'needs_input' and its questions in the result for what is the user's (answer those with job_answer); use delegate_async when the user should be asked. " +
+        "When the cast names a fallback for the role and the model's provider refuses the request before the role did anything (out of credits, a rejected key, " +
+        "an unknown model, no connection), the run is retried once on the fallback: the result is the retry's, fallback_of names the failed job and warnings say why.")]
     public static Task<string> DelegateAsync(
         [Description("Role name, e.g. builder, code-reviewer, tester (see list_roles).")] string role,
         [Description("The brief: markdown with H2 sections ## Task/## Scope/## Must still work/## Diff (docs/PLAN.md §B3).")] string brief,
@@ -280,7 +282,9 @@ public sealed class ClaustrumTools
             PreRunWarnings: castWarnings,
             // #124: always live; whether anyone can answer is the reply timeout (0 for the blocked `delegate`).
             Live: true,
-            ReplyTimeoutSeconds: replyTimeoutSeconds);
+            ReplyTimeoutSeconds: replyTimeoutSeconds,
+            Fallback: appResult.Fallback,
+            FallbackResolved: appResult.FallbackResolved);
     }
 
     [McpServerTool(Name = "list_roles")]

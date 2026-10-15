@@ -26,7 +26,7 @@ public static class CoordinateEngine
     /// and what that worktree needs committed (#74), the `gh` import and the architect's user prompt.
     /// Both front doors call it before any job directory is minted, so a usage error, a missing or
     /// uncommitted cast and a failed `gh` all leave the job store untouched;
-    /// <see cref="CoordinatePlan.Prepare"/> is the second half, and still mints nothing.
+    /// <see cref="CoordinatePlan.Prepare()"/> is the second half, and still mints nothing.
     /// </summary>
     public static async Task<CoordinatePlan> PlanAsync(CoordinateRequest request, IIssueSource issues, CancellationToken cancellationToken)
     {
@@ -70,7 +70,7 @@ public static class CoordinateEngine
         string[] castWarnings = appResult.Warnings;
 
         string userPrompt = CoordinationBrief.RenderUserPrompt(task, request.Issues, CoordinationBrief.ArchitectCwd(request.Cwd, isolated, request.Resume?.WorktreeOf));
-        return new CoordinatePlan(request, cast, castName, userPrompt, tier, overrides, castBudget, isolated, castWarnings, warnings);
+        return new CoordinatePlan(request, cast, castName, userPrompt, tier, overrides, castBudget, isolated, castWarnings, warnings, appResult.Fallback, appResult.FallbackResolved);
     }
 
     /// <summary>
@@ -111,6 +111,15 @@ public static class CoordinateEngine
     /// </summary>
     public static async Task<RunResult> RunAsync(CoordinatePlan plan, PreparedDelegation prepared, JobPaths job, CancellationToken cancellationToken)
     {
+        RunResult first = await RunJobAsync(plan, prepared, job, cancellationToken);
+
+        // #126: refused before it did anything, the architect is retried on its cast's fallback as a whole new coordinate job — its own
+        // tree rooted at its id, owner, settle and ledger entry — not as another dispatch inside this one (NOTES.md "A cast can name a fallback model").
+        return await FallbackRetry.RunAsync(prepared, first, CoordinatePlan.PrepareRequest, (retry, retryJob) => RunJobAsync(plan, retry, retryJob, cancellationToken));
+    }
+
+    private static async Task<RunResult> RunJobAsync(CoordinatePlan plan, PreparedDelegation prepared, JobPaths job, CancellationToken cancellationToken)
+    {
         // F2: a resumed architect takes its parent's one answer before it touches anything the parent's tree holds (its successor marker,
         // the sweep of the tree's running children below): the loser of a double answer must leave the winner's tree alone.
         await DelegateEngine.ClaimAsync(prepared, job);
@@ -130,7 +139,7 @@ public static class CoordinateEngine
         RunResult result;
         try
         {
-            result = await DelegateEngine.RunAsync(plan.BindUserPrompt(prepared, job.Id), job, cancellationToken);
+            result = await DelegateEngine.RunOnceAsync(plan.BindUserPrompt(prepared, job.Id), job, cancellationToken);
         }
         finally
         {

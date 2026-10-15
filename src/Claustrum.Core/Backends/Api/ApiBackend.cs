@@ -82,8 +82,10 @@ public sealed class ApiBackend(IPlatform platform) : IBackend
     public ParsedOutput Parse(string stdout, string stderr, int exitCode)
     {
         string trimmed = stdout.Trim();
+        // #126: a one-shot HTTP call has no tools, so a refusal is always before any work. No answer at all (curl: could not resolve or connect,
+        // timed out, TLS or receive failure) is the connection; a status or error type in the body is the provider's.
         if (trimmed.Length == 0)
-            return new ParsedOutput(stderr, null, null, null, [], null, IsError: true);
+            return new ParsedOutput(stderr, null, null, null, [], null, IsError: true, exitCode is 6 or 7 or 28 or 35 or 52 or 55 or 56 ? ErrorKind.ProviderTransport : ErrorKind.Other, stderr, ToolCallsCompleted: 0);
 
         JsonDocument document;
         try
@@ -108,7 +110,9 @@ public sealed class ApiBackend(IPlatform platform) : IBackend
                 string message = errorElement.ValueKind == JsonValueKind.Object && errorElement.TryGetProperty("message", out JsonElement messageProp)
                     ? messageProp.GetString() ?? trimmed
                     : trimmed;
-                return new ParsedOutput(message, null, null, null, [], root, IsError: true);
+                int? status = TryGetInt(errorElement, "code");
+                string? type = errorElement.ValueKind == JsonValueKind.Object && errorElement.TryGetProperty("type", out JsonElement typeProp) && typeProp.ValueKind == JsonValueKind.String ? typeProp.GetString() : null;
+                return new ParsedOutput(message, null, null, null, [], root, IsError: true, ProviderErrors.Classify(status, type), message, ToolCallsCompleted: 0);
             }
 
             return root.TryGetProperty("choices", out JsonElement choices)

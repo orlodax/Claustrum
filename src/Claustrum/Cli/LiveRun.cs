@@ -66,6 +66,13 @@ internal static class LiveRun
         {
             while (!run.IsCompleted)
             {
+                // #126: once the job was retried on its cast's fallback, the conversation to show and the questions to ask are the retry's.
+                if (job.ReadRetry() is { } retry)
+                {
+                    prompter.Abandon();
+                    (job, printer, prompter) = (retry, new ConversationPrinter(), new QuestionPrompter(retry, openTerminal));
+                }
+
                 IReadOnlyList<ConversationEntry> entries = job.ReadConversation();
                 printer.Print(entries, prefix: null);
                 prompter.Poll(job.ReadState(), entries);

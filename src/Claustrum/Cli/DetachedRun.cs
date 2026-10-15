@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Claustrum.Core.Model;
+using Claustrum.Delegation;
 using Claustrum.Live;
 
 namespace Claustrum.Cli;
@@ -12,28 +13,57 @@ namespace Claustrum.Cli;
 // or a RunResult synthesized for a job whose own never came (abandoned: exit 6; unreadable: 1; Ctrl-C that could not cancel: 130).
 internal static class DetachedRun
 {
-    public static async Task<int> WaitAsync(LiveJob job, int? answeredSeq, bool jsonMode, bool rawMode, string[] printedWarnings, CancelSignalHandler cancel)
+    // The first job's receipt names its retry (#126) a few milliseconds after the receipt itself; a run that may be retried waits this long for it.
+    private const int RetryPolls = 12;
+    private const int RetryPollMs = 250;
+
+    public static async Task<int> WaitAsync(
+        LiveJob job, int? answeredSeq, bool jsonMode, bool rawMode, string[] printedWarnings, CancelSignalHandler cancel, bool retryPossible = false)
     {
-        JobWaitResult seen;
-        try
+        while (true)
         {
-            (seen, _) = await LiveWait.UntilAsync(job, deadline: null, answeredSeq, finalOnly: false, cancel.Token);
-        }
-        catch (OperationCanceledException)
-        {
-            // A job with no host (or one that is already done or gone) is not this process's to cancel: it is left as it was.
-            if (TryRequestCancel(job) is { } notCancelled)
+            JobWaitResult seen;
+            try
             {
-                cancel.Settled();
-                JobWaitResult now = job.Observe();
-                return now.State == "done" ? Report(job, now, jsonMode, rawMode, printedWarnings) : NotCancelled(job, notCancelled, jsonMode, rawMode, printedWarnings);
+                (seen, _) = await LiveWait.UntilAsync(job, deadline: null, answeredSeq, finalOnly: false, cancel.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                // A job with no host (or one that is already done or gone) is not this process's to cancel: it is left as it was.
+                if (TryRequestCancel(job) is { } notCancelled)
+                {
+                    cancel.Settled();
+                    JobWaitResult now = job.Observe();
+                    return now.State == "done" ? Report(job, now, jsonMode, rawMode, printedWarnings) : NotCancelled(job, notCancelled, jsonMode, rawMode, printedWarnings);
+                }
+
+                (seen, _) = await LiveWait.UntilAsync(job, deadline: null, answeredSeq: null, finalOnly: true, CancellationToken.None);
             }
 
-            (seen, _) = await LiveWait.UntilAsync(job, deadline: null, answeredSeq: null, finalOnly: true, CancellationToken.None);
-        }
+            // #126: a job its cast's fallback took over ends in a receipt that names the retry, and the retry is what this waits for.
+            if (seen.State == "done" && await RetryOfAsync(job, retryPossible) is { } retry)
+            {
+                (job, answeredSeq, retryPossible) = (retry, null, false);
+                continue;
+            }
 
-        cancel.Settled();
-        return Report(job, seen, jsonMode, rawMode, printedWarnings);
+            cancel.Settled();
+            return Report(job, seen, jsonMode, rawMode, printedWarnings);
+        }
+    }
+
+    private static async Task<LiveJob?> RetryOfAsync(LiveJob job, bool retryPossible)
+    {
+        for (int poll = 0; ; poll++)
+        {
+            if (job.ReadRetry() is { } retry)
+                return retry;
+
+            if (!retryPossible || job.ReadResult() is not { } receipt || !FallbackRetry.Qualifies(receipt) || poll >= RetryPolls)
+                return null;
+
+            await Task.Delay(RetryPollMs);
+        }
     }
 
     // Null when the host was asked; otherwise why it was not.

@@ -272,6 +272,14 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
                 ? new BranchReceipt(Commit: null, diff, Warnings: [])
                 : await CommitWorkAsync(worktree, mismatch, role.Name, job, extracted.Report, diff, runOptions.DiffByteCapBytes);
 
+            // #126: why it failed and whether it did any work first, which together say if a cast's fallback may take over. A worktree whose
+            // files were not read (mismatch) says nothing about changes, and a live session that went past its first turn had a human in it.
+            ErrorKind? errorKind = status == RunStatus.Failed ? parsed.ErrorKind ?? ErrorKind.Other : null;
+            bool firstTurnOnly = outcome.LastTurn is null || outcome.LastTurn.Stdout.Length == outcome.Stdout.Length;
+            bool? beforeAnyWork = status == RunStatus.Failed && parsed.ToolCallsCompleted is not null
+                ? ProviderErrors.BeforeAnyWork(parsed.ToolCallsCompleted, branch.Changes.ChangedFiles, treeRead: mismatch is null or { OwnWorktree: true }, firstTurnOnly)
+                : null;
+
             RunResult result = new(
                 SchemaVersion: "1",
                 JobId: job.Id,
@@ -296,7 +304,10 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
                 Warnings: [.. postWarnings ?? [], .. extracted.Warnings, .. asked.Warnings, .. branch.Warnings],
                 Commit: branch.Commit,
                 Conversation: ConversationOf(job, live, notes),
-                Questions: asked.Questions);
+                Questions: asked.Questions,
+                ErrorKind: errorKind,
+                ErrorDetail: errorKind is null ? null : parsed.ErrorDetail,
+                BeforeAnyWork: beforeAnyWork);
 
             return await FinishAsync(job, reservation, result, ran: true, runOptions);
         }
@@ -560,6 +571,8 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
             result = result with { Worktree = worktree.Path, Branch = worktree.Branch };
         if (options?.PreRunWarnings is { Length: > 0 } decided)
             result = result with { Warnings = [.. decided, .. result.Warnings] };
+        if (options?.FallbackOf is { } retryOf)
+            result = result with { FallbackOf = retryOf };
 
         if (reservation is { } claim)
             result = await ChargeAsync(claim, result, ran);
