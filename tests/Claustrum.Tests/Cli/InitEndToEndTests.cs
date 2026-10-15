@@ -17,6 +17,24 @@ public sealed class InitEndToEndTests : IDisposable
 
     private static string Lf(string text) => text.Replace("\r\n", "\n", StringComparison.Ordinal);
 
+    // Every built-in alias answered, with these overrides: init exits 0 only on a complete set (2026-10-15, review 2).
+    private static string CompleteAnswers(params (string Alias, string Target)[] overrides)
+    {
+        Dictionary<string, string> answers = new()
+        {
+            ["frontier-reasoning"] = "claude:opus",
+            ["frontier-coding"] = "claude:opus",
+            ["standard-coding"] = "claude:sonnet",
+            ["cheap-coding"] = "claude:haiku",
+            ["fast"] = "claude:haiku",
+        };
+        foreach ((string alias, string target) in overrides)
+            answers[alias] = target;
+        return JsonSerializer.Serialize(answers);
+    }
+
+    private static string[] MissingFrom(string stderr) => [.. Lf(stderr).Split('\n', StringSplitOptions.RemoveEmptyEntries).Where(line => line.StartsWith("model aliases:", StringComparison.Ordinal))];
+
     private Task<CliResult> InitAsync(params string[] extra) => cli.RunAsync(["init", .. extra], "", null);
 
     private string WriteAnswers(string json, string name = "answers.json")
@@ -31,6 +49,9 @@ public sealed class InitEndToEndTests : IDisposable
         using JsonDocument document = JsonDocument.Parse(File.ReadAllText(cli.UserConfigPath));
         return document.RootElement.Clone();
     }
+
+    // Everything under the child's cwd, so a refused run can be shown to have left no trace there.
+    private string[] RepoEntries() => [.. Directory.EnumerateFileSystemEntries(cli.Cwd, "*", SearchOption.AllDirectories).Select(path => Path.GetRelativePath(cli.Cwd, path)).Order(StringComparer.Ordinal)];
 
     private static string[] KeysOf(JsonElement element) => [.. element.EnumerateObject().Select(property => property.Name)];
 
@@ -167,7 +188,7 @@ public sealed class InitEndToEndTests : IDisposable
     [Fact]
     public async Task ABareModelIdIsTakenAsAClaudeModelAndIsValidAsync()
     {
-        string answers = WriteAnswers(/*lang=json,strict*/ """{"fast":"haiku"}""");
+        string answers = WriteAnswers(CompleteAnswers(("fast", "haiku")));
 
         CliResult result = await InitAsync("--answers", answers);
 
@@ -206,7 +227,7 @@ public sealed class InitEndToEndTests : IDisposable
     public async Task AnAnswerForAnAliasTheUserConfigAlreadyDefinesIsIgnoredAndTheOthersAreAddedAsync()
     {
         cli.WriteUserConfig(/*lang=json,strict*/ """{"models":{"fast":"claude:sonnet"}}""");
-        string answers = WriteAnswers(/*lang=json,strict*/ """{"fast":"claude:opus","cheap-coding":"claude:haiku"}""");
+        string answers = WriteAnswers(CompleteAnswers(("fast", "claude:opus")));
 
         CliResult result = await InitAsync("--answers", answers);
 
@@ -214,7 +235,7 @@ public sealed class InitEndToEndTests : IDisposable
         JsonElement models = ReadUserConfig().GetProperty("models");
         Assert.Equal("claude:sonnet", models.GetProperty("fast").GetString());
         Assert.Equal("claude:haiku", models.GetProperty("cheap-coding").GetString());
-        Assert.Equal(2, KeysOf(models).Length);
+        Assert.Equal(aliases.Order(StringComparer.Ordinal), KeysOf(models).Order(StringComparer.Ordinal));
     }
 
     [Fact]
@@ -244,7 +265,7 @@ public sealed class InitEndToEndTests : IDisposable
               "jobs": { "keep_last": 7 }
             }
             """);
-        string answers = WriteAnswers(/*lang=json,strict*/ """{"cheap-coding":"claude:haiku"}""");
+        string answers = WriteAnswers(CompleteAnswers(("fast", "claude:opus")));
 
         CliResult result = await InitAsync("--answers", answers);
 
@@ -263,6 +284,102 @@ public sealed class InitEndToEndTests : IDisposable
         Assert.Equal(3.5m, defaults.GetProperty("budget_usd").GetDecimal());
         Assert.Equal("all", defaults.GetProperty("env_passthrough").GetString());
         Assert.Equal(7, config.GetProperty("jobs").GetProperty("keep_last").GetInt32());
+    }
+
+    // Regression (review 2, 2026-10-15): the agents were rendered with the config loaded BEFORE the answers were written, so a
+    // fresh machine got the built-in model in `.claude/agents/` whatever it had just answered.
+    [Fact]
+    public async Task TheAgentsSyncedByAnAnswersRunUseTheAnsweredModelNotTheBuiltInAsync()
+    {
+        string answers = WriteAnswers(CompleteAnswers(("frontier-coding", "claude:sonnet")));
+
+        CliResult result = await InitAsync("--answers", answers);
+
+        Assert.Equal(ExitCodes.Ok, result.ExitCode);
+        string builder = Lf(File.ReadAllText(Path.Combine(cli.Cwd, ".claude", "agents", "builder.md")));
+        Assert.Contains("\nmodel: sonnet\n", builder, StringComparison.Ordinal);
+        Assert.DoesNotContain("\nmodel: opus\n", builder, StringComparison.Ordinal);
+    }
+
+    // Regression (review 2): a partial answer set exited 0 with the repo scaffolded and synced against built-ins.
+    [Theory]
+    [InlineData(/*lang=json,strict*/ """{"fast":"claude:haiku","cheap-coding":"claude:haiku"}""", 3)]
+    [InlineData(/*lang=json,strict*/ """{}""", 5)]
+    public async Task APartialOrEmptyAnswerSetIsExitTwoCountingWhatIsLeftAndTouchesNothingInTheRepoAsync(string json, int missing)
+    {
+        string answers = WriteAnswers(json);
+        string[] before = RepoEntries();
+
+        CliResult result = await InitAsync("--answers", answers);
+
+        Assert.Equal(ExitCodes.Usage, result.ExitCode);
+        Assert.Equal([$"model aliases: {missing} missing from {cli.UserConfigPath}; answer `claustrum init questions --json` and run `claustrum init --answers <file>`"], MissingFrom(result.Stderr));
+        Assert.Equal(before, RepoEntries());
+        foreach (string created in new[] { ".claustrum", ".claude", ".gitignore", "AGENTS.md", "claustrum.json" })
+            Assert.False(Path.Exists(Path.Combine(cli.Cwd, created)), $"{created} must not exist after a refused init");
+    }
+
+    // The answers that were given are kept, so the next run only has the remainder to ask for.
+    [Fact]
+    public async Task TheAnswersOfAPartialSetAreStillWrittenAndOnlyTheRestIsAskedNextAsync()
+    {
+        string answers = WriteAnswers(/*lang=json,strict*/ """{"fast":"claude:haiku","cheap-coding":"claude:haiku"}""");
+
+        await InitAsync("--answers", answers);
+
+        (string[] keys, _) = await QuestionsAsync();
+        Assert.Equal(["frontier-coding", "frontier-reasoning", "standard-coding"], keys.Order(StringComparer.Ordinal));
+    }
+
+    // Regression (review 2): an alias a repo claustrum.json defines wins at run time, so it is not asked about and not missing.
+    [Fact]
+    public async Task AnAliasARepoClaustrumJsonDefinesIsNotAskedAboutNorCountedMissingAsync()
+    {
+        cli.MarkAsGitRoot();
+        File.WriteAllText(Path.Combine(cli.Cwd, "claustrum.json"), /*lang=json,strict*/ """{"models":{"frontier-coding":"opencode:vendor/coder","fast":"claude:haiku"}}""");
+
+        (string[] keys, _) = await QuestionsAsync();
+
+        Assert.Equal(["cheap-coding", "frontier-reasoning", "standard-coding"], keys.Order(StringComparer.Ordinal));
+    }
+
+    [Fact]
+    public async Task AnAnswerSetThatCoversOnlyWhatTheRepoLeavesUndefinedIsExitZeroAsync()
+    {
+        cli.MarkAsGitRoot();
+        File.WriteAllText(Path.Combine(cli.Cwd, "claustrum.json"), /*lang=json,strict*/ """{"models":{"frontier-coding":"opencode:vendor/coder","fast":"claude:haiku"}}""");
+        string answers = WriteAnswers(/*lang=json,strict*/ """{"frontier-reasoning":"claude:opus","standard-coding":"claude:sonnet","cheap-coding":"claude:haiku"}""");
+
+        CliResult result = await InitAsync("--answers", answers);
+
+        Assert.Equal(ExitCodes.Ok, result.ExitCode);
+        Assert.Equal(["cheap-coding", "frontier-reasoning", "standard-coding"], KeysOf(ReadUserConfig().GetProperty("models")).Order(StringComparer.Ordinal));
+    }
+
+    [Fact]
+    public async Task WithTheRepoDefiningSomeAliasesTheRedirectedNoAnswersRunCountsOnlyTheUndefinedOnesAsync()
+    {
+        cli.MarkAsGitRoot();
+        File.WriteAllText(Path.Combine(cli.Cwd, "claustrum.json"), /*lang=json,strict*/ """{"models":{"frontier-coding":"opencode:vendor/coder","fast":"claude:haiku"}}""");
+
+        CliResult result = await InitAsync();
+
+        Assert.Equal(ExitCodes.Usage, result.ExitCode);
+        Assert.Equal([$"model aliases: 3 missing from {cli.UserConfigPath}; answer `claustrum init questions --json` and run `claustrum init --answers <file>`"], MissingFrom(result.Stderr));
+    }
+
+    // A repo that defines every alias leaves nothing to answer: init runs without a user config's help.
+    [Fact]
+    public async Task ARepoClaustrumJsonThatDefinesEveryAliasLeavesNothingMissingAsync()
+    {
+        cli.MarkAsGitRoot();
+        File.WriteAllText(Path.Combine(cli.Cwd, "claustrum.json"), /*lang=json,strict*/ """{"models":{"frontier-reasoning":"claude:opus","frontier-coding":"claude:opus","standard-coding":"claude:sonnet","cheap-coding":"claude:haiku","fast":"claude:haiku"}}""");
+
+        CliResult result = await InitAsync();
+
+        Assert.Equal(ExitCodes.Ok, result.ExitCode);
+        (string[] keys, _) = await QuestionsAsync();
+        Assert.Empty(keys);
     }
 
     [Fact]
