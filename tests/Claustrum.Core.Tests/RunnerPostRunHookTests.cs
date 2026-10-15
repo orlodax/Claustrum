@@ -15,9 +15,11 @@ public sealed class RunnerPostRunHookTests : IDisposable
 {
     private readonly string homeDir = Directory.CreateTempSubdirectory("claustrum-home-").FullName;
     private readonly string cwd = Directory.CreateTempSubdirectory("claustrum-cwd-").FullName;
+    private readonly CancellationTokenSource externalCancel = new();
 
     public void Dispose()
     {
+        externalCancel.Dispose();
         TryDelete(homeDir);
         TryDelete(cwd);
     }
@@ -30,7 +32,7 @@ public sealed class RunnerPostRunHookTests : IDisposable
 
     private async Task<RunResult> RunAsync(IBackend backend, string? resume = null, Action<string>? onStreamLine = null, bool streamRaw = false, TimeSpan? cancelAfter = null)
     {
-        using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken, externalCancel.Token);
         if (cancelAfter is { } delay)
             linked.CancelAfter(delay);
 
@@ -169,6 +171,29 @@ public sealed class RunnerPostRunHookTests : IDisposable
         Assert.DoesNotContain("must not appear", result.Warnings);
     }
 
+    // The baseline export swallows its own cancellation, so Runner has to look again before it starts the process (review of #127).
+    [Fact]
+    public async Task ACancelDuringThePreRunExportEndsCancelledAndNeverStartsTheBackendAsync()
+    {
+        string marker = Path.Combine(cwd, "started.txt");
+        HookedBackend backend = new(
+            ScriptedBackend.Shell("echo started > started.txt", "echo started > started.txt", Parsed()),
+            preRun: _ =>
+            {
+                externalCancel.Cancel();
+                return null;
+            },
+            postRun: (_, _, _) => new PostRunResult(9m, null, "must not appear"));
+
+        RunResult result = await RunAsync(backend, resume: "ses_1");
+
+        Assert.Equal(RunStatus.Cancelled, result.Status);
+        Assert.Equal(1, backend.PreRunCalls);
+        Assert.Equal(0, backend.PostRunCalls);
+        Assert.False(File.Exists(marker), "the backend's process must not start on a cancelled run");
+        Assert.NotEqual(9m, result.CostUsd);
+    }
+
     [Fact]
     public async Task ARunThatReportedNoSessionIsNotAskedEitherAsync()
     {
@@ -198,10 +223,11 @@ public sealed class RunnerPostRunHookTests : IDisposable
     [InlineData(true)]
     public async Task ABackendWithoutAFormatterEchoesTheRawLinesInOrderAsync(bool streamRaw)
     {
-        string script = OperatingSystem.IsWindows() ? "echo one&echo {\"two\":2}" : "echo one; echo '{\"two\":2}'";
+        // The lines come from a file in the job's cwd: .NET escapes a quote in a cmd /c argument as \", and cmd echoes the backslash (CI, 2026-10-15).
+        await File.WriteAllTextAsync(Path.Combine(cwd, "lines.txt"), "one\n{\"two\":2}\n", TestContext.Current.CancellationToken);
         ConcurrentQueue<string> echoed = [];
 
-        RunResult result = await RunAsync(ScriptedBackend.Shell(script, script), onStreamLine: echoed.Enqueue, streamRaw: streamRaw);
+        RunResult result = await RunAsync(ScriptedBackend.Shell("cat lines.txt", "type lines.txt"), onStreamLine: echoed.Enqueue, streamRaw: streamRaw);
 
         Assert.Equal(RunStatus.Success, result.Status);
         Assert.Equal(["one", /*lang=json,strict*/ """{"two":2}"""], echoed);

@@ -124,7 +124,7 @@ public sealed class CoordinatePlanTests(AppServicesHomeFixture fixture) : IDispo
     [Fact]
     public async Task EnvCarriesClaustrumHomeWhenThePlatformReportsOneAsync()
     {
-        AppServices.OverrideForTests(new ClaustrumHomeReportingPlatform("/fake/claustrum/home"));
+        AppServices.OverrideForTests(new ClaustrumHomeReportingPlatform("/fake/claustrum/home", fixture.HomeDirectory));
         try
         {
             DelegateRequest request = (await PlanAsync(SpawnedCast())).ToDelegateRequest();
@@ -185,6 +185,23 @@ public sealed class CoordinatePlanTests(AppServicesHomeFixture fixture) : IDispo
         Assert.Equal(repo.Repo, request.Cwd);
         Assert.Contains($"Work branch: claustrum/{DelegateRequest.JobIdToken} — you are already on it, in your own worktree {token}", request.SystemAppendix, StringComparison.Ordinal);
         Assert.Contains($"- Working directory: {token}", request.Brief, StringComparison.Ordinal);
+    }
+
+    // A cast file is addressed by its file name (`--cast <name>` is what the children are told); the `name` inside is the document's own
+    // claim, and a teammate's copy under another file name carries the teammate's. The worktree is handed the copy under the file name.
+    [Fact]
+    public async Task TheWorktreeCastCopyCarriesTheFileNameNotTheNameInsideTheJsonAsync()
+    {
+        using IsolatedRepo repo = IsolatedRepo.ForCoordinate();
+        string path = Path.Combine(repo.Repo, ".claustrum", "casts", "default.json");
+        File.WriteAllText(path, File.ReadAllText(path).Replace("\"name\":\"default\"", "\"name\":\"teammates-cast\"", StringComparison.Ordinal));
+        repo.CommitAll("a copied cast");
+
+        CoordinatePlan plan = await PlanInAsync(repo);
+
+        Assert.Equal("default", plan.CastName);
+        Cast copy = Assert.IsType<Cast>(plan.ToDelegateRequest().WorktreeCastCopy);
+        Assert.Equal("default", copy.Name);
     }
 
     [Fact]
@@ -352,15 +369,21 @@ public sealed class CoordinatePlanTests(AppServicesHomeFixture fixture) : IDispo
     }
 
     // Delegates everything to RealPlatform except CLAUSTRUM_HOME, which HomeRedirectPlatform hides
-    // unconditionally — the one seam this test file needs and no shared fixture provides.
-    private sealed class ClaustrumHomeReportingPlatform(string home) : IPlatform
+    // unconditionally — the one seam this test file needs and no shared fixture provides. It lives in the
+    // fixture's home (HOME and APPDATA both), so the #122 gate finds the user config the fixture wrote.
+    private sealed class ClaustrumHomeReportingPlatform(string home, string userHome) : IPlatform
     {
         private readonly RealPlatform real = new();
 
         public ClaustrumOs Os => real.Os;
-        public string HomeDirectory => real.HomeDirectory;
+        public string HomeDirectory => userHome;
 
-        public string? GetEnvironmentVariable(string name) => name == "CLAUSTRUM_HOME" ? home : real.GetEnvironmentVariable(name);
+        public string? GetEnvironmentVariable(string name) => name switch
+        {
+            "CLAUSTRUM_HOME" => home,
+            "APPDATA" => userHome,
+            _ => real.GetEnvironmentVariable(name),
+        };
 
         public IReadOnlyDictionary<string, string> GetEnvironmentVariables() => real.GetEnvironmentVariables();
         public string[] GetPathEntries() => real.GetPathEntries();

@@ -2,12 +2,15 @@ using Claustrum.Casts;
 using Claustrum.Cli;
 using Claustrum.Coordination;
 using Claustrum.Core.Config;
+using Claustrum.Tests.Testing;
 
 namespace Claustrum.Tests.Coordination;
 
-// CoordinateEngine.PlanAsync touches no AppServices singleton (CastStore is plain file I/O, gh goes
-// through the caller-supplied IIssueSource), so this needs neither AppServicesHomeFixture nor a real
-// `gh` — a FakeIssueSource that records its calls is the whole seam.
+// PlanAsync starts with the #122 gate on AppServices.Platform, so this runs in the "AppServices home"
+// collection: the fixture's home holds a user config, and no other class swaps the platform mid-test
+// (outside it these failed on all three CI runners, 2026-10-15). gh goes through the caller-supplied
+// IIssueSource, so a FakeIssueSource that records its calls is the whole seam.
+[Collection(AppServicesHomeCollectionDefinition.Name)]
 public sealed class CoordinateEngineTests : IDisposable
 {
     private readonly string cwd = Directory.CreateTempSubdirectory("claustrum-coordinate-engine-").FullName;

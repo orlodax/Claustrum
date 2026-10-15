@@ -11,8 +11,8 @@ public sealed class JobsFollowEndToEndTests : IDisposable
 {
     private static readonly TimeSpan wait = TimeSpan.FromSeconds(30);
 
-    private const string SaysHello = /*lang=json,strict*/ """{"type":"assistant","timestamp":"2026-10-15T09:00:00.000Z","message":{"content":[{"type":"text","text":"hello there"}]}}""";
-    private const string SaysDone = /*lang=json,strict*/ """{"type":"assistant","timestamp":"2026-10-15T09:00:05.000Z","message":{"content":[{"type":"text","text":"all done"}]}}""";
+    private const string SaysHello = /*lang=json,strict*/ """{"type":"assistant","message":{"content":[{"type":"text","text":"hello there"}]}}""";
+    private const string SaysDone = /*lang=json,strict*/ """{"type":"assistant","message":{"content":[{"type":"text","text":"all done"}]}}""";
     private const string Result = /*lang=json,strict*/ """{"status":"success","backend":"claude","model":"haiku","cost_usd":0.0123,"duration_seconds":2.5,"warnings":["w1","w2"]}""";
 
     private readonly IsolatedRepo repo = new();
@@ -23,15 +23,15 @@ public sealed class JobsFollowEndToEndTests : IDisposable
 
     private string JobDirectory(string id) => Path.Combine(repo.JobsRoot, id);
 
-    private string MakeJob(string id, string? stdoutLog = "", bool backendJson = true, string? resultJson = null)
+    private string MakeJob(string id, string? stdoutLog = "", bool backendJson = true, string? resultJson = null, string role = "builder", string backendJsonText = /*lang=json,strict*/ """{"backend":"claude","model":"haiku"}""")
     {
         string directory = Directory.CreateDirectory(JobDirectory(id)).FullName;
-        File.WriteAllText(Path.Combine(directory, "request.json"), $$$"""{"role":"builder","cwd":"{{{repo.Repo.Replace("\\", "\\\\", StringComparison.Ordinal)}}}"}""");
+        File.WriteAllText(Path.Combine(directory, "request.json"), $$$"""{"role":"{{{role}}}","cwd":"{{{repo.Repo.Replace("\\", "\\\\", StringComparison.Ordinal)}}}"}""");
         if (stdoutLog is not null)
             File.WriteAllText(Path.Combine(directory, "stdout.log"), stdoutLog);
 
         if (backendJson)
-            File.WriteAllText(Path.Combine(directory, "backend.json"), /*lang=json,strict*/ """{"backend":"claude","model":"haiku"}""");
+            File.WriteAllText(Path.Combine(directory, "backend.json"), backendJsonText);
 
         if (resultJson is not null)
             File.WriteAllText(Path.Combine(directory, "result.json"), resultJson);
@@ -58,7 +58,7 @@ public sealed class JobsFollowEndToEndTests : IDisposable
 
         string[] lines = Lf(process.Stderr).Split('\n', StringSplitOptions.RemoveEmptyEntries);
         Assert.Equal(ExitCodes.Ok, process.ExitCode);
-        Assert.Equal("job 20261015-163517-22930bff  claude:haiku", lines[0]);
+        Assert.Equal("job 20261015-163517-22930bff  builder  claude:haiku", lines[0]);
         Assert.EndsWith("SAYS  hello there", lines[1], StringComparison.Ordinal);
         Assert.EndsWith("SAYS  all done", lines[2], StringComparison.Ordinal);
         Assert.StartsWith("━━━ success  cost $0.01", lines[3], StringComparison.Ordinal);
@@ -192,7 +192,7 @@ public sealed class JobsFollowEndToEndTests : IDisposable
 
         string stderr = Lf(follow.Stderr);
         Assert.Equal(24, "20261015-163517-22930bff".Length);
-        Assert.Contains("following 20261015-163517-22930bff  job 20261015-163517-22930bff  claude:haiku", stderr, StringComparison.Ordinal);
+        Assert.Contains("following 20261015-163517-22930bff  job 20261015-163517-22930bff  builder  claude:haiku", stderr, StringComparison.Ordinal);
         Assert.Contains(stderr.Split('\n'), line => line.StartsWith("20261015-163517-22930bff ", StringComparison.Ordinal) && line.EndsWith("SAYS  all done", StringComparison.Ordinal));
         Assert.DoesNotContain("20260101-000000-aaaaaaaa", stderr, StringComparison.Ordinal);
         Assert.DoesNotContain("hello there", stderr, StringComparison.Ordinal);
@@ -237,5 +237,104 @@ public sealed class JobsFollowEndToEndTests : IDisposable
         Assert.Contains(lines, line => line.StartsWith("20261015-170000-bbbbbbbb ", StringComparison.Ordinal) && line.EndsWith("SAYS  all done", StringComparison.Ordinal));
         await follow.SendSigintAsync(Ct);
         Assert.Equal(ExitCodes.Cancelled, await follow.WaitForExitAsync(wait, Ct));
+    }
+
+    // ---- the clock: claude's stream has no stamps ---------------------------------------------------------------------
+
+    // Claude's stream-json carries no time, so a replayed line must not invent one; a line that arrives while watching is stamped on arrival.
+    [Fact]
+    public async Task ClaudeLinesWrittenBeforeTheFollowStartedShowNoTimeAndLaterOnesShowTheClockAsync()
+    {
+        string directory = MakeJob("20261015-163517-22930bff", stdoutLog: SaysHello + "\n");
+        using RunningCli follow = repo.StartCli("jobs", "follow", "20261015-163517-22930bff");
+
+        await follow.WaitUntilAsync(() => Lf(follow.Stderr).Contains("--:--:-- SAYS  hello there", StringComparison.Ordinal), "the replayed line", wait, Ct);
+        await File.AppendAllTextAsync(Path.Combine(directory, "stdout.log"), SaysDone + "\n", Ct);
+        await follow.WaitUntilAsync(() => Lf(follow.Stderr).Contains("SAYS  all done", StringComparison.Ordinal), "the live line", wait, Ct);
+
+        string[] lines = Lf(follow.Stderr).Split('\n');
+        Assert.Matches(@"^\d{2}:\d{2}:\d{2} SAYS  all done$", lines.Single(line => line.EndsWith("SAYS  all done", StringComparison.Ordinal)));
+        Assert.DoesNotContain(lines, line => line.StartsWith("--:--:-- ", StringComparison.Ordinal) && line.Contains("all done", StringComparison.Ordinal));
+
+        await File.WriteAllTextAsync(Path.Combine(directory, "result.json"), Result, Ct);
+        Assert.Equal(ExitCodes.Ok, await follow.WaitForExitAsync(wait, Ct));
+    }
+
+    [Fact]
+    public async Task AFinishedClaudeJobFollowedAfterTheFactIsAllReplayAsync()
+    {
+        MakeJob("20261015-163517-22930bff", stdoutLog: SaysHello + "\n" + SaysDone + "\n", resultJson: Result);
+
+        CliResult process = await repo.RunAsync("jobs", "follow", "20261015-163517-22930bff");
+
+        string[] lines = Lf(process.Stderr).Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        Assert.Equal("--:--:-- SAYS  hello there", lines[1]);
+        Assert.Equal("--:--:-- SAYS  all done", lines[2]);
+    }
+
+    // ---- a character cut in half between two polls -------------------------------------------------------------------
+
+    [Fact]
+    public async Task AMultibyteCharacterSplitAcrossTwoPollsIsDecodedWholeAsync()
+    {
+        string line = /*lang=json,strict*/ """{"type":"assistant","message":{"content":[{"type":"text","text":"coffee ☕ café done"}]}}""" + "\n";
+        byte[] bytes = System.Text.Encoding.UTF8.GetBytes(line);
+        int cup = Array.IndexOf(bytes, (byte)0xE2) + 1; // inside the three bytes of ☕
+        string directory = MakeJob("20261015-163517-22930bff", stdoutLog: SaysHello + "\n");
+        string log = Path.Combine(directory, "stdout.log");
+        using RunningCli follow = repo.StartCli("jobs", "follow", "20261015-163517-22930bff");
+        await follow.WaitUntilAsync(() => follow.Stderr.Contains("SAYS  hello there", StringComparison.Ordinal), "the first line", wait, Ct);
+
+        await AppendBytesAsync(log, bytes[..cup]);
+        await Task.Delay(1500, Ct);
+        await AppendBytesAsync(log, bytes[cup..]);
+        await follow.WaitUntilAsync(() => Lf(follow.Stderr).Contains("done", StringComparison.Ordinal), "the line completed across polls", wait, Ct);
+
+        Assert.Contains("SAYS  coffee ☕ café done", Lf(follow.Stderr), StringComparison.Ordinal);
+        Assert.DoesNotContain('\uFFFD', follow.Stderr);
+
+        await File.WriteAllTextAsync(Path.Combine(directory, "result.json"), Result, Ct);
+        Assert.Equal(ExitCodes.Ok, await follow.WaitForExitAsync(wait, Ct));
+    }
+
+    private static async Task AppendBytesAsync(string path, byte[] bytes)
+    {
+        await using FileStream stream = new(path, FileMode.Append, FileAccess.Write, FileShare.ReadWrite);
+        await stream.WriteAsync(bytes, Ct);
+    }
+
+    // ---- nothing from a job's files reaches the terminal as a control byte ---------------------------------------------
+
+    // Model text, a tool's target and command, a failed result, the role, the backend, the model and the status all come from files
+    // a job (or anything that can write one) controls. ESC, BEL, C1 and DEL come out as visible escapes; a multi-line command is one line.
+    [Fact]
+    public async Task ControlCharactersInALogAndInTheHeaderAndSummaryAreShownAsEscapesNeverSentAsync()
+    {
+        string[] events =
+        [
+            /*lang=json,strict*/ """{"type":"assistant","message":{"content":[{"type":"text","text":"a\u001b[2Jb\u0007c\u009bd\u007fe"}]}}""",
+            /*lang=json,strict*/ """{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"echo safe\n\u001b[1Arm -rf /\r\necho end"}}]}}""",
+            /*lang=json,strict*/ """{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"/x/\u001b]0;pwned\u0007.cs"}}]}}""",
+            /*lang=json,strict*/ """{"type":"user","message":{"content":[{"type":"tool_result","is_error":true,"content":"boom\u001b[31m\nsecond line"}]}}""",
+        ];
+        MakeJob(
+            "20261015-163517-22930bff",
+            stdoutLog: string.Join('\n', events) + "\n",
+            resultJson: /*lang=json,strict*/ """{"status":"suc\u001bcess","backend":"cl\u0007aude","model":"ha\u009biku","cost_usd":0.5,"duration_seconds":1.0}""",
+            role: "bui\\u001blder",
+            backendJsonText: /*lang=json,strict*/ """{"backend":"claude","model":"ha\u001biku"}""");
+
+        CliResult process = await repo.RunAsync("jobs", "follow", "20261015-163517-22930bff");
+
+        string[] lines = Lf(process.Stderr).Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        Assert.Equal(ExitCodes.Ok, process.ExitCode);
+        Assert.Equal("job 20261015-163517-22930bff  bui\\x1blder  claude:ha\\x1biku", lines[0]);
+        Assert.Equal("--:--:-- SAYS  a\\x1b[2Jb\\x07c\\u009bd\\x7fe", lines[1]);
+        Assert.Equal("--:--:-- BASH  echo safe \\x1b[1Arm -rf / echo end", lines[2]);
+        Assert.StartsWith("--:--:-- EDIT  /x/\\x1b]0;pwned\\x07.cs", lines[3], StringComparison.Ordinal);
+        Assert.Equal("--:--:-- ✗     boom\\x1b[31m second line", lines[4]);
+        Assert.Equal("━━━ suc\\x1bcess  cost $0.50  1.0s  cl\\x07aude:ha\\u009biku", lines[5]);
+        Assert.Equal(6, lines.Length);
+        Assert.False(process.Stderr.Any(character => character is (< ' ' and not '\n' and not '\r') or '\u007f' or (>= '\u0080' and <= '\u009f')), "a control character reached the terminal");
     }
 }

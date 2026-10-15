@@ -187,4 +187,32 @@ public sealed class CastStoreTests : IDisposable
         Assert.Null(loaded.Architect.Model);
         Assert.Null(loaded.Architect.Tier);
     }
+
+    // A cast's `name` is its file name: `../../leak` saved under it landed outside `.claustrum/casts/`, where the architect's
+    // commit takes it onto the branch (2026-10-15, review of #127).
+    [Theory]
+    [InlineData("../leak")]
+    [InlineData("..")]
+    [InlineData(".")]
+    [InlineData("a/b")]
+    [InlineData("a\\b")]
+    [InlineData("c:evil")]
+    [InlineData(" padded")]
+    [InlineData("trailing ")]
+    [InlineData("")]
+    public void SaveRefusesANameThatIsNotAPlainFileNameAndWritesNothing(string name)
+    {
+        CastException refusal = Assert.Throws<CastException>(() => CastStore.Save(cwd, SampleCast(name)));
+
+        Assert.Contains("is not a plain file name", refusal.Message, StringComparison.Ordinal);
+        Assert.Empty(Directory.GetFileSystemEntries(cwd, "*", SearchOption.AllDirectories));
+    }
+
+    [Fact]
+    public void SaveStillAcceptsANameWithASpaceADotAndNonAsciiLetters()
+    {
+        CastStore.Save(cwd, SampleCast("sp ace.v2-café"));
+
+        Assert.Equal("sp ace.v2-café", CastStore.Load(cwd, "sp ace.v2-café").Name);
+    }
 }

@@ -1,3 +1,4 @@
+using Claustrum.Casts;
 using Claustrum.Cli;
 using Claustrum.Coordination;
 using Claustrum.Tests.Testing;
@@ -190,13 +191,39 @@ public sealed class ArchitectWorktreeTests : IDisposable
         Assert.Empty(await ReadyAsync());
     }
 
+    // The ignore probe asks about the cast actually used, not always `default.json` (2026-10-15, review of #127): a rule for the
+    // default cast alone used to make every other cast look covered, and the architect's `git add -A` committed the copy it was handed.
     [Fact]
-    public async Task AnIgnoredCastIsRefusedWhenNoRuleIgnoresTheCastsDirectoryAsync()
+    public async Task ARuleThatIgnoresOnlyTheDefaultCastDoesNotCoverAnotherCastAsync()
+    {
+        CommitIgnore(IsolatedRepo.MachineryIgnoreRules + ".claustrum/casts/default.json\n");
+        WriteCast("other");
+
+        Assert.Contains(CastWithoutRule("other", "untracked"), await RefusalAsync("other"), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ARuleThatIgnoresTheCastUsedAcceptsItEvenWhenOnlyThatFileIsNamedAsync()
     {
         CommitIgnore(IsolatedRepo.MachineryIgnoreRules + ".claustrum/casts/other.json\n");
         WriteCast("other");
 
-        Assert.Contains(CastWithoutRule("other", "ignored"), await RefusalAsync("other"), StringComparison.Ordinal);
+        Assert.Empty(await ReadyAsync("other"));
+    }
+
+    // CastStore.Save refuses a cast name that would leave `.claustrum/casts/`; the readiness check refuses the same name first.
+    [Theory]
+    [InlineData("../leak")]
+    [InlineData("a/b")]
+    [InlineData("a\\b")]
+    [InlineData("..")]
+    [InlineData("")]
+    public async Task ACastNameThatIsNotAPlainFileNameIsRefusedBeforeAnyGitProbeAsync(string castName)
+    {
+        CastException refusal = await Assert.ThrowsAsync<CastException>(() => ReadyAsync(castName));
+
+        Assert.Contains("is not a plain file name", refusal.Message, StringComparison.Ordinal);
+        Assert.Empty(ProbeDirectories());
     }
 
     // IsolatedRepo's own default: the whole of `.claustrum/` ignored. That is a rule ignoring `.claustrum/casts/`, so an ignored
