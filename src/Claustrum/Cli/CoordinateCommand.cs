@@ -49,7 +49,8 @@ public static class CoordinateCommand
             string? streamValue = parseResult.GetValue(stream);
             bool streamMode = parseResult.GetResult(stream) is not null;
             bool streamRaw = streamValue == "raw";
-            await ExecuteAsync(
+            // A block lambda that only awaited dropped the exit code: every run exited 0 (2026-10-15, 72 tests).
+            return await ExecuteAsync(
                 parseResult.GetValue(cast),
                 parseResult.GetValue(issues),
                 parseResult.GetValue(brief),
