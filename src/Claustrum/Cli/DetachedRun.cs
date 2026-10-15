@@ -62,6 +62,28 @@ internal static class DetachedRun
         return RunCommand.Present(job.SynthesizedReceipt(RunStatus.Cancelled, error), ExitCodes.Cancelled, jsonMode, rawMode, printedWarnings);
     }
 
+    // live.json says done before Runner has written result.json: the receipt is polled for while the host lives, and for a short grace
+    // after it exits. One read synthesized a "failed" receipt for a cancelled job on macOS CI (2026-10-15).
+    private static RunResult? AwaitResult(LiveJob job)
+    {
+        DateTimeOffset giveUp = DateTimeOffset.UtcNow.AddSeconds(30);
+        DateTimeOffset? hostGoneAt = null;
+        while (true)
+        {
+            if (job.ReadResult() is { } result)
+                return result;
+
+            DateTimeOffset now = DateTimeOffset.UtcNow;
+            if (job.ReadHost() is not { } host || !host.IsAlive())
+                hostGoneAt ??= now;
+
+            if (now >= giveUp || now - hostGoneAt > TimeSpan.FromSeconds(3))
+                return null;
+
+            Thread.Sleep(100);
+        }
+    }
+
     private static int Report(LiveJob job, JobWaitResult seen, bool jsonMode, bool rawMode, string[] printedWarnings)
     {
         if (seen is { State: "waiting_for_input", Question: { } question })
@@ -92,7 +114,7 @@ internal static class DetachedRun
             return RunCommand.Present(job.SynthesizedReceipt(RunStatus.Failed, $"{LiveJob.AbandonedMessage} (job {job.Id})"), ExitCodes.Abandoned, jsonMode, rawMode, printedWarnings);
         }
 
-        if (job.ReadResult() is not { } result)
+        if (AwaitResult(job) is not { } result)
         {
             string unreadable = $"job {job.Id} ended with no readable result.json";
             if (!jsonMode)
