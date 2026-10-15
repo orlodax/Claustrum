@@ -83,6 +83,17 @@ cleanup() { rm -rf "$work"; }
 trap cleanup EXIT
 mkdir -p "$tmp" "$outputs"
 
+# Since #122 the gated commands refuse a machine with no user config. The init rows run against a
+# throwaway HOME so they never write the developer's real ~/.config/claustrum/config.json; every
+# later row (paid, needs the real HOME's backend credentials) finds a committed repo claustrum.json
+# instead, which counts as initialized.
+smoke_home="$work/home"
+smoke_answers="$work/answers.json"
+mkdir -p "$smoke_home"
+cat > "$smoke_answers" <<'JSON'
+{"frontier-reasoning":"claude:opus","frontier-coding":"claude:opus","standard-coding":"claude:sonnet","cheap-coding":"claude:haiku","fast":"claude:haiku"}
+JSON
+
 (
     cd "$tmp"
     git init -q
@@ -163,13 +174,15 @@ check_all_doctors() {
 check_init() {
     local output exit_code entry
     local missing=()
-    output="$(cd "$tmp" && "$claustrum_bin" init 2>&1)"
+    output="$(cd "$tmp" && HOME="$smoke_home" "$claustrum_bin" init --answers "$smoke_answers" 2>&1)"
     exit_code=$?
 
-    [ -f "$tmp/claustrum.json" ] || missing+=("claustrum.json")
+    # init writes the aliases to the user config and never a repo claustrum.json (#122).
+    [ -f "$smoke_home/.config/claustrum/config.json" ] || missing+=("user config")
+    [ ! -e "$tmp/claustrum.json" ] || missing+=("claustrum.json must not be written")
     [ -d "$tmp/.claustrum/casts" ] || missing+=(".claustrum/casts/")
     [ -f "$tmp/.claude/agents/builder.md" ] || missing+=(".claude/agents/builder.md")
-    for entry in ".claustrum/worktrees/" ".claustrum/locks/" ".claustrum/briefs/"; do
+    for entry in ".claustrum/casts/" ".claustrum/worktrees/" ".claustrum/locks/" ".claustrum/briefs/"; do
         grep -qF "$entry" "$tmp/.gitignore" 2>/dev/null || missing+=(".gitignore lacks $entry")
     done
 
@@ -187,11 +200,11 @@ snapshot_repo() {
 check_init_rerun() {
     local before after output exit_code unchanged=no up_to_date=no snapshot=identical
     before="$(snapshot_repo)"
-    output="$(cd "$tmp" && "$claustrum_bin" init 2>&1)"
+    output="$(cd "$tmp" && HOME="$smoke_home" "$claustrum_bin" init --answers "$smoke_answers" 2>&1)"
     exit_code=$?
     after="$(snapshot_repo)"
 
-    printf '%s\n' "$output" | grep -q "already present, left unchanged" && unchanged=yes
+    printf '%s\n' "$output" | grep -q "claustrum.json: not written" && unchanged=yes
     printf '%s\n' "$output" | grep -q "already up to date" && up_to_date=yes
     [ "$before" = "$after" ] || snapshot=differs
 
@@ -464,9 +477,20 @@ JSON
     fi
 }
 
+# Initializes the machine for the rows that follow, which run with the real HOME. Committed, so the
+# tree stays clean for the isolated and coordinated rows.
+seed_repo_config() {
+    cat > "$tmp/claustrum.json" <<'JSON'
+{"models":{"frontier-reasoning":"claude:opus","frontier-coding":"claude:opus","standard-coding":"claude:sonnet","cheap-coding":"claude:haiku","fast":"claude:haiku"}}
+JSON
+    git -C "$tmp" add -A
+    git -C "$tmp" commit -q -m "smoke: init output and repo config"
+}
+
 check_all_doctors
 check_init
 check_init_rerun
+seed_repo_config
 check_all_runs
 check_max_parallel
 check_coordinate

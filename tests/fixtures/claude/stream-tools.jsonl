@@ -1,0 +1,8 @@
+{"type":"system","subtype":"init","cwd":"/work/repo","session_id":"769cd518-1e5e-4e42-ab2b-7fb32a63536a","model":"claude-haiku-4-5-20251001"}
+{"type":"assistant","message":{"model":"claude-haiku-4-5-20251001","role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Edit","input":{"file_path":"/work/repo/src/a.cs","old_string":"x","new_string":"y"}}]},"session_id":"769cd518-1e5e-4e42-ab2b-7fb32a63536a","timestamp":"2026-10-15T09:00:00.000Z"}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"The file /work/repo/src/a.cs has been updated."}]},"session_id":"769cd518-1e5e-4e42-ab2b-7fb32a63536a"}
+{"type":"assistant","message":{"model":"claude-haiku-4-5-20251001","role":"assistant","content":[{"type":"tool_use","id":"toolu_2","name":"Bash","input":{"command":"dotnet build"}}]},"session_id":"769cd518-1e5e-4e42-ab2b-7fb32a63536a","timestamp":"2026-10-15T09:00:01.000Z"}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_2","is_error":true,"content":"Exit code 1\nerror CS1002: ; expected"}]},"session_id":"769cd518-1e5e-4e42-ab2b-7fb32a63536a"}
+{"type":"assistant","message":{"model":"claude-haiku-4-5-20251001","role":"assistant","content":[{"type":"text","text":"The build\nfailed on a missing semicolon."}]},"session_id":"769cd518-1e5e-4e42-ab2b-7fb32a63536a","timestamp":"2026-10-15T09:00:02.000Z"}
+{"type":"rate_limit_event","rate_limit_info":{"status":"allowed"},"session_id":"769cd518-1e5e-4e42-ab2b-7fb32a63536a"}
+{"type":"result","subtype":"success","is_error":false,"result":"The build failed on a missing semicolon.","session_id":"769cd518-1e5e-4e42-ab2b-7fb32a63536a","total_cost_usd":0.0123,"usage":{"input_tokens":10,"output_tokens":4}}

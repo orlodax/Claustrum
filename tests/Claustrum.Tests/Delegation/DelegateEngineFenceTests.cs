@@ -155,9 +155,9 @@ public sealed class DelegateEngineFenceTests(AppServicesHomeFixture fixture) : I
             "default", "1.0.0", new CastArchitect("host"),
             new Dictionary<string, CastRoleEntry?> { ["builder"] = new CastRoleEntry(Model: null, Backend: "claude", Tier: null, MaxParallel: 2) },
             BudgetUsd: 5.00m));
-        (string tier, ConfigOverrides overrides, CastBudget? castBudget, int? maxParallel, string? castName) =
+        CastApplicationResult applied =
             CastApplication.Resolve(repo.Repo, "builder", castName: null, tierFlag: null, new ConfigOverrides(Backend: "claude", TimeoutSeconds: 60));
-        DelegateRequest request = Request(maxParallel: maxParallel) with { Tier = tier, Overrides = overrides, CastBudget = castBudget, CastName = castName };
+        DelegateRequest request = Request(maxParallel: applied.MaxParallel) with { Tier = applied.Tier, Overrides = applied.Overrides, CastBudget = applied.CastBudget, CastName = applied.CastName };
         string key = RoleConcurrencyGate.KeyFor("default", "builder");
 
         await using RoleConcurrencyGate first = await RoleConcurrencyGate.AcquireAsync(repo.Repo, key, 2, TimeSpan.FromSeconds(5), Ct);

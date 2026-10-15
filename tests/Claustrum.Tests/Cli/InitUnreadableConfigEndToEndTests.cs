@@ -10,7 +10,7 @@ namespace Claustrum.Tests.Cli;
 // first and the command fails with the same words on stderr. POSIX modes only; skipped for an account a mode does not stop (root).
 public sealed class InitUnreadableConfigEndToEndTests : IDisposable
 {
-    private readonly ClaustrumCli cli = new();
+    private readonly ClaustrumCli cli = ClaustrumCli.Initialized();
     private string? locked;
 
     public void Dispose()

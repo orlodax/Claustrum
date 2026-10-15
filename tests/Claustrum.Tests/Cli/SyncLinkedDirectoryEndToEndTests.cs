@@ -20,7 +20,7 @@ public sealed partial class SyncLinkedDirectoryEndToEndTests : IDisposable
     private static readonly StringComparison pathComparison =
         OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
 
-    private readonly ClaustrumCli cli = new();
+    private readonly ClaustrumCli cli = ClaustrumCli.Initialized();
     private readonly string scratch = Directory.CreateTempSubdirectory("claustrum-linked-dir-e2e-").FullName;
     private readonly string outside;
 

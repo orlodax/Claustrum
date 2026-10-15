@@ -11,7 +11,7 @@ public sealed class PipeStandInEndToEndTests : IDisposable
 {
     private const string RefusedHeader = "refused (sync never writes through a link that leaves the repo, nor into a pipe, socket or device):";
 
-    private readonly ClaustrumCli cli = new();
+    private readonly ClaustrumCli cli = ClaustrumCli.Initialized();
 
     public void Dispose() => cli.Dispose();
 
@@ -73,7 +73,7 @@ public sealed class PipeStandInEndToEndTests : IDisposable
         Assert.Equal(ExitCodes.Usage, result.ExitCode);
         Assert.Contains($"{name}: refused (", stdout, StringComparison.Ordinal);
         Assert.Contains("not a regular file", stdout, StringComparison.Ordinal);
-        Assert.True(File.Exists(Path.Combine(cli.Cwd, "claustrum.json")), "the config step completes");
+        Assert.Contains("claustrum.json: not written", stdout, StringComparison.Ordinal);
         Assert.True(Directory.Exists(Path.Combine(cli.Cwd, ".claustrum", "casts")), "the scaffold step completes");
         Assert.NotNull(StillAPipe(path));
     }
@@ -161,7 +161,8 @@ public sealed class PipeStandInEndToEndTests : IDisposable
         string stdout = Lf(result.Stdout);
         Assert.Equal(ExitCodes.Usage, result.ExitCode);
         Assert.Contains("refused (outside the repo, or a pipe, socket or device)", stdout, StringComparison.Ordinal);
-        Assert.True(File.Exists(Path.Combine(cli.Cwd, "claustrum.json")));
+        Assert.False(File.Exists(Path.Combine(cli.Cwd, "claustrum.json")), "init writes no repo claustrum.json (#122)");
+        Assert.True(File.Exists(Path.Combine(cli.Cwd, ".gitignore")), "the gitignore step completes");
         Assert.NotNull(StillAPipe(Path.Combine(cli.Cwd, ".mcp.json")));
     }
 

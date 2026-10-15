@@ -418,23 +418,23 @@ public sealed class DelegateEngineTests(AppServicesHomeFixture fixture) : IDispo
 
     private static DelegateRequest CastRequest(string atCwd, ConfigOverrides overrides)
     {
-        (string tier, ConfigOverrides resolvedOverrides, CastBudget? castBudget, int? maxParallel, string? castName) =
+        CastApplicationResult applied =
             CastApplication.Resolve(atCwd, "builder", castName: null, tierFlag: null, overrides);
 
         return new DelegateRequest(
             Role: "builder",
             Brief: "hi",
             Cwd: atCwd,
-            Tier: tier,
-            Overrides: resolvedOverrides,
+            Tier: applied.Tier,
+            Overrides: applied.Overrides,
             ResumeSession: null,
             AttachFiles: [],
             Env: [],
             Stream: false,
             DiffCapBytes: 64 * 1024,
-            CastBudget: castBudget,
-            MaxParallel: maxParallel,
-            CastName: castName);
+            CastBudget: applied.CastBudget,
+            MaxParallel: applied.MaxParallel,
+            CastName: applied.CastName);
     }
 
     private static void SaveCast(string atCwd, decimal? budgetUsd, int maxParallel) => CastStore.Save(atCwd, new Cast(

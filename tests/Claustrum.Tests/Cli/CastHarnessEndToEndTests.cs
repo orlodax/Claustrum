@@ -15,7 +15,7 @@ public sealed class CastHarnessEndToEndTests : IDisposable
     // builder, code-reviewer, demo-author, tester, ui-reviewer, builder_max_parallel, budget.
     private const string AllSupportedAnswers = "host\nclaude:opus\nnot needed\nnot needed\nclaude:sonnet\nclaude:sonnet\n2\n10\n";
 
-    private readonly ClaustrumCli cli = new();
+    private readonly ClaustrumCli cli = ClaustrumCli.Initialized();
     private readonly string emptyPath;
 
     public CastHarnessEndToEndTests() => emptyPath = Directory.CreateDirectory(Path.Combine(cli.Home, "empty-path")).FullName;

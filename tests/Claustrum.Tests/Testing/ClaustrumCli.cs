@@ -19,12 +19,26 @@ public sealed class ClaustrumCli(string cwdPrefix = "claustrum-cli-") : IDisposa
     /// <summary>A temp directory named after the constructor's prefix, which may hold a space or non-ASCII characters on purpose.</summary>
     public string Cwd { get; } = Directory.CreateTempSubdirectory(cwdPrefix).FullName;
 
+    /// <summary>A child on a machine a developer has already set up: <see cref="WriteUserConfig"/> has run, so the gated commands (#122) start.</summary>
+    public static ClaustrumCli Initialized(string cwdPrefix = "claustrum-cli-")
+    {
+        ClaustrumCli cli = new(cwdPrefix);
+        cli.WriteUserConfig();
+        return cli;
+    }
+
     public string Home { get; } = Directory.CreateTempSubdirectory("claustrum-cli-home-").FullName;
 
     /// <summary>Where a job would be minted; absent until some run creates one.</summary>
     public string JobsDirectory => Path.Combine(Home, "jobs");
 
     public string CastsDirectory => Path.Combine(Cwd, ".claustrum", "casts");
+
+    /// <summary>Where this child's user config lives (HOME, and APPDATA on Windows, are both <see cref="Home"/>); absent until <see cref="WriteUserConfig"/>.</summary>
+    public string UserConfigPath => UserConfig.PathFor(Home);
+
+    /// <summary>Gives the child a user config (#122), so the commands that refuse an uninitialized machine run; every alias is answered unless <paramref name="json"/> says otherwise.</summary>
+    public string WriteUserConfig(string json = UserConfig.Complete) => UserConfig.Write(Home, json);
 
     public void Dispose()
     {

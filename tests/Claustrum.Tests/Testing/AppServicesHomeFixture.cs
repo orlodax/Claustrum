@@ -9,6 +9,8 @@ namespace Claustrum.Tests.Testing;
 // a test in one class see the other class's mutation of this shared mutable static mid-flight.
 public sealed class AppServicesHomeFixture : IDisposable
 {
+    public string UserConfigPath => UserConfig.PathFor(HomeDirectory);
+
     public string HomeDirectory { get; } = Directory.CreateTempSubdirectory("claustrum-appservices-home-").FullName;
 
     // Exposed so a test can set e.g. Platform.Environment["CLAUSTRUM_PARENT_JOB"] for its own
@@ -20,6 +22,10 @@ public sealed class AppServicesHomeFixture : IDisposable
     public AppServicesHomeFixture()
     {
         Platform = new HomeRedirectPlatform(HomeDirectory);
+
+        // #122: run/delegate/coordinate/cast refuse a machine with neither a user config nor a repo claustrum.json; this home is
+        // a developer's, initialized, so a test with no claustrum.json of its own still gets a model. UninitializedMachine swaps it out.
+        UserConfig.Write(HomeDirectory);
         AppServices.OverrideForTests(Platform);
     }
 

@@ -12,7 +12,7 @@ public sealed class CastLinkEndToEndTests : IDisposable
     private const string Refusal = "resolves outside the working directory";
     private const string AllSupportedAnswers = "host\nclaude:opus\nnot needed\nnot needed\nclaude:sonnet\nclaude:sonnet\n2\n10\n";
 
-    private readonly ClaustrumCli cli = new();
+    private readonly ClaustrumCli cli = ClaustrumCli.Initialized();
     private readonly CastLinkFixture links;
     private readonly string emptyPath;
 

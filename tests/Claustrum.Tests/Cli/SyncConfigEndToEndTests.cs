@@ -10,7 +10,7 @@ public sealed class SyncConfigEndToEndTests : IDisposable
 {
     private const string Cycle = /*lang=json,strict*/ """{"models":{"frontier-coding":"a","a":"frontier-coding"}}""";
 
-    private readonly ClaustrumCli cli = new();
+    private readonly ClaustrumCli cli = ClaustrumCli.Initialized();
     private readonly string emptyPath;
 
     public SyncConfigEndToEndTests()

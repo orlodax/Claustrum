@@ -75,7 +75,15 @@ public sealed class ArchitectWorktreeTests : IDisposable
 
     // ---- the committed-files check: cast and claustrum.json --------------------------------------------------
 
-    public static TheoryData<string> CommittedFiles => ["claustrum.json", ".claustrum/casts/default.json"];
+    public static TheoryData<string> CommittedFiles => ["claustrum.json"];
+
+    private const string CastsRule = ".claustrum/casts/\n";
+
+    // The cast is judged apart from the other files (#122): tracked it is committed like any file; untracked it is per-developer.
+    private static string TrackedCastRefusal(string castName) => $"{castName}.json (uncommitted changes — commit it first)";
+
+    private static string CastWithoutRule(string castName, string state) =>
+        $"the cast '{castName}' is {state}, but no committed .gitignore rule ignores .claustrum/casts/; run `claustrum init` and commit .gitignore first";
 
     [Theory]
     [MemberData(nameof(CommittedFiles))]
@@ -107,43 +115,99 @@ public sealed class ArchitectWorktreeTests : IDisposable
         Assert.Contains($"commit (or un-ignore) {file} (uncommitted changes) first", await RefusalAsync(), StringComparison.Ordinal);
     }
 
+    // ---- the cast's own check (#122) ------------------------------------------------------------------------------
+
+    [Fact]
+    public async Task ATrackedDirtyCastIsRefusedWhateverTheIgnoreRulesSayAsync()
+    {
+        File.AppendAllText(At(".claustrum", "casts", "default.json"), "\n");
+        Assert.Contains(TrackedCastRefusal("default"), await RefusalAsync(), StringComparison.Ordinal);
+
+        CommitIgnore(IsolatedRepo.MachineryIgnoreRules + CastsRule);
+        Assert.Contains(TrackedCastRefusal("default"), await RefusalAsync(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ATrackedCastDeletedOrStagedButNeverCommittedIsRefusedAsync()
+    {
+        File.AppendAllText(At(".claustrum", "casts", "default.json"), "\n");
+        repo.Git("add", ".claustrum/casts/default.json");
+        Assert.Contains(TrackedCastRefusal("default"), await RefusalAsync(), StringComparison.Ordinal);
+
+        repo.Git("reset", "-q", "--hard");
+        File.Delete(At(".claustrum", "casts", "default.json"));
+        Assert.Contains(TrackedCastRefusal("default"), await RefusalAsync(), StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task ACastStagedAsNewButNeverCommittedIsRefusedAsync()
     {
         WriteCast("other");
         repo.Git("add", ".claustrum/casts/other.json");
 
-        Assert.Contains("commit (or un-ignore) .claustrum/casts/other.json (uncommitted changes) first", await RefusalAsync("other"), StringComparison.Ordinal);
+        Assert.Contains(TrackedCastRefusal("other"), await RefusalAsync("other"), StringComparison.Ordinal);
+    }
+
+    // Regression F1 (2026-10-15): the polarity was inverted — a cast WITH the committed casts rule was refused as "no rule".
+    [Fact]
+    public async Task AnUntrackedCastWithACommittedCastsIgnoreRuleIsAcceptedAsync()
+    {
+        CommitIgnore(IsolatedRepo.MachineryIgnoreRules + CastsRule);
+        WriteCast("other");
+
+        Assert.Empty(await ReadyAsync("other"));
     }
 
     [Fact]
-    public async Task AnUntrackedCastIsRefusedAsync()
+    public async Task AnUntrackedCastWithoutTheRuleIsRefusedNamingInitAsync()
     {
         WriteCast("other");
 
-        Assert.Contains("commit (or un-ignore) .claustrum/casts/other.json (untracked) first", await RefusalAsync("other"), StringComparison.Ordinal);
+        string message = await RefusalAsync("other");
+
+        Assert.Contains(CastWithoutRule("other", "untracked"), message, StringComparison.Ordinal);
+        Assert.Contains(CommitFirst, message, StringComparison.Ordinal);
+    }
+
+    // The rule has to be COMMITTED: the worktree is cut from HEAD, and its own `git add -A` sees HEAD's .gitignore.
+    [Fact]
+    public async Task AnUntrackedCastWhoseCastsIgnoreRuleIsOnlyInTheWorkingTreeIsRefusedAsync()
+    {
+        File.WriteAllText(At(".gitignore"), IsolatedRepo.MachineryIgnoreRules + CastsRule);
+        WriteCast("other");
+
+        string message = await RefusalAsync("other");
+
+        Assert.Contains(".gitignore (uncommitted changes", message, StringComparison.Ordinal);
+    }
+
+    // Regression F2 (2026-10-15): a cast tracked and clean needs no rule, so a repo with an old .gitignore (no casts line) stays ready.
+    [Fact]
+    public async Task ATrackedCleanCastWithAnOldGitignoreIsAcceptedAsync()
+    {
+        Assert.DoesNotContain(".claustrum/casts/", File.ReadAllText(At(".gitignore")), StringComparison.Ordinal);
+
+        Assert.Empty(await ReadyAsync());
     }
 
     [Fact]
-    public async Task AnIgnoredCastIsRefusedAsync()
+    public async Task AnIgnoredCastIsRefusedWhenNoRuleIgnoresTheCastsDirectoryAsync()
     {
         CommitIgnore(IsolatedRepo.MachineryIgnoreRules + ".claustrum/casts/other.json\n");
         WriteCast("other");
 
-        Assert.Contains("commit (or un-ignore) .claustrum/casts/other.json (ignored) first", await RefusalAsync("other"), StringComparison.Ordinal);
+        Assert.Contains(CastWithoutRule("other", "ignored"), await RefusalAsync("other"), StringComparison.Ordinal);
     }
 
-    // IsolatedRepo's own default: the whole of `.claustrum/` ignored, which hides the cast the worktree needs.
+    // IsolatedRepo's own default: the whole of `.claustrum/` ignored. That is a rule ignoring `.claustrum/casts/`, so an ignored
+    // cast is accepted (it is per-developer; the architect's worktree is handed a copy) — before #122 it was refused as "(ignored)".
     [Fact]
-    public async Task ARepositoryThatIgnoresAllOfDotClaustrumRefusesItsCastAsIgnoredAsync()
+    public async Task ARepositoryThatIgnoresAllOfDotClaustrumAcceptsItsIgnoredCastAsync()
     {
         using IsolatedRepo wide = new();
         wide.WriteCast(maxParallel: null);
 
-        CliUsageException refusal = await Assert.ThrowsAsync<CliUsageException>(
-            () => ArchitectWorktree.RequireReadyAsync(wide.Repo, wide.Repo, "default", Ct));
-
-        Assert.Contains("commit (or un-ignore) .claustrum/casts/default.json (ignored) first", refusal.Message, StringComparison.Ordinal);
+        Assert.Empty(await ArchitectWorktree.RequireReadyAsync(wide.Repo, wide.Repo, "default", Ct));
     }
 
     [Fact]
@@ -193,7 +257,7 @@ public sealed class ArchitectWorktreeTests : IDisposable
         WriteCast("other");
         Assert.Equal("", repo.Git("status", "--porcelain"));
 
-        Assert.Contains("commit (or un-ignore) .claustrum/casts/other.json (untracked) first", await RefusalAsync("other"), StringComparison.Ordinal);
+        Assert.Contains(CastWithoutRule("other", "untracked"), await RefusalAsync("other"), StringComparison.Ordinal);
     }
 
     [Fact]
@@ -202,8 +266,8 @@ public sealed class ArchitectWorktreeTests : IDisposable
         WriteCast("sp ace");
         WriteCast("café");
 
-        Assert.Contains("commit (or un-ignore) .claustrum/casts/sp ace.json (untracked) first", await RefusalAsync("sp ace"), StringComparison.Ordinal);
-        Assert.Contains("commit (or un-ignore) .claustrum/casts/café.json (untracked) first", await RefusalAsync("café"), StringComparison.Ordinal);
+        Assert.Contains(CastWithoutRule("sp ace", "untracked"), await RefusalAsync("sp ace"), StringComparison.Ordinal);
+        Assert.Contains(CastWithoutRule("café", "untracked"), await RefusalAsync("café"), StringComparison.Ordinal);
     }
 
     // A cast name is the caller's text: asked to git as a pathspec it would be a glob, and `--cast 'o*'` would be judged by
@@ -220,7 +284,7 @@ public sealed class ArchitectWorktreeTests : IDisposable
         File.AppendAllText(At(".claustrum", "casts", "other.json"), "\n");
 
         Assert.Empty(await ReadyAsync("o*"));
-        Assert.Contains("commit (or un-ignore) .claustrum/casts/other.json (uncommitted changes) first", await RefusalAsync("other"), StringComparison.Ordinal);
+        Assert.Contains(TrackedCastRefusal("other"), await RefusalAsync("other"), StringComparison.Ordinal);
     }
 
     // ---- the committed-files check: .claustrum/roles ----------------------------------------------------------

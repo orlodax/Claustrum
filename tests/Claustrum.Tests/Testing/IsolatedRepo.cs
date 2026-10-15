@@ -27,6 +27,8 @@ public sealed class IsolatedRepo : IDisposable
     public IsolatedRepo(string gitignore = ".claustrum/\n", string directoryPrefix = "claustrum-cli-")
     {
         cli = new ClaustrumCli(directoryPrefix);
+        // #122: the machine is initialized the way a developer's is, and every alias is answered so no run warns about a built-in.
+        cli.WriteUserConfig();
         fakeDirectory = Directory.CreateDirectory(Path.Combine(cli.Home, "fake")).FullName;
         TestGit.Init(Repo);
         // A developer's global excludes file must not decide what these repositories ignore.

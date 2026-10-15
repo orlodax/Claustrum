@@ -1,0 +1,71 @@
+{
+  "info": {
+    "id": "ses_f35a1b513ffeMTNgfaAtjYaIl6",
+    "slug": "claustrum-fixture",
+    "title": "Reply with ok",
+    "cost": 0.0932,
+    "tokens": {
+      "input": 1200,
+      "output": 340,
+      "reasoning": 20,
+      "cache": {
+        "read": 5000,
+        "write": 100
+      }
+    },
+    "time": {
+      "created": 1790101575000,
+      "updated": 1790101582000
+    }
+  },
+  "messages": [
+    {
+      "info": {
+        "id": "msg_1",
+        "role": "user",
+        "sessionID": "ses_f35a1b513ffeMTNgfaAtjYaIl6"
+      },
+      "parts": [
+        {
+          "id": "prt_u1",
+          "type": "text",
+          "text": "Reply with the word ok."
+        }
+      ]
+    },
+    {
+      "info": {
+        "id": "msg_2",
+        "role": "assistant",
+        "sessionID": "ses_f35a1b513ffeMTNgfaAtjYaIl6",
+        "cost": 0.0932,
+        "tokens": {
+          "input": 1200,
+          "output": 340,
+          "reasoning": 20,
+          "cache": {
+            "read": 5000,
+            "write": 100
+          }
+        }
+      },
+      "parts": [
+        {
+          "id": "prt_a1",
+          "type": "step-start"
+        },
+        {
+          "id": "prt_a2",
+          "type": "text",
+          "text": "ok"
+        },
+        {
+          "id": "prt_a3",
+          "type": "step-finish",
+          "reason": "stop",
+          "cost": 0.0932
+        }
+      ]
+    }
+  ]
+}

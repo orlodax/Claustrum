@@ -15,6 +15,9 @@ public sealed class CoordinateEndToEndTests : IDisposable
     private readonly string cwd = Directory.CreateTempSubdirectory("claustrum-coordinate-e2e-").FullName;
     private readonly string home = Directory.CreateTempSubdirectory("claustrum-coordinate-e2e-home-").FullName;
 
+    // #122: a developer's machine, set up once; the uninitialized refusal has its own class.
+    public CoordinateEndToEndTests() => UserConfig.Write(home);
+
     public void Dispose()
     {
         TempTree.Delete(cwd);

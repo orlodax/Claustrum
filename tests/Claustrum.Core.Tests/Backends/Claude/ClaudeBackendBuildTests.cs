@@ -39,7 +39,7 @@ public sealed class ClaudeBackendBuildTests
 
         Assert.Equal(
         [
-            "-p", "--output-format", "json", "--model", "sonnet",
+            "-p", "--output-format", "stream-json", "--verbose", "--model", "sonnet",
             "--append-system-prompt-file", "/job/system.md",
             "--permission-mode", "plan", "--permission-prompts", "none",
             "--allowedTools", "Read,Glob,Grep,Bash(git diff*),Bash(git log*),Bash(git show*),Bash(git status*),Bash(gh pr *),Bash(gh issue *)",
@@ -65,7 +65,7 @@ public sealed class ClaudeBackendBuildTests
 
         Assert.Equal(
         [
-            "-p", "--output-format", "json", "--model", "sonnet",
+            "-p", "--output-format", "stream-json", "--verbose", "--model", "sonnet",
             "--append-system-prompt-file", "/job/system.md",
             "--permission-mode", "acceptEdits", "--permission-prompts", "none",
             "--disallowedTools", "Bash",
@@ -81,7 +81,7 @@ public sealed class ClaudeBackendBuildTests
 
         Assert.Equal(
         [
-            "-p", "--output-format", "json", "--model", "sonnet",
+            "-p", "--output-format", "stream-json", "--verbose", "--model", "sonnet",
             "--append-system-prompt-file", "/job/system.md",
             "--permission-mode", "acceptEdits", "--permission-prompts", "none",
             "--allowedTools", "Edit,Write,Read,Glob,Grep,Bash(*)",
@@ -159,7 +159,7 @@ public sealed class ClaudeBackendBuildTests
 
         Assert.Equal(
         [
-            "-p", "--output-format", "json", "--model", "sonnet",
+            "-p", "--output-format", "stream-json", "--verbose", "--model", "sonnet",
             "--append-system-prompt-file", "/job/system.md",
             "--dangerously-skip-permissions", "--permission-prompts", "none",
             "--no-session-persistence",
@@ -237,11 +237,12 @@ public sealed class ClaudeBackendBuildTests
     }
 
     [Fact]
-    public void NonStreamingUsesPlainJsonFormat()
+    public void NonStreamingStillUsesStreamJsonSoJobsFollowHasEventsToRead()
     {
+        // 2026-10-15 (#123): --stream only gates the stderr echo; the argv is stream-json either way.
         ProcessSpec spec = backend.Build(MakeRun(new PermissionPolicy(PermissionLevel.Full, []), stream: false));
 
-        Assert.Equal(["-p", "--output-format", "json"], spec.Args[..3]);
+        Assert.Equal(["-p", "--output-format", "stream-json", "--verbose"], spec.Args[..4]);
     }
 
     // #68: the brief rides on stdin, so it shows in no process listing (a tester's `pgrep -f` pattern
@@ -314,7 +315,7 @@ public sealed class ClaudeBackendBuildTests
 
         Assert.Equal(
         [
-            "-p", "--output-format", "json", "--model", "sonnet",
+            "-p", "--output-format", "stream-json", "--verbose", "--model", "sonnet",
             "--append-system-prompt-file", "/job/system.md",
             "--permission-mode", "plan", "--permission-prompts", "none",
             "--allowedTools", "Read,Glob,Grep,Bash(git diff*),Bash(git log*),Bash(git show*),Bash(git status*),Bash(gh pr *),Bash(gh issue *)",
@@ -331,7 +332,7 @@ public sealed class ClaudeBackendBuildTests
 
         Assert.Equal(
         [
-            "-p", "--output-format", "json", "--model", "sonnet",
+            "-p", "--output-format", "stream-json", "--verbose", "--model", "sonnet",
             "--append-system-prompt-file", "/job/system.md",
             "--permission-mode", "plan", "--permission-prompts", "none",
             "--disallowedTools", "Edit,Write,NotebookEdit",
@@ -348,7 +349,7 @@ public sealed class ClaudeBackendBuildTests
 
         Assert.Equal(
         [
-            "-p", "--output-format", "json", "--model", "sonnet",
+            "-p", "--output-format", "stream-json", "--verbose", "--model", "sonnet",
             "--append-system-prompt-file", "/job/system.md",
             "--permission-mode", "acceptEdits", "--permission-prompts", "none",
             "--disallowedTools", "Bash",
@@ -365,7 +366,7 @@ public sealed class ClaudeBackendBuildTests
 
         Assert.Equal(
         [
-            "-p", "--output-format", "json", "--model", "sonnet",
+            "-p", "--output-format", "stream-json", "--verbose", "--model", "sonnet",
             "--append-system-prompt-file", "/job/system.md",
             "--permission-mode", "acceptEdits", "--permission-prompts", "none",
             "--allowedTools", "Edit,Write,Read,Glob,Grep,Bash(*)",
@@ -382,7 +383,7 @@ public sealed class ClaudeBackendBuildTests
 
         Assert.Equal(
         [
-            "-p", "--output-format", "json", "--model", "sonnet",
+            "-p", "--output-format", "stream-json", "--verbose", "--model", "sonnet",
             "--append-system-prompt-file", "/job/system.md",
             "--dangerously-skip-permissions", "--permission-prompts", "none",
             "--disallowedTools", "Agent,Task",
@@ -401,7 +402,7 @@ public sealed class ClaudeBackendBuildTests
 
         Assert.Equal(
         [
-            "-p", "--output-format", "json", "--model", "sonnet",
+            "-p", "--output-format", "stream-json", "--verbose", "--model", "sonnet",
             "--append-system-prompt-file", "/job/system.md",
             "--dangerously-skip-permissions", "--permission-prompts", "none",
             "--disallowedTools", "Agent,Task",

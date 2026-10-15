@@ -48,7 +48,7 @@ public sealed class RunCapEndToEndTests : IDisposable
     [Fact]
     public async Task ACapAboveOneInADirectoryWithNoRepositoryRunsInPlaceAtACapOfOneAndSaysSoEverywhereAsync()
     {
-        using ClaustrumCli plain = new();
+        using ClaustrumCli plain = ClaustrumCli.Initialized();
         Directory.CreateDirectory(plain.CastsDirectory);
         File.WriteAllText(Path.Combine(plain.CastsDirectory, "default.json"), /*lang=json,strict*/
             """{"name":"default","library":"1.0.0","architect":{"mode":"host"},"roles":{"builder":{"backend":"claude","max_parallel":2}},"budget_usd":null}""");

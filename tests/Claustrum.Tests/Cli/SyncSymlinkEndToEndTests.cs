@@ -11,7 +11,7 @@ public sealed class SyncSymlinkEndToEndTests : IDisposable
 {
     private static readonly string agentTail = Path.Combine(".claude", "agents", "builder.md");
 
-    private readonly ClaustrumCli cli = new();
+    private readonly ClaustrumCli cli = ClaustrumCli.Initialized();
     private readonly string outside = Directory.CreateTempSubdirectory("claustrum-symlink-target-").FullName;
 
     public void Dispose()

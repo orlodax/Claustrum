@@ -17,7 +17,7 @@ public sealed class HomeRedirectPlatform(string homeDirectory, IReadOnlyDictiona
 {
     private readonly RealPlatform real = new();
 
-    public Dictionary<string, string?> Environment { get; } = BuildEnvironment(extraEnvironment);
+    public Dictionary<string, string?> Environment { get; } = BuildEnvironment(homeDirectory, extraEnvironment);
 
     public ClaustrumOs Os => real.Os;
     public string HomeDirectory { get; } = homeDirectory;
@@ -38,10 +38,13 @@ public sealed class HomeRedirectPlatform(string homeDirectory, IReadOnlyDictiona
     public string ReadAllText(string path) => real.ReadAllText(path);
     public string? ReadRegularFileText(string path, out string? refusal) => real.ReadRegularFileText(path, out refusal);
 
-    private static Dictionary<string, string?> BuildEnvironment(IReadOnlyDictionary<string, string?>? extra)
+    private static Dictionary<string, string?> BuildEnvironment(string home, IReadOnlyDictionary<string, string?>? extra)
     {
         Dictionary<string, string?> environment = extra is null ? [] : new Dictionary<string, string?>(extra);
         environment.TryAdd("CLAUSTRUM_PARENT_JOB", null);
+
+        // The user config is %APPDATA%\claustrum\config.json on Windows: left to the real environment it would be the developer's own.
+        environment.TryAdd("APPDATA", home);
         return environment;
     }
 }
