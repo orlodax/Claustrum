@@ -10,7 +10,7 @@ public static class ExitCodes
     public const int Timeout = 4;
     public const int Budget = 5;
 
-    /// <summary>`jobs wait` on a live job whose claustrum process is gone (#124). Shares 5 with <see cref="Budget"/>: the two come from different verbs.</summary>
-    public const int Abandoned = 5;
+    /// <summary>`jobs wait` on a live job whose claustrum process is gone (#124); its own code, never one a run can end with.</summary>
+    public const int Abandoned = 6;
     public const int Cancelled = 130;
 }
