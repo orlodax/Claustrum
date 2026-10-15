@@ -6,7 +6,7 @@ namespace Claustrum.Core.Backends.Claude;
 
 // `--input-format stream-json` (measured 2026-10-15, NOTES.md "Live sessions"): one JSON user message per
 // stdin line, one `result` event per turn on stdout, and the process outlives each turn until stdin closes.
-public sealed class ClaudeLiveProtocol : ILiveProtocol
+public sealed class ClaudeLiveProtocol : IStreamLiveProtocol
 {
     public static readonly ClaudeLiveProtocol Instance = new();
 

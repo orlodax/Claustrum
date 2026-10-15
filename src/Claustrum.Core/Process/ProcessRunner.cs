@@ -22,6 +22,135 @@ public sealed class ProcessRunner(IPlatform platform)
         CancellationToken cancellationToken,
         IProcessLive? live = null)
     {
+        ProcessStartInfo startInfo = StartInfoFor(spec, backendConfig, envPassthroughAll);
+
+        StringBuilder stdout = new();
+        StringBuilder stderr = new();
+
+        // AutoFlush on both, or the 4 KB FileStream buffer holds a quiet run's whole output until
+        // exit and `last_line` (JobManager, MCP job_status) has nothing to report while it matters.
+        await using StreamWriter stdoutLog = new(job.StdoutLog, append: false) { AutoFlush = true };
+        await using StreamWriter stderrLog = new(job.StderrLog, append: false) { AutoFlush = true };
+
+        // A session that resumes per turn (#124 stage 3a) is several processes sharing this method's logs,
+        // buffers and clock: nothing below is per-process except `process` itself.
+        bool perTurn = live is { PerTurn: true };
+        Action<string>? guardedStreamLine = onStreamLine is null ? null : Guard(onStreamLine);
+        Action<string>? guardedLiveLine = live is null || perTurn ? null : Guard(live.OnStdoutLine);
+        Pumps pumps = new(stdout, stderr, stdoutLog, stderrLog, guardedStreamLine, guardedLiveLine);
+
+        Stopwatch stopwatch = Stopwatch.StartNew();
+        System.Diagnostics.Process process = Launch(startInfo, pumps);
+
+        using PausableDeadline deadline = new(timeout);
+        live?.Attach(deadline);
+
+        // Pumps started before stdin is written: a prompt larger than the pipe buffer would otherwise
+        // deadlock against a child already blocked writing stdout nobody is draining yet.
+        process.BeginOutputReadLine();
+        process.BeginErrorReadLine();
+
+        using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, deadline.Token);
+        using CancellationTokenSource liveStop = new();
+        Task liveLoop = Task.CompletedTask;
+        bool liveStarted = false;
+
+        ProcessTermination termination = ProcessTermination.Completed;
+        bool stopped = false;
+        int exitCode = 0;
+        TurnOutput? lastTurn = null;
+        ProcessSpec current = spec;
+        int stdoutMark = 0;
+        int stderrMark = 0;
+        try
+        {
+            while (true)
+            {
+                try
+                {
+                    // Inside the timeout, not before it: a child that never drains its stdin would otherwise
+                    // block this write with nothing left to interrupt it. A stream session keeps stdin open for
+                    // the conversation and closes it itself; it starts only after the first message is written,
+                    // so a human's early message cannot overtake the brief.
+                    await WriteStdinAsync(process, current.StdinText, keepOpen: live is not null && !perTurn, linked.Token);
+                    if (live is not null && !liveStarted)
+                    {
+                        liveStarted = true;
+                        liveLoop = live.RunAsync(perTurn ? null : process.StandardInput, liveStop.Token);
+                    }
+
+                    await process.WaitForExitAsync(linked.Token);
+                }
+                catch (OperationCanceledException)
+                {
+                    termination = Interrupted(cancellationToken);
+                    stopped = true;
+                    process.Kill(entireProcessTree: true);
+                    await process.WaitForExitAsync(CancellationToken.None);
+                }
+
+                exitCode = process.ExitCode;
+                if (live is not { PerTurn: true } turns)
+                    break;
+
+                TurnOutput turn = new(stdout.ToString(stdoutMark, stdout.Length - stdoutMark), stderr.ToString(stderrMark, stderr.Length - stderrMark));
+                lastTurn = turn;
+                if (stopped)
+                    break;
+
+                turns.TurnEnded(exitCode, turn.Stdout, turn.Stderr);
+                ProcessSpec? next;
+                try
+                {
+                    next = await turns.NextTurnAsync(linked.Token);
+                }
+                catch (OperationCanceledException)
+                {
+                    // Between processes there is nothing to kill: the job was cancelled (or its clock ran out) while no turn was running.
+                    termination = Interrupted(cancellationToken);
+                    stopped = true;
+                    break;
+                }
+
+                if (next is null)
+                    break;
+
+                current = next;
+                stdoutMark = stdout.Length;
+                stderrMark = stderr.Length;
+                process.Dispose();
+                process = Launch(StartInfoFor(next, backendConfig, envPassthroughAll), pumps);
+                process.BeginOutputReadLine();
+                process.BeginErrorReadLine();
+            }
+        }
+        finally
+        {
+            if (live is not null)
+                await EndLiveAsync(live, liveStop, liveLoop);
+
+            process.Dispose();
+        }
+
+        // A report already delivered is the job's outcome (#124): stopping the process after it, for a timeout or a
+        // cancel, is housekeeping. The exit code of a child we killed (or a signal killed) is not the role's, so it reads as clean.
+        bool reportKept = live is { ReportDelivered: true };
+        if (reportKept)
+            termination = ProcessTermination.Completed;
+
+        // The terminal's signal can kill the child before our handler cancels the token: a cancel, not a failed backend.
+        if (termination == ProcessTermination.Completed && !reportKept && SignalExit.IsCancelSignal(exitCode) && await SignalExit.CancelArrivesAsync(cancellationToken))
+            termination = ProcessTermination.Cancelled;
+
+        stopwatch.Stop();
+        return new ProcessOutcome(reportKept && (stopped || SignalExit.IsCancelSignal(exitCode)) ? 0 : exitCode, stdout.ToString(), stderr.ToString(), termination, stopwatch.Elapsed, lastTurn);
+    }
+
+    private static ProcessTermination Interrupted(CancellationToken cancellationToken) =>
+        cancellationToken.IsCancellationRequested ? ProcessTermination.Cancelled : ProcessTermination.TimedOut;
+
+    private ProcessStartInfo StartInfoFor(ProcessSpec spec, BackendConfig? backendConfig, bool envPassthroughAll)
+    {
         ResolvedBinary binary = BinaryLocator.Locate(spec.Exe, spec.Args, backendConfig, platform);
 
         ProcessStartInfo startInfo = new()
@@ -49,74 +178,28 @@ public sealed class ProcessRunner(IPlatform platform)
         foreach (KeyValuePair<string, string> entry in EnvAllowList.Build(platform, spec.Env, envPassthroughAll))
             startInfo.Environment[entry.Key] = entry.Value;
 
-        using System.Diagnostics.Process process = new() { StartInfo = startInfo };
-        StringBuilder stdout = new();
-        StringBuilder stderr = new();
+        return startInfo;
+    }
 
-        // AutoFlush on both, or the 4 KB FileStream buffer holds a quiet run's whole output until
-        // exit and `last_line` (JobManager, MCP job_status) has nothing to report while it matters.
-        await using StreamWriter stdoutLog = new(job.StdoutLog, append: false) { AutoFlush = true };
-        await using StreamWriter stderrLog = new(job.StderrLog, append: false) { AutoFlush = true };
+    private sealed record Pumps(StringBuilder Stdout, StringBuilder Stderr, StreamWriter StdoutLog, StreamWriter StderrLog, Action<string>? StreamLine, Action<string>? LiveLine);
 
-        Action<string>? guardedStreamLine = onStreamLine is null ? null : Guard(onStreamLine);
-        Action<string>? guardedLiveLine = live is null ? null : Guard(live.OnStdoutLine);
-        process.OutputDataReceived += (_, e) => Pump(e.Data, stdout, stdoutLog, guardedStreamLine, guardedLiveLine);
-        process.ErrorDataReceived += (_, e) => Pump(e.Data, stderr, stderrLog, onStreamLine: null, onLiveLine: null);
+    private static System.Diagnostics.Process Launch(ProcessStartInfo startInfo, Pumps pumps)
+    {
+        System.Diagnostics.Process process = new() { StartInfo = startInfo };
+        process.OutputDataReceived += (_, e) => Pump(e.Data, pumps.Stdout, pumps.StdoutLog, pumps.StreamLine, pumps.LiveLine);
+        process.ErrorDataReceived += (_, e) => Pump(e.Data, pumps.Stderr, pumps.StderrLog, onStreamLine: null, onLiveLine: null);
 
-        Stopwatch stopwatch = Stopwatch.StartNew();
-        process.Start();
-
-        using PausableDeadline deadline = new(timeout);
-        live?.Attach(deadline);
-
-        // Pumps started before stdin is written: a prompt larger than the pipe buffer would otherwise
-        // deadlock against a child already blocked writing stdout nobody is draining yet.
-        process.BeginOutputReadLine();
-        process.BeginErrorReadLine();
-
-        using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, deadline.Token);
-        using CancellationTokenSource liveStop = new();
-        Task liveLoop = Task.CompletedTask;
-
-        ProcessTermination termination = ProcessTermination.Completed;
-        bool stopped = false;
         try
         {
-            // Inside the timeout, not before it: a child that never drains its stdin would otherwise
-            // block this write with nothing left to interrupt it. A live session keeps stdin open for
-            // the conversation and closes it itself; it starts only after the first message is written,
-            // so a human's early message cannot overtake the brief.
-            await WriteStdinAsync(process, spec.StdinText, keepOpen: live is not null, linked.Token);
-            if (live is not null)
-                liveLoop = live.RunAsync(process.StandardInput, liveStop.Token);
-
-            await process.WaitForExitAsync(linked.Token);
+            process.Start();
         }
-        catch (OperationCanceledException)
+        catch
         {
-            termination = cancellationToken.IsCancellationRequested ? ProcessTermination.Cancelled : ProcessTermination.TimedOut;
-            stopped = true;
-            process.Kill(entireProcessTree: true);
-            await process.WaitForExitAsync(CancellationToken.None);
-        }
-        finally
-        {
-            if (live is not null)
-                await EndLiveAsync(live, liveStop, liveLoop);
+            process.Dispose();
+            throw;
         }
 
-        // A report already delivered is the job's outcome (#124): stopping the process after it, for a timeout or a
-        // cancel, is housekeeping. The exit code of a child we killed (or a signal killed) is not the role's, so it reads as clean.
-        bool reportKept = live is { ReportDelivered: true };
-        if (reportKept)
-            termination = ProcessTermination.Completed;
-
-        // The terminal's signal can kill the child before our handler cancels the token: a cancel, not a failed backend.
-        if (termination == ProcessTermination.Completed && !reportKept && SignalExit.IsCancelSignal(process.ExitCode) && await SignalExit.CancelArrivesAsync(cancellationToken))
-            termination = ProcessTermination.Cancelled;
-
-        stopwatch.Stop();
-        return new ProcessOutcome(reportKept && (stopped || SignalExit.IsCancelSignal(process.ExitCode)) ? 0 : process.ExitCode, stdout.ToString(), stderr.ToString(), termination, stopwatch.Elapsed);
+        return process;
     }
 
     // Stdin always ends up closed, and is never inherited: a child holding the MCP host's own live

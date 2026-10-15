@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using Claustrum.Core.Config;
+using Claustrum.Core.Live;
 using Claustrum.Core.Model;
 using Claustrum.Core.Platform;
 using Claustrum.Core.Process;
@@ -17,7 +18,12 @@ public sealed class OpencodeBackend(IPlatform platform) : IBackend, IPostRunHook
 {
     private static readonly TimeSpan detectTimeout = TimeSpan.FromSeconds(10);
 
+    private OpencodeLiveProtocol? liveProtocol;
+
     public string Name => "opencode";
+
+    // One `opencode run` per turn, resumed with `--session` (NOTES.md "Live sessions on opencode").
+    public ILiveProtocol? LiveProtocol => liveProtocol ??= new OpencodeLiveProtocol(this);
 
     public IStreamFormatter? CreateStreamFormatter(string cwd) => new OpencodeStreamFormatter(cwd);
 
@@ -41,6 +47,11 @@ public sealed class OpencodeBackend(IPlatform platform) : IBackend, IPostRunHook
         List<string> args = ["run", "--standalone", "--agent", agentName, "--model", run.Role.Model, "--format", "json", "--auto"];
         if (run.ResumeSession is { Length: > 0 } resumeSession)
             args.AddRange(["--session", resumeSession]);
+
+        // A live run's later turns carry a person's words, and a message that starts with `-` makes `opencode run`
+        // print its help and exit 0 (measured 2026-10-15), which would read as the role's question.
+        if (run.Live)
+            args.Add("--");
         args.Add(run.Brief);
 
         Dictionary<string, string> env = new(run.Env, StringComparer.Ordinal)

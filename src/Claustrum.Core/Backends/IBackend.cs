@@ -20,8 +20,9 @@ public interface IBackend
     IStreamFormatter? CreateStreamFormatter(string cwd) => null;
 
     /// <summary>
-    /// How this backend holds a conversation over stdin (#124), or null when it cannot: a run that asks for
-    /// a live session on such a backend simply runs as it always did.
+    /// How this backend holds a conversation (#124): messages on one process's stdin (claude) or one process per turn,
+    /// the session resumed (opencode). Null when it cannot: a run that asks for a live session on such a backend
+    /// simply runs as it always did.
     /// </summary>
     ILiveProtocol? LiveProtocol => null;
 }

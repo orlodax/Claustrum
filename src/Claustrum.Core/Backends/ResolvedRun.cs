@@ -18,5 +18,6 @@ public sealed record ResolvedRun(
     string JobDirectory,
     Dictionary<string, string> Env,
     // #124: the run is a live session (the backend has a LiveProtocol and Runner is feeding it): the brief
-    // goes in as the first message of a conversation on a stdin that stays open.
+    // goes in as the first message of a conversation. A backend that resumes per turn is built again for each
+    // next turn, with the message as Brief and the session as ResumeSession, and Live still true.
     bool Live = false);
