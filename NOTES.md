@@ -2944,6 +2944,35 @@ the `--standalone` question and handed over the v2 error shape. A deliberately w
       or no `info.cost`), `Parse`'s original data — complete step costs or null — stands, and a
       warning naming the fallback is appended. The old "complete or absent" rule stays as the fallback
       for backends without a post-run hook and for opencode when the export itself fails.
+    - **2026-10-15, review of #125: a resumed run is charged `after − before`.** `info.cost` and
+      `info.tokens` are the **session's** running total, and `--resume <id>` continues the same
+      session. Measured on job `20261015-163517-22930bff`, which resumed `160852`'s session: the
+      export said **$0.5290** (both jobs) against the job's own step sum of **$0.0932**. A resumed
+      run therefore exports the session *before* the process starts (`IPostRunHook.PreRunAsync`) and
+      charges the difference for cost and every token field. If the pre-run export fails, the post-run
+      total is not this job's cost, so the run falls back as for a failed export, and the warning
+      says the pre-run export was the one that failed. A baseline only applies when the run's
+      `sessionID` is the one it resumed; a total that went *down* is a bad reading, not a refund.
+    - **Same day: piping `opencode session export` truncates, a file does not.** Through a pipe the
+      export came back cut off (`Unfinished string at EOF`) for 5 of 5 large sessions (0.5–1.3 MB)
+      while the same export to a file was complete: opencode exits before a full stdout pipe drains.
+      Re-measured with `--standalone`: three fast readers got all 1 267 340 bytes, a reader that
+      slept 3 s first got **8 192** — so a pipe is a race with the reader, not a fix. On POSIX the
+      export is therefore written to a temp file in the job directory through
+      `sh -c 'out=$1; shift; exec "$@" > "$out"'` and read once the process has exited (the file is
+      deleted afterwards, and never touches `stdout.log`/`stderr.log`). Windows has no such
+      one-liner worth the quoting and keeps the pipe (⚠ unmeasured there). Either way a parse failure
+      is retried once, then counts as a failed export. The export runs in the run's own environment
+      (the spec's env with caller `--env`, `env_passthrough: all`, `OPENCODE_DISABLE_FILEWATCHER`) and
+      with `--standalone`, like the run itself.
+    - **Same day: the fallback when the export fails.** "Step costs only if every `step_start` has a
+      `step_finish`" never held for a normal run (the final message has no `step_finish`), so it
+      always charged the cap. The rule now: if the only unfinished step is the **last** one and it
+      produced only text (no `tool_use`), take the step sum and warn `opencode session export failed
+      (<reason>): cost is the step sum, without the final text step`; any other gap is null and the
+      cap, as before. ⚠ A `step_finish` has its own part id, so steps pair by order, not by id. The
+      export never changes a run's status: whatever the hook throws becomes the warning, and a
+      cancelled job skips it (it runs on `CancellationToken.None`, up to 30 uninterruptible seconds).
 
 6. **The api backend, against a live OpenRouter endpoint.** `claustrum run code-reviewer --model
    api:openrouter:deepseek/deepseek-v4-flash --brief "## Task\nSay OK.\n## Diff\nnone" --budget 0.5

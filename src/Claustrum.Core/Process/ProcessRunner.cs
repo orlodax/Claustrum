@@ -57,7 +57,8 @@ public sealed class ProcessRunner(IPlatform platform)
         await using StreamWriter stdoutLog = new(job.StdoutLog, append: false) { AutoFlush = true };
         await using StreamWriter stderrLog = new(job.StderrLog, append: false) { AutoFlush = true };
 
-        process.OutputDataReceived += (_, e) => Pump(e.Data, stdout, stdoutLog, onStreamLine);
+        Action<string>? guardedStreamLine = onStreamLine is null ? null : Guard(onStreamLine);
+        process.OutputDataReceived += (_, e) => Pump(e.Data, stdout, stdoutLog, guardedStreamLine);
         process.ErrorDataReceived += (_, e) => Pump(e.Data, stderr, stderrLog, onStreamLine: null);
 
         Stopwatch stopwatch = Stopwatch.StartNew();
@@ -113,6 +114,35 @@ public sealed class ProcessRunner(IPlatform platform)
             // workspace-trust and plan-tier refusals both exit in ~1-5s) makes this a broken pipe.
             // Its exit code and stderr diagnose that far better than a throw from here would.
         }
+    }
+
+    // The callback runs on a thread-pool thread inside OutputDataReceived: an exception out of it
+    // terminates the whole process. A formatter that chokes on one line must cost that line, not
+    // the job; the first failure is said once on stderr, the rest are dropped.
+    private static Action<string> Guard(Action<string> callback)
+    {
+        int reported = 0;
+        return line =>
+        {
+            try
+            {
+                callback(line);
+            }
+            catch (Exception ex)
+            {
+                if (Interlocked.Exchange(ref reported, 1) != 0)
+                    return;
+
+                try
+                {
+                    Console.Error.WriteLine($"claustrum: stream callback failed ({ex.GetType().Name}: {ex.Message}); further failures are not reported");
+                }
+                catch (IOException)
+                {
+                    // stderr is gone as well; nothing left to tell.
+                }
+            }
+        };
     }
 
     private static void Pump(string? line, StringBuilder buffer, StreamWriter log, Action<string>? onStreamLine)

@@ -192,7 +192,8 @@ backend, or it skips with "no model alias … resolves to this backend".
   warnings count) and exits 0. Without an id, follows every job that starts after the command, each
   line prefixed with the short job id, until Ctrl-C (exit 130). `--raw` shows unformatted lines.
   Works while the job's terminal is gone: open a second terminal and run
-  `claustrum jobs follow <job id>` to watch progress from there.
+  `claustrum jobs follow <job id>` to watch progress from there. A job whose claustrum process died
+  before writing `result.json` is followed until Ctrl-C: there is nothing to tell follow it ended.
 - `clean`: removes the **worktrees** of finished isolated jobs; their branches stay, with the work
   committed on them. It never forces: a clean worktree is renamed to a `.trash-*` sibling, its own registration
   deleted and the trash deleted, and the sweep first deletes any `.trash-*` an earlier interrupted free left,

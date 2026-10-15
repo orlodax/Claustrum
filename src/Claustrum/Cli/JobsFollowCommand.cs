@@ -62,9 +62,6 @@ public static class JobsFollowCommand
     private static async Task<int> FollowOneAsync(string jobsRoot, string jobId, bool rawMode, CancellationToken ct)
     {
         string jobDir = Path.Combine(jobsRoot, jobId);
-        string logPath = Path.Combine(jobDir, "stdout.log");
-        string resultPath = Path.Combine(jobDir, "result.json");
-
         if (!Directory.Exists(jobDir))
         {
             Console.Error.WriteLine($"job '{jobId}' not found under {jobsRoot}");
@@ -72,88 +69,47 @@ public static class JobsFollowCommand
         }
 
         // Print header: job id, role, backend:model
-        string header = SummarizeJob(jobDir, jobId);
-        SafeConsole.Error(header);
+        SafeConsole.Error(SummarizeJob(jobDir, jobId));
 
-        // Pick the formatter from backend.json when available.
-        IStreamFormatter? formatter = rawMode ? null : ResolveFormatter(jobDir);
-
-        // Read what already exists in the log, then poll for new content.
-        long lastPosition = 0;
-        string partialLine = "";
-
-        if (File.Exists(logPath))
-            (lastPosition, partialLine) = PrintTail(logPath, 0, partialLine, formatter);
-
-        // Poll until result.json appears.
-        while (!File.Exists(resultPath))
-        {
+        JobTracker job = new(jobDir, rawMode);
+        while (!Poll(job, prefix: null))
             await Task.Delay(PollIntervalMs, ct);
-            (lastPosition, partialLine) = PrintTail(logPath, lastPosition, partialLine, formatter);
-        }
-
-        // Read any remaining log content after the result.
-        (_, _) = PrintTail(logPath, lastPosition, partialLine, formatter);
-
-        // Print summary line.
-        PrintSummary(resultPath);
 
         return ExitCodes.Ok;
     }
 
     private static async Task<int> FollowAllAsync(string jobsRoot, bool rawMode, CancellationToken ct)
     {
-        // Track which job directories we already discovered.
+        // Jobs already on disk are history, not news: only directories created after this point are followed.
+        HashSet<string> existing = new(StringComparer.Ordinal);
+        if (Directory.Exists(jobsRoot))
+            foreach (string dir in Directory.EnumerateDirectories(jobsRoot))
+                existing.Add(Path.GetFileName(dir));
+
         Dictionary<string, JobTracker> trackers = new(StringComparer.Ordinal);
 
         while (!ct.IsCancellationRequested)
         {
-            // Poll for new job directories.
             if (Directory.Exists(jobsRoot))
             {
                 foreach (string dir in Directory.EnumerateDirectories(jobsRoot))
                 {
                     string id = Path.GetFileName(dir);
-                    if (id.Length < 32 || trackers.ContainsKey(id))
+                    if (existing.Contains(id) || trackers.ContainsKey(id))
                         continue;
 
                     // Only follow jobs whose stdout.log exists (they started writing).
-                    string logPath = Path.Combine(dir, "stdout.log");
-                    if (!File.Exists(logPath))
+                    if (!File.Exists(Path.Combine(dir, "stdout.log")))
                         continue;
 
-                    string shortId = id[..Math.Min(id.Length, 23)];
-                    trackers[id] = new JobTracker(dir, id, shortId, rawMode ? null : ResolveFormatter(dir));
-                    SafeConsole.Error($"following {shortId}  {SummarizeJob(dir, id)}");
+                    trackers[id] = new JobTracker(dir, rawMode);
+                    SafeConsole.Error($"following {id}  {SummarizeJob(dir, id)}");
                 }
             }
 
-            // Read new data for every tracker.
-            foreach ((_, JobTracker tracker) in trackers)
-            {
-                if (tracker.Done)
-                    continue;
-
-                string resultPath = Path.Combine(tracker.Directory, "result.json");
-                if (File.Exists(resultPath))
-                {
-                    tracker.Done = true;
-                    // Read any remaining output.
-                    (_, _) = PrintTail(
-                        Path.Combine(tracker.Directory, "stdout.log"),
-                        tracker.Position, tracker.Partial, tracker.Formatter,
-                        tracker.ShortId);
-                    PrintSummary(resultPath);
-                    continue;
-                }
-
-                (long pos, string partial) = PrintTail(
-                    Path.Combine(tracker.Directory, "stdout.log"),
-                    tracker.Position, tracker.Partial, tracker.Formatter,
-                    tracker.ShortId);
-                tracker.Position = pos;
-                tracker.Partial = partial;
-            }
+            foreach ((string id, JobTracker tracker) in trackers)
+                if (!tracker.Done)
+                    tracker.Done = Poll(tracker, prefix: id);
 
             try
             {
@@ -168,21 +124,64 @@ public static class JobsFollowCommand
         return ExitCodes.Cancelled;
     }
 
-    private sealed class JobTracker(string directory, string id, string shortId, IStreamFormatter? formatter)
+    private sealed class JobTracker(string directory, bool rawMode)
     {
+        private const int MaxSummaryAttempts = 20;
+
         public string Directory => directory;
-        public string Id => id;
-        public string ShortId => shortId;
-        public IStreamFormatter? Formatter => formatter;
+        public IStreamFormatter? Formatter { get; private set; }
         public long Position;
         public string Partial = "";
         public bool Done;
+        private bool formatterResolved = rawMode;
+        private int summaryAttempts;
+
+        // backend.json is written at job start but may not be there yet (or fully written) when a
+        // follow starts right after `delegate_async` returned the id: ask again on every poll.
+        public bool TryResolveFormatter()
+        {
+            if (!formatterResolved)
+                (formatterResolved, Formatter) = ResolveFormatter(directory);
+
+            return formatterResolved;
+        }
+
+        // result.json is written non-atomically, so a failed read is retried on the next poll; only a
+        // file that stays unreadable for ~10 s is reported as incomplete.
+        public bool SummaryGivenUp() => ++summaryAttempts >= MaxSummaryAttempts;
+    }
+
+    // One poll of one job: print what the log gained, and once result.json is there, the summary.
+    // Returns true when the job is finished and reported.
+    private static bool Poll(JobTracker job, string? prefix)
+    {
+        string resultPath = Path.Combine(job.Directory, "result.json");
+
+        // Checked before the tail: result.json is written after the process exits, so a log read that
+        // follows it sees the whole output.
+        bool finished = File.Exists(resultPath);
+
+        // Until backend.json names the formatter the log is held back; a finished job without one is raw.
+        if (job.TryResolveFormatter() || finished)
+            (job.Position, job.Partial) = PrintTail(Path.Combine(job.Directory, "stdout.log"), job.Position, job.Partial, job.Formatter, prefix);
+
+        if (!finished)
+            return false;
+
+        if (TryPrintSummary(resultPath))
+            return true;
+
+        if (!job.SummaryGivenUp())
+            return false;
+
+        SafeConsole.Error("━━━ incomplete (unparsable result.json)");
+        return true;
     }
 
     // Read new data from the log, format lines (optionally with a job-id prefix for the all-jobs mode),
     // return the new file position and any held-back partial line.
     private static (long Position, string Partial) PrintTail(
-        string logPath, long lastPosition, string partialLine, IStreamFormatter? formatter, string? prefix = null)
+        string logPath, long lastPosition, string partialLine, IStreamFormatter? formatter, string? prefix)
     {
         if (!File.Exists(logPath))
             return (0, partialLine);
@@ -236,77 +235,62 @@ public static class JobsFollowCommand
 
         foreach (string line in lines)
         {
-            string clean = line.TrimEnd('\r');
-            if (formatter is { } fmt)
-            {
-                string? formatted = fmt.FormatLine(clean);
-                if (formatted is not null)
-                {
-                    if (prefix is not null)
-                        SafeConsole.Error($"{prefix} {formatted}");
-                    else
-                        SafeConsole.Error(formatted);
-                }
-            }
-            else
-            {
-                if (prefix is not null)
-                    SafeConsole.Error($"{prefix} {clean}");
-                else
-                    SafeConsole.Error(clean);
-            }
+            string? output = FormatSafely(formatter, line.TrimEnd('\r'));
+            if (output is null)
+                continue;
+
+            SafeConsole.Error(prefix is null ? output : $"{prefix} {output}");
         }
 
         return (newLength, newPartial);
     }
 
+    // A formatter that chokes on a line must not take the follow down: that line goes out raw.
+    private static string? FormatSafely(IStreamFormatter? formatter, string line)
+    {
+        if (formatter is null)
+            return line;
+
+        try
+        {
+            return formatter.FormatLine(line);
+        }
+        catch (Exception)
+        {
+            return line;
+        }
+    }
+
     // Build a header line for a job.
     private static string SummarizeJob(string jobDir, string jobId)
     {
-        string resultPath = Path.Combine(jobDir, "result.json");
-        string requestPath = Path.Combine(jobDir, "request.json");
-        string backendPath = Path.Combine(jobDir, "backend.json");
-
         // Try backend.json first (written at job start).
         string backend = "";
         string model = "";
-        if (File.Exists(backendPath))
+        using (JsonDocument? doc = TryReadObject(Path.Combine(jobDir, "backend.json")))
         {
-            try
-            {
-                using JsonDocument doc = JsonDocument.Parse(File.ReadAllText(backendPath));
-                JsonElement root = doc.RootElement;
-                backend = root.TryGetProperty("backend", out JsonElement b) ? b.GetString() ?? "" : "";
-                model = root.TryGetProperty("model", out JsonElement m) ? m.GetString() ?? "" : "";
-            }
-            catch (JsonException) { }
+            backend = doc is null ? "" : GetString(doc.RootElement, "backend") ?? "";
+            model = doc is null ? "" : GetString(doc.RootElement, "model") ?? "";
         }
 
         // Fall back to request.json when the run has not yet produced backend.json.
         string role = "";
-        if (backend.Length == 0 && File.Exists(requestPath))
+        if (backend.Length == 0)
         {
-            try
-            {
-                using JsonDocument doc = JsonDocument.Parse(File.ReadAllText(requestPath));
-                JsonElement root = doc.RootElement;
-                role = root.TryGetProperty("role", out JsonElement r) ? r.GetString() ?? "" : "";
-            }
-            catch (JsonException) { }
+            using JsonDocument? doc = TryReadObject(Path.Combine(jobDir, "request.json"));
+            role = doc is null ? "" : GetString(doc.RootElement, "role") ?? "";
         }
 
         // Fall back to result.json as a last resort.
-        if (backend.Length == 0 && File.Exists(resultPath))
+        if (backend.Length == 0)
         {
-            try
+            using JsonDocument? doc = TryReadObject(Path.Combine(jobDir, "result.json"));
+            if (doc is not null)
             {
-                using JsonDocument doc = JsonDocument.Parse(File.ReadAllText(resultPath));
-                JsonElement root = doc.RootElement;
-                backend = root.TryGetProperty("backend", out JsonElement b) ? b.GetString() ?? "" : "";
-                model = root.TryGetProperty("model", out JsonElement m) ? m.GetString() ?? "" : "";
-                role = root.TryGetProperty("role", out JsonElement r) ? r.GetString() ?? "" : "";
+                backend = GetString(doc.RootElement, "backend") ?? "";
+                model = GetString(doc.RootElement, "model") ?? "";
+                role = GetString(doc.RootElement, "role") ?? "";
             }
-            catch (JsonException) { }
         }
 
         string line = $"job {jobId}";
@@ -316,84 +300,76 @@ public static class JobsFollowCommand
         return line;
     }
 
-    // Print the summary line from a completed job's result.json.
-    private static void PrintSummary(string resultPath)
+    // Print the summary line from a completed job's result.json; false when it cannot be read yet.
+    private static bool TryPrintSummary(string resultPath)
     {
-        try
-        {
-            using JsonDocument doc = JsonDocument.Parse(File.ReadAllText(resultPath));
-            JsonElement root = doc.RootElement;
+        using JsonDocument? doc = TryReadObject(resultPath);
+        if (doc is null)
+            return false;
 
-            string status = root.TryGetProperty("status", out JsonElement s) ? s.GetString() ?? "?" : "?";
-            string cost = root.TryGetProperty("cost_usd", out JsonElement c) && c.TryGetDecimal(out decimal costVal)
-                ? BudgetLedger.Dollars(costVal)
-                : "-";
-            double? duration = root.TryGetProperty("duration_seconds", out JsonElement d) && d.TryGetDouble(out double durVal)
-                ? durVal
-                : null;
-            string backend = root.TryGetProperty("backend", out JsonElement b) ? b.GetString() ?? "" : "";
-            string model = root.TryGetProperty("model", out JsonElement m) ? m.GetString() ?? "" : "";
-            int warnings = 0;
-            if (root.TryGetProperty("warnings", out JsonElement w) && w.ValueKind == JsonValueKind.Array)
-                warnings = w.GetArrayLength();
+        JsonElement root = doc.RootElement;
 
-            string durationStr = duration is { } dur ? $"{dur:F1}s" : "?";
-            string summary = $"━━━ {status}  cost {cost}  {durationStr}  {backend}:{model}";
+        string status = GetString(root, "status") ?? "?";
+        string cost = root.TryGetProperty("cost_usd", out JsonElement c) && c.ValueKind == JsonValueKind.Number && c.TryGetDecimal(out decimal costVal)
+            ? BudgetLedger.Dollars(costVal)
+            : "-";
+        double? duration = root.TryGetProperty("duration_seconds", out JsonElement d) && d.ValueKind == JsonValueKind.Number && d.TryGetDouble(out double durVal)
+            ? durVal
+            : null;
+        string backend = GetString(root, "backend") ?? "";
+        string model = GetString(root, "model") ?? "";
+        int warnings = root.TryGetProperty("warnings", out JsonElement w) && w.ValueKind == JsonValueKind.Array
+            ? w.GetArrayLength()
+            : 0;
 
-            if (warnings > 0)
-                summary += $"  {warnings} warning{(warnings == 1 ? "" : "s")}";
+        string durationStr = duration is { } dur ? $"{dur:F1}s" : "?";
+        string summary = $"━━━ {status}  cost {cost}  {durationStr}  {backend}:{model}";
 
-            SafeConsole.Error(summary);
-        }
-        catch (JsonException)
-        {
-            SafeConsole.Error($"━━━ incomplete (unparsable result.json)");
-        }
+        if (warnings > 0)
+            summary += $"  {warnings} warning{(warnings == 1 ? "" : "s")}";
+
+        SafeConsole.Error(summary);
+        return true;
     }
 
-    // Resolve the stream formatter for a job by reading backend.json.
-    private static IStreamFormatter? ResolveFormatter(string jobDir)
+    // Resolve the stream formatter for a job by reading backend.json. Resolved is false while the file
+    // is missing or not yet readable; a backend with no formatter is resolved, to null.
+    private static (bool Resolved, IStreamFormatter? Formatter) ResolveFormatter(string jobDir)
     {
-        string backendPath = Path.Combine(jobDir, "backend.json");
-        if (!File.Exists(backendPath))
-            return null;
+        using JsonDocument? doc = TryReadObject(Path.Combine(jobDir, "backend.json"));
+        if (doc is null || GetString(doc.RootElement, "backend") is not { } backendName)
+            return (false, null);
 
-        string? backendName;
-        try
-        {
-            using JsonDocument doc = JsonDocument.Parse(File.ReadAllText(backendPath));
-            backendName = doc.RootElement.TryGetProperty("backend", out JsonElement b) ? b.GetString() : null;
-        }
-        catch (JsonException)
-        {
-            return null;
-        }
+        // The cwd shortens paths in the formatted lines; request.json is written before backend.json.
+        string cwd = ReadCwd(jobDir) ?? "";
 
-        if (backendName is null)
-            return null;
-
-        // Fall back to result.json to learn the cwd for path shortening.
-        string? cwd = ReadCwd(jobDir);
-        cwd ??= "";
-
-        if (AppServices.Backends.TryGet(backendName, out IBackend? backend))
-            return backend.CreateStreamFormatter(cwd);
-
-        return null;
+        return AppServices.Backends.TryGet(backendName, out IBackend? backend)
+            ? (true, backend.CreateStreamFormatter(cwd))
+            : (true, null);
     }
 
     private static string? ReadCwd(string jobDir)
     {
-        string requestPath = Path.Combine(jobDir, "request.json");
-        if (!File.Exists(requestPath))
-            return null;
+        using JsonDocument? doc = TryReadObject(Path.Combine(jobDir, "request.json"));
+        return doc is null ? null : GetString(doc.RootElement, "cwd");
+    }
 
+    private static string? GetString(JsonElement parent, string propertyName) =>
+        parent.TryGetProperty(propertyName, out JsonElement property) && property.ValueKind == JsonValueKind.String ? property.GetString() : null;
+
+    // Null when the file is missing, mid-write (a partial document), locked, or not a JSON object.
+    private static JsonDocument? TryReadObject(string path)
+    {
         try
         {
-            using JsonDocument doc = JsonDocument.Parse(File.ReadAllText(requestPath));
-            return doc.RootElement.TryGetProperty("cwd", out JsonElement cwd) ? cwd.GetString() : null;
+            JsonDocument doc = JsonDocument.Parse(File.ReadAllText(path));
+            if (doc.RootElement.ValueKind == JsonValueKind.Object)
+                return doc;
+
+            doc.Dispose();
+            return null;
         }
-        catch (JsonException)
+        catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException)
         {
             return null;
         }
