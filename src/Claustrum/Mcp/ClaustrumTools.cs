@@ -154,10 +154,11 @@ public sealed class ClaustrumTools
 
     [McpServerTool(Name = "job_status")]
     [Description(
-        "Check a delegate_async job's progress: state (running|waiting_for_input|done|failed), elapsed seconds, " +
+        "Check a delegate_async job's progress: state (running|waiting_for_input|abandoned|done|failed), elapsed seconds, " +
         "the last captured output line, and question ({seq, text}, null unless state is 'waiting_for_input'). " +
         "'waiting_for_input' means the role asked the user something: ask them with your question tool and " +
-        "answer with job_say. 'failed' means the job threw after it was started instead of finishing with a " +
+        "answer with job_say. 'abandoned' means the claustrum process running the job is gone and left no result: " +
+        "nobody will answer it. 'failed' means the job threw after it was started instead of finishing with a " +
         "RunResult (e.g. a blind-gate rejection) — call job_result for the underlying error. State 'unknown' " +
         "means no such job id.")]
     public static string JobStatus(string jobId)
@@ -170,7 +171,8 @@ public sealed class ClaustrumTools
     [Description(
         "Talk to a live delegate_async job: answer the question job_status shows (state 'waiting_for_input'), or, " +
         "while it runs, send its role a message. Returns {answers_question, state}; an error when the job is " +
-        "unknown, not live, or done. A blind role (code-reviewer, ui-reviewer) never asks, so there is nothing to answer.")]
+        "unknown, not live, done or abandoned (its claustrum process is gone). A blind role (role.json blind:true, e.g. " +
+        "code-reviewer, ui-reviewer) never asks and receives no human input: job_say to its job is refused.")]
     public static string JobSay(
         string jobId,
         [Description("The answer or message.")] string text) =>

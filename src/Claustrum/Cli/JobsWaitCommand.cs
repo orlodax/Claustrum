@@ -8,7 +8,8 @@ namespace Claustrum.Cli;
 
 // #124 `claustrum jobs wait <id> [--timeout <s>] [--json]`: blocks until the job asks a question or finishes, and says which.
 // The primitive a coordinating architect polls with: stdout is the answer (a question as `? text` and its seq, or the
-// summary line `jobs follow` ends on; one JSON document under --json), exit 0 for either, 4 on --timeout, 130 on Ctrl-C.
+// summary line `jobs follow` ends on; one JSON document under --json), exit 0 for either, 4 on --timeout, 5 when the
+// job is abandoned (its claustrum process is gone and left no result.json), 130 on Ctrl-C.
 public static class JobsWaitCommand
 {
     private const int PollIntervalMs = 500;
@@ -21,7 +22,7 @@ public static class JobsWaitCommand
     {
         Argument<string> id = new("id") { Description = "Job id." };
         Option<int?> timeout = new("--timeout") { Description = "Give up after this many seconds (exit 4)." };
-        Option<bool> json = new("--json") { Description = "Print one document: {state, question: {seq, text} | null, result_status | null}." };
+        Option<bool> json = new("--json") { Description = "Print one document: {state: running|waiting_for_input|done|abandoned, question: {seq, text} | null, result_status | null}." };
         Command wait = new("wait", "Block until a job asks a question or finishes (poll-based, ~500 ms).") { id, timeout, json };
         wait.SetAction(async parseResult => await ExecuteAsync(
             parseResult.GetRequiredValue(id),
@@ -52,6 +53,22 @@ public static class JobsWaitCommand
             while (true)
             {
                 JobWaitResult seen = job.Observe();
+                if (seen.State == "abandoned")
+                {
+                    // The message goes to stdout in plain mode, where the answer is; under --json stdout stays the one document.
+                    if (jsonMode)
+                    {
+                        PrintJson(seen);
+                        SafeConsole.Error(LiveJob.AbandonedMessage);
+                    }
+                    else
+                    {
+                        SafeConsole.Out(LiveJob.AbandonedMessage);
+                    }
+
+                    return ExitCodes.Abandoned;
+                }
+
                 if (seen.State == "waiting_for_input" || (seen.State == "done" && (seen.ResultStatus is not null || ++receiptPolls >= ReceiptPolls)))
                 {
                     Report(job, seen, jsonMode);

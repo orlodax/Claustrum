@@ -16,9 +16,17 @@ internal sealed partial class TerminalInput : IDisposable
     private const uint ShareReadWrite = 0x3;
     private const uint OpenExisting = 3;
 
+    // tcflush's TCIFLUSH queue selector: 0 on Linux, 1 on macOS (the BSD numbering).
+    private static readonly int flushInputQueue = OperatingSystem.IsLinux() ? 0 : 1;
+
+    private readonly FileStream stream;
     private readonly StreamReader reader;
 
-    private TerminalInput(StreamReader reader) => this.reader = reader;
+    private TerminalInput(FileStream stream, Encoding encoding)
+    {
+        this.stream = stream;
+        reader = new StreamReader(stream, encoding, detectEncodingFromByteOrderMarks: false);
+    }
 
     /// <summary>Stdin and stderr are both terminals: the rule for a prompt on any verb (a redirected stream means nobody is there to type).</summary>
     public static bool IsInteractive => !Console.IsInputRedirected && !Console.IsErrorRedirected;
@@ -29,13 +37,25 @@ internal sealed partial class TerminalInput : IDisposable
         try
         {
             return OperatingSystem.IsWindows()
-                ? new TerminalInput(new StreamReader(OpenConsoleInput(), Console.InputEncoding, detectEncodingFromByteOrderMarks: false))
-                : new TerminalInput(new StreamReader(new FileStream("/dev/tty", FileMode.Open, FileAccess.Read, FileShare.ReadWrite, bufferSize: 1), new UTF8Encoding(false), false));
+                ? new TerminalInput(OpenConsoleInput(), Console.InputEncoding)
+                : new TerminalInput(new FileStream("/dev/tty", FileMode.Open, FileAccess.Read, FileShare.ReadWrite, bufferSize: 1), new UTF8Encoding(false));
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {
             return null;
         }
+    }
+
+    /// <summary>
+    /// Throws away what was typed and not yet read (type-ahead), so a reply answers only what is on screen: an Enter pressed
+    /// before the question existed must not become its answer. Best effort; only valid while no read is outstanding.
+    /// </summary>
+    public void DiscardPending()
+    {
+        if (OperatingSystem.IsWindows())
+            FlushConsoleInputBuffer(stream.SafeFileHandle);
+        else
+            TcFlush(stream.SafeFileHandle, flushInputQueue);
     }
 
     /// <summary>One line, without its line break; null at end of input. At most one read may be outstanding.</summary>
@@ -55,4 +75,11 @@ internal sealed partial class TerminalInput : IDisposable
 
     [LibraryImport("kernel32.dll", EntryPoint = "CreateFileW", SetLastError = true, StringMarshalling = StringMarshalling.Utf16)]
     private static partial SafeFileHandle CreateFile(string name, uint access, uint share, nint security, uint disposition, uint flags, nint template);
+
+    [LibraryImport("kernel32.dll", EntryPoint = "FlushConsoleInputBuffer", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool FlushConsoleInputBuffer(SafeFileHandle handle);
+
+    [LibraryImport("libc", EntryPoint = "tcflush", SetLastError = true)]
+    private static partial int TcFlush(SafeFileHandle fd, int queue);
 }

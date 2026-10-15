@@ -38,7 +38,7 @@ same operations as tools. `sync` writes the registration for each host (§12).
 |---|---|---|
 | `delegate` | `claustrum run` | the receipt (diff capped at 64 KB) |
 | `delegate_async` | `claustrum run` in the background | `{job_id, log_path}` |
-| `job_status` | — | `{state: running\|waiting_for_input\|done\|failed, elapsed_seconds, last_line, question: {seq, text} \| null}` |
+| `job_status` | — | `{state: running\|waiting_for_input\|abandoned\|done\|failed, elapsed_seconds, last_line, question: {seq, text} \| null}` |
 | `job_say` | `claustrum jobs say` | `{answers_question, state}` — answers the open question, or messages the running role (§3, *Talking to a running job*) |
 | `job_result` | `claustrum jobs show` | the receipt, once done (throws before) |
 | `coordinate` | `claustrum coordinate` | `{job_id, log_path, warnings}` — always async; poll `job_status` |
@@ -240,13 +240,18 @@ front doors, one channel:
 
 - **The terminal.** `run` and `coordinate` with stdin and stderr both terminals are live with a reply timeout of
   1800 s: the question is printed on stderr as `? …` and a `reply> ` prompt reads one line from the terminal itself
-  (`/dev/tty`, `CONIN$`; never stdin, which may have carried the brief). An empty line means "not now". Ctrl-C still
-  ends the run `cancelled`, with its receipt, prompt or not. `jobs follow <id>` on a terminal prints the same
-  conversation and asks the same way.
+  (`/dev/tty`, `CONIN$`; never stdin, which may have carried the brief). What was typed before the question existed is
+  discarded when the prompt appears: a reply answers only what was on screen. An empty line means "not now" — it prints
+  `not answered; reply later with: claustrum jobs say <id> "<answer>"` and the question stays open for `jobs say` and
+  `jobs follow`. Ctrl-C still ends the run `cancelled`, with its receipt, prompt or not. `jobs follow <id>` on a
+  terminal prints the same conversation and asks the same way. A blind role (`blind: true`) is never prompted for.
 - **Another shell.** `claustrum jobs say <id> "…"` queues one message: the answer while a question is open, a message
-  to the running role otherwise (exit 2 when the job has no `live.json`, i.e. is not live, or is done). `jobs wait <id>`
+  to the running role otherwise (exit 2 when the job has no `live.json`, i.e. is not live, or is done or abandoned, or runs
+  a blind role, which receives no human input). `jobs wait <id>`
   blocks until the job is waiting or finished: it prints the question as `? text` then `(question N)`, or the summary
-  line `jobs follow` ends on (exit 0 for either, 4 on `--timeout`, 130 on Ctrl-C). `--json` prints
+  line `jobs follow` ends on (exit 0 for either, 4 on `--timeout`, 130 on Ctrl-C). A job whose claustrum process is gone with no `result.json`
+  is *abandoned*: `jobs wait` prints `abandoned: the claustrum process running this job is gone` and exits 5, and
+  `jobs follow` says so once and stops prompting. `--json` prints
   `{"state", "question": {"seq", "text"} | null, "result_status"}` instead, for a script or an architect to branch on.
 - **MCP.** `job_status` reports `state: waiting_for_input` and the `question`; the host asks its user with its own
   question tool and answers with `job_say`. `delegate_async` runs live with a 1800 s reply timeout; `delegate`, which

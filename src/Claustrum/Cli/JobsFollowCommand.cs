@@ -153,6 +153,7 @@ public static class JobsFollowCommand
         public long Position;
         public string Partial = "";
         public bool Done;
+        public bool AbandonedShown;
 
         // #124: null when the job is not reachable as a live one (its directory is a link out of the store).
         public LiveJob? Channel { get; } = LiveJob.Find(Path.GetFileName(directory));
@@ -216,7 +217,8 @@ public static class JobsFollowCommand
 
     // #124: the conversation of a live job, after the stream lines of the same poll (a question ends a turn, so the lines
     // that led to it were written first; the stream has no times of its own to order them by). A job that is not live has
-    // no conversation.jsonl and prints nothing here. A finished job is never asked.
+    // no conversation.jsonl and prints nothing here. A finished job is never asked, and an abandoned one (its owner process
+    // gone, no result.json) is reported once and not asked either.
     private static void PrintConversation(JobTracker job, string? prefix, bool finished)
     {
         if (job.Channel is not { } channel)
@@ -224,8 +226,17 @@ public static class JobsFollowCommand
 
         IReadOnlyList<ConversationEntry> entries = channel.ReadConversation();
         job.Conversation.Print(entries, prefix);
-        if (!finished)
-            job.Prompter?.Poll(channel.ReadState(), entries);
+        if (finished)
+            return;
+
+        LiveState? state = channel.ReadState();
+        if (!job.AbandonedShown && channel.IsAbandoned(state))
+        {
+            job.AbandonedShown = true;
+            SafeConsole.Error(prefix is null ? LiveJob.AbandonedMessage : $"{StreamText.Sanitize(prefix)} {LiveJob.AbandonedMessage}");
+        }
+
+        job.Prompter?.Poll(state, entries);
     }
 
     private static long LogLength(string logPath)

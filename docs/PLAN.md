@@ -127,8 +127,12 @@ claustrum mcp [--cwd <dir>]             claustrum sync … / init … (Part B)
 |---|---|---|
 | `delegate` | `{role, brief, cwd?, backend?, model?, effort?, permission?, deny?[], budget_usd?, timeout_seconds?=1800, resume_session?, files?[], include_raw?}` | RunResult (diff ≤64 KB) |
 | `delegate_async` | same | `{job_id, log_path}` |
-| `job_status` / `job_result` | `{job_id}` | `{state: queued|running|done, elapsed_seconds, last_line}` / RunResult |
+| `job_status` / `job_result` | `{job_id}` | `{state: running|waiting_for_input|abandoned|done|failed, elapsed_seconds, last_line, question}` / RunResult |
+| `job_say` | `{job_id, text}` | `{answers_question, state}` (#124; refused for a blind role) |
+| `coordinate` | `{issues?[] \| brief?, cast?, …}` | `{job_id, log_path, warnings}` (§D5) |
 | `list_roles`, `list_backends`, `doctor` | `{}` | summaries / full report |
+| `cast_questions`, `cast_create`, `cast_list` | (§D2) | questionnaire / written cast / names |
+Twelve tools in all (as shipped, 2026-10-15): `delegate`, `delegate_async`, `coordinate`, `job_status`, `job_say`, `job_result`, `list_roles`, `list_backends`, `doctor`, `cast_questions`, `cast_create`, `cast_list`.
 Tool descriptions spell out permission semantics so the calling architect chooses deliberately.
 
 ### A7. Config (JSON only, AOT-friendly)

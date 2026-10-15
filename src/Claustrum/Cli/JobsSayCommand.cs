@@ -6,7 +6,7 @@ namespace Claustrum.Cli;
 
 // #124 `claustrum jobs say <id> <text>`: the human's way into a live job. One inbox message, queued for the session:
 // the answer while a question is open, a message to the running role otherwise. Exit 2 when the job is unknown, not
-// live (no live.json) or done.
+// live (no live.json), done or abandoned (its claustrum process is gone), or runs a blind role.
 public static class JobsSayCommand
 {
     public static Command Build()
