@@ -105,7 +105,10 @@ public sealed class ClaustrumTools
         "worktree on branch claustrum/<job_id>, never in cwd's checkout: cwd must be the repository root, the cast, " +
         "claustrum.json and .claustrum/roles committed, a .mcp.json/opencode.json committed or git-ignored, and `claustrum init`'s " +
         ".claustrum/ ignore rules in a committed .gitignore — this call refuses otherwise, naming what to fix. warnings names " +
-        "what the worktree gets as HEAD has it instead (a committed .mcp.json/opencode.json with a local edit).")]
+        "what the worktree gets as HEAD has it instead (a committed .mcp.json/opencode.json with a local edit). The architect " +
+        "answers its children's questions itself; when it cannot, it stops and asks you: job_status then reports state " +
+        "'waiting_for_input' and the question (which child asked, if one did) — ask the user and answer with job_say. After " +
+        "30 minutes without an answer it is told to decide alone.")]
     public static Task<string> CoordinateAsync(
         [Description("GitHub issue numbers to import as the task, e.g. [12, 13].")] int[]? issues = null,
         [Description("Task text, instead of issues.")] string? brief = null,
@@ -118,20 +121,7 @@ public sealed class ClaustrumTools
         CancellationToken cancellationToken = default) =>
         McpExceptionBoundary.GuardAsync(async () =>
         {
-            string resolvedCwd = cwd is { Length: > 0 } ? Path.GetFullPath(cwd) : Environment.CurrentDirectory;
-            CoordinateRequest request = new(
-                Cwd: resolvedCwd,
-                CastName: cast,
-                Issues: issues ?? [],
-                Brief: brief,
-                TierFlag: tier,
-                Overrides: new ConfigOverrides(Model: model, BudgetUsd: budgetUsd, TimeoutSeconds: timeoutSeconds),
-                // Streaming with no OnStreamLine: nothing echoes it anywhere, but ProcessRunner logs
-                // every line as it arrives, so job_status has a last line to relay for the whole run
-                // instead of an empty stdout.log until exit (claude's Parse auto-detects the JSONL).
-                Stream: true,
-                StreamRaw: false,
-                DiffCapBytes: McpDiffCapBytes);
+            CoordinateRequest request = BuildCoordinateRequest(issues, brief, cwd, cast, tier, model, budgetUsd, timeoutSeconds);
 
             // Planned on this call, not inside the job: a usage error, a missing cast or a failed
             // `gh` is then answered here, with its own message, instead of being buried in a
@@ -154,7 +144,7 @@ public sealed class ClaustrumTools
 
     [McpServerTool(Name = "job_status")]
     [Description(
-        "Check a delegate_async job's progress: state (running|waiting_for_input|abandoned|done|failed), elapsed seconds, " +
+        "Check a delegate_async or coordinate job's progress: state (running|waiting_for_input|abandoned|done|failed), elapsed seconds, " +
         "the last captured output line, and question ({seq, text}, null unless state is 'waiting_for_input'). " +
         "'waiting_for_input' means the role asked the user something: ask them with your question tool and " +
         "answer with job_say. 'abandoned' means the claustrum process running the job is gone and left no result: " +
@@ -169,7 +159,7 @@ public sealed class ClaustrumTools
 
     [McpServerTool(Name = "job_say")]
     [Description(
-        "Talk to a live delegate_async job: answer the question job_status shows (state 'waiting_for_input'), or, " +
+        "Talk to a live delegate_async or coordinate job: answer the question job_status shows (state 'waiting_for_input'), or, " +
         "while it runs, send its role a message. Returns {answers_question, state}; an error when the job is " +
         "unknown, not live, done or abandoned (its claustrum process is gone). A blind role (role.json blind:true, e.g. " +
         "code-reviewer, ui-reviewer) never asks and receives no human input: job_say to its job is refused.")]
@@ -193,7 +183,26 @@ public sealed class ClaustrumTools
             return JsonSerializer.Serialize(result, ClaustrumJsonContext.Default.RunResult);
         });
 
-    private static DelegateRequest BuildRequest(
+    // #124 stage 2: the architect runs live with a reply window, so its escalations show in job_status and job_say answers them
+    // (the children it spawns are tree members, whose questions it answers first). Internal so a test reads the options it sets.
+    internal static CoordinateRequest BuildCoordinateRequest(
+        int[]? issues, string? brief, string? cwd, string? cast, string? tier, string? model, decimal? budgetUsd, int? timeoutSeconds) => new(
+        Cwd: cwd is { Length: > 0 } ? Path.GetFullPath(cwd) : Environment.CurrentDirectory,
+        CastName: cast,
+        Issues: issues ?? [],
+        Brief: brief,
+        TierFlag: tier,
+        Overrides: new ConfigOverrides(Model: model, BudgetUsd: budgetUsd, TimeoutSeconds: timeoutSeconds),
+        // Streaming with no OnStreamLine: nothing echoes it anywhere, but ProcessRunner logs
+        // every line as it arrives, so job_status has a last line to relay for the whole run
+        // instead of an empty stdout.log until exit (claude's Parse auto-detects the JSONL).
+        Stream: true,
+        StreamRaw: false,
+        DiffCapBytes: McpDiffCapBytes,
+        Live: true,
+        ReplyTimeoutSeconds: DelegateEngine.DefaultReplyTimeoutSeconds);
+
+    internal static DelegateRequest BuildRequest(
         string role, string brief, string? cwd, string? backend, string? model, string? effort, string? tier,
         string? permission, string[]? deny, decimal? budgetUsd, int? timeoutSeconds, string? resumeSession, string[]? files, string? cast,
         string? branch, int replyTimeoutSeconds)

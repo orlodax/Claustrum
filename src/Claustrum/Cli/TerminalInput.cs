@@ -9,7 +9,7 @@ namespace Claustrum.Cli;
 // Unix, `CONIN$` on Windows) and never from the process stdin, which may have carried the brief (`--brief-file -`).
 // A read blocks a thread of its own and cannot be interrupted, so callers never await it alone: a cancel is answered
 // by whoever races it, and the thread (a background one) dies with the process.
-internal sealed partial class TerminalInput : IDisposable
+internal sealed partial class TerminalInput : IPromptTerminal, IDisposable
 {
     private const uint GenericRead = 0x80000000;
     private const uint GenericWrite = 0x40000000;

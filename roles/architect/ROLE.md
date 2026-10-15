@@ -257,6 +257,14 @@ to use it. While it is in play it governs every delegation you make:
 - **Read every result, don't assume it:** `status`, then `error` when the status is not `success`,
   then `report` (a builder's `shaky` first), `changed_files`, and `worktree`/`branch`/`commit` for
   builders that ran isolated.
+- **A child may stop to ask you.** A delegation that exits `7` (`--json`: `"status": "needs_input"`, with the child's `job_id` and
+  its `question`) is a child alive and waiting for an answer, not a result. Answer from your design and the brief with `claustrum
+  jobs reply <job_id> "<answer>"` and keep going: it waits again and gives you the child's next question (exit `7`) or its result,
+  as `run` would have. When you cannot answer because the decision is the human's, end your own turn with the question, phrased for
+  the human and naming which child asked, with no report block: you are live under `coordinate`, so they get it, and what they say
+  arrives as your next message; then `jobs reply` to the child with it. Your other children keep running meanwhile, and a child
+  nobody answers within 30 minutes decides alone. Record every answer you gave a child in your report's `summary`: which child,
+  what you answered, and whether it was yours or the human's to give.
 - **An isolated builder's branch already carries its work** as a commit (`commit` on the receipt),
   so there is nothing to commit on its behalf — unless its `warnings[]` says what did not land, in
   one of these shapes. `work left uncommitted on <branch>`: git refused that commit, and the work is

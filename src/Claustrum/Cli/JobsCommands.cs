@@ -9,7 +9,7 @@ using Claustrum.Roles.Sync;
 namespace Claustrum.Cli;
 
 // docs/PLAN.md §A5 `claustrum jobs list [--last N]|show <id>|logs <id> [--stderr]|clean`, reading
-// `~/.claustrum/jobs` (`CLAUSTRUM_HOME` honoured via JobDirectory.ResolveRoot); `say` and `wait` are #124's live channel.
+// `~/.claustrum/jobs` (`CLAUSTRUM_HOME` honoured via JobDirectory.ResolveRoot); `say`, `wait`, `reply`, `cancel` and the hidden `host` are #124's live channel.
 public static class JobsCommands
 {
     private const int DefaultLast = 20;
@@ -47,8 +47,11 @@ public static class JobsCommands
         Command follow = JobsFollowCommand.Build();
         Command say = JobsSayCommand.Build();
         Command wait = JobsWaitCommand.Build();
+        Command reply = JobsReplyCommand.Build();
+        Command cancel = JobsCancelCommand.Build();
+        Command host = JobsHostCommand.Build();
 
-        return new Command("jobs", "Inspect past and running jobs, and talk to a live one.") { list, show, logs, clean, budget, follow, say, wait };
+        return new Command("jobs", "Inspect past and running jobs, and talk to a live one.") { list, show, logs, clean, budget, follow, say, wait, reply, cancel, host };
     }
 
     private static int List(int last)

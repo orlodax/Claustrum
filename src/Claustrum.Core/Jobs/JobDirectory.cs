@@ -18,15 +18,30 @@ public static class JobDirectory
 
         Prune(platform, root);
 
-        return new JobPaths(
-            id,
-            directory,
-            Path.Combine(directory, "request.json"),
-            Path.Combine(directory, "system.md"),
-            Path.Combine(directory, "stdout.log"),
-            Path.Combine(directory, "stderr.log"),
-            Path.Combine(directory, "result.json"));
+        return PathsIn(id, directory);
     }
+
+    /// <summary>
+    /// The paths of a job directory that already exists, for the process that runs a job another one minted (a detached
+    /// host, #124); null when there is no such directory. The id is a name under the jobs root, never a path.
+    /// </summary>
+    public static JobPaths? Open(IPlatform platform, string id)
+    {
+        if (id.Length == 0 || id is "." or ".." || id.AsSpan().IndexOfAny('/', '\\') >= 0)
+            return null;
+
+        string directory = Path.Combine(ResolveRoot(platform), id);
+        return Directory.Exists(directory) ? PathsIn(id, directory) : null;
+    }
+
+    private static JobPaths PathsIn(string id, string directory) => new(
+        id,
+        directory,
+        Path.Combine(directory, "request.json"),
+        Path.Combine(directory, "system.md"),
+        Path.Combine(directory, "stdout.log"),
+        Path.Combine(directory, "stderr.log"),
+        Path.Combine(directory, "result.json"));
 
     // The id must be unique across *processes*, not just within one: M3 fans builders out as N
     // concurrent `claustrum run` processes that all start inside the same wall-clock second, and the

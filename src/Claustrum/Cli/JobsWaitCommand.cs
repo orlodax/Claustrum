@@ -8,16 +8,10 @@ namespace Claustrum.Cli;
 
 // #124 `claustrum jobs wait <id> [--timeout <s>] [--json]`: blocks until the job asks a question or finishes, and says which.
 // The primitive a coordinating architect polls with: stdout is the answer (a question as `? text` and its seq, or the
-// summary line `jobs follow` ends on; one JSON document under --json), exit 0 for either, 4 on --timeout, 5 when the
+// summary line `jobs follow` ends on; one JSON document under --json), exit 0 for either, 4 on --timeout, 6 when the
 // job is abandoned (its claustrum process is gone and left no result.json), 130 on Ctrl-C.
 public static class JobsWaitCommand
 {
-    private const int PollIntervalMs = 500;
-
-    // A job whose live.json says done, or whose result.json is cut short, gets this many polls (~10 s) to show a readable
-    // receipt before it is reported without one: the process that wrote the one may have died before the other.
-    private const int ReceiptPolls = 20;
-
     public static Command Build()
     {
         Argument<string> id = new("id") { Description = "Job id." };
@@ -47,46 +41,26 @@ public static class JobsWaitCommand
         };
 
         DateTime? deadline = timeoutSeconds is { } seconds ? DateTime.UtcNow.AddSeconds(seconds) : null;
-        int receiptPolls = 0;
         try
         {
-            while (true)
+            (JobWaitResult seen, bool timedOut) = await LiveWait.UntilAsync(job, deadline, answeredSeq: null, finalOnly: false, cts.Token);
+            if (seen.State == "abandoned")
             {
-                JobWaitResult seen = job.Observe();
-                if (seen.State == "abandoned")
-                {
-                    // The message goes to stdout in plain mode, where the answer is; under --json stdout stays the one document.
-                    if (jsonMode)
-                    {
-                        PrintJson(seen);
-                        SafeConsole.Error(LiveJob.AbandonedMessage);
-                    }
-                    else
-                    {
-                        SafeConsole.Out(LiveJob.AbandonedMessage);
-                    }
-
-                    return ExitCodes.Abandoned;
-                }
-
-                if (seen.State == "waiting_for_input" || (seen.State == "done" && (seen.ResultStatus is not null || ++receiptPolls >= ReceiptPolls)))
-                {
-                    Report(job, seen, jsonMode);
-                    return ExitCodes.Ok;
-                }
-
-                TimeSpan left = deadline is { } due ? due - DateTime.UtcNow : TimeSpan.MaxValue;
-                if (left <= TimeSpan.Zero)
-                {
-                    SafeConsole.Error($"timed out after {timeoutSeconds}s waiting for job {StreamText.Sanitize(id)} (state: {seen.State})");
-                    if (jsonMode)
-                        PrintJson(seen);
-
-                    return ExitCodes.Timeout;
-                }
-
-                await Task.Delay(left < TimeSpan.FromMilliseconds(PollIntervalMs) ? left : TimeSpan.FromMilliseconds(PollIntervalMs), cts.Token);
+                LiveWait.PrintAbandoned(seen, jsonMode);
+                return ExitCodes.Abandoned;
             }
+
+            if (timedOut)
+            {
+                SafeConsole.Error($"timed out after {timeoutSeconds}s waiting for job {StreamText.Sanitize(id)} (state: {seen.State})");
+                if (jsonMode)
+                    PrintJson(seen);
+
+                return ExitCodes.Timeout;
+            }
+
+            Report(job, seen, jsonMode);
+            return ExitCodes.Ok;
         }
         catch (OperationCanceledException)
         {

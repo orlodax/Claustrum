@@ -1,3 +1,4 @@
+using System.Text.Json.Serialization;
 using Claustrum.Casts;
 using Claustrum.Core.Config;
 
@@ -7,7 +8,8 @@ namespace Claustrum.Delegation;
 // need to agree on once each front door has finished its own arg parsing (a brief already read from
 // --brief-file/stdin on the CLI side, "K=V" pairs already split, etc. — see docs/PLAN.md A1 "one
 // executable; MCP and CLI are thin adapters over Core", extended one layer up now that both share
-// this pipeline instead of duplicating it).
+// this pipeline instead of duplicating it). A detached job (#124) carries it to its host as host-request.json, so
+// the two things a file cannot hold (a callback, a cast `coordinate` copies) are not serialized.
 public sealed record DelegateRequest(
     string Role,
     string Brief,
@@ -24,7 +26,7 @@ public sealed record DelegateRequest(
     // The cast MaxParallel came from (CastApplication.Resolve). Only RoleConcurrencyGate reads it:
     // its slot pool has to be per cast, not per role (docs/PLAN.md §D4).
     string? CastName = null,
-    Action<string>? OnStreamLine = null,
+    [property: JsonIgnore] Action<string>? OnStreamLine = null,
     // Appended to the rendered role's system body before Config.Resolve — how `coordinate` gets the
     // cast into its architect's prompt without Roles/Core learning what a cast is (NOTES.md
     // "coordinate: a spawned architect is a job run with the cast injected…"). May carry JobIdToken.
@@ -45,7 +47,7 @@ public sealed record DelegateRequest(
     // #122: `coordinate`'s cast, set when the cast was not tracked in HEAD — RunIsolatedAsync copies
     // it into the worktree after creation so the architect can load it. Only set by CoordinatePlan;
     // null for all other paths (CLI `run`, MCP `delegate`).
-    Cast? WorktreeCastCopy = null,
+    [property: JsonIgnore] Cast? WorktreeCastCopy = null,
     // #124: set by the front doors (CLI TTY rule, MCP delegate vs delegate_async); copied into RunOptions by Prepare.
     bool Live = false,
     int ReplyTimeoutSeconds = 0)

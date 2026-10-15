@@ -13,4 +13,14 @@ public sealed record JobPaths(string Id, string Directory, string RequestJson, s
     public string LiveJson => Path.Combine(Directory, "live.json");
 
     public string InboxDirectory => Path.Combine(Directory, "inbox");
+
+    // A detached job (`run --detach`, #124 stage 2) is run by a `claustrum jobs host` process of its own: what it is to run,
+    // who it is, where its console output goes, and the marker `jobs cancel` leaves for it.
+    public string HostRequestJson => Path.Combine(Directory, "host-request.json");
+
+    public string HostJson => Path.Combine(Directory, "host.json");
+
+    public string HostLog => Path.Combine(Directory, "host.log");
+
+    public string CancelRequest => Path.Combine(Directory, "cancel");
 }

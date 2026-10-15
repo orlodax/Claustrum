@@ -9,9 +9,9 @@ namespace Claustrum.Cli;
 // A reply answers only what was on screen: type-ahead is discarded before each prompt. A blind role is never asked
 // (nothing is delivered to it), and an abandoned job stops the prompting. The question text itself is printed by
 // ConversationPrinter, so the prompt always follows it.
-internal sealed class QuestionPrompter(LiveJob job)
+internal sealed class QuestionPrompter(LiveJob job, Func<IPromptTerminal?>? openTerminal = null)
 {
-    private TerminalInput? terminal;
+    private IPromptTerminal? terminal;
     private Task<string?>? read;
     private int readSeq = -1;
     private int askedSeq = -1;
@@ -47,7 +47,7 @@ internal sealed class QuestionPrompter(LiveJob job)
             return;
 
         askedSeq = open.Seq;
-        terminal ??= TerminalInput.TryOpen();
+        terminal ??= (openTerminal ?? TerminalInput.TryOpen)();
         if (terminal is null)
         {
             disabled = true;

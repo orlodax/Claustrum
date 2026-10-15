@@ -8,7 +8,8 @@
   *your* model, in *your* harness, outside the cast's budget, which is precisely what the cast
   exists to decide.
 - **Running builders concurrently through Claustrum.** `claustrum run` blocks until its role is
-  done, so two calls in a row are sequential — on 2026-10-09 a spawned architect with
+  done or, in your tree, asks you a question (exit `7`: see "A child may stop to ask you"), so two
+  calls in a row are sequential — on 2026-10-09 a spawned architect with
   `max_parallel: 2` ran its two builders 64 ms apart, one after the other (#72, drive 2). To run
   them at once, start each in the background with its receipt redirected to a file, and `wait` for
   all of them in the same command:
@@ -21,7 +22,8 @@
   wait
   ```
 
-  then read each receipt file as you would a single run's output. The Bash tool's
+  then read each receipt file as you would a single run's output — one whose `status` is `needs_input`
+  is a child's question, not its result. The Bash tool's
   `run_in_background: true` is the other way to start them — but read every receipt before your
   turn ends. Never start more at once than the cast's `max_parallel`. The rest of this section
   applies only when **no** cast is in play.
