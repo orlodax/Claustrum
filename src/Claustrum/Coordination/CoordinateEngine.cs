@@ -5,6 +5,7 @@ using Claustrum.Core.Config;
 using Claustrum.Core.Git;
 using Claustrum.Core.IO;
 using Claustrum.Core.Jobs;
+using Claustrum.Core.Json;
 using Claustrum.Core.Model;
 using Claustrum.Delegation;
 using Claustrum.Live;
@@ -82,8 +83,8 @@ public static class CoordinateEngine
         DateTimeOffset startedAt = DateTimeOffset.UtcNow;
         AtomicFile.WriteAllText(job.OwnerJson, JsonSerializer.Serialize(OwnerRecord.ForCurrentProcess(), LiveJsonContext.Default.OwnerRecord));
 
-        // Whatever ends the architect, a throw included, its detached children must not outlive it. The warnings ride the returned
-        // result only, as the ledger's below: result.json was written by Runner before this ran, and is not rewritten.
+        // Whatever ends the architect, a throw included, its detached children must not outlive it. Runner wrote result.json
+        // before this ran, so a settle that cancelled anything rewrites it: `jobs show` and MCP job_result read the disk.
         string[] settled;
         RunResult result;
         try
@@ -96,7 +97,10 @@ public static class CoordinateEngine
         }
 
         if (settled.Length > 0)
+        {
             result = result with { Warnings = [.. result.Warnings, .. settled.Select(TreeSettler.WarningFor)] };
+            AtomicFile.WriteAllText(job.ResultJson, JsonSerializer.Serialize(result, ClaustrumJsonContext.Default.RunResult));
+        }
 
         // Only a capped cast has a ledger at all (DelegateEngine builds no JobTreeBudget without a
         // cap, so its children write no entry either). The architect is deliberately not a *member*
