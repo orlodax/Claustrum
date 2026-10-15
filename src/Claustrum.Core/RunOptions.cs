@@ -26,4 +26,8 @@ public sealed record RunOptions(
     // What the caller decided before the run and the receipt must say, first in `warnings` — on disk too,
     // which a caller appending to the returned result would miss (#60's lesson): DelegateEngine's in-place
     // fallback with no git repository (#74 H7).
-    string[]? PreRunWarnings = null);
+    string[]? PreRunWarnings = null,
+    // #124: keep a claude session open as a conversation (Claustrum.Core.Live). ReplyTimeoutSeconds is how
+    // long an open question waits for the human; 0 tells the role at once that nobody is there to answer.
+    bool Live = false,
+    int ReplyTimeoutSeconds = 0);

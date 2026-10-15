@@ -45,7 +45,10 @@ public sealed record DelegateRequest(
     // #122: `coordinate`'s cast, set when the cast was not tracked in HEAD — RunIsolatedAsync copies
     // it into the worktree after creation so the architect can load it. Only set by CoordinatePlan;
     // null for all other paths (CLI `run`, MCP `delegate`).
-    Cast? WorktreeCastCopy = null)
+    Cast? WorktreeCastCopy = null,
+    // #124: set by the front doors (CLI TTY rule, MCP delegate vs delegate_async); copied into RunOptions by Prepare.
+    bool Live = false,
+    int ReplyTimeoutSeconds = 0)
 {
     /// <summary>
     /// The exact token <see cref="SystemAppendix"/> and <see cref="Env"/> values may carry in place of

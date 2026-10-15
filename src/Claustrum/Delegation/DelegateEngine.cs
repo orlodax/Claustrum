@@ -101,7 +101,9 @@ public static class DelegateEngine
             OnStreamLine: request.OnStreamLine,
             StreamRaw: request.StreamRaw,
             Tree: tree,
-            PreRunWarnings: request.PreRunWarnings);
+            PreRunWarnings: request.PreRunWarnings,
+            Live: request.Live,
+            ReplyTimeoutSeconds: request.ReplyTimeoutSeconds);
 
         return new PreparedDelegation(request, resolved, options, budgetUsd, timeoutSeconds, requestPermission);
     }
