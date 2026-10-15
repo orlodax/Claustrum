@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
+using Claustrum.Core.IO;
 using Claustrum.Core.Jobs;
 using Claustrum.Core.Json;
 using Claustrum.Core.Model;
@@ -17,9 +18,16 @@ public sealed class LiveSession(JobPaths job, ILiveProtocol protocol, bool blind
 {
     public const string BlindNotice = "This role cannot ask questions: the review is blind. Put any doubt in your findings and continue to your report.";
 
+    public const string BlindInputNotice = "A message for this blind role was not delivered: blind roles receive no human input.";
+
+    // The same cap `jobs say` puts on a message: a bigger inbox file did not come from it.
+    public const int MaxInboxBytes = 1024 * 1024;
+
     private const string DecideAlone = "Decide yourself, record the choice and why in open_decisions, and continue.";
 
     private const double WarnFraction = 0.85;
+
+    private static readonly DateTimeOffset? ownerStartedAt = CurrentProcessStart();
 
     private readonly TimeProvider time = timeProvider ?? TimeProvider.System;
     private readonly Lock gate = new();
@@ -40,12 +48,20 @@ public sealed class LiveSession(JobPaths job, ILiveProtocol protocol, bool blind
     // its report and the last `result` in the stream would no longer be the one that carries it.
     private volatile bool closing;
 
-    public static string NoAnswerNotice(int minutes) => $"No answer arrived within {minutes} minutes. {DecideAlone}";
+    // A turn carrying the report was recorded: from then on the job's outcome is that report, whatever stops the process.
+    private volatile bool reported;
+
+    public static string NoAnswerNotice(TimeSpan window) => $"No answer arrived within {Duration(window)}. {DecideAlone}";
 
     public static string NoHumanNotice => $"No human is available to answer. {DecideAlone}";
 
-    public static string TimeoutWarning(int minutes) =>
-        $"About {minutes} minutes remain before this job is stopped. Finish what you are doing and write your claustrum-report now.";
+    public static string TimeoutWarning(TimeSpan remaining)
+    {
+        string left = Duration(remaining);
+        return $"About {left} {(left.StartsWith("1 ", StringComparison.Ordinal) ? "remains" : "remain")} before this job is stopped. Finish what you are doing and write your claustrum-report now.";
+    }
+
+    public bool ReportDelivered => reported;
 
     public int Entries
     {
@@ -122,9 +138,11 @@ public sealed class LiveSession(JobPaths job, ILiveProtocol protocol, bool blind
             return;
         }
 
-        if (ReportExtractor.Extract(turn.Text).Status != ReportStatus.Missing || toldOnce)
+        bool hasReport = ReportExtractor.Extract(turn.Text).Status != ReportStatus.Missing;
+        if (hasReport || toldOnce)
         {
             Append(ConversationParty.Role, ConversationKind.Message, turn.Text);
+            reported = hasReport;
             Finish();
             return;
         }
@@ -151,31 +169,51 @@ public sealed class LiveSession(JobPaths job, ILiveProtocol protocol, bool blind
         deadline?.Pause();
     }
 
+    // The inbox is read and parsed before `gate` is taken and its files are deleted after it is released, so a file
+    // that stalls (or a slow disk) never holds up the pump thread: a cancel or a timeout always completes.
     private void Tick()
     {
         lock (gate)
         {
             if (state == LiveStatus.Done)
                 return;
+        }
 
-            DrainInbox();
+        List<InboxItem> inbox = ReadInbox();
+        lock (gate)
+        {
+            if (state == LiveStatus.Done)
+                return;
+
+            foreach (InboxItem item in inbox)
+            {
+                if (item.Discarded is { } why)
+                    Append(ConversationParty.Claustrum, ConversationKind.Notice, why);
+                else if (item.Message is { Text.Length: > 0 })
+                    Deliver(item.Message.Text);
+            }
 
             if (state == LiveStatus.WaitingForInput && replyTimeoutSeconds > 0
                 && time.GetElapsedTime(waitingSince) >= TimeSpan.FromSeconds(replyTimeoutSeconds))
             {
-                Notify(NoAnswerNotice(Minutes(TimeSpan.FromSeconds(replyTimeoutSeconds))));
+                Notify(NoAnswerNotice(TimeSpan.FromSeconds(replyTimeoutSeconds)));
                 toldOnce = true;
                 Resume();
             }
 
             WarnBeforeTimeout();
         }
+
+        // A message is recorded and queued for stdin before its file goes, so a crash between the two repeats it
+        // rather than loses it.
+        foreach (InboxItem item in inbox)
+            TryDelete(item.File);
     }
 
-    // Oldest first by file name (`<ticks>-<random>.json`). A message is recorded and queued for stdin before its
-    // file is deleted, so a crash between the two repeats it rather than loses it. Files still being written
-    // never match: the writer renames them into place.
-    private void DrainInbox()
+    // Oldest first by file name (`<ticks>-<random>.json`). Files still being written never match: the writer renames
+    // them into place. An item with neither message nor reason is an empty text; a file that cannot be read right now
+    // (still open for writing on Windows) is left out and tried again on the next tick.
+    private List<InboxItem> ReadInbox()
     {
         string[] files;
         try
@@ -184,37 +222,74 @@ public sealed class LiveSession(JobPaths job, ILiveProtocol protocol, bool blind
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            return;
+            return [];
         }
 
         Array.Sort(files, StringComparer.Ordinal);
+        List<InboxItem> items = [];
         foreach (string file in files)
         {
-            InboxMessage? message;
-            try
+            if (ReadInboxFile(file) is { } item)
+                items.Add(item);
+        }
+
+        return items;
+    }
+
+    // Only a regular, unlinked file of at most MaxInboxBytes is read: a FIFO named `*.json` would block the read
+    // for ever and `/dev/zero` behind a symlink would never end (review of #124). PlainFile opens without
+    // blocking and judges the opened handle; the link check covers a regular file kept outside the store.
+    private static InboxItem? ReadInboxFile(string file)
+    {
+        string name = Path.GetFileName(file);
+        try
+        {
+            if (new FileInfo(file).LinkTarget is not null)
+                return Discard(file, name, "it is a link");
+
+            using FileStream? stream = PlainFile.OpenRead(file, out string? refusal);
+            if (stream is null)
+                return Discard(file, name, refusal ?? PlainFile.NotRegular);
+
+            using MemoryStream bytes = new();
+            byte[] chunk = new byte[16384];
+            int read;
+            while ((read = stream.Read(chunk)) > 0)
             {
-                message = JsonSerializer.Deserialize(File.ReadAllText(file), ClaustrumJsonContext.Default.InboxMessage);
-            }
-            catch (JsonException)
-            {
-                Append(ConversationParty.Claustrum, ConversationKind.Notice, $"Discarded an unreadable inbox message ({Path.GetFileName(file)}).");
-                TryDelete(file);
-                continue;
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-            {
-                continue;
+                bytes.Write(chunk, 0, read);
+                if (bytes.Length > MaxInboxBytes)
+                    return Discard(file, name, $"it is over {MaxInboxBytes / 1024} KiB");
             }
 
-            if (message is { Text.Length: > 0 })
-                Deliver(message.Text);
+            ReadOnlySpan<byte> json = bytes.GetBuffer().AsSpan(0, (int)bytes.Length);
+            if (json.StartsWith(Encoding.UTF8.Preamble))
+                json = json[Encoding.UTF8.Preamble.Length..];
 
-            TryDelete(file);
+            return new InboxItem(file, JsonSerializer.Deserialize(json, ClaustrumJsonContext.Default.InboxMessage), null);
+        }
+        catch (JsonException)
+        {
+            return Discard(file, name, "it is not a message");
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return null;
         }
     }
 
+    private static InboxItem Discard(string file, string name, string why) => new(file, null, $"Discarded an inbox message ({name}): {why}.");
+
+    // A blind role is only ever told: whatever the human writes, the engine does not pass it on, because it could
+    // carry the rationale the blind gate withholds (review of #124, the owner's decision). It does not count as
+    // human input either: the role's one automatic answer is not reset.
     private void Deliver(string text)
     {
+        if (blind)
+        {
+            Append(ConversationParty.Claustrum, ConversationKind.Notice, BlindInputNotice);
+            return;
+        }
+
         bool replying = state == LiveStatus.WaitingForInput;
         Append(ConversationParty.Human, replying ? ConversationKind.Reply : ConversationKind.Message, text);
         toldOnce = false;
@@ -230,7 +305,7 @@ public sealed class LiveSession(JobPaths job, ILiveProtocol protocol, bool blind
             return;
 
         warned = true;
-        Notify(TimeoutWarning(Minutes(limit - clock.Active)));
+        Notify(TimeoutWarning(limit - clock.Active));
     }
 
     // The role is working again: the question is closed and the clock runs.
@@ -265,7 +340,31 @@ public sealed class LiveSession(JobPaths job, ILiveProtocol protocol, bool blind
         Publish();
     }
 
-    private static int Minutes(TimeSpan span) => Math.Max(1, (int)Math.Round(span.TotalMinutes));
+    // "1 minute" / "5 minutes"; under a minute the seconds are said, because "1 minute" for 20 seconds is a lie.
+    private static string Duration(TimeSpan span)
+    {
+        if (span < TimeSpan.FromMinutes(1))
+        {
+            int seconds = Math.Max(1, (int)span.TotalSeconds);
+            return seconds == 1 ? "1 second" : $"{seconds} seconds";
+        }
+
+        int minutes = (int)Math.Round(span.TotalMinutes);
+        return minutes == 1 ? "1 minute" : $"{minutes} minutes";
+    }
+
+    private static DateTimeOffset? CurrentProcessStart()
+    {
+        try
+        {
+            using System.Diagnostics.Process self = System.Diagnostics.Process.GetCurrentProcess();
+            return self.StartTime.ToUniversalTime();
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or NotSupportedException or System.ComponentModel.Win32Exception)
+        {
+            return null;
+        }
+    }
 
     // One JSON line in one write, so a reader following the file never sees half of an entry it can parse.
     private int Append(ConversationParty from, ConversationKind kind, string text)
@@ -286,7 +385,7 @@ public sealed class LiveSession(JobPaths job, ILiveProtocol protocol, bool blind
     // Windows refuses the rename while a reader holds the file, so it is tried a few times.
     private void Publish()
     {
-        LiveState snapshot = new(state, questionSeq, since, replyTimeoutSeconds);
+        LiveState snapshot = new(state, questionSeq, since, replyTimeoutSeconds, Environment.ProcessId, ownerStartedAt);
         string json = JsonSerializer.Serialize(snapshot, ClaustrumJsonContext.Default.LiveState);
         string temp = job.LiveJson + ".tmp";
         for (int attempt = 0; attempt < 5; attempt++)
@@ -318,6 +417,8 @@ public sealed class LiveSession(JobPaths job, ILiveProtocol protocol, bool blind
     }
 
     private static void TryDelete(string file) => Guarded(() => File.Delete(file));
+
+    private sealed record InboxItem(string File, InboxMessage? Message, string? Discarded);
 
     // The only code that touches stdin after the brief: messages in order, then the close that tells the
     // child the conversation is over (claude exits 0 on a closed stdin).

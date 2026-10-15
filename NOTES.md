@@ -6142,6 +6142,11 @@ through `IProcessLive`; claude's wire format is `ClaudeLiveProtocol`; `Runner` s
 - **Inbox.** Polled every 500 ms, `*.json` oldest first by file name, ordinal. A message that arrives while a question is open
   is a `Reply` and closes it; otherwise a `Message`; either is sent as the next user turn, and its file is deleted only after it
   is recorded and queued (a crash between the two repeats it, never loses it). An unreadable file is discarded with a `Notice`.
+  **The read never blocks the pump** (review of #124, F2): files are read and parsed before `gate` is taken and deleted after
+  it is released, through `PlainFile` (a FIFO or device is refused, not opened), a link is refused, and over 1 MiB (`jobs say`'s
+  own cap) is refused; each refusal deletes the file and records a `Notice` with the reason. The writes the session does
+  under `gate` (`conversation.jsonl`, `live.json`) stay there on purpose: they keep entries in `seq` order, and the job
+  directory is one Claustrum created, so nothing foreign can be named there.
   All conversation writes are single-write appends of one JSON line; `live.json` is a temp file renamed over the old one, tried 5
   times because Windows refuses a rename while a reader holds the file. A job directory that stops taking writes costs the
   record, never the run: the session swallows IO errors, because a throw on the pump thread would end the process.
@@ -6155,7 +6160,10 @@ through `IProcessLive`; claude's wire format is `ClaudeLiveProtocol`; `Runner` s
   `waiting_for_input`: the `Question` is recorded and "No human is available to answer. …" goes out at once.
 - **Blind roles can only tell** (owner's decision, #124 comment). A report-less turn of a blind role is a `Message`, never a
   `Question`, answered at once with the fixed `Notice` "This role cannot ask questions: the review is blind…". It never waits.
-  `jobs say` to a blind role is NOT refused by the engine: that is for the front door to decide.
+  **Blind roles receive no human text** (review of #124, F1): a message in a blind job's inbox is deleted and recorded as the
+  `Notice` "A message for this blind role was not delivered…", never sent and never resetting the one-automatic-answer flag,
+  because it could carry the rationale the blind gate withholds. The front doors refuse such a message first; this is the
+  engine's own line.
 - **Timeout warning.** Once, when `Active` reaches 85% of the limit (the pause-adjusted clock), a `Notice` "About <m> minutes
   remain…" goes out as a user turn, the same way as any message. It never fires while waiting (the clock is stopped); a run
   with no timeout never gets one. This is what stops a timed-out job losing its report (job 20261015-170331-5531b2a9).
@@ -6165,7 +6173,9 @@ through `IProcessLive`; claude's wire format is `ClaudeLiveProtocol`; `Runner` s
   written after the end.** Once the report is seen, messages still queued are dropped: a line written ahead of the close would
   start a turn after the report and make the last `result` the wrong one. A message that crossed the report on the wire can still
   do that; `ClaudeBackend.ParseStream` then keeps the turn that carries the report as `final_message` (cost and usage stay the last
-  `result`'s). (c) **Live needs a report.** `Runner` goes live only for a role with `HasReport` and a backend with a
+  `result`'s). **A delivered report is the outcome:** once its turn is recorded (`IProcessLive.ReportDelivered`), a timeout or a
+  cancel that stops the process afterwards is not reported as one, and the exit code of the child we killed reads 0 (seen once:
+  status `timeout`, report `ok`); a Ctrl-C before the report still cancels. (c) **Live needs a report.** `Runner` goes live only for a role with `HasReport` and a backend with a
   `LiveProtocol` (claude); without a fence there is no way to end a conversation. (d) **The trailer.** The report trailer says
   "a reply without it is rejected", which would stop any role from asking, so a live run gets its own: a turn without the block
   is taken as a question; a blind role keeps the old one and is told it cannot ask.
@@ -6176,3 +6186,9 @@ through `IProcessLive`; claude's wire format is `ClaudeLiveProtocol`; `Runner` s
   warning, cancel while waiting, report on turn 1, mid-turn message); never through a real multi-turn Claustrum job, which needs
   paid calls. Known limit: the few milliseconds between claude emitting a `result` and Claustrum reading it are a window in which
   a message is still taken as mid-turn.
+- **Owner identity.** `live.json` carries `owner_pid` and `owner_started_at`; `LiveState.IsOwnerAlive()` says the pid is gone or
+  now another process (start time more than 5 s apart). A session killed without reaching its end leaves `running` behind, and
+  this is how a front door tells that from a live job. No owner recorded, or a process that cannot be inspected, counts alive.
+- **Front-door rules** (stage 1b). `run` mints its own job dir on a live terminal so `follow` can read it while the job runs; the
+  claude-only gate is a capability check on the backend's live protocol, not a name; a **stale question** rule: an answer
+  still unconsumed in `inbox/` hides the open question (it is answered, the session has not read it yet); and blind roles receive no human text.
