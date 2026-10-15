@@ -7,7 +7,8 @@ using Claustrum.Live;
 
 namespace Claustrum.Delegation;
 
-// State: running | waiting_for_input (a live job's question is open, and Question carries it; #124) | done | failed | unknown.
+// State: running | waiting_for_input (a live job's question is open, and Question carries it; #124) | abandoned (a live job
+// whose claustrum process is gone, no result.json) | done | failed | unknown.
 public sealed record JobStatusInfo(string State, double ElapsedSeconds, string? LastLine, QuestionInfo? Question = null);
 
 // Backs MCP delegate_async/job_status/job_result (docs/PLAN.md §A6). In-memory only, so it covers
@@ -71,7 +72,7 @@ public sealed class JobManager
             return null;
 
         JobWaitResult observed = live.Observe();
-        return new JobStatusInfo(observed.State == "waiting_for_input" ? observed.State : "running", 0, null, observed.Question);
+        return new JobStatusInfo(observed.State is "waiting_for_input" or "abandoned" ? observed.State : "running", 0, null, observed.Question);
     }
 
     public async Task<RunResult?> GetResultAsync(string jobId)

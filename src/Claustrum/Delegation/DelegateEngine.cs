@@ -1,5 +1,6 @@
 using Claustrum.Casts;
 using Claustrum.Core;
+using Claustrum.Core.Backends;
 using Claustrum.Core.Config;
 using Claustrum.Core.Git;
 using Claustrum.Core.Jobs;
@@ -106,8 +107,8 @@ public static class DelegateEngine
             StreamRaw: request.StreamRaw,
             Tree: tree,
             PreRunWarnings: request.PreRunWarnings,
-            // #124 stage 1: a live session exists for claude only (opencode follows), so a request for another backend is dropped here.
-            Live: request.Live && resolved.Backend == "claude",
+            // #124: a live session needs a backend that holds a conversation (LiveProtocol); a request for any other is dropped here.
+            Live: request.Live && AppServices.Backends.TryGet(resolved.Backend, out IBackend? liveBackend) && liveBackend.LiveProtocol is not null,
             ReplyTimeoutSeconds: request.ReplyTimeoutSeconds);
 
         return new PreparedDelegation(request, resolved, options, budgetUsd, timeoutSeconds, requestPermission);

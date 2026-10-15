@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
@@ -6,6 +7,7 @@ using Claustrum.Core.IO;
 using Claustrum.Core.Jobs;
 using Claustrum.Core.Json;
 using Claustrum.Core.Live;
+using Claustrum.Roles;
 using Claustrum.Roles.Sync;
 
 namespace Claustrum.Live;
@@ -54,6 +56,29 @@ internal sealed class LiveJob
     public static ConversationEntry? OpenQuestion(LiveState? state, IReadOnlyList<ConversationEntry> entries) =>
         state is { State: LiveStatus.WaitingForInput, QuestionSeq: { } seq } ? entries.FirstOrDefault(entry => entry.Seq == seq) : null;
 
+    /// <summary>
+    /// Whether the job's role is blind (role.json `blind: true`), read from request.json and the role library; null while that
+    /// cannot be told (no request.json yet, an unreadable or unknown role). Callers treat anything but false as blind.
+    /// </summary>
+    public bool? IsBlind() => TryReadRole(out string? role, out string? cwd) ? LoadBlind(role, cwd) : null;
+
+    /// <summary>The job's role name from request.json, or null while it cannot be read.</summary>
+    public string? Role => TryReadRole(out string? role, out _) ? role : null;
+
+    // Why the job is reported abandoned, shared by every front door (`jobs wait|say|follow`, job_status/job_say).
+    public const string AbandonedMessage = "abandoned: the claustrum process running this job is gone";
+
+    /// <summary>
+    /// Whether a job that is not finished has lost its owner: its live.json names a process that is no longer alive and
+    /// there is no result.json. A readable live.json is the precondition: a job without one is not live, hence not abandoned.
+    /// </summary>
+    public bool IsAbandoned(LiveState? state) =>
+        state is { State: not LiveStatus.Done } && !File.Exists(Path.Combine(directory, "result.json")) && !OwnerAlive(state);
+
+    // TODO(#124 front-door brief, item 3): temporary stub until LiveState.IsOwnerAlive lands from the engine builder; then
+    // this becomes `LiveState.IsOwnerAlive(state)` (or the instance form) and the stub goes. Until then no job is ever abandoned.
+    private static bool OwnerAlive(LiveState _) => true;
+
     public LiveState? ReadState() => Parse(ReadText("live.json"), ClaustrumJsonContext.Default.LiveState);
 
     public IReadOnlyList<ConversationEntry> ReadConversation()
@@ -97,7 +122,8 @@ internal sealed class LiveJob
 
     /// <summary>
     /// Where the job stands, for `jobs wait` and MCP job_status. A readable result.json is done; so is a live.json that
-    /// says done or an unreadable result.json, with ResultStatus null until the receipt can be read. An open question is
+    /// says done or an unreadable result.json, with ResultStatus null until the receipt can be read; abandoned is a live.json
+    /// whose owner process is gone with no result.json written. An open question is
     /// reported only once its entry is written, and not while an answer for it sits unconsumed in inbox/ (a caller that
     /// says and then waits must not be handed the question it just answered).
     /// </summary>
@@ -110,6 +136,9 @@ internal sealed class LiveJob
         LiveState? state = ReadState();
         if (resultExists || state?.State == LiveStatus.Done)
             return new JobWaitResult("done", null, null);
+
+        if (IsAbandoned(state))
+            return new JobWaitResult("abandoned", null, null);
 
         if (OpenQuestion(state, ReadConversation()) is { } question && !HasQueuedMessage())
             return new JobWaitResult("waiting_for_input", new QuestionInfo(question.Seq, question.Text), null);
@@ -152,6 +181,13 @@ internal sealed class LiveJob
         if (state.State == LiveStatus.Done || File.Exists(Path.Combine(directory, "result.json")))
             throw new CliUsageException($"job '{Id}' is done: nobody is listening");
 
+        if (IsAbandoned(state))
+            throw new CliUsageException($"job '{Id}' is {AbandonedMessage}: nobody is listening");
+
+        // The engine drops such a message too; refusing here tells the sender instead of leaving it to vanish in inbox/.
+        if (IsBlind() is not false)
+            throw new CliUsageException($"job '{Id}' runs a blind role{(Role is { } role ? $" ({role})" : "")}, or its role cannot be read: blind roles receive no human input, so there is nothing to say");
+
         string inbox = Path.Combine(directory, "inbox");
         if (fence.Escapes(inbox))
             throw new CliUsageException($"{inbox} resolves outside the jobs store ({SyncRoot.Resolve(inbox)}): nothing is written through a link that leaves it");
@@ -177,6 +213,28 @@ internal sealed class LiveJob
 
         LiveStatus now = ReadState()?.State ?? state.State;
         return new SayResult(state.State == LiveStatus.WaitingForInput ? state.QuestionSeq : null, NameOf(now));
+    }
+
+    private bool TryReadRole([NotNullWhen(true)] out string? role, out string? cwd)
+    {
+        role = cwd = null;
+        if (Parse(ReadText("request.json"), ClaustrumJsonContext.Default.RunRequest) is not { Role: { Length: > 0 } name } request)
+            return false;
+
+        (role, cwd) = (name, request.Cwd);
+        return true;
+    }
+
+    private static bool? LoadBlind(string role, string? cwd)
+    {
+        try
+        {
+            return AppServices.RoleLibrary.LoadRole(role, cwd).Definition.Blind;
+        }
+        catch (Exception e) when (e is RoleRenderException or IOException or UnauthorizedAccessException or JsonException)
+        {
+            return null;
+        }
     }
 
     private string? ReadText(string name)
