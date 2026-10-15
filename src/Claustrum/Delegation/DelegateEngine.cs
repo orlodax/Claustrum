@@ -58,22 +58,19 @@ public static class DelegateEngine
 
         ResolvedRole resolved = config.Resolve(rendered, request.Overrides);
 
-        // #122 item 2: warn when no cast is active and the role's model class resolved through a
-        // built-in default — the user config defines no alias for it. Never emit both this warning
-        // and the cast one for the same role: the cast check only runs when a cast is active.
-        if (request.CastBudget is null && request.Overrides.Model is null && request.Overrides.Backend is null)
+        // #122 item 2, F9: warn whenever the role's final model — after flags, the cast, `roles` config and the
+        // tier's class — came through a built-in default, unless a cast warning already said so for this role.
+        // Keyed on that warning, not on a cast being active: a cast naming no model for the role warns nothing itself.
+        string modelSpec = request.Overrides.Model ?? config.Merged.Roles?.GetValueOrDefault(request.Role)?.Model ?? rendered.ModelClass;
+        ModelResolution finalResolution = config.Describe(modelSpec);
+        bool castWarned = request.CastName is { } castName
+            && (request.PreRunWarnings ?? []).Any(warning => warning.StartsWith(CastModelLines.WarningPrefix(castName, request.Role), StringComparison.Ordinal));
+        if (finalResolution.FromBuiltin && !castWarned)
         {
-            string modelSpec = rendered.ModelClass;
-            RoleSettings? roleSettings = config.Merged.Roles?.GetValueOrDefault(request.Role);
-            if (roleSettings?.Model is { } m)
-                modelSpec = m;
-
-            ModelResolution noCastResolution = config.Describe(modelSpec);
-            if (noCastResolution.FromBuiltin)
-            {
-                string msg = $"role '{request.Role}': model '{modelSpec}' resolved to the built-in default {noCastResolution.Backend}:{noCastResolution.ModelId}; {config.UserConfigPath} does not define it";
-                request = request with { PreRunWarnings = [.. request.PreRunWarnings ?? [], msg] };
-            }
+            string msg = finalResolution.Layer != ConfigLayer.Builtin && finalResolution.BuiltinHop is not null
+                ? $"role '{request.Role}': {CastModelLines.ChainedBuiltinNote(finalResolution)}"
+                : $"role '{request.Role}': model '{modelSpec}' resolved to the built-in default {resolved.Backend}:{resolved.Model}; {config.UserConfigPath} does not define it";
+            request = request with { PreRunWarnings = [.. request.PreRunWarnings ?? [], msg] };
         }
 
         // docs/PLAN.md §D4: inside a job tree (CLAUSTRUM_PARENT_JOB, §D2) the cast's budget_usd is the

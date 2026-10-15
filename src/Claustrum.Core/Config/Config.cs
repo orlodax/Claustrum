@@ -149,7 +149,7 @@ public sealed class Config
     // silently capping real resolution at 2 hops.
     public (string Backend, string ModelId) ResolveModel(string spec)
     {
-        (string backend, string modelId, _, _) = ChaseModel(spec);
+        (string backend, string modelId, _, _, _) = ChaseModel(spec);
         return (backend, modelId);
     }
 
@@ -158,27 +158,30 @@ public sealed class Config
     // a built-in default?" flag that DescribeWarnings and the cast models table need.
     public ModelResolution Describe(string spec)
     {
-        (string backend, string modelId, ConfigLayer? layer, bool fromBuiltin) = ChaseModel(spec);
-        return new ModelResolution(spec, backend, modelId, layer, SourceFor(layer), fromBuiltin);
+        (string backend, string modelId, ConfigLayer? layer, bool fromBuiltin, string? builtinHop) = ChaseModel(spec);
+        return new ModelResolution(spec, backend, modelId, layer, SourceFor(layer), fromBuiltin, builtinHop);
     }
 
     // Shared by ResolveModel and Describe: the §A7 alias chase to depth 3, plus (for Describe alone)
-    // the first hop's layer and whether any hop came from the built-in defaults. ResolveModel
-    // discards those extra fields.
-    private (string Backend, string ModelId, ConfigLayer? FirstLayer, bool FromBuiltin) ChaseModel(string spec)
+    // the first hop's layer, whether any hop came from the built-in defaults and the name of the first
+    // such hop. ResolveModel discards those extra fields.
+    private (string Backend, string ModelId, ConfigLayer? FirstLayer, bool FromBuiltin, string? BuiltinHop) ChaseModel(string spec)
     {
         HashSet<string> seen = [spec];
         string current = spec;
         ConfigLayer? firstLayer = null;
         bool fromBuiltin = false;
+        string? builtinHop = null;
         for (int hop = 0; hop < 3; hop++)
         {
             if (Merged.Models is null || !Merged.Models.TryGetValue(current, out string? next))
-                return (SplitBackendModel(current).Backend, SplitBackendModel(current).ModelId, firstLayer, fromBuiltin);
+                return (SplitBackendModel(current).Backend, SplitBackendModel(current).ModelId, firstLayer, fromBuiltin, builtinHop);
 
             ConfigLayer layer = Origins.GetValueOrDefault($"models.{current}", ConfigLayer.Builtin);
             firstLayer ??= layer;
             fromBuiltin |= layer == ConfigLayer.Builtin;
+            if (layer == ConfigLayer.Builtin)
+                builtinHop ??= current;
 
             if (!seen.Add(next))
                 throw new ConfigException($"model alias '{spec}' has a cycle at '{next}'");
@@ -190,7 +193,7 @@ public sealed class Config
             throw new ConfigException($"model alias '{spec}' did not resolve within 3 levels");
 
         (string backend, string modelId) = SplitBackendModel(current);
-        return (backend, modelId, firstLayer, fromBuiltin);
+        return (backend, modelId, firstLayer, fromBuiltin, builtinHop);
     }
 
     private static (string Backend, string ModelId) SplitBackendModel(string value)

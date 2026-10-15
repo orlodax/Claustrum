@@ -57,15 +57,13 @@ public static partial class ArchitectWorktree
         }
 
         await RefuseTrackedLinksAsync(gitRoot, cancellationToken);
-        (string[] unignored, string[] ruleFiles) = await MachineryIgnoresAsync(cwd, gitRoot, cancellationToken);
+        (string[] unignored, string[] ruleFiles, bool castsIgnored) = await MachineryIgnoresAsync(cwd, gitRoot, cancellationToken);
 
-        // #122: the cast is accepted at any git state as long as committed rules cover it:
-        // untracked or ignored is OK when a committed .gitignore rule ignores .claustrum/casts/;
-        // tracked and identical to HEAD is the same as before; tracked with local changes is refused.
-        // So we exclude the cast path *from* the paths array below — it has its own check below.
+        // #122: the cast is judged by its own git state (CheckCastState), apart from the paths below; the
+        // casts rule is required only when it is untracked, so it is not in the generic `unignored` refusal (2026-10-15).
         string castPath = OnDiskPath(gitRoot, CastStore.PathFor(cwd, castName));
         Difference[] castDifferences = [.. await UncommittedAsync(gitRoot, [castPath], cancellationToken)];
-        string? castProblem = CheckCastState(cwd, castName, castDifferences, unignored.Contains(CastsDirectory));
+        string? castProblem = CheckCastState(cwd, castName, castDifferences, castsIgnored);
 
         string[] paths =
         [
@@ -201,8 +199,9 @@ public static partial class ArchitectWorktree
 
     // Which machinery directories a rule ignores, and the in-tree files those rules live in: only those
     // can differ in the worktree — `.git/info/exclude` and the global excludes file are shared by every
-    // worktree. A `!` pattern is a match that un-ignores.
-    private static async Task<(string[] Unignored, string[] RuleFiles)> MachineryIgnoresAsync(string cwd, string gitRoot, CancellationToken cancellationToken)
+    // worktree. A `!` pattern is a match that un-ignores. Unignored lists the directories NO rule ignores
+    // (an inverse: the casts one is reported apart, as CastsIgnored, the cast's git state deciding if it matters).
+    private static async Task<(string[] Unignored, string[] RuleFiles, bool CastsIgnored)> MachineryIgnoresAsync(string cwd, string gitRoot, CancellationToken cancellationToken)
     {
         // F1 (2026-10-09): asked about the shapes Claustrum really writes there — a whitelist `.gitignore`
         // (`*`, `!*/`, `!*.md`) ignores a file named `probe` and un-ignores a worktree directory and a brief.
@@ -228,11 +227,11 @@ public static partial class ArchitectWorktree
 
         (string Directory, string Probe)[] probes =
         [
-            (CastsDirectory, $"{CastsDirectory}default.json"),
             (WorktreesDirectory, $"{WorktreesDirectory}{probeName}/"),
             (BriefsDirectory, $"{BriefsDirectory}1-builder.md"),
             (LocksDirectory, $"{LocksDirectory}default__builder.1.lock"),
         ];
+        string castsProbe = $"{CastsDirectory}default.json";
 
         string output;
         try
@@ -240,7 +239,7 @@ public static partial class ArchitectWorktree
             Directory.CreateDirectory(Path.Combine(worktrees, probeName));
 
             // Exit 1 is "none of them is ignored", an answer like any other.
-            output = await GitAsync(gitRoot, "check-ignore", ["check-ignore", "-v", "--no-index", "--", .. probes.Select(probe => probe.Probe)], 1, cancellationToken);
+            output = await GitAsync(gitRoot, "check-ignore", ["check-ignore", "-v", "--no-index", "--", castsProbe, .. probes.Select(probe => probe.Probe)], 1, cancellationToken);
 
             // G5: a `jobs clean` beside this run deletes an empty probe, and git's answer about a path that is
             // no directory is the one a whitelist `.gitignore` gets wrong — so it is not taken.
@@ -272,7 +271,7 @@ public static partial class ArchitectWorktree
                 ruleFiles.Add(source);
         }
 
-        return ([.. probes.Where(probe => !ignored.Contains(probe.Probe)).Select(probe => probe.Directory)], [.. ruleFiles]);
+        return ([.. probes.Where(probe => !ignored.Contains(probe.Probe)).Select(probe => probe.Directory)], [.. ruleFiles], ignored.Contains(castsProbe));
     }
 
     // Non-recursive: the probe and a `.claustrum/worktrees` made only for it are empty, unless a run beside
@@ -404,9 +403,10 @@ public static partial class ArchitectWorktree
     [GeneratedRegex(@"^(?<source>.+?):\d+:(?<pattern>.*)$")]
     private static partial Regex CheckIgnoreRule();
 
-    // #122: cast git-state check. Untracked or ignored is OK when a committed .gitignore rule ignores
-    // .claustrum/casts/; tracked and identical to HEAD (no differences) is the same as before; tracked
-    // with local changes is refused (commit it, or untrack it and let it be ignored).
+    // #122: cast git-state check. Untracked or ignored needs a rule ignoring .claustrum/casts/, or the architect's
+    // `git add -A` commits the copied cast; tracked and identical to HEAD needs none (the worktree has it from
+    // HEAD, nothing is copied); tracked with local changes is refused (commit it, or untrack it and let it be ignored).
+    // ⚠ castsIgnoredByRule is "a rule ignores it" — not the `unignored` list's inverse sense (2026-10-15, F1).
     private static string? CheckCastState(string cwd, string castName, Difference[] differences, bool castsIgnoredByRule)
     {
         if (differences.Length == 0)

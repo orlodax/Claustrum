@@ -241,8 +241,9 @@ missing aliases are written; existing ones are never overwritten. Without `--ans
 aliases are asked on the terminal; with redirected stdin it prints a message and exits 2.
 
 `init questions --json` prints one question per missing built-in alias with options
-(including the built-in default), the same shape as `CastQuestion`. A repo `claustrum.json`
-is created empty when absent — aliases are per-developer in the user config.
+(including the built-in default), the same shape as `CastQuestion`. "Missing" means not defined in
+the user config. `init` writes no repo `claustrum.json` (it reports `claustrum.json: not written …`
+when absent, `already present, left unchanged` when there): aliases are per-developer in the user config.
 
 Also creates `.claustrum/casts/` and git-ignores `.claustrum/{casts,briefs,worktrees,locks}/`,
 runs `sync` for `claude` **always** — its sync is the one that registers the MCP server in

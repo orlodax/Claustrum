@@ -4,7 +4,7 @@
 If a command exits 2 saying "this repo isn't initialized", ask the user with the host's
 question mechanism (e.g. `AskUserQuestion` in Claude Code) whether to run `claustrum init`.
 If yes:
-1. Run `claustrum init questions --json` (or the MCP tool) — one question per built-in
+1. Run `claustrum init questions --json` (CLI only — there is no MCP tool for it) — one question per built-in
    model alias the user config does not yet define.
 2. Ask each question with the host's native question mechanism. Write the answers to a
    JSON file keyed by each alias.
