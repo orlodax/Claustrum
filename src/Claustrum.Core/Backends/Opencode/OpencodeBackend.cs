@@ -62,10 +62,50 @@ public sealed class OpencodeBackend(IPlatform platform) : IBackend, IPostRunHook
         if (trimmed.Length == 0)
             return new ParsedOutput(stderr, null, null, null, [], null, IsError: exitCode != 0);
 
+        StepScan scan = Scan(trimmed);
+
+        // A reported opencode cost is complete or absent, never partial: `step_finish` is emitted
+        // *before* each tool call and never after the final message, so a stream whose steps do not
+        // all report back is a floor, not a total (NOTES.md "The opencode and api backends, validated
+        // against real endpoints", defect 3). Charging a floor verbatim would silently under-bill the
+        // §D4 ledger; leaving both null makes Runner.ChargeAsync charge the cap and say so.
+        decimal? cost = null;
+        Usage? usage = null;
+        if (scan.StepFinishes.Count == scan.StepStarts.Count)
+            foreach (JsonElement finished in scan.StepFinishes.Values)
+                AddStepFinish(finished, ref cost, ref usage);
+
+        string finalMessage = string.Join("", scan.TextParts.OrderBy(entry => entry.Value.Order).Select(entry => entry.Value.Text));
+
+        // A `type:"error"` event is the run failing, whatever the exit code says: opencode is not
+        // contractually bound to also exit non-zero, and trusting the exit code alone reported a
+        // failed run as Success with the error text sitting in final_message (review finding). The
+        // message is appended rather than only used as a fallback so a run that produced partial
+        // text before failing does not silently drop the reason.
+        if (scan.ErrorMessage is not null)
+            finalMessage = finalMessage.Length == 0 ? scan.ErrorMessage : $"{finalMessage}\n\n{scan.ErrorMessage}";
+
+        return new ParsedOutput(finalMessage, scan.SessionId, cost, usage, [], scan.LastEvent, IsError: exitCode != 0 || scan.ErrorMessage is not null);
+    }
+
+    private sealed record StepScan(
+        string? SessionId,
+        Dictionary<string, (int Order, string Text)> TextParts,
+        Dictionary<string, JsonElement> StepFinishes,
+        List<string> StepStarts,
+        bool ToolAfterLastStart,
+        bool FinishAfterLastStart,
+        string? ErrorMessage,
+        JsonElement? LastEvent);
+
+    private static StepScan Scan(string trimmed)
+    {
         string? sessionId = null;
         Dictionary<string, (int Order, string Text)> textParts = [];
         Dictionary<string, JsonElement> stepFinishes = [];
-        HashSet<string> stepStarts = new(StringComparer.Ordinal);
+        List<string> stepStarts = [];
+        bool toolAfterLastStart = false;
+        bool finishAfterLastStart = false;
         string? errorMessage = null;
         JsonElement? lastEvent = null;
         int nextOrder = 0;
@@ -89,11 +129,14 @@ public sealed class OpencodeBackend(IPlatform platform) : IBackend, IPostRunHook
             using (document)
             {
                 JsonElement root = document.RootElement;
-                lastEvent = root.Clone();
-                if (root.TryGetProperty("sessionID", out JsonElement sessionProp))
-                    sessionId = sessionProp.GetString();
+                if (root.ValueKind != JsonValueKind.Object)
+                    continue;
 
-                string? type = root.TryGetProperty("type", out JsonElement typeProp) ? typeProp.GetString() : null;
+                lastEvent = root.Clone();
+                if (GetString(root, "sessionID") is { } eventSession)
+                    sessionId = eventSession;
+
+                string? type = GetString(root, "type");
                 if (type == "error")
                 {
                     errorMessage = ExtractErrorMessage(root, line);
@@ -107,47 +150,36 @@ public sealed class OpencodeBackend(IPlatform platform) : IBackend, IPostRunHook
                 // carries the whole text, so a repeat for the same id replaces rather than appends —
                 // which is why every handler here keys on `part.id`, a `step_finish` no less than a
                 // `text` (a repeated one would otherwise be billed twice).
-                if (!root.TryGetProperty("part", out JsonElement part) || PartId(part) is not { } partId)
+                if (!root.TryGetProperty("part", out JsonElement part) || part.ValueKind != JsonValueKind.Object || GetString(part, "id") is not { } partId)
                     continue;
 
-                if (type == "text" && part.TryGetProperty("text", out JsonElement textProp))
+                if (type == "text" && GetString(part, "text") is { } text)
                 {
                     int order = textParts.TryGetValue(partId, out (int Order, string Text) existing) ? existing.Order : nextOrder++;
-                    textParts[partId] = (order, textProp.GetString() ?? "");
+                    textParts[partId] = (order, text);
                 }
                 else if (type == "step_start")
                 {
-                    stepStarts.Add(partId);
+                    if (!stepStarts.Contains(partId))
+                    {
+                        stepStarts.Add(partId);
+                        toolAfterLastStart = false;
+                        finishAfterLastStart = false;
+                    }
+                }
+                else if (type == "tool_use")
+                {
+                    toolAfterLastStart = true;
                 }
                 else if (type == "step_finish")
                 {
                     stepFinishes[partId] = part.Clone();
+                    finishAfterLastStart = true;
                 }
             }
         }
 
-        // A reported opencode cost is complete or absent, never partial: `step_finish` is emitted
-        // *before* each tool call and never after the final message, so a stream whose steps do not
-        // all report back is a floor, not a total (NOTES.md "The opencode and api backends, validated
-        // against real endpoints", defect 3). Charging a floor verbatim would silently under-bill the
-        // §D4 ledger; leaving both null makes Runner.ChargeAsync charge the cap and say so.
-        decimal? cost = null;
-        Usage? usage = null;
-        if (stepFinishes.Count == stepStarts.Count)
-            foreach (JsonElement finished in stepFinishes.Values)
-                AddStepFinish(finished, ref cost, ref usage);
-
-        string finalMessage = string.Join("", textParts.OrderBy(entry => entry.Value.Order).Select(entry => entry.Value.Text));
-
-        // A `type:"error"` event is the run failing, whatever the exit code says: opencode is not
-        // contractually bound to also exit non-zero, and trusting the exit code alone reported a
-        // failed run as Success with the error text sitting in final_message (review finding). The
-        // message is appended rather than only used as a fallback so a run that produced partial
-        // text before failing does not silently drop the reason.
-        if (errorMessage is not null)
-            finalMessage = finalMessage.Length == 0 ? errorMessage : $"{finalMessage}\n\n{errorMessage}";
-
-        return new ParsedOutput(finalMessage, sessionId, cost, usage, [], lastEvent, IsError: exitCode != 0 || errorMessage is not null);
+        return new StepScan(sessionId, textParts, stepFinishes, stepStarts, toolAfterLastStart, finishAfterLastStart, errorMessage, lastEvent);
     }
 
     // Two genuinely captured shapes, one per major version, so both are read: v2.0.12 writes
@@ -163,8 +195,8 @@ public sealed class OpencodeBackend(IPlatform platform) : IBackend, IPostRunHook
 
         return error.TryGetProperty("data", out JsonElement data)
             && data.ValueKind == JsonValueKind.Object
-            && data.TryGetProperty("message", out JsonElement nested)
-                ? nested.GetString() ?? rawLine
+            && GetString(data, "message") is { } nested
+                ? nested
                 : rawLine;
     }
 
@@ -174,10 +206,10 @@ public sealed class OpencodeBackend(IPlatform platform) : IBackend, IPostRunHook
     // the last step of a multi-step run.
     private static void AddStepFinish(JsonElement part, ref decimal? cost, ref Usage? usage)
     {
-        if (part.TryGetProperty("cost", out JsonElement costProp) && costProp.TryGetDecimal(out decimal costValue))
+        if (part.TryGetProperty("cost", out JsonElement costProp) && costProp.ValueKind == JsonValueKind.Number && costProp.TryGetDecimal(out decimal costValue))
             cost = (cost ?? 0m) + costValue;
 
-        if (!part.TryGetProperty("tokens", out JsonElement tokens))
+        if (!part.TryGetProperty("tokens", out JsonElement tokens) || tokens.ValueKind != JsonValueKind.Object)
             return;
 
         JsonElement cache = tokens.TryGetProperty("cache", out JsonElement cacheProp) ? cacheProp : default;
@@ -193,136 +225,219 @@ public sealed class OpencodeBackend(IPlatform platform) : IBackend, IPostRunHook
     private static int? Add(int? running, int? step) =>
         running is null && step is null ? null : (running ?? 0) + (step ?? 0);
 
-    private static string? PartId(JsonElement part) =>
-        part.TryGetProperty("id", out JsonElement id) ? id.GetString() : null;
+    private static string? GetString(JsonElement parent, string propertyName) =>
+        parent.TryGetProperty(propertyName, out JsonElement property) && property.ValueKind == JsonValueKind.String ? property.GetString() : null;
 
     private static int? TryGetInt(JsonElement parent, string propertyName) =>
         parent.ValueKind == JsonValueKind.Object
         && parent.TryGetProperty(propertyName, out JsonElement property)
+        && property.ValueKind == JsonValueKind.Number
         && property.TryGetInt32(out int value) ? value : null;
 
-    // IPostRunHook: enrich cost/usage from `opencode session export` when Parse could not get a
-    // complete picture (the final step never emits a step_finish — NOTES.md defect 3, confirmed
-    // 2026-09-22). The export is best-effort: a failure keeps the parsed output as-is and adds a
-    // warning saying which fallback applied.
+    // IPostRunHook: the real cost is `opencode session export`'s `info.cost`, because the final step
+    // never emits a step_finish (defect 3). The export is the session's running total, so a resumed
+    // run is charged after − before. Best-effort and never fatal: NOTES.md "The opencode and api backends,
+    // validated against real endpoints" (#125 bullets) has the resume bill, the truncation and the fallback.
+    async Task<PreRunBaseline?> IPostRunHook.PreRunAsync(PostRunContext context, CancellationToken cancellationToken)
+    {
+        if (context.ResumeSession is not { Length: > 0 } sessionId)
+            return null;
+
+        SessionExport before = await ExportAsync(sessionId, context, cancellationToken);
+        return new PreRunBaseline(before.CostUsd, before.Usage, before.Failure);
+    }
+
     async Task<PostRunResult?> IPostRunHook.PostRunAsync(
         ParsedOutput parsed,
-        string cwd,
-        BackendConfig? backendConfig,
-        IPlatform platform,
+        PostRunContext context,
+        PreRunBaseline? baseline,
         CancellationToken cancellationToken)
     {
         if (parsed.SessionId is not { Length: > 0 } sessionId)
             return null;
 
-        ResolvedBinary binary;
-        try
-        {
-            binary = BinaryLocator.Locate("opencode", ["session", "export", sessionId], backendConfig, platform);
-        }
-        catch (BackendNotFoundException)
-        {
+        // A baseline only applies when the run really continued that session.
+        bool resumed = baseline is not null && sessionId == context.ResumeSession;
+        if (resumed && baseline!.Failure is { } baselineFailure)
+            return FailedExport(parsed, context.Stdout, $"the pre-run export of the resumed session failed: {baselineFailure}");
+
+        SessionExport after = await ExportAsync(sessionId, context, cancellationToken);
+        if (after.Failure is { } failure)
+            return FailedExport(parsed, context.Stdout, failure);
+
+        if (!resumed)
+            return new PostRunResult(after.CostUsd, after.Usage, Warning: null);
+
+        decimal cost = after.CostUsd!.Value - (baseline!.CostUsd ?? 0m);
+        Usage? usage = SubtractUsage(after.Usage, baseline.Usage);
+        return cost < 0m || (after.Usage is not null && usage is null)
+            ? FailedExport(parsed, context.Stdout, "the resumed session's total went down between the two exports")
+            : new PostRunResult(cost, usage, Warning: null);
+    }
+
+    // Null when any field would go negative: a total that shrank is a bad reading, not a refund.
+    private static Usage? SubtractUsage(Usage? after, Usage? before)
+    {
+        if (after is null)
             return null;
-        }
 
-        // Build the same env the run used (allow-list only); the export needs PATH, HOME and
-        // OPENCODE_* vars to find the session database, not the caller's --env entries.
-        Dictionary<string, string> exportEnv = EnvAllowList.Build(platform, new Dictionary<string, string>(), passthroughAll: false);
+        int?[] fields =
+        [
+            Delta(after.InputTokens, before?.InputTokens),
+            Delta(after.OutputTokens, before?.OutputTokens),
+            Delta(after.CacheReadInputTokens, before?.CacheReadInputTokens),
+            Delta(after.CacheCreationInputTokens, before?.CacheCreationInputTokens),
+        ];
 
-        ProcessStartInfo startInfo = new()
-        {
-            FileName = binary.Executable,
-            WorkingDirectory = cwd,
-            UseShellExecute = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            RedirectStandardInput = true,
-            CreateNoWindow = true,
-        };
-        foreach (string arg in binary.Args)
-            startInfo.ArgumentList.Add(arg);
+        return fields.Any(field => field < 0) ? null : new Usage(fields[0], fields[1], fields[2], fields[3]);
+    }
 
-        startInfo.Environment.Clear();
-        foreach (KeyValuePair<string, string> entry in exportEnv)
-            startInfo.Environment[entry.Key] = entry.Value;
+    private static int? Delta(int? after, int? before) => after is null ? null : after.Value - (before ?? 0);
 
-        using System.Diagnostics.Process process = new() { StartInfo = startInfo };
-        process.Start();
-        process.StandardInput.Close();
+    private sealed record SessionExport(decimal? CostUsd, Usage? Usage, string? Failure, bool Unparseable = false);
 
-        Task<string> stdoutTask = process.StandardOutput.ReadToEndAsync(CancellationToken.None);
-        Task<string> stderrTask = process.StandardError.ReadToEndAsync(CancellationToken.None);
+    private static readonly TimeSpan exportTimeout = TimeSpan.FromSeconds(30);
 
-        TimeSpan exportTimeout = TimeSpan.FromSeconds(30);
-        using CancellationTokenSource timeoutSource = new(exportTimeout);
-        using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutSource.Token);
+    // One retry, and only for JSON that did not parse: a cut-off export is the one failure a second
+    // attempt can cure; a missing binary or a non-zero exit would fail the same way again.
+    private async Task<SessionExport> ExportAsync(string sessionId, PostRunContext context, CancellationToken cancellationToken)
+    {
+        SessionExport export = await ExportOnceAsync(sessionId, context, cancellationToken);
+        return export.Unparseable ? await ExportOnceAsync(sessionId, context, cancellationToken) : export;
+    }
+
+    private async Task<SessionExport> ExportOnceAsync(string sessionId, PostRunContext context, CancellationToken cancellationToken)
+    {
+        // On POSIX the export goes to a file in the job directory through a one-line `sh` redirect: opencode
+        // exits before a full stdout pipe drains, and a reader that is merely slow gets a cut-off document
+        // (measured 2026-10-15: 8 192 bytes of 1.27 MB behind a 3 s reader). A file write completes first.
+        string? outputPath = platform.Os == ClaustrumOs.Windows ? null : Path.Combine(context.JobDirectory, $"session-export-{Guid.NewGuid():N}.tmp");
         try
         {
-            await process.WaitForExitAsync(linked.Token);
-        }
-        catch (OperationCanceledException)
-        {
-            process.Kill(entireProcessTree: true);
-            await process.WaitForExitAsync(CancellationToken.None);
-            string reason = timeoutSource.IsCancellationRequested ? "timed out after 30s" : "cancelled";
-            return FailedExport(parsed.CostUsd is not null, reason);
-        }
+            ResolvedBinary binary = BinaryLocator.Locate("opencode", ["session", "export", "--standalone", sessionId], context.BackendConfig, platform);
 
-        string stdout = await stdoutTask;
-        string stderr = stderrTask.Result;
-
-        if (process.ExitCode != 0)
-        {
-            string reason = stderr.Trim() is { Length: > 0 } errMsg ? errMsg : $"exit code {process.ExitCode}";
-            return FailedExport(parsed.CostUsd is not null, reason);
-        }
-
-        // Read only `info.cost` and `info.tokens` from the session export JSON; ignore messages.
-        // The export is ~800 KB for a 30-step session; use a streaming parse, never materialise it.
-        try
-        {
-            using JsonDocument document = JsonDocument.Parse(stdout);
-            JsonElement root = document.RootElement;
-
-            if (!root.TryGetProperty("info", out JsonElement info) || info.ValueKind != JsonValueKind.Object)
-                return FailedExport(parsed.CostUsd is not null, "export JSON has no 'info' object");
-
-            decimal? exportCost = null;
-            if (info.TryGetProperty("cost", out JsonElement costProp) && costProp.TryGetDecimal(out decimal costValue))
-                exportCost = costValue;
-
-            Usage? exportUsage = null;
-            if (info.TryGetProperty("tokens", out JsonElement tokens) && tokens.ValueKind == JsonValueKind.Object)
+            ProcessStartInfo startInfo = new()
             {
-                // Same field layout as AddStepFinish: input→input, output→output, cache.read→cache_read, cache.write→cache_creation.
-                // reasoning tokens are dropped (Usage has no field for them, matching AddStepFinish).
-                JsonElement cache = tokens.TryGetProperty("cache", out JsonElement cacheProp) && cacheProp.ValueKind == JsonValueKind.Object
-                    ? cacheProp
-                    : default;
-                exportUsage = new Usage(
-                    TryGetInt(tokens, "input"),
-                    TryGetInt(tokens, "output"),
-                    TryGetInt(cache, "read"),
-                    TryGetInt(cache, "write"));
+                FileName = outputPath is null ? binary.Executable : "/bin/sh",
+                WorkingDirectory = context.Spec.Cwd,
+                UseShellExecute = false,
+                RedirectStandardOutput = outputPath is null,
+                RedirectStandardError = true,
+                RedirectStandardInput = true,
+                CreateNoWindow = true,
+            };
+
+            string[] argv = outputPath is null
+                ? binary.Args
+                : ["-c", "out=$1; shift; exec \"$@\" > \"$out\"", "sh", outputPath, binary.Executable, .. binary.Args];
+            foreach (string arg in argv)
+                startInfo.ArgumentList.Add(arg);
+
+            // The run's own environment, `--env` entries and `env_passthrough: all` included.
+            startInfo.Environment.Clear();
+            foreach (KeyValuePair<string, string> entry in EnvAllowList.Build(platform, context.Spec.Env, context.EnvPassthroughAll))
+                startInfo.Environment[entry.Key] = entry.Value;
+
+            using System.Diagnostics.Process process = new() { StartInfo = startInfo };
+            process.Start();
+            process.StandardInput.Close();
+
+            Task<string>? stdoutTask = outputPath is null ? process.StandardOutput.ReadToEndAsync(CancellationToken.None) : null;
+            Task<string> stderrTask = process.StandardError.ReadToEndAsync(CancellationToken.None);
+
+            using CancellationTokenSource timeoutSource = new(exportTimeout);
+            using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutSource.Token);
+            try
+            {
+                await process.WaitForExitAsync(linked.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                process.Kill(entireProcessTree: true);
+                await process.WaitForExitAsync(CancellationToken.None);
+                return new SessionExport(null, null, timeoutSource.IsCancellationRequested ? "timed out after 30s" : "cancelled");
             }
 
-            // Session export always has cost (measured on job 20261015-154643-6943f428: $0.18085).
-            // When it doesn't, fall through to the same failure path as a missing info block.
-            if (exportCost is null)
-                return FailedExport(parsed.CostUsd is not null, "export info has no cost");
+            string stderr = await stderrTask;
+            if (process.ExitCode != 0)
+            {
+                string detail = stderr.Trim();
+                return new SessionExport(null, null, detail.Length > 0 ? detail[..Math.Min(detail.Length, 300)] : $"exit code {process.ExitCode}");
+            }
 
-            return new PostRunResult(exportCost, exportUsage, Warning: null);
+            string json = stdoutTask is not null ? await stdoutTask : await File.ReadAllTextAsync(outputPath!, CancellationToken.None);
+            return ReadTotals(json);
         }
-        catch (JsonException ex)
+        catch (Exception ex)
         {
-            return FailedExport(parsed.CostUsd is not null, $"unparseable export JSON: {ex.Message}");
+            return new SessionExport(null, null, $"{ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            if (outputPath is not null)
+                try { File.Delete(outputPath); } catch (IOException) { }
         }
     }
 
-    private static PostRunResult FailedExport(bool hadStepCosts, string reason)
+    // Only `info.cost` and `info.tokens` matter; the messages (~1 MB for a long session) are ignored.
+    private static SessionExport ReadTotals(string json)
     {
-        string fallback = hadStepCosts ? "cost from step_finish events" : "cost unknown, charged the cap";
-        return new PostRunResult(null, null, $"opencode session export failed ({reason}): {fallback}");
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(json);
+            JsonElement root = document.RootElement;
+
+            if (root.ValueKind != JsonValueKind.Object || !root.TryGetProperty("info", out JsonElement info) || info.ValueKind != JsonValueKind.Object)
+                return new SessionExport(null, null, "export JSON has no 'info' object");
+
+            if (!info.TryGetProperty("cost", out JsonElement costProp) || costProp.ValueKind != JsonValueKind.Number || !costProp.TryGetDecimal(out decimal cost))
+                return new SessionExport(null, null, "export info has no cost");
+
+            Usage? usage = null;
+            if (info.TryGetProperty("tokens", out JsonElement tokens) && tokens.ValueKind == JsonValueKind.Object)
+            {
+                // Same field layout as AddStepFinish; reasoning tokens are dropped (Usage has no field for them).
+                JsonElement cache = tokens.TryGetProperty("cache", out JsonElement cacheProp) && cacheProp.ValueKind == JsonValueKind.Object
+                    ? cacheProp
+                    : default;
+                usage = new Usage(TryGetInt(tokens, "input"), TryGetInt(tokens, "output"), TryGetInt(cache, "read"), TryGetInt(cache, "write"));
+            }
+
+            return new SessionExport(cost, usage, null);
+        }
+        catch (JsonException ex)
+        {
+            return new SessionExport(null, null, $"unparseable export JSON: {ex.Message}", Unparseable: true);
+        }
+    }
+
+    // #125 fallback: step costs when they are complete, else the step sum when the only gap is the
+    // final text-only step (it never emits a step_finish), else null and the cap.
+    private static PostRunResult FailedExport(ParsedOutput parsed, string stdout, string reason)
+    {
+        string prefix = $"opencode session export failed ({reason})";
+        if (parsed.CostUsd is not null)
+            return new PostRunResult(null, null, $"{prefix}: cost from step_finish events");
+
+        if (stdout.Trim() is { Length: > 0 } trimmed && SumWithoutFinalTextStep(Scan(trimmed)) is { } sum)
+            return new PostRunResult(sum.Cost, sum.Usage, $"{prefix}: cost is the step sum, without the final text step");
+
+        return new PostRunResult(null, null, $"{prefix}: cost unknown, charged the cap");
+    }
+
+    private static (decimal? Cost, Usage? Usage)? SumWithoutFinalTextStep(StepScan scan)
+    {
+        // A step_finish has its own part id, so steps pair up by order, not by id: one more start than
+        // finishes, with nothing finished or called since the last start, means only the final step is open.
+        if (scan.StepStarts.Count != scan.StepFinishes.Count + 1 || scan.FinishAfterLastStart || scan.ToolAfterLastStart)
+            return null;
+
+        decimal? cost = null;
+        Usage? usage = null;
+        foreach (JsonElement finished in scan.StepFinishes.Values)
+            AddStepFinish(finished, ref cost, ref usage);
+
+        return (cost, usage);
     }
 
     // `{file:<path>}` substitution inside OPENCODE_CONFIG_CONTENT is real (confirmed live): opencode

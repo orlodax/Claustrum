@@ -14,8 +14,8 @@ namespace Claustrum.Core.Backends.Claude;
 // to inline `--append-system-prompt` (wrong; see NOTES.md "Role injection per backend"). The brief
 // goes in on stdin, never argv (#68, 2026-10-08, the cursor shape): `claude -p` reads its prompt
 // from stdin when argv carries none. Parse tells single-object `json` from `stream-json` JSONL by
-// parsing stdout as one JSON document first (IBackend.Parse has no `--stream` flag to consult): a
-// JSONL stream always has trailing content after the first line closes, which JsonDocument rejects.
+// parsing stdout as one JSON document first (a JSONL stream has trailing content, which JsonDocument
+// rejects). Every run is stream-json since 2026-10-15; the single-document form still parses.
 public sealed class ClaudeBackend(IPlatform platform) : IBackend
 {
     private static readonly TimeSpan detectTimeout = TimeSpan.FromSeconds(10);
@@ -42,7 +42,10 @@ public sealed class ClaudeBackend(IPlatform platform) : IBackend
         bool resuming = run.ResumeSession is { Length: > 0 };
 
         List<string> args = ["-p"];
-        args.AddRange(run.Stream ? ["--output-format", "stream-json", "--verbose"] : ["--output-format", "json"]);
+
+        // Always stream-json: a single `json` document lands only at exit, which left `jobs follow` (and an
+        // MCP delegate) with nothing to show for the whole run. `--stream` now only gates the stderr echo.
+        args.AddRange(["--output-format", "stream-json", "--verbose"]);
         args.AddRange(["--model", run.Role.Model]);
         args.AddRange(["--append-system-prompt-file", run.SystemPromptFilePath]);
         args.AddRange(PermissionArgs(run.Role.Permission));
@@ -82,11 +85,16 @@ public sealed class ClaudeBackend(IPlatform platform) : IBackend
         try
         {
             using JsonDocument document = JsonDocument.Parse(trimmed);
-            return BuildFromResult(document.RootElement.Clone(), exitCode, []);
+            JsonElement root = document.RootElement;
+
+            // A stream cut down to one line (killed after `init`) is a valid document too, but not a result.
+            return root.ValueKind == JsonValueKind.Object && TryGetString(root, "type") is { } type && type != "result"
+                ? ParseStream(trimmed, stderr, exitCode)
+                : BuildFromResult(root.Clone(), exitCode, []);
         }
         catch (JsonException)
         {
-            return ParseStream(trimmed, exitCode);
+            return ParseStream(trimmed, stderr, exitCode);
         }
     }
 
@@ -139,10 +147,11 @@ public sealed class ClaudeBackend(IPlatform platform) : IBackend
         return string.Join(',', rules);
     }
 
-    private static ParsedOutput ParseStream(string text, int exitCode)
+    private static ParsedOutput ParseStream(string text, string stderr, int exitCode)
     {
         JsonElement? lastResult = null;
         List<ChangedFile> reportedEdits = [];
+        bool sawEvent = false;
 
         foreach (string rawLine in text.Split('\n'))
         {
@@ -163,7 +172,11 @@ public sealed class ClaudeBackend(IPlatform platform) : IBackend
             using (document)
             {
                 JsonElement root = document.RootElement;
-                string? type = root.TryGetProperty("type", out JsonElement typeProp) ? typeProp.GetString() : null;
+                if (root.ValueKind != JsonValueKind.Object)
+                    continue;
+
+                sawEvent = true;
+                string? type = TryGetString(root, "type");
                 if (type == "result")
                     lastResult = root.Clone();
                 else if (type == "assistant")
@@ -171,9 +184,10 @@ public sealed class ClaudeBackend(IPlatform platform) : IBackend
             }
         }
 
+        // No result line (a killed run): events are noise as a message, so stderr speaks if it has anything.
         return lastResult is { } result
             ? BuildFromResult(result, exitCode, reportedEdits)
-            : new ParsedOutput(text, null, null, null, [.. reportedEdits], null, IsError: exitCode != 0);
+            : new ParsedOutput(sawEvent && stderr.Trim().Length > 0 ? stderr : text, null, null, null, [.. reportedEdits], null, IsError: exitCode != 0);
     }
 
     private static ParsedOutput BuildFromResult(JsonElement root, int exitCode, List<ChangedFile> reportedEdits)
@@ -225,21 +239,22 @@ public sealed class ClaudeBackend(IPlatform platform) : IBackend
     private static void CollectToolUseEdits(JsonElement root, List<ChangedFile> edits)
     {
         if (!root.TryGetProperty("message", out JsonElement message)
+            || message.ValueKind != JsonValueKind.Object
             || !message.TryGetProperty("content", out JsonElement content)
             || content.ValueKind != JsonValueKind.Array)
             return;
 
         foreach (JsonElement item in content.EnumerateArray())
         {
-            if (!item.TryGetProperty("type", out JsonElement typeProp) || typeProp.GetString() != "tool_use")
+            if (item.ValueKind != JsonValueKind.Object || TryGetString(item, "type") != "tool_use")
                 continue;
 
-            string? name = item.TryGetProperty("name", out JsonElement nameProp) ? nameProp.GetString() : null;
+            string? name = TryGetString(item, "name");
             if (name is not ("Edit" or "Write"))
                 continue;
 
-            string? path = item.TryGetProperty("input", out JsonElement input) && input.TryGetProperty("file_path", out JsonElement pathProp)
-                ? pathProp.GetString()
+            string? path = item.TryGetProperty("input", out JsonElement input) && input.ValueKind == JsonValueKind.Object
+                ? TryGetString(input, "file_path")
                 : null;
 
             if (path is not null)

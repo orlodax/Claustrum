@@ -153,6 +153,10 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
             return await FinishAsync(job, reservation, FailureResult(job, role, outcome: null, ex), ran: false, runOptions);
         }
 
+        // F5: a resumed session's export is cumulative, so the figure before this run is the baseline.
+        PostRunContext postRunContext = new(spec, request.ResumeSession, job.Directory, runOptions.BackendConfig, runOptions.EnvPassthroughAll, Stdout: "");
+        PreRunBaseline? baseline = backend is IPostRunHook preRun ? await PreRunBaselineAsync(preRun, postRunContext, cancellationToken) : null;
+
         ProcessOutcome outcome;
         try
         {
@@ -187,13 +191,21 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
 
             // Issue #125: post-run enrichment for backends that can fetch cost/usage after the
             // process has finished (opencode session export). Runs before the result is built or
-            // charged, so the enriched numbers flow into both. Best-effort: a failure or absent
-            // session_id leaves parsed unchanged and pushes a warning.
+            // charged, so the enriched numbers flow into both. Best-effort: it never changes the run's
+            // status (a throw becomes a warning), and a cancelled job skips it — it runs on
+            // CancellationToken.None and can take 30 s that nobody could interrupt.
             string[]? postWarnings = null;
-            if (backend is IPostRunHook postRun && parsed.SessionId is { Length: > 0 })
+            if (backend is IPostRunHook postRun && parsed.SessionId is { Length: > 0 } && outcome.Termination != ProcessTermination.Cancelled)
             {
-                PostRunResult? enriched = await postRun.PostRunAsync(
-                    parsed, request.Cwd, runOptions.BackendConfig, platform, CancellationToken.None);
+                PostRunResult? enriched;
+                try
+                {
+                    enriched = await postRun.PostRunAsync(parsed, postRunContext with { Stdout = outcome.Stdout }, baseline, CancellationToken.None);
+                }
+                catch (Exception ex)
+                {
+                    enriched = new PostRunResult(null, null, $"post-run cost lookup failed ({ex.GetType().Name}: {ex.Message}): cost is what the run's own output gave");
+                }
 
                 if (enriched is not null)
                 {
@@ -247,6 +259,19 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
         finally
         {
             DeleteTempFiles(spec.TempFiles);
+        }
+    }
+
+    private static async Task<PreRunBaseline?> PreRunBaselineAsync(IPostRunHook hook, PostRunContext context, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await hook.PreRunAsync(context, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            // Only a resumed run needs a baseline, and one that could not be read says so instead of vanishing.
+            return context.ResumeSession is { Length: > 0 } ? new PreRunBaseline(null, null, $"{ex.GetType().Name}: {ex.Message}") : null;
         }
     }
 

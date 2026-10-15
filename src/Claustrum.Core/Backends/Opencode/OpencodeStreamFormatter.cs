@@ -26,11 +26,13 @@ public sealed class OpencodeStreamFormatter(string cwd) : IStreamFormatter
         using JsonDocument _ = document;
         JsonElement root = document.RootElement;
 
-        if (!root.TryGetProperty("type", out JsonElement typeProp))
+        // Not an object with a string `type`: not an event we know the shape of, so the raw line
+        // goes out and no property access below can throw on the pump thread.
+        if (root.ValueKind != JsonValueKind.Object || GetString(root, "type") is not { } type)
             return rawLine;
 
-        string? type = typeProp.GetString();
         long? timestampMs = root.TryGetProperty("timestamp", out JsonElement tsProp)
+            && tsProp.ValueKind == JsonValueKind.Number
             && tsProp.TryGetInt64(out long ts)
                 ? ts
                 : null;
@@ -44,7 +46,9 @@ public sealed class OpencodeStreamFormatter(string cwd) : IStreamFormatter
 
         // step_finish: track cost, print nothing.
         if (type == "step_finish" && root.TryGetProperty("part", out JsonElement finishPart)
+            && finishPart.ValueKind == JsonValueKind.Object
             && finishPart.TryGetProperty("cost", out JsonElement costProp)
+            && costProp.ValueKind == JsonValueKind.Number
             && costProp.TryGetDecimal(out decimal stepCost))
         {
             runningCost += stepCost;
@@ -57,33 +61,33 @@ public sealed class OpencodeStreamFormatter(string cwd) : IStreamFormatter
 
         // text: fold newlines, cut at ~140 chars.
         if (type == "text" && root.TryGetProperty("part", out JsonElement textPart)
-            && textPart.TryGetProperty("text", out JsonElement textProp))
-        {
-            string text = textProp.GetString() ?? "";
-            string folded = FoldText(text);
-            return FormatLine(timestampMs, "SAYS", folded);
-        }
+            && GetString(textPart, "text") is { } text)
+            return FormatLine(timestampMs, "SAYS", FoldText(text));
 
         // tool_use: the interesting one.
-        if (type == "tool_use" && root.TryGetProperty("part", out JsonElement toolPart))
+        if (type == "tool_use" && root.TryGetProperty("part", out JsonElement toolPart) && toolPart.ValueKind == JsonValueKind.Object)
             return FormatToolUse(toolPart, timestampMs);
 
         // Unknown event type: pass through.
         return rawLine;
     }
 
+    private static string? GetString(JsonElement parent, string propertyName) =>
+        parent.ValueKind == JsonValueKind.Object
+        && parent.TryGetProperty(propertyName, out JsonElement property)
+        && property.ValueKind == JsonValueKind.String
+            ? property.GetString()
+            : null;
+
     private string? FormatToolUse(JsonElement part, long? timestampMs)
     {
-        string? tool = part.TryGetProperty("tool", out JsonElement toolProp) ? toolProp.GetString() : null;
-        if (tool is null)
+        if (GetString(part, "tool") is not { } tool)
             return null;
 
         // Check for error state.
-        if (part.TryGetProperty("state", out JsonElement state))
+        if (part.TryGetProperty("state", out JsonElement state) && state.ValueKind == JsonValueKind.Object)
         {
-            string? status = state.TryGetProperty("status", out JsonElement statusProp)
-                ? statusProp.GetString()
-                : null;
+            string? status = GetString(state, "status");
 
             if (status is "completed" or "pending")
             {
@@ -92,14 +96,14 @@ public sealed class OpencodeStreamFormatter(string cwd) : IStreamFormatter
                 if (state.TryGetProperty("input", out JsonElement input) && input.ValueKind == JsonValueKind.Object)
                 {
                     // File operations: try filePath then path.
-                    if (input.TryGetProperty("filePath", out JsonElement fp))
-                        inputText = ShortenPath(fp.GetString() ?? "");
-                    else if (input.TryGetProperty("path", out JsonElement p))
-                        inputText = ShortenPath(p.GetString() ?? "");
-                    else if (input.TryGetProperty("command", out JsonElement cmd))
-                        inputText = cmd.GetString();
-                    else if (input.TryGetProperty("pattern", out JsonElement pat))
-                        inputText = pat.GetString();
+                    if (GetString(input, "filePath") is { } fp)
+                        inputText = ShortenPath(fp);
+                    else if (GetString(input, "path") is { } p)
+                        inputText = ShortenPath(p);
+                    else if (GetString(input, "command") is { } cmd)
+                        inputText = cmd;
+                    else if (GetString(input, "pattern") is { } pat)
+                        inputText = pat;
                 }
 
                 string label = ToolLabel(tool);
@@ -109,7 +113,7 @@ public sealed class OpencodeStreamFormatter(string cwd) : IStreamFormatter
 
             // Failed tool call: show ✗ error.
             string message = state.TryGetProperty("error", out JsonElement errorProp)
-                ? (errorProp.GetString() ?? "")
+                ? (errorProp.ValueKind == JsonValueKind.String ? errorProp.GetString() ?? "" : "")
                 : $"{tool} failed";
             return FormatLine(timestampMs, "\u2717", message);
         }
@@ -236,8 +240,8 @@ public sealed class OpencodeStreamFormatter(string cwd) : IStreamFormatter
 
         return error.TryGetProperty("data", out JsonElement data)
             && data.ValueKind == JsonValueKind.Object
-            && data.TryGetProperty("message", out JsonElement nested)
-                ? nested.GetString() ?? rawLine
+            && GetString(data, "message") is { } nested
+                ? nested
                 : rawLine;
     }
 }
