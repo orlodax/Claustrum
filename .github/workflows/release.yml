@@ -78,9 +78,14 @@ jobs:
   pack:
     needs: version
     runs-on: ubuntu-latest
+    # Trusted publishing (2026-10-15): no stored key. GitHub's OIDC token for this job is exchanged at
+    # nuget.org for a one-hour key, against the policy "orlodax/Claustrum, release.yml".
+    permissions:
+      contents: read
+      id-token: write
     # Job level, not step level: a step's own `env:` is not visible to that step's `if:`.
     env:
-      NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+      NUGET_USER: ${{ vars.NUGET_USER }}
       VERSION: ${{ needs.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
@@ -100,7 +105,15 @@ jobs:
         with:
           name: nupkg
           path: nupkg/*.nupkg
-      - if: github.ref_type == 'tag' && env.NUGET_API_KEY != ''
+      # Only a real tag publishes, and only once the nuget.org profile name is set as the repo variable NUGET_USER.
+      - if: github.ref_type == 'tag' && env.NUGET_USER != ''
+        id: login
+        uses: NuGet/login@v1
+        with:
+          user: ${{ env.NUGET_USER }}
+      - if: steps.login.outcome == 'success'
+        env:
+          NUGET_API_KEY: ${{ steps.login.outputs.NUGET_API_KEY }}
         run: dotnet nuget push nupkg/*.nupkg --api-key "$NUGET_API_KEY" --source https://api.nuget.org/v3/index.json --skip-duplicate
 
   release:

@@ -1966,9 +1966,17 @@ publishes nothing). The tag is the version: `v0.1.0` → `-p:Version=0.1.0`, der
   from a plain build needs a *publish* first. Both smoke scripts' fallback resolver did not, and was
   fixed on 2026-09-22 (#22) — see "Both smoke scripts' fallback resolver publishes, it does not
   build".
-- `NUGET_API_KEY` is declared as **job**-level `env` in the pack job, not on the push step: a step's
+- The guard variable is declared as **job**-level `env` in the pack job, not on the step: a step's
   own `env:` block is not visible to that step's own `if:`, so a step-level declaration would make
-  the guard read empty and always skip.
+  the guard read empty and always skip. It was `NUGET_API_KEY` until 2026-10-15; since then it is
+  `NUGET_USER` (a repo variable, the nuget.org profile name).
+- **Trusted publishing (2026-10-15, owner's choice over a stored key).** The pack job has
+  `id-token: write`; on a `v*` tag, `NuGet/login@v1` exchanges the job's GitHub OIDC token at
+  nuget.org for a key valid one hour, against a policy on the owner's nuget.org account: owner
+  `orlodax`, repository `Claustrum`, workflow file `release.yml` (file name only), no environment,
+  package glob `Claustrum`. Nothing to rotate. Renaming `release.yml` or the repository breaks the
+  policy match. A `workflow_dispatch` run never logs in or pushes. Until the first successful
+  publish the policy may be only temporarily active (7 days, renewable on nuget.org).
 
 ## Reading a live job log needs FileShare.ReadWrite (2026-09-22, PR #26 windows leg)
 
