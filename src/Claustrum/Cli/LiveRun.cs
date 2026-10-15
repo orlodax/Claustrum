@@ -15,22 +15,26 @@ internal static class LiveRun
 
     public static Option<int?> ReplyTimeoutOption() => new("--reply-timeout")
     {
-        Description = $"Seconds an open question waits for a human reply before the role is told to decide alone (default {DelegateEngine.DefaultReplyTimeoutSeconds} on a terminal, 0 otherwise: the role is told at once nobody can answer).",
+        Description = $"Seconds an open question waits for a human reply before the role is told to decide alone (default {DelegateEngine.DefaultReplyTimeoutSeconds} on a terminal or as a child in a job tree, 0 otherwise: the role is told at once nobody can answer).",
     };
 
     public static Option<bool> NoLiveOption() => new("--no-live") { Description = "Run as before the live channel: no conversation, so the role cannot ask the human anything." };
 
+    /// <summary>Whether this process is a member of a job tree (CLAUSTRUM_PARENT_JOB): a child of a coordinate architect, which is the one who answers it.</summary>
+    public static bool InTree => BudgetLedger.TreeIdFor(AppServices.Platform) is not null;
+
     /// <summary>
     /// The live options for a run: live unless <c>--no-live</c>, with the reply timeout of <c>--reply-timeout</c>, else
-    /// 1800 s when stdin and stderr are terminals (someone can answer) and 0 when not (the engine tells the role at once).
+    /// 1800 s when someone can answer (stdin and stderr are terminals, or <paramref name="answeredByArchitect"/>: a tree's
+    /// child, whose architect replies with `jobs reply`) and 0 when not (the engine tells the role at once).
     /// </summary>
-    public static (bool Live, int ReplyTimeoutSeconds) Resolve(bool noLive, int? replyTimeout)
+    public static (bool Live, int ReplyTimeoutSeconds) Resolve(bool noLive, int? replyTimeout, bool answeredByArchitect = false)
     {
         if (replyTimeout is < 0)
             throw new CliUsageException("--reply-timeout must be zero or more seconds");
 
         if (!noLive)
-            return (true, replyTimeout ?? (TerminalInput.IsInteractive ? DelegateEngine.DefaultReplyTimeoutSeconds : 0));
+            return (true, replyTimeout ?? (answeredByArchitect || TerminalInput.IsInteractive ? DelegateEngine.DefaultReplyTimeoutSeconds : 0));
 
         return replyTimeout is null ? (false, 0) : throw new CliUsageException("--reply-timeout has no meaning with --no-live");
     }
@@ -42,11 +46,11 @@ internal static class LiveRun
     /// Awaits <paramref name="run"/> while printing its job's conversation and asking each open question on the terminal. The
     /// run is the only thing awaited without a race: a typed line never delays a cancel, and a failure here only ends the prompting.
     /// </summary>
-    public static async Task<RunResult> AnswerWhileAsync(Task<RunResult> run, JobPaths jobPaths)
+    public static async Task<RunResult> AnswerWhileAsync(Task<RunResult> run, JobPaths jobPaths, Func<IPromptTerminal?>? openTerminal = null)
     {
         LiveJob job = LiveJob.At(jobPaths);
         ConversationPrinter printer = new();
-        QuestionPrompter prompter = new(job);
+        QuestionPrompter prompter = new(job, openTerminal);
         try
         {
             while (!run.IsCompleted)

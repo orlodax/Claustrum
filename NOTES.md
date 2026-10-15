@@ -6192,3 +6192,60 @@ through `IProcessLive`; claude's wire format is `ClaudeLiveProtocol`; `Runner` s
 - **Front-door rules** (stage 1b). `run` mints its own job dir on a live terminal so `follow` can read it while the job runs; the
   claude-only gate is a capability check on the backend's live protocol, not a name; a **stale question** rule: an answer
   still unconsumed in `inbox/` hides the open question (it is answered, the session has not read it yet); and blind roles receive no human text.
+
+## Detached hosts and tree routing (2026-10-15, issue #124 stage 2)
+
+Owner's decision, 2026-10-15: in a `coordinate` tree the architect answers its children first. A child's question makes its
+`claustrum run` return early (`needs_input`, exit 7, the question and the job id) while the child's session stays alive; the architect
+replies with `jobs reply`, or escalates by ending its own turn with the question, which reaches the human through coordinate's front door.
+
+- **Why a detached host.** A live claude session's stdin pipe belongs to the process that spawned `claude` and cannot be handed to
+  another one (no fd passing through the job directory; the inbox is a file contract between *Claustrum* processes, and the session
+  that reads it is the one holding the pipe). A `run` that returns early while its child keeps waiting would end that process and
+  take the pipe with it. So a child that may outlive its `run` call is hosted from the start in a process that does not: `run
+  --detach` mints the job and starts `claustrum jobs host <id>` (hidden), which runs the job to its receipt; a tree's `run` is
+  `--detach` followed by a wait. Nothing about the session changed: `LiveSession`, the inbox and `live.json` are stage 1's, with the
+  host as the owner (`owner_pid` is the host's, so `jobs wait`'s abandoned check follows it).
+- **What the host runs.** `host-request.json` is the `DelegateRequest` as `run` parsed it, *before* `Prepare` added its warnings; the
+  host calls `Prepare` again and then the same `DelegateEngine.RunAsync(prepared, job, token)` an in-process run does, so the slot,
+  the worktree, the budget admission and Runner are not reimplemented. The alternative, serialising the `PreparedDelegation` (the
+  resolved role, `RunOptions`, the tree), would freeze exactly what the parent resolved but puts a dozen more types in a JSON
+  context; the cost of preparing twice is a `claustrum.json` edited in the milliseconds between, which then fails the host's
+  `Prepare`, and a Prepare that fails in the host becomes a `failed` receipt (a placeholder role names it), never a job left `pending`.
+  `request.json` is still Runner's and keeps its meaning. The parent validates (`DelegateEngine.Validate`) before it mints, so a
+  refusal leaves nothing behind, as for `run` today.
+- **Detached, not just backgrounded.** `Process.Start` with all three streams redirected, the parent closes its stdin end and drops the
+  other two at once (the host's stdout and stderr are pipes nobody holds; .NET ignores SIGPIPE, `SafeConsole` swallows the rest); the
+  host's first act is `setsid()` on Unix (a session of its own: no controlling terminal, so no hangup, and a terminal's Ctrl-C goes to
+  the foreground group it is no longer in) and replacing `Console.Out`/`Error` with `host.log`. Windows gets `CreateNoWindow` (a console
+  of its own that is never shown, so the parent's Ctrl-C and console close never reach it). `posix_spawn(POSIX_SPAWN_SETSID)` with file
+  actions was the alternative: no window between fork and `setsid`, but libc struct sizes and `O_*` constants per platform, unmeasurable
+  here for macOS. Measured 2026-10-15: after `run` exited the host was `PPID 1`, `SID == PID`, no tty.
+- **Cancel is a marker, not a signal.** `jobs cancel <id>` writes `<job>/cancel`; the host polls it every 250 ms and cancels the run's
+  token, which ends the job `cancelled` with its receipt, as Ctrl-C does. The brief said "signals the host": a Windows process with
+  no console cannot be sent Ctrl-C, SIGTERM cannot be caught there, and a file works the same on both systems and cannot hit a reused
+  pid. The host still handles SIGTERM/SIGHUP (the same `CancelSignalHandler`), so `kill <host pid>` also cancels.
+- **Hosts are found by `host.json`.** The launching process writes the host's pid and start time right after `Start`; `LiveJob.IsAbandoned`
+  reads it when there is no `live.json` yet (a host queued for a slot, or a job that is not live), so a host that dies before its session
+  starts is abandoned, not waited on for ever. Measured: `kill -9` on a host under a waiting `run` gave exit 6 within a poll.
+  `ProcessIdentity` is `LiveState.IsOwnerAlive`'s pid + start-time check, shared.
+- **The wait is `jobs wait`'s.** `LiveWait.UntilAsync` is that loop extracted (`jobs wait`, a tree's `run` and `jobs reply` all use it);
+  `reply` passes the question its `say` answered so a `live.json` still showing it open is not read as a new one. A waiter's first
+  Ctrl-C/SIGTERM/SIGHUP cancels the job through its host and waits for the receipt (`run` owns the job until it returns; a killed Bash
+  tool must not leave a paid child running), exit 130. A job with no host is left alone.
+- **Exit 7 is a return, not a status.** `ExitCodes.NeedsInput`. Abandoned stays 6 for `run` in a tree: no receipt is invented for a
+  host that died.
+- **Not hosted, on purpose.** A blind role never asks, so it runs in-process as before; `--stream` needs the process in the room, so a
+  tree's `--stream` run stays in-process with the TTY rule's reply timeout (0 without a terminal: the child is told nobody can answer);
+  `--no-live` and a backend with no live protocol are not live, so there is nothing to return early for.
+- **Known limits.** (1) A child outlives its architect: `Kill(entireProcessTree)` follows parent pids and the host was reparented to
+  init, so a cancelled `coordinate` does not stop its detached children; they end on their own timeout (a waiting one: the 1800 s window,
+  then it decides alone). (2) A `.claustrum` link that leaves the repo is refused in the host after the mint: the receipt is `failed`
+  (exit 1 for the waiter), where in-process it is exit 2. (3) `--file <(cmd)` is read by the host after `run` exited, so it fails
+  there. (4) A waiting child holds its slot and its budget reservation, as the owner decided; measured 2026-10-15, a sibling `run` in the
+  same tree was refused with "nothing left … while 1 running job(s) hold $4.96". (5) Windows: the host start, `CreateNoWindow` and the
+  marker poll are written to the documented behaviour and **not measured on Windows**; a parent in a job object that kills its
+  children on close takes the host too (no `CREATE_BREAKAWAY_FROM_JOB`).
+- **Measured by hand, fake claude, no paid call.** `run --detach` (human and `--json`), `jobs wait`, `jobs cancel` (waiting and done
+  job), a tree's `run` → 7 → `jobs reply` → 7 → `jobs reply --json` → 0 (`live.json` `reply_timeout_seconds` 1800, an isolated builder
+  under a cast with `max_parallel` 2 and a ledger entry), SIGTERM on a waiting `run` (130, `cancelled`), `kill -9` on a host (6).

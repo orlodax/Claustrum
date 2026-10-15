@@ -1,11 +1,14 @@
 using System.CommandLine;
+using System.ComponentModel;
 using System.Text.Json;
 using Claustrum.Casts;
+using Claustrum.Core;
 using Claustrum.Core.Config;
 using Claustrum.Core.Jobs;
 using Claustrum.Core.Json;
 using Claustrum.Core.Model;
 using Claustrum.Delegation;
+using Claustrum.Live;
 
 namespace Claustrum.Cli;
 
@@ -50,11 +53,16 @@ public static class RunCommand
         Option<bool> raw = new("--raw") { Description = "Include the backend's raw response in JSON output." };
         Option<int?> replyTimeout = LiveRun.ReplyTimeoutOption();
         Option<bool> noLive = LiveRun.NoLiveOption();
+        Option<bool> detach = new("--detach")
+        {
+            Description = "Start the job in a detached host process and exit at once, printing its id (--json: {status: started, job_id}). Watch it with `jobs follow`, "
+                + "talk to it with `jobs say`, stop it with `jobs cancel`. Cannot be combined with --stream.",
+        };
 
         Command command = new("run", "Delegate a task to a role.")
         {
             role, brief, briefFile, cwd, backend, model, effort, tier, permission,
-            deny, budget, timeout, resume, file, env, cast, branch, json, stream, streamRawOption, raw, replyTimeout, noLive,
+            deny, budget, timeout, resume, file, env, cast, branch, json, stream, streamRawOption, raw, replyTimeout, noLive, detach,
         };
 
         command.SetAction(async parseResult =>
@@ -85,7 +93,8 @@ public static class RunCommand
                 streamMode, streamRaw,
                 parseResult.GetValue(raw),
                 parseResult.GetValue(noLive),
-                parseResult.GetValue(replyTimeout));
+                parseResult.GetValue(replyTimeout),
+                parseResult.GetValue(detach));
         });
 
         return command;
@@ -95,10 +104,16 @@ public static class RunCommand
         string roleName, string? briefText, string? briefFilePath, string? cwdOption, string? tierFlag,
         ConfigOverrides overrides, string? resumeSession, string[] attachFiles, string[] envEntries,
         string? castName, string? branch, bool jsonMode, bool streamMode, bool streamRaw, bool rawMode,
-        bool noLive, int? replyTimeout)
+        bool noLive, int? replyTimeout, bool detach)
     {
+        if (detach && streamMode)
+            throw new CliUsageException("--detach and --stream cannot be combined: a detached job's output is read with `claustrum jobs follow <id>`");
+
+        // #124 stage 2: in a job tree the architect answers, so a child that may ask is hosted detached and `run` returns early on its
+        // question. --stream needs this process to stay in the room, so it keeps the child in-process, where nobody can answer.
+        bool routed = LiveRun.InTree && !streamMode;
         string cwd = Path.GetFullPath(cwdOption ?? Environment.CurrentDirectory);
-        (bool live, int replyTimeoutSeconds) = LiveRun.Resolve(noLive, replyTimeout);
+        (bool live, int replyTimeoutSeconds) = LiveRun.Resolve(noLive, replyTimeout, answeredByArchitect: routed);
 
         // Before the handler: it swallows the first signal, and a stdin read blocked here listens on no token.
         string brief = ResolveBrief(briefText, briefFilePath);
@@ -149,6 +164,23 @@ public static class RunCommand
             foreach (string warning in printedWarnings)
                 SafeConsole.Error($"warning: {warning}");
 
+            // #124 stage 2: a detached job, or a tree's child that can ask (a blind role never does), is minted here and run by
+            // `jobs host`. Everything that can be refused was refused above, and Validate repeats Runner's own checks, before the mint.
+            if (detach || (routed && prepared.Options.Live && !prepared.Role.Blind))
+            {
+                DelegateEngine.Validate(prepared);
+                JobPaths hosted = JobDirectory.Create(AppServices.Platform);
+                await StartHostAsync(request, hosted, prepared);
+                if (detach)
+                {
+                    cancel.Settled();
+                    SafeConsole.Out(jsonMode ? JsonSerializer.Serialize(StartedResult.For(hosted.Id), LiveJsonContext.Default.StartedResult) : hosted.Id);
+                    return ExitCodes.Ok;
+                }
+
+                return await DetachedRun.WaitAsync(LiveJob.At(hosted), answeredSeq: null, jsonMode, rawMode, printedWarnings, cancel);
+            }
+
             // #124: a terminal run shows the conversation and asks the human, so it needs the job's directory before the run
             // starts. Runner mints its own only after the checks Validate repeats, so a refusal still leaves nothing behind.
             JobPaths? job = null;
@@ -174,15 +206,7 @@ public static class RunCommand
             // The receipt is on disk: a Windows console close need wait no longer.
             cancel.Settled();
 
-            RunResult output = rawMode ? result : result with { Raw = null };
-
-            int exitCode = refusedExit ?? ExitCodeFor(output.Status);
-            if (jsonMode)
-                SafeConsole.Out(JsonSerializer.Serialize(output, ClaustrumJsonContext.Default.RunResult));
-            else
-                PrintHuman(output, exitCode, printedWarnings);
-
-            return exitCode;
+            return Present(result, refusedExit, jsonMode, rawMode, printedWarnings);
         }
         // Everything else (ConfigException, RoleRenderException, CliUsageException,
         // BlindGateException, BackendNotFoundException, ...) is intentionally not caught here —
@@ -194,6 +218,38 @@ public static class RunCommand
             cancel.Settled();
             return Cancelled(ex);
         }
+    }
+
+    // The host failing to start leaves a minted job that nothing will ever run: it gets the failed receipt a waiter polls for.
+    private static async Task StartHostAsync(DelegateRequest request, JobPaths job, PreparedDelegation prepared)
+    {
+        try
+        {
+            DetachedLauncher.Start(request, job);
+        }
+        catch (Exception ex) when (ex is IOException or Win32Exception or InvalidOperationException or UnauthorizedAccessException)
+        {
+            await Runner.RefuseAsync(job, prepared.Role, RunStatus.Failed, $"the detached host could not be started: {ex.Message}");
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Prints a finished run and returns its exit code, for the in-process `run` and for everything that reads a detached job's
+    /// receipt back (a tree's `run`, `jobs reply`): --json is the one RunResult document, otherwise the summary. <paramref name="refusedExit"/>
+    /// is the usage exit a machinery refusal (#104) ends with in place of its status's.
+    /// </summary>
+    internal static int Present(RunResult result, int? refusedExit, bool jsonMode, bool rawMode, string[] printedWarnings)
+    {
+        RunResult output = rawMode ? result : result with { Raw = null };
+
+        int exitCode = refusedExit ?? ExitCodeFor(output.Status);
+        if (jsonMode)
+            SafeConsole.Out(JsonSerializer.Serialize(output, ClaustrumJsonContext.Default.RunResult));
+        else
+            PrintHuman(output, exitCode, printedWarnings);
+
+        return exitCode;
     }
 
     // §B3's three ways in live in BriefSource, shared with `coordinate`. `run` is the door where a

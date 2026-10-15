@@ -7,12 +7,13 @@ using Claustrum.Core.IO;
 using Claustrum.Core.Jobs;
 using Claustrum.Core.Json;
 using Claustrum.Core.Live;
+using Claustrum.Core.Model;
 using Claustrum.Roles;
 using Claustrum.Roles.Sync;
 
 namespace Claustrum.Live;
 
-// #124: the front doors' side of a live job's three files (conversation.jsonl, inbox/, live.json), shared by
+// #124: the front doors' side of a live job's files (conversation.jsonl, inbox/, live.json, and a detached job's host.json), shared by
 // `jobs say|wait|follow`, `run`/`coordinate`'s terminal prompt and the MCP tools. Every read goes through
 // PlainFile (a FIFO is a miss, not a hang) behind a fence that refuses a link leaving the jobs store, and a file
 // that is missing or half-written reads as null/empty: the caller asks again on its next poll.
@@ -69,11 +70,46 @@ internal sealed class LiveJob
     public const string AbandonedMessage = "abandoned: the claustrum process running this job is gone";
 
     /// <summary>
-    /// Whether a job that is not finished has lost its owner: its live.json names a process that is no longer alive and
-    /// there is no result.json. A readable live.json is the precondition: a job without one is not live, hence not abandoned.
+    /// Whether a job that is not finished has lost its owner: no result.json, and the process running it is no longer alive.
+    /// That process is the one live.json names; before the session writes it (a detached job still queued for a slot, or one
+    /// that is not live at all) it is the host host.json names. A job with neither file is not abandoned.
     /// </summary>
-    public bool IsAbandoned(LiveState? state) =>
-        state is { State: not LiveStatus.Done } && !File.Exists(Path.Combine(directory, "result.json")) && !state.IsOwnerAlive();
+    public bool IsAbandoned(LiveState? state)
+    {
+        if (File.Exists(Path.Combine(directory, "result.json")))
+            return false;
+
+        return state is null ? ReadHost() is { } host && !host.IsAlive() : state.State != LiveStatus.Done && !state.IsOwnerAlive();
+    }
+
+    /// <summary>The detached host of this job (`run --detach`, a tree's `run`), or null for a job run by the process that started it.</summary>
+    public HostRecord? ReadHost() => Parse(ReadText("host.json"), LiveJsonContext.Default.HostRecord);
+
+    /// <summary>The receipt, or null while result.json is missing or unreadable (it is written non-atomically).</summary>
+    public RunResult? ReadResult() => Parse(ReadText("result.json"), ClaustrumJsonContext.Default.RunResult);
+
+    /// <summary>
+    /// Asks the job's detached host to end the job `cancelled`, with its receipt (the host polls for the marker this leaves). Refused
+    /// when the job has no host (its own process owns it: Ctrl-C that), is done, or its host is gone.
+    /// </summary>
+    public void RequestCancel()
+    {
+        HostRecord host = ReadHost()
+            ?? throw new CliUsageException($"job '{Id}' is not a detached job: only the claustrum process that runs it can cancel it (Ctrl-C there)");
+
+        if (File.Exists(Path.Combine(directory, "result.json")) || ReadState()?.State == LiveStatus.Done)
+            throw new CliUsageException($"job '{Id}' is done: nothing to cancel");
+
+        if (!host.IsAlive())
+            throw new CliUsageException($"job '{Id}' is {AbandonedMessage}: nothing to cancel");
+
+        string marker = Path.Combine(directory, "cancel");
+        if (fence.Escapes(marker))
+            throw new CliUsageException($"{marker} resolves outside the jobs store ({SyncRoot.Resolve(marker)}): nothing is written through a link that leaves it");
+
+        if (!PlainFile.TryWriteAllText(marker, DateTimeOffset.UtcNow.ToString("o"), FileMode.Create, out string? refusal))
+            throw new CliUsageException($"{marker}: {refusal}");
+    }
 
     public LiveState? ReadState() => Parse(ReadText("live.json"), ClaustrumJsonContext.Default.LiveState);
 

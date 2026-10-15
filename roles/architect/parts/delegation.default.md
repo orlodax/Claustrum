@@ -2,7 +2,8 @@
   the fixed H2s `## Task`, `## Scope`, `## Must still work`, `## Diff`, `## Access` (ui-reviewer
   and demo-author only) and `## Context` (non-blind roles only) — then run
   `claustrum run <role> --brief-file <path> --json`, adding `--cast <name>` when a cast is in play
-  and `--tier xhigh` or `--tier max` for a heavier tier. It returns when the role is done and prints
+  and `--tier xhigh` or `--tier max` for a heavier tier. It returns when the role is done — or, in your
+  tree, asks you a question (exit `7`, `"status": "needs_input"`: see "A child may stop to ask you") — and prints
   exactly one JSON document.
 - **When the `claustrum` MCP server is connected**, the `delegate` tool is the same call
   (`role`, `brief`, `cwd`, `tier`, `cast`, …) and blocks the same way. Where a long run would exceed
@@ -28,6 +29,7 @@
   wait
   ```
 
-  then read each receipt file as you would a single run's output — or use your harness's own
+  then read each receipt file as you would a single run's output (one whose `status` is `needs_input` is a child's
+  question, not its result) — or use your harness's own
   background-command mode when it has one, reading every receipt before you finish. Never start
   more at once than the cast's `max_parallel`.

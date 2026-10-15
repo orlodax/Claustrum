@@ -10,7 +10,10 @@ public static class ExitCodes
     public const int Timeout = 4;
     public const int Budget = 5;
 
-    /// <summary>`jobs wait` on a live job whose claustrum process is gone (#124); its own code, never one a run can end with.</summary>
+    /// <summary>A job whose claustrum process is gone with no receipt (#124): what `jobs wait`, `jobs reply` and a tree's `run` report; never a status a run ends with.</summary>
     public const int Abandoned = 6;
+
+    /// <summary>A tree's `run`, or `jobs reply`, returned early because the child asked its architect a question and is still waiting (#124 stage 2).</summary>
+    public const int NeedsInput = 7;
     public const int Cancelled = 130;
 }

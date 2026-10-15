@@ -1,6 +1,6 @@
-using System.ComponentModel;
 using System.Text.Json.Serialization;
 using Claustrum.Core.Json;
+using Claustrum.Core.Process;
 
 namespace Claustrum.Core.Live;
 
@@ -12,34 +12,12 @@ namespace Claustrum.Core.Live;
 // reader tells that from a live one.
 public sealed record LiveState(LiveStatus State, int? QuestionSeq, DateTimeOffset Since, int ReplyTimeoutSeconds, int OwnerPid = 0, DateTimeOffset? OwnerStartedAt = null)
 {
-    // Process start times come from the OS clock and are not exact across reads (Linux derives them from the
-    // boot time): a reused pid belongs to a process started long after the owner, never within seconds of it.
-    private static readonly TimeSpan startSkew = TimeSpan.FromSeconds(5);
-
     /// <summary>
     /// False when the owner is gone, or its pid now belongs to another process (the start time differs). True when
     /// it is alive, when no owner was recorded, or when it exists but cannot be inspected: a live job is never
     /// declared dead on a guess.
     /// </summary>
-    public bool IsOwnerAlive()
-    {
-        if (OwnerPid <= 0)
-            return true;
-
-        try
-        {
-            using System.Diagnostics.Process owner = System.Diagnostics.Process.GetProcessById(OwnerPid);
-            return !owner.HasExited && (OwnerStartedAt is not { } started || (owner.StartTime.ToUniversalTime() - started).Duration() <= startSkew);
-        }
-        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException)
-        {
-            return false;
-        }
-        catch (Win32Exception)
-        {
-            return true;
-        }
-    }
+    public bool IsOwnerAlive() => OwnerPid <= 0 || ProcessIdentity.IsAlive(OwnerPid, OwnerStartedAt);
 }
 
 [JsonConverter(typeof(SnakeCaseEnumConverter<LiveStatus>))]
