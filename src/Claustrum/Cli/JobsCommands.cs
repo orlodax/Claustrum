@@ -4,6 +4,7 @@ using System.Text.Json;
 using Claustrum.Coordination;
 using Claustrum.Core.Git;
 using Claustrum.Core.Jobs;
+using Claustrum.Delegation;
 using Claustrum.Roles.Sync;
 
 namespace Claustrum.Cli;
@@ -204,6 +205,10 @@ public static class JobsCommands
             }
 
             if (!JobDirectory.IsFinished(jobsRoot, jobId))
+                continue;
+
+            // #124 stage 3 review F1: the continuation of a finished job runs in that job's worktree, which is not free while it runs.
+            if (JobAnswering.RunningContinuation(jobsRoot, jobId) is not null)
                 continue;
 
             // Per entry, not per sweep: one directory git no longer recognises as a worktree (removed

@@ -54,7 +54,12 @@ public sealed record DelegateRequest(
     // #124 stage 3b: the `needs_input` job this one continues (`jobs answer`, `coordinate --resume`); copied into request.json.
     string? ParentJobId = null,
     // Set only on `coordinate`'s architect: what a resume of it needs beyond this request (CoordinateOrigin).
-    CoordinateOrigin? Coordinate = null)
+    CoordinateOrigin? Coordinate = null,
+    // #124 stage 3 review F1: the isolated job this continuation takes the worktree of (`.claustrum/worktrees/<id>`), so its session resumes
+    // where it began. Only with Branch; DelegateEngine.RunIsolatedAsync reuses, recreates or refuses that path.
+    string? WorktreeOf = null,
+    // F5: what the continued job ran as; Prepare keeps the run on it whatever today's configuration resolves.
+    ResumePin? Pin = null)
 {
     /// <summary>
     /// The exact token <see cref="SystemAppendix"/> and <see cref="Env"/> values may carry in place of

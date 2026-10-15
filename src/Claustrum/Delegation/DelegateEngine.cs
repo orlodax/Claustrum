@@ -21,7 +21,7 @@ public static class DelegateEngine
 {
     public const int DefaultTimeoutSeconds = 1800;
 
-    // #124, owner's decision 2026-10-15: how long a question waits for its human before the role is told to decide alone,
+    // #124, owner's decision 2026-10-15: how long a question waits for its human before the role is told no human is available,
     // wherever a human can be expected to answer (a terminal, an MCP host's job_say).
     public const int DefaultReplyTimeoutSeconds = 1800;
 
@@ -51,6 +51,16 @@ public static class DelegateEngine
         // must already know the harness it will run on (M1 review finding #2), not a placeholder
         // rendered against regardless of the real target.
         Config config = Config.Load(AppServices.Platform, request.Cwd);
+
+        // #124 stage 3 review F5: a continuation resumes a session only the backend and model it began on can read, so it runs as the job
+        // it continues did; if today's configuration would resolve the role differently, the receipt says so.
+        string? pinWarning = null;
+        if (request.Pin is { } pin)
+        {
+            pinWarning = PinDrift(config, request, pin);
+            request = request with { Overrides = request.Overrides with { Backend = pin.Backend, Model = $"{pin.Backend}:{pin.Model}", Permission = pin.Permission ?? request.Overrides.Permission } };
+        }
+
         string tierModelClass = AppServices.RoleRenderer.TierModelClass(request.Role, request.Tier, request.Cwd);
         string harness = config.ResolveBackend(request.Role, tierModelClass, request.Overrides);
         RequireSupportedHarness(request.Role, harness, request.Cwd);
@@ -64,6 +74,8 @@ public static class DelegateEngine
             rendered = rendered with { SystemBody = InsertAppendix(rendered.SystemBody, appendix) };
 
         ResolvedRole resolved = config.Resolve(rendered, request.Overrides);
+        if (pinWarning is not null)
+            request = request with { PreRunWarnings = [.. request.PreRunWarnings ?? [], pinWarning] };
 
         // #122 item 2, F9: warn whenever the role's final model — after flags, the cast, `roles` config and the
         // tier's class — came through a built-in default, unless a cast warning already said so for this role.
@@ -116,6 +128,28 @@ public static class DelegateEngine
         return new PreparedDelegation(request, resolved, options, budgetUsd, timeoutSeconds, requestPermission);
     }
 
+    // What today's configuration would run the role as, said when it is not what the continued job ran as. `request` is still the
+    // unpinned one, so the resolution here is exactly what a plain run would have got.
+    private static string? PinDrift(Config config, DelegateRequest request, ResumePin pin)
+    {
+        string was = Describe(pin.Backend, pin.Model, pin.Permission);
+        try
+        {
+            string tierModelClass = AppServices.RoleRenderer.TierModelClass(request.Role, request.Tier, request.Cwd);
+            string harness = config.ResolveBackend(request.Role, tierModelClass, request.Overrides);
+            ResolvedRole today = config.Resolve(AppServices.RoleRenderer.Render(request.Role, request.Tier, harness, request.Cwd), request.Overrides);
+            string now = Describe(today.Backend, today.Model, pin.Permission is null ? null : PermissionLevelParser.ToConfigString(today.Permission.Level));
+            return now == was ? null : $"job {request.ParentJobId} ran as {was}; today's configuration would run it as {now} — the continuation stays on {was}, the one its session belongs to";
+        }
+        catch (Exception ex) when (ex is ConfigException or RoleRenderException)
+        {
+            return $"job {request.ParentJobId} ran as {was}; today's configuration cannot resolve the role ({ex.Message}) — the continuation stays on {was}";
+        }
+    }
+
+    private static string Describe(string backend, string model, string? permission) =>
+        permission is null ? $"{backend}:{model}" : $"{backend}:{model} ({permission})";
+
     /// <summary>
     /// The checks <see cref="Runner"/> makes before it mints a job (timeout, brief and attachments, blind gate), for a caller
     /// that mints one itself to watch it run (#124): a refusal throws as it would from <see cref="RunAsync(PreparedDelegation, JobPaths?, CancellationToken)"/>
@@ -135,11 +169,56 @@ public static class DelegateEngine
     /// </summary>
     public static async Task<RunResult> RunAsync(PreparedDelegation prepared, JobPaths? job, CancellationToken cancellationToken)
     {
-        RunResult result = await DispatchAsync(prepared, job, cancellationToken);
+        // #124 stage 3 review F2: a continuation takes the one answer its parent job has. Its job is minted here, after the checks Runner
+        // would make before minting one (so a refusal leaves nothing behind), because the claim names it.
+        string? parent = prepared.Request.ParentJobId;
+        if (parent is not null)
+        {
+            if (job is null)
+            {
+                Validate(prepared);
+                job = JobDirectory.Create(AppServices.Platform);
+            }
+
+            await ClaimAsync(prepared, job);
+        }
+
+        RunResult result;
+        try
+        {
+            result = await DispatchAsync(prepared, job, cancellationToken);
+        }
+        catch (MachineryRefusedException)
+        {
+            ReleaseUnspent(parent, job);
+            throw;
+        }
+
+        // A receipt with no process behind it (exit -1, no time spent) and no session: the backend never saw the answer, so it is still to give.
+        if (result is { ExitCode: -1, SessionId: null, DurationSeconds: 0 })
+            ReleaseUnspent(parent, job);
+
         if (result.Status == RunStatus.NeedsInput)
             RecordResumable(prepared.Request, job, result);
 
         return result;
+    }
+
+    /// <summary>
+    /// Claims the answer of the job a continuation continues (F2), or refuses it as a machinery refusal: a failed receipt, the
+    /// <c>refused</c> marker a detached host's waiter reads, and the exception that makes the front door exit 2. A no-op for a run that
+    /// continues nothing. `coordinate` calls it first, before it touches the tree the job belongs to; a second call for the same job is a no-op.
+    /// </summary>
+    internal static async Task ClaimAsync(PreparedDelegation prepared, JobPaths job)
+    {
+        if (prepared.Request.ParentJobId is { } parent && JobAnswering.TryClaim(parent, job.Id, prepared.Request.Coordinate is not null) is { } refusal)
+            throw await RefusedWithAsync(job, prepared.Role, refusal);
+    }
+
+    private static void ReleaseUnspent(string? parent, JobPaths? job)
+    {
+        if (parent is not null && job is not null)
+            JobAnswering.Release(parent, job.Id);
     }
 
     // #124 stage 3b: a job that came back asking can be continued with `jobs answer` / `coordinate --resume`, which rebuild the run from
@@ -243,8 +322,14 @@ public static class DelegateEngine
         DelegateRequest request = bound.Request;
         ResolvedRole role = IsolatedRole(bound.Role);
 
+        // F1: a continuation of an isolated job runs where that job did. claude happened to find a session from any directory (measured
+        // 2026-10-15, 2.1.300, NOTES.md "Live sessions"), but the session records its cwd and its tool calls name paths under it, and a
+        // checkout elsewhere frees that directory first. opencode keys its sessions by id, not by directory; cursor was not measured.
+        string? home = request.WorktreeOf is { } named && request.Branch is not null && JobDirectory.IsJobId(named) ? named : null;
+        string worktreePath = JobWorktree.PathFor(request.Cwd, home ?? job.Id);
+
         // #104: before anything is created — the worktree, the slot files, the branch lock.
-        List<string> machinery = [JobWorktree.PathFor(request.Cwd, job.Id)];
+        List<string> machinery = [worktreePath];
         if (request.MaxParallel is { } slots && slots >= 1)
             machinery.AddRange(LockPaths(request.Cwd, RoleConcurrencyGate.KeyFor(request.CastName, request.Role), slots));
         if (request.Branch is { } branched)
@@ -318,7 +403,7 @@ public static class DelegateEngine
 
         // #104, again: the waits above can take minutes, and `.claustrum` may have become a link meanwhile. Before
         // admission, so a refusal here holds no reservation; the gates above are released by their `await using`.
-        await RequireInsideAsync(request.Cwd, job, role, [JobWorktree.PathFor(request.Cwd, job.Id)]);
+        await RequireInsideAsync(request.Cwd, job, role, [worktreePath]);
 
         // Binding, and before any isolation: this path cuts a branch and holds a slot before Runner
         // ever sees the request, so a job the ledger will refuse has to be refused here. The slot
@@ -342,9 +427,13 @@ public static class DelegateEngine
         JobWorktreeInfo? worktree = null;
         try
         {
-            worktree = request.Branch is { } existing
-                ? await JobWorktree.CheckOutBranchAsync(request.Cwd, job.Id, existing, JobDirectory.ResolveRoot(AppServices.Platform), cancellationToken)
-                : await JobWorktree.AddAsync(request.Cwd, job.Id, cancellationToken);
+            string jobsRoot = JobDirectory.ResolveRoot(AppServices.Platform);
+            worktree = (request.Branch, home) switch
+            {
+                ({ } continued, { } homeJob) => await JobWorktree.ReopenAsync(request.Cwd, homeJob, continued, jobsRoot, cancellationToken),
+                ({ } existing, null) => await JobWorktree.CheckOutBranchAsync(request.Cwd, job.Id, existing, jobsRoot, cancellationToken),
+                _ => await JobWorktree.AddAsync(request.Cwd, job.Id, cancellationToken),
+            };
 
             // #122: when the cast is per-developer (untracked/ignored by .gitignore), the worktree
             // cut from HEAD doesn't hold it. Copy it in so the architect (and every child it starts
@@ -418,8 +507,11 @@ public static class DelegateEngine
     {
         string error = $"refused: {escaping} resolves outside the working directory ({SyncRoot.Resolve(escaping)}); `.claustrum` is a link that leaves it, "
             + "and a run's worktree and lock files are never created through one";
-        JobPaths refused = job ?? JobDirectory.Create(AppServices.Platform);
+        return await RefusedWithAsync(job ?? JobDirectory.Create(AppServices.Platform), role, error);
+    }
 
+    private static async Task<MachineryRefusedException> RefusedWithAsync(JobPaths refused, ResolvedRole role, string error)
+    {
         // Before the receipt: a tree's `run` waits on a detached host, and the waiter that finds the receipt must already find this (exit 2, as in-process).
         File.WriteAllText(refused.RefusedMarker, error);
         return new MachineryRefusedException(await Runner.RefuseAsync(refused, role, RunStatus.Failed, error));

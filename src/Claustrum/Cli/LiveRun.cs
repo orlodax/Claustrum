@@ -15,7 +15,7 @@ internal static class LiveRun
 
     public static Option<int?> ReplyTimeoutOption() => new("--reply-timeout")
     {
-        Description = $"Seconds an open question waits for a human reply before the role is told to decide alone (default {DelegateEngine.DefaultReplyTimeoutSeconds} on a terminal or as a child in a job tree whose architect is live, 0 otherwise: the role is told at once nobody can answer).",
+        Description = $"Seconds an open question waits for a human reply before the role is told no human is available (default {DelegateEngine.DefaultReplyTimeoutSeconds} on a terminal or as a child in a job tree whose architect is live, 0 otherwise: the role is told at once nobody can answer).",
     };
 
     public static Option<bool> NoLiveOption() => new("--no-live") { Description = "Run as before the live channel: no conversation, so the role cannot ask the human anything." };

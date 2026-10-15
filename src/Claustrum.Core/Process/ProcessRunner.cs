@@ -62,6 +62,7 @@ public sealed class ProcessRunner(IPlatform platform)
         ProcessSpec current = spec;
         int stdoutMark = 0;
         int stderrMark = 0;
+        string? failure = null;
         try
         {
             while (true)
@@ -111,6 +112,11 @@ public sealed class ProcessRunner(IPlatform platform)
                     stopped = true;
                     break;
                 }
+                catch (Exception ex)
+                {
+                    failure = NextTurnFailed(turns, ex, stderr, stderrLog);
+                    break;
+                }
 
                 if (next is null)
                     break;
@@ -119,9 +125,20 @@ public sealed class ProcessRunner(IPlatform platform)
                 stdoutMark = stdout.Length;
                 stderrMark = stderr.Length;
                 process.Dispose();
-                process = Launch(StartInfoFor(next, backendConfig, envPassthroughAll), pumps);
-                process.BeginOutputReadLine();
-                process.BeginErrorReadLine();
+
+                // F6: turns already ran, so a process that cannot start is a failed job with its receipt and conversation, not an escape
+                // from the runner and not "never ran" (BackendNotFoundException, Win32Exception, whatever the system says).
+                try
+                {
+                    process = Launch(StartInfoFor(next, backendConfig, envPassthroughAll), pumps);
+                    process.BeginOutputReadLine();
+                    process.BeginErrorReadLine();
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    failure = NextTurnFailed(turns, ex, stderr, stderrLog);
+                    break;
+                }
             }
         }
         finally
@@ -143,7 +160,25 @@ public sealed class ProcessRunner(IPlatform platform)
             termination = ProcessTermination.Cancelled;
 
         stopwatch.Stop();
-        return new ProcessOutcome(reportKept && (stopped || SignalExit.IsCancelSignal(exitCode)) ? 0 : exitCode, stdout.ToString(), stderr.ToString(), termination, stopwatch.Elapsed, lastTurn);
+        return new ProcessOutcome(
+            failure is not null ? -1 : reportKept && (stopped || SignalExit.IsCancelSignal(exitCode)) ? 0 : exitCode,
+            stdout.ToString(),
+            stderr.ToString(),
+            termination,
+            stopwatch.Elapsed,
+            lastTurn,
+            failure);
+    }
+
+    // The session hears why (its conversation and live.json end there), and the reason goes to stderr.log too, where a post-mortem looks.
+    private static string NextTurnFailed(IProcessLive turns, Exception ex, StringBuilder stderr, StreamWriter stderrLog)
+    {
+        string reason = ex is BackendNotFoundException ? ex.Message : $"{ex.GetType().Name}: {ex.Message}";
+        turns.NextTurnFailed(reason);
+        string line = $"claustrum: the next turn could not be started: {reason}";
+        stderr.AppendLine(line);
+        stderrLog.WriteLine(line);
+        return $"the next turn could not be started: {reason}";
     }
 
     private static ProcessTermination Interrupted(CancellationToken cancellationToken) =>

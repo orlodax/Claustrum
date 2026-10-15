@@ -28,10 +28,11 @@ public static class CoordinationBrief
 
     /// <summary>
     /// Where the architect works: <paramref name="cwd"/> itself, or — isolated (#74) — its own worktree
-    /// under it, whose path carries <see cref="DelegateRequest.JobIdToken"/> until the job exists.
+    /// under it, whose path carries <see cref="DelegateRequest.JobIdToken"/> until the job exists. A resumed architect (#124 stage 3
+    /// review F1) works in the worktree of the job it continues, <paramref name="worktreeOf"/>, which exists already.
     /// </summary>
-    public static string ArchitectCwd(string cwd, bool isolated) =>
-        isolated ? JobWorktree.PathFor(cwd, DelegateRequest.JobIdToken) : cwd;
+    public static string ArchitectCwd(string cwd, bool isolated, string? worktreeOf = null) =>
+        isolated ? JobWorktree.PathFor(cwd, worktreeOf ?? DelegateRequest.JobIdToken) : cwd;
 
     public static string WorkingDirectoryLine(string workingDirectory) => $"- Working directory: {workingDirectory}";
 
@@ -77,10 +78,11 @@ public static class CoordinationBrief
     // child is that worktree's, and the work branch already exists; not isolated, there is no git at all
     // (NOTES.md "coordinate runs the architect in its own worktree").
     // `continuedTree` (#124 stage 3b): a resumed architect keeps the budget tree and the work branch of the job it continues, so the lines
-    // that name them carry that job's id; only its worktree is new, and its path keeps the token.
-    public static string RenderSystemAppendix(Cast cast, string castName, string cwd, string? modelOverride = null, bool isolated = false, string? continuedTree = null)
+    // that name them carry that job's id; its worktree is that job's too (`worktreeOf`) when it still has one, else the path keeps the token.
+    public static string RenderSystemAppendix(
+        Cast cast, string castName, string cwd, string? modelOverride = null, bool isolated = false, string? continuedTree = null, string? worktreeOf = null)
     {
-        string workingDirectory = ArchitectCwd(cwd, isolated);
+        string workingDirectory = ArchitectCwd(cwd, isolated, worktreeOf);
         string tree = continuedTree ?? DelegateRequest.JobIdToken;
         List<string> lines =
         [

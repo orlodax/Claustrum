@@ -24,8 +24,8 @@ was wrong and a finding you never read are indistinguishable once the run is ove
 the change is green without the tester's own report saying so.
 
 A decision that is the human's is not yours to guess (a child's question is yours to answer first):
-on a live run, ask by ending a turn without this block; when you cannot ask (the run says no human
-is available, or it is not live), stop with `"status": "needs_input"` and `"questions": [{"key":
+on a live run, ask by ending a turn without this block; when you cannot ask (the run says "No human is
+available to answer now", or it is not live), stop with `"status": "needs_input"` and `"questions": [{"key":
 "...", "prompt": "...", "options": ["..."], "allow_free_form": true}]` added to the block, the rest
 as usual, and the caller will answer and resume you. A line `claustrum-note: <text>` in your output
 is a one-way progress note to the human.

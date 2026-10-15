@@ -35,7 +35,9 @@ public sealed class LiveSession(
     // The same cap `jobs say` puts on a message: a bigger inbox file did not come from it.
     public const int MaxInboxBytes = 1024 * 1024;
 
-    private const string DecideAlone = "Decide yourself, record the choice and why in open_decisions, and continue.";
+    // One rule for every case where nobody answers (no reply window, or the window passed): the roles' report text and the manual quote it.
+    private const string WhenNobodyAnswers =
+        "If the decision is one you can make, make it, record it in open_decisions and continue; if it is the human's, stop with status needs_input and put your questions in the report.";
 
     private const double WarnFraction = 0.85;
 
@@ -74,9 +76,9 @@ public sealed class LiveSession(
     // A turn carrying the report was recorded: from then on the job's outcome is that report, whatever stops the process.
     private volatile bool reported;
 
-    public static string NoAnswerNotice(TimeSpan window) => $"No answer arrived within {Duration(window)}. {DecideAlone}";
+    public static string NoAnswerNotice(TimeSpan window) => $"No answer arrived within {Duration(window)}. {WhenNobodyAnswers}";
 
-    public static string NoHumanNotice => $"No human is available to answer. {DecideAlone}";
+    public static string NoHumanNotice => $"No human is available to answer now. {WhenNobodyAnswers}";
 
     public static string TimeoutWarning(TimeSpan remaining)
     {
@@ -197,22 +199,49 @@ public sealed class LiveSession(
                 await wake.Reader.ReadAsync(cancellationToken);
         }
 
-        try
-        {
-            if (session is null || resumeTurn is null)
-                throw new InvalidOperationException("the backend named no session to resume");
-
-            return resumeTurn(session, message);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        if (session is null || resumeTurn is null)
         {
             lock (gate)
             {
-                Append(ConversationParty.Claustrum, ConversationKind.Notice, $"The next turn could not be started: {ex.Message}");
+                Append(ConversationParty.Claustrum, ConversationKind.Notice, "The next turn could not be started: the backend named no session to resume");
                 Finish();
             }
 
             return null;
+        }
+
+        // A throw here is the runner's to handle (NextTurnFailed): a turn that cannot start fails the job, it does not end it quietly.
+        return resumeTurn(session, message);
+    }
+
+    // The next turn's process could not be built or started (F6): the session ends here with the reason in its conversation, and the
+    // runner ends the job failed. Nothing is sent: there is no process left to take it.
+    public void NextTurnFailed(string reason)
+    {
+        lock (gate)
+        {
+            if (state == LiveStatus.Done)
+                return;
+
+            Append(ConversationParty.Claustrum, ConversationKind.Notice, $"The next turn could not be started: {reason}");
+            Finish();
+        }
+    }
+
+    /// <summary>
+    /// A line <c>claustrum-note: …</c> the role printed (#124 stage 3 review, loose end): recorded as a Message from the role with the
+    /// prefix kept, as NoteRecorder does for a run with no session, so `jobs follow` shows both alike. The session owns this file's numbering,
+    /// which is why the note comes through here. Nothing is written once the session is over. False when it was not recorded.
+    /// </summary>
+    public bool RecordNote(string text)
+    {
+        lock (gate)
+        {
+            if (state == LiveStatus.Done)
+                return false;
+
+            Append(ConversationParty.Role, ConversationKind.Message, text);
+            return true;
         }
     }
 

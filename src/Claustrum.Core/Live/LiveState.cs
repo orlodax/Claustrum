@@ -6,7 +6,7 @@ namespace Claustrum.Core.Live;
 
 // `<job>/live.json` (#124), rewritten atomically on every change. QuestionSeq is the open question's
 // ConversationEntry.Seq while State is WaitingForInput; ReplyTimeoutSeconds is how long the session
-// waits for a reply before telling the role to decide alone (0 = never waits). OwnerPid and OwnerStartedAt
+// waits for a reply before telling the role no human is available (0 = never waits). OwnerPid and OwnerStartedAt
 // name the claustrum process running the session (0 / null in a file written before they existed): a
 // session killed without reaching its end leaves "running" behind for ever, and IsOwnerAlive is how a
 // reader tells that from a live one.

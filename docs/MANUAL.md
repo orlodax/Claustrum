@@ -231,7 +231,8 @@ backend, or it skips with "no model alias … resolves to this backend".
   with the one registration each may still have (`swept N leftover trash directories`; a trash that will not delete,
   that git still lists as a worktree, or whose registration was not released — locked, another repository's, its
   worktree directory still there, a NUL in the file — is a `warning:` line, not a failure, and is kept). If `.claustrum`
-  is a link that leaves the working directory, `jobs clean` refuses before touching anything (exit 2).
+  is a link that leaves the working directory, `jobs clean` refuses before touching anything (exit 2). A finished job's worktree is also
+  left while a continuation of it (`jobs answer`, below) is running: that job works in it.
   The first Ctrl-C, SIGTERM or SIGHUP stops the sweep (exit 130); a worktree not yet renamed stays intact, and
   the next `jobs clean` finishes any trash. A worktree with anything uncommitted — new files included,
   whatever `status.showUntrackedFiles` says (a commit the runner could not make, a hard-killed run)
@@ -250,7 +251,7 @@ backend, or it skips with "no model alias … resolves to this backend".
 
 ### Talking to a running job
 
-A claude role need not finish in one breath. When its turn ends without a `claustrum-report` block, that turn
+A claude or opencode role need not finish in one breath. When its turn ends without a `claustrum-report` block, that turn
 is a message to the human: the session stays open, the human's reply goes in as the next turn, and the job's clock
 stands still while it waits (it keeps its concurrency slot). Everything said lands in the job directory's
 `conversation.jsonl` and reads as one line per entry: `? ` a role's question, `> ` the human's reply or message,
@@ -277,11 +278,17 @@ front doors, one channel:
   which blocks its host, runs with 0. A `coordinate` architect answers its children's questions itself, so what reaches
   `job_status` is the architect's own (*Questions inside a tree*).
 
-When nobody answers — `--reply-timeout 0` (the default with no terminal), or the timeout passing without a reply —
-the role is told to decide alone and record the choice in `open_decisions`. `--reply-timeout <s>` sets the wait and
+When nobody answers — `--reply-timeout 0` (the default with no terminal), or the timeout passing without a reply — the role is
+told "No human is available to answer now" (after a timeout, "No answer arrived within <n> minutes"), then the one rule for both: *If the decision is
+one you can make, make it, record it in open_decisions and continue; if it is the human's, stop with status needs_input and put your
+questions in the report.* A role that stops that way is answered with `jobs answer` (below). `--reply-timeout <s>` sets the wait and
 `--no-live` turns the channel off: the run is exactly what it was before it existed. Blind roles (`code-reviewer`,
 `ui-reviewer`) can only tell, not ask: a human answer could carry the rationale the blind gate withholds, so their doubts
-go into their findings. Only claude is live today; for any other backend the flags are accepted and change nothing.
+go into their findings. Live needs a backend that holds a conversation: claude and opencode. On claude a message sent while the role works
+reaches it at its next tool-result boundary; opencode runs one process per turn and resumes its session, so a message sent mid-turn waits for
+the turn's end and goes out as the next turn, and the 85% timeout warning reaches the role only between turns (a role that works one long
+turn never gets it: tell it its deadline in the brief). For any other backend (copilot, cursor, api) the flags are accepted and change nothing;
+those roles use the fallback of *When nobody can answer live*.
 
 #### When nobody can answer live
 
@@ -299,8 +306,15 @@ guessing at a decision that is the human's. Blind roles never do this; their dou
   still ends `needs_input` (answer in free text); the receipt's `warnings[]` says so. Over MCP, `job_status` shows `status` and
   `questions` for a done job, and `job_result` the whole receipt.
 - **`claustrum jobs answer <id> (--answers <file> | <text>) [--json]`.** Continues a finished `needs_input` job: its backend session
-  is resumed (`run --resume <session_id>`) as a **new job** with the same role, cast, backend, model and cwd, and the job's branch when
-  it was isolated (a new worktree on that branch, as `run --branch`); the new request carries `parent_job_id`. The message is the
+  is resumed (`run --resume <session_id>`) as a **new job** with the same role, cast and cwd, linked by `parent_job_id`, and **pinned to what
+  the job ran as**: its backend, model and permission level (`backend.json`), whatever today's configuration resolves; when it would
+  resolve otherwise the receipt's `warnings[]` names both. An isolated job continues **in the same worktree** (`.claustrum/worktrees/<the job>`, on its
+  branch; the new receipt's `worktree` says so): reused when it still holds the branch and is clean, recreated at that path when
+  `jobs clean` removed it, refused with the reason when something else is there or it holds uncommitted work (a `failed` receipt; fix it
+  and answer again). The session records its working directory and its tool calls name paths under it. A job is **answered once**: the
+  start of its continuation writes `answered.json` beside its receipt, exclusively; a second `jobs answer` (or a retried `job_answer`)
+  is refused, exit 2, naming the continuation, and when that one stopped with `needs_input` too, it is the one to answer. A continuation that
+  never reached its backend (a refusal, a budget, a missing binary) gives the answer back. The message is the
   answers: `--answers` is a JSON object, question `key` → string answer (an unknown key, or a value outside the options of a
   question that does not allow free form, is refused; a question left out is handed back to the role to decide and record in
   `open_decisions`), or the text is taken as one free-form reply. It prints the new job's result as `run` does and exits with its
@@ -309,18 +323,17 @@ guessing at a decision that is the human's. Blind roles never do this; their dou
   the answers in its brief) or a receipt with no session id. MCP: `job_answer {job_id, answers | text}`, which returns the new job's
   id at once (poll it like `delegate_async`).
 - **`claustrum coordinate --resume <job> (--answers <file> | --brief <text> | --brief-file <path>)`.** The same for a coordinate job:
-  its architect session is resumed on the job's branch (`claustrum/<job>`, checked out in a new worktree — refused, naming the
-  holder, while the old one still holds its children's worktrees: run `jobs clean --cwd <it>` first), under the same cast and the
-  same **budget tree**: the children are accounted in the first job's ledger (`jobs budget <first job>` lists both architect runs),
+  its architect session is resumed on the job's branch (`claustrum/<job>`) in the job's own worktree, children's worktrees
+  included, pinned and answered once as above, under the same cast and the same **budget tree**: the children are accounted in the first job's ledger (`jobs budget <first job>` lists both architect runs),
   and the job left a `successor` marker so the tree's detached hosts watch the running architect, not the finished one. `--cast`,
-  `--issues` and `--cwd` are refused (the job's own are used); `--tier`, `--model`, `--budget` and `--timeout` override the original's.
+  `--issues` and `--cwd` are refused (the job's own are used); `--tier`, `--budget` and `--timeout` override the original's, and `--model` is
+  accepted but the architect stays on the backend and model its session began on (a warning says so).
   MCP `job_answer` does this for a coordinate job.
 - **Progress notes.** A role on any backend may print a line `claustrum-note: <text>`. Claustrum appends it to the job's
-  `conversation.jsonl` as a `message` from the role (the file is created if the run is not live) and `jobs follow` shows it as
-  `· <text>`. One-way: nothing answers it. The job's `conversation` field then points at the file. A repeat of a note is recorded once, at
+  `conversation.jsonl` as a `message` from the role (the file is created if the run is not live; a live session numbers and writes
+  them itself) and `jobs follow` shows it as `· <text>`. One-way: nothing answers it. The job's `conversation` field then points at the file. A repeat of a note is recorded once, at
   most 200 per job. Only a JSON event's assistant text is read (not a tool's output), so on a backend whose output arrives as one document at
-  the end (cursor, api), notes appear when the run ends. **A live run's notes are not recorded in `conversation.jsonl`**: the
-  session owns that file's numbering; they remain in the stream and `stdout.log`.
+  the end (cursor, api), notes appear when the run ends.
 
 #### Questions inside a tree
 
@@ -335,10 +348,12 @@ prints `{"status":"needs_input","job_id":"…","question":{"seq":…,"text":"…
 slot and its budget reservation while it waits, and its clock stands still. The architect's loop is `run` → 7 →
 `claustrum jobs reply <id> "<answer>"` → 7 … → 0: `reply` queues the answer (refusing a blind, done or abandoned job as `jobs say`
 does), then waits like `run` and prints the next question (7) or the result exactly as `run` would (`--json`: the RunResult; the
-exit code is its status's). What the architect cannot answer it escalates by ending its own turn with the question: it is live under
+exit code is its status's). A child whose backend has no live protocol cannot wait: it ends `needs_input` and `run` exits 7 with its
+whole RunResult (`questions[]`), nothing alive to reply to. `jobs reply` refuses such a job, saying to use `jobs answer`, which resumes it.
+What the architect cannot answer it escalates by ending its own turn with the question: it is live under
 `coordinate`, so its human gets it (the terminal, or `job_status`/`job_say` over MCP, where `coordinate` now runs its architect with
 a 1800 s reply timeout), and the architect replies to the child with what they said. A child nobody answers within the window is
-told to decide alone. Ctrl-C (or SIGTERM, SIGHUP) on a waiting `run` or `reply` cancels the job through its host and prints the
+told no human is available, and decides what it can. Ctrl-C (or SIGTERM, SIGHUP) on a waiting `run` or `reply` cancels the job through its host and prints the
 `cancelled` receipt, exit 130, as it would in-process; a machinery refusal in the host (a `.claustrum` link that leaves the repo) is exit 2
 here too. Under `--json` a tree's `run` and `jobs reply` always print exactly one document: the `needs_input` one, the job's RunResult,
 or, when the job's own never comes (the host died: exit 6; `result.json` unreadable: exit 1; a Ctrl-C that could not reach the host:

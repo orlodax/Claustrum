@@ -6156,8 +6156,10 @@ through `IProcessLive`; claude's wire format is `ClaudeLiveProtocol`; `Runner` s
   (`--timeout 3`, reply window 5 s): the job waited 5 s, then finished `success`. The concurrency slot is not touched: the
   runner call stays in flight, so a waiting role keeps its slot (the owner's decision).
 - **No answer.** After `ReplyTimeoutSeconds` (default 1800) the session records a `Notice` and sends "No answer arrived within
-  <n> minutes. Decide yourself, record the choice and why in open_decisions, and continue." With 0 it never publishes
-  `waiting_for_input`: the `Question` is recorded and "No human is available to answer. …" goes out at once.
+  <n> minutes." plus the rule below. With 0 it never publishes `waiting_for_input`: the `Question` is recorded and "No human is
+  available to answer now." plus the same rule goes out at once. **The rule, one for both (stage 3 review F4, 2026-10-15):** "If the
+  decision is one you can make, make it, record it in open_decisions and continue; if it is the human's, stop with status needs_input
+  and put your questions in the report." It replaced "Decide yourself…", which contradicted the report text's "stop with needs_input".
 - **Blind roles can only tell** (owner's decision, #124 comment). A report-less turn of a blind role is a `Message`, never a
   `Question`, answered at once with the fixed `Notice` "This role cannot ask questions: the review is blind…". It never waits.
   **Blind roles receive no human text** (review of #124, F1): a message in a blind job's inbox is deleted and recorded as the
@@ -6344,3 +6346,73 @@ its owner, tree routing and a hosted child, cancel); only the two places that we
   narrates between tool calls reads "Let me look.Which database?". (2) A message is an argv element: Linux refuses one over ~128 KB
   (`jobs say` allows 1 MiB), as a 128 KB brief already did. (3) The sessions stay in opencode's own database after the job. (4) Windows:
   nothing here is OS-specific beyond what stage 1 measured, but it was run on Linux only.
+
+## Stage 3 review fixes (2026-10-15, issue #124)
+
+The blind review of stages 3a/3b (branch `feature/casts-and-live-jobs`, HEAD `1a154c8`) found six things and left two loose ends.
+
+- **F1 — a continuation resumes where the session began.** `jobs answer`, `coordinate --resume` and MCP `job_answer` on an isolated job
+  used to check the branch out in `.claustrum/worktrees/<new job>` and free the old worktree first. Now `DelegateRequest.WorktreeOf` (the job
+  whose worktree directory the receipt's `worktree` names, `JobAnswering.HomeOf`) makes `RunIsolatedAsync` call `JobWorktree.ReopenAsync`:
+  **reused** when git lists that path as the worktree holding the branch, nothing is in progress and it is clean (a `coordinate` architect's
+  nested job worktrees stay, so `coordinate --resume` no longer needs `jobs clean --cwd <it>` first); **recreated** at the same path when
+  it is gone (`jobs clean`; the existing branch-free machinery runs, so a branch held elsewhere is refused naming the holder);
+  **refused** with the reason (a `failed` receipt through the `--branch` refusal path) when the path is a link, a plain directory, a
+  worktree of another branch or repository, mid-operation or dirty. A continuation of a continuation names the first job's directory again.
+  The new receipt's `worktree` is the path it ran in; the resumed architect's system appendix and `Working directory:` line name it too
+  (`CoordinationBrief.ArchitectCwd(…, worktreeOf)`). `jobs clean` leaves a finished job's worktree while a continuation in its
+  `answered.json` chain has no result yet (`JobAnswering.RunningContinuation`), because that job works in it.
+  **Measured, claude 2.1.300, haiku, `--strict-mcp-config --tools "" --system-prompt …`, $0.0049 for the three calls:** a one-word prompt in
+  dir A gave session `074031a3…` (stored under `~/.claude/projects/-tmp-…-probe-a/`); `claude -p --resume <id>` **from dir B found it**
+  (same session id, the turn appended to the same file with `cwd` B, the next prompt got an "Environment update" naming B as the
+  working directory), and from A again also worked. So the review's premise that claude looks a session up by working directory is **false for
+  `-p --resume` on 2.1.300**; the reason to resume in the same directory stays: the session records its cwd and its earlier tool calls
+  name paths under it, and the old design freed that directory before the resumed run started. opencode keys sessions by id, not directory
+  (measured in stage 3a); cursor was not measured.
+- **F2 — a job is answered once.** When an answer starts a continuation, `<old job>/answered.json` (`{job_id, at}`) is created
+  **exclusively and whole** (`AtomicFile.TryCreate`), at the one point every door passes: `DelegateEngine.RunAsync` for a run that
+  carries `ParentJobId` (it mints the job there when the caller has none, after the checks Runner would make first), and first thing in
+  `CoordinateEngine.RunAsync` so the loser of a double `coordinate --resume` touches neither the winner's successor marker nor its tree's
+  children. `JobAnswering.Open` refuses a second answer before anything is minted (exit 2 / a tool error, naming the continuation and, when it
+  ended `needs_input` too, saying to answer **it**); a race that gets past `Open` loses the claim and ends as a machinery refusal (failed
+  receipt, `refused` marker, exit 2). **⚠ Measured trap: `File.Move(overwrite: false)` is not exclusive on Linux .NET 10** — 8 threads moving
+  to one target gave more than one winner in 284 of 300 rounds, and the first version of the claim let two of four racing `jobs answer`
+  processes both resume the session. `TryCreate` is `link(2)` on Unix (a create-new-and-write fallback where the filesystem has no hard
+  links) and a move without overwrite on Windows (`MoveFileEx` without `REPLACE_EXISTING` refuses atomically; **not measured on Windows**).
+  With the link, 4 racing processes gave 1 winner and 3 exit-2 refusals, one backend resume. **The claim is given back** (the file
+  deleted) when the continuation never reached its backend: a `MachineryRefusedException`, or a receipt with exit code -1 and no session id
+  (a refused worktree, a budget, a missing binary, a cancel before the start) — otherwise fixing the dirty worktree F1 reported would not let
+  anyone answer again. A continuation that ran and was cancelled or failed keeps it: the session may have read the answer.
+- **F3 — exit 7 with a RunResult.** A tree child on a backend with no live protocol ends `needs_input` (exit 7 plus its whole
+  RunResult), nothing alive to `jobs reply` to. The architect role text (`ROLE.md`, both delegation parts) says to answer that with `jobs answer`
+  and keeps `jobs reply` for a child still waiting; `LiveJob.Say`'s "not live" and "done" refusals add, for a job whose result is
+  `needs_input`, "answer it with `claustrum jobs answer <id> …`" (or that job X already took the answer).
+- **F4** — see "No answer." above. The four report parts now quote the notice ("No human is available to answer now").
+- **F5 — pinned to what it continues.** `DelegateRequest.Pin` (`ResumePin`: backend, model, permission level) is set by `Continue` and by
+  `CoordinateEngine.ResumeRequest` from the receipt and `backend.json` (which now records `permission`; an older job has none, and its
+  permission is today's). `DelegateEngine.Prepare` resolves **to the pin** (overrides `backend`, `model` as `backend:model`, `permission`),
+  after resolving today's way once, only to compare: a difference is a warning on the receipt naming both ("ran as claude:opus
+  (edit+shell); today's configuration would run it as claude:haiku (readonly) — the continuation stays on …"), and a role today's
+  configuration cannot resolve any more is a warning too, not a failure. It lives in `Prepare` and not in `Continue` because a detached host
+  prepares again from `host-request.json`. `coordinate --resume --model X` therefore keeps the architect's model and warns.
+- **F6 — a later turn that cannot start.** `ProcessRunner` catches a failure to build or launch turn n>1 (`BackendNotFoundException`,
+  `Win32Exception`, anything but a cancel): `IProcessLive.NextTurnFailed` records a `Notice` and ends the session (`live.json` done), the
+  reason goes to `stderr.log`, and `ProcessOutcome.Failure` makes `Runner` end the job `failed` with that as its `error`, exit code -1, the
+  turns' session id and conversation, and `ran: true` (the earlier turns were paid for). Measured with a fake opencode that deletes itself
+  after turn 1 and a PATH without the real one: `failed`, `error: the next turn could not be started: backend 'opencode' was not found on
+  PATH`, 4 conversation entries, no exception out of `Runner.RunAsync`. (With the real opencode on PATH the same setup ran *it*, which printed
+  "Session not found": a turn the backend fails, handled as before.) The "backend named no session to resume" ending keeps its documented
+  Success/`missing` outcome.
+- **Loose end — notes from live runs.** `NoteRecorder` takes the `LiveSession` and hands it each note (`RecordNote`: a Role `Message`
+  with the `claustrum-note: ` text, nothing after the session is over), so a live job's `conversation.jsonl` numbers them in order with the
+  turns (measured: note seq 1, the question seq 2) and `jobs follow` shows both kinds alike. Dedup and the cap of 200 stay in the recorder.
+- **Loose end — the MANUAL.** "Talking to a running job" says live covers claude and opencode, what differs mid-turn and for the 85% warning, and
+  names copilot, cursor and api as the fallback's backends.
+- **Measured by hand, fake claude / fake opencode, no paid call except the probe above.** Reuse, recreate after `jobs clean`, refusal for
+  a dirty worktree (claim given back, a retry then works), a plain directory, a link; a second answer (exit 2), concurrent answers
+  (above), a pinned continuation with a changed `claustrum.json`, `coordinate` → needs_input → `coordinate --resume` in the architect's own
+  worktree and a second resume refused, `jobs clean` skipping a worktree whose continuation runs.
+- **Not measured / known limits.** (1) cursor's session lookup. (2) Windows: the exclusive claim, the reopen and the clean skip were
+  written to documented behaviour only. (3) A continuation that was cancelled after its backend started keeps the claim, so that job
+  cannot be answered again (its session is the way on: `run --resume`). (4) `answered.json` is per job and the chain walk of `jobs clean` follows
+  it up to 64 hops.

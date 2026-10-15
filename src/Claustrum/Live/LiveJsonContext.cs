@@ -11,4 +11,5 @@ namespace Claustrum.Live;
 [JsonSerializable(typeof(NeedsInputResult))]
 [JsonSerializable(typeof(HostRecord))]
 [JsonSerializable(typeof(OwnerRecord))]
+[JsonSerializable(typeof(AnsweredRecord))]
 internal sealed partial class LiveJsonContext : JsonSerializerContext;
