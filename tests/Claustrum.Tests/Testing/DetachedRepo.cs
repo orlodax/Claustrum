@@ -47,6 +47,9 @@ public sealed class DetachedRepo : IDisposable
     public Task<CliResult> RunBuilderAsync(IReadOnlyDictionary<string, string?> env, params string[] extraArgs) =>
         Repo.RunWithEnvAsync(["run", "builder", "--brief", "do the task", .. extraArgs], env);
 
+    /// <summary>Any command in the repository, in a child with this tree's environment (<see cref="Tree"/>).</summary>
+    public Task<CliResult> RunWithTreeAsync(IReadOnlyDictionary<string, string?> env, params string[] args) => Repo.RunWithEnvAsync(args, env);
+
     public RunningCli StartBuilder(IReadOnlyDictionary<string, string?> env, params string[] extraArgs) =>
         Repo.StartCliWithEnv(env, ["run", "builder", "--brief", "do the task", .. extraArgs]);
 

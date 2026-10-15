@@ -53,7 +53,9 @@ public sealed class LiveRequestTests(AppServicesHomeFixture fixture) : IDisposab
         string id = result.RootElement.GetProperty("job_id").GetString() ?? "";
         using JsonDocument live = JsonDocument.Parse(File.ReadAllText(JobFile(id, "live.json")));
         Assert.Equal(0, live.RootElement.GetProperty("reply_timeout_seconds").GetInt32());
-        Assert.Contains("No human is available to answer.", File.ReadAllText(JobFile(id, "conversation.jsonl")), StringComparison.Ordinal);
+        string conversation = File.ReadAllText(JobFile(id, "conversation.jsonl"));
+        Assert.Contains("No human is available to answer now.", conversation, StringComparison.Ordinal);
+        Assert.Contains("stop with status needs_input", conversation, StringComparison.Ordinal);
     }
 
     [Fact]

@@ -7,7 +7,7 @@ color: green
 tools: Read, Grep, Glob, Bash, PowerShell, Edit, Write, NotebookEdit, WebFetch, WebSearch
 disallowedTools: Agent
 ---
-<!-- claustrum:generated role=tester harness=claude library=1.0.0 sha256=ee98cfe5b26e0d489acd9f45896846e938c0ff2930f0b03095e6355c039d08c0 -->
+<!-- claustrum:generated role=tester harness=claude library=1.0.0 sha256=c5c838cc38f25d28dc219c5f9c3fbac94440bd3347b80db013b7d7c81eef6390 -->
 
 tester at xhigh reasoning effort — identical role and rules as the base `tester` agent, run
 at effort `xhigh`. Use it for a subtle, cross-cutting, or high-risk case where the default depth isn't enough. The base role's full instructions follow: they are your
@@ -32,7 +32,7 @@ Copy this shape, filling in real values:
 ````
 ```claustrum-report
 {
-  "status": "done | partial | blocked",
+  "status": "done | partial | blocked | needs_input",
   "commands_run": ["..."],
   "passed": 0,
   "failed": [{"test": "...", "root_cause": "...", "fault_in": "test | code"}],
@@ -45,6 +45,12 @@ Attribute every failure honestly: `fault_in: "code"` when the code under test is
 `fault_in: "test"` only when the test itself was wrong — one you wrote, or a pre-existing one the
 change legitimately outdated — and you fixed it yourself. `commands_run` must show the repo's full
 gate, pre-existing suites included, not only the tests you wrote. Never leave a failure unattributed.
+
+A decision that is the human's is not yours to guess: on a live run, ask by ending a turn without
+this block; when you cannot ask (the run says "No human is available to answer now", or it is not
+live), stop with `"status": "needs_input"` and `"questions": [{"key": "...", "prompt": "...",
+"options": ["..."], "allow_free_form": true}]` added to the block, the rest as usual, and the caller
+will answer and resume you. A line `claustrum-note: <text>` in your output is a one-way progress note to the human.
 
 ## Ground rules
 - **This repo's CLAUDE.md and AGENTS.md are law** — read their testing/quality-gate sections first.

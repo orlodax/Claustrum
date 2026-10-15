@@ -2,6 +2,7 @@ using System.Text.Json;
 using Claustrum.Core;
 using Claustrum.Core.Backends;
 using Claustrum.Core.Backends.Claude;
+using Claustrum.Core.Backends.Opencode;
 using Claustrum.Core.Config;
 using Claustrum.Core.Jobs;
 using Claustrum.Core.Json;
@@ -24,6 +25,8 @@ public sealed class LiveJobHarness : IDisposable
     private readonly HomeRedirectPlatform platform;
     private readonly Runner runner;
     private readonly BackendConfig backend;
+    private readonly string backendName = "claude";
+    private readonly string model = "sonnet";
 
     /// <param name="script">What the conversing fake claude does.</param>
     /// <param name="sharedPlatform">The platform AppServices is overridden with (AppServicesHomeFixture), for a test that drives a front door which finds the job through AppServices; its home then holds the job.</param>
@@ -40,6 +43,30 @@ public sealed class LiveJobHarness : IDisposable
         runner = new Runner(platform, new BackendRegistry([new ClaudeBackend(platform)]), new ProcessRunner(platform));
         Job = JobDirectory.Create(platform);
     }
+
+    private LiveJobHarness(FakeOpencodeTurn[] turns, decimal startingCostUsd)
+    {
+        FakeOpencode.RequirePosixShellForHarness();
+        Directory.CreateDirectory(Cwd);
+        platform = new HomeRedirectPlatform(Path.Combine(root, "home"));
+        InputLog = Path.Combine(root, "input.log");
+        ArgvLog = Path.Combine(root, "argv.log");
+        Directory.CreateDirectory(Path.Combine(root, "opencode"));
+        opencode = new FakeOpencode(Path.Combine(root, "opencode"), turns, startingCostUsd);
+        backend = new BackendConfig(opencode.ScriptPath);
+        backendName = "opencode";
+        model = "opencode/fake";
+        runner = new Runner(platform, new BackendRegistry([new OpencodeBackend(platform)]), new ProcessRunner(platform));
+        Job = JobDirectory.Create(platform);
+    }
+
+    /// <summary>A live job on a fake opencode (#124 stage 3a): one process per turn, the session resumed.</summary>
+    public static LiveJobHarness ForOpencode(FakeOpencodeTurn[] turns, decimal startingCostUsd = 0m) => new(turns, startingCostUsd);
+
+    private readonly FakeOpencode? opencode;
+
+    /// <summary>The fake opencode behind a <see cref="ForOpencode"/> harness.</summary>
+    public FakeOpencode Opencode => opencode ?? throw new InvalidOperationException("this harness runs the fake claude");
 
     public JobPaths Job { get; }
 
@@ -59,12 +86,13 @@ public sealed class LiveJobHarness : IDisposable
         bool live = true,
         int replyTimeoutSeconds = 60,
         TimeSpan? timeout = null,
-        CancellationToken? cancel = null)
+        CancellationToken? cancel = null,
+        string? resumeSession = null)
     {
-        ResolvedRole role = new("builder", "system prompt", "claude", "sonnet", "high", new PermissionPolicy(PermissionLevel.EditShell, []), blind, hasReport);
+        ResolvedRole role = new("builder", "system prompt", backendName, model, "high", new PermissionPolicy(PermissionLevel.EditShell, []), blind, hasReport);
         RunRequest request = new(
             Role: "builder", Brief: "do it", BriefFile: null, Cwd: Cwd, Backend: null, Model: null, Effort: null,
-            Permission: null, BudgetUsd: null, Timeout: timeout, ResumeSession: null, AttachFiles: [], Env: [], Stream: false);
+            Permission: null, BudgetUsd: null, Timeout: timeout, ResumeSession: resumeSession, AttachFiles: [], Env: [], Stream: false);
         RunOptions options = new(DiffByteCapBytes: 200_000, BackendConfig: backend, Live: live, ReplyTimeoutSeconds: replyTimeoutSeconds);
         return Task.Run(() => runner.RunAsync(request, role, options, Job, cancel ?? TestContext.Current.CancellationToken), CancellationToken.None);
     }

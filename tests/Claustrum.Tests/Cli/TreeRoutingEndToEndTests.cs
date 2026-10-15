@@ -147,7 +147,8 @@ public sealed class TreeRoutingEndToEndTests : IDisposable
         Assert.Equal("success", OneDocument(process.Stdout).GetProperty("status").GetString());
         Assert.False(File.Exists(Path.Combine(fixture.JobDir(id), "host.json")), "run in-process: no host");
         Assert.Equal(0, fixture.Json(id, "live.json")?.GetProperty("reply_timeout_seconds").GetInt32());
-        Assert.Contains("No human is available to answer.", fixture.Conversation(id), StringComparison.Ordinal);
+        Assert.Contains("No human is available to answer now.", fixture.Conversation(id), StringComparison.Ordinal);
+        Assert.Contains("stop with status needs_input", fixture.Conversation(id), StringComparison.Ordinal);
     }
 
     [Fact]
@@ -172,7 +173,8 @@ public sealed class TreeRoutingEndToEndTests : IDisposable
         string id = fixture.OnlyJob();
         Assert.False(File.Exists(Path.Combine(fixture.JobDir(id), "host.json")));
         Assert.Equal(0, fixture.Json(id, "live.json")?.GetProperty("reply_timeout_seconds").GetInt32());
-        Assert.Contains("No human is available to answer.", fixture.Conversation(id), StringComparison.Ordinal);
+        Assert.Contains("No human is available to answer now.", fixture.Conversation(id), StringComparison.Ordinal);
+        Assert.Contains("stop with status needs_input", fixture.Conversation(id), StringComparison.Ordinal);
     }
 
     [Fact]

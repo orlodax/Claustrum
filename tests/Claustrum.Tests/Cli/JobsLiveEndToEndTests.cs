@@ -261,7 +261,9 @@ public sealed class JobsLiveEndToEndTests : IDisposable
         string directory = Path.Combine(repo.JobsRoot, job);
         using JsonDocument live = JsonDocument.Parse(File.ReadAllText(Path.Combine(directory, "live.json")));
         Assert.Equal(0, live.RootElement.GetProperty("reply_timeout_seconds").GetInt32());
-        Assert.Contains("No human is available to answer.", File.ReadAllText(Path.Combine(directory, "conversation.jsonl")), StringComparison.Ordinal);
+        string conversation = File.ReadAllText(Path.Combine(directory, "conversation.jsonl"));
+        Assert.Contains("No human is available to answer now.", conversation, StringComparison.Ordinal);
+        Assert.Contains("stop with status needs_input", conversation, StringComparison.Ordinal);
         Assert.Equal(JsonValueKind.Object, result.GetProperty("conversation").ValueKind);
     }
 
