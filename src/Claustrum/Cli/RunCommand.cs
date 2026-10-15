@@ -44,7 +44,12 @@ public static class RunCommand
         Option<string[]> file = new("--file") { Description = "Attach a file (repeatable)." };
         Option<string[]> env = new("--env") { Description = "Extra env var K=V (repeatable)." };
         Option<bool> json = new("--json") { Description = "Emit exactly one RunResult JSON document on stdout." };
-        Option<bool> stream = new("--stream") { Description = "Echo backend output to stderr as it runs." };
+        Option<string?> stream = new("--stream")
+        {
+            Description = "Stream output to stderr: 'readable' (default) formats progress lines, 'raw' echoes the raw backend JSON.",
+            Arity = ArgumentArity.ZeroOrOne,
+        };
+        stream.AcceptOnlyFromAmong("readable", "raw");
         Option<bool> raw = new("--raw") { Description = "Include the backend's raw response in JSON output." };
 
         Command command = new("run", "Delegate a task to a role.")
@@ -53,28 +58,34 @@ public static class RunCommand
             deny, budget, timeout, resume, file, env, cast, branch, json, stream, raw,
         };
 
-        command.SetAction(async parseResult => await ExecuteAsync(
-            parseResult.GetRequiredValue(role),
-            parseResult.GetValue(brief),
-            parseResult.GetValue(briefFile),
-            parseResult.GetValue(cwd),
-            parseResult.GetValue(tier),
-            new ConfigOverrides(
-                Backend: parseResult.GetValue(backend),
-                Model: parseResult.GetValue(model),
-                Effort: parseResult.GetValue(effort),
-                Permission: parseResult.GetValue(permission),
-                Deny: parseResult.GetValue(deny),
-                BudgetUsd: parseResult.GetValue(budget),
-                TimeoutSeconds: parseResult.GetValue(timeout)),
-            parseResult.GetValue(resume),
-            parseResult.GetValue(file) ?? [],
-            parseResult.GetValue(env) ?? [],
-            parseResult.GetValue(cast),
-            parseResult.GetValue(branch),
-            parseResult.GetValue(json),
-            parseResult.GetValue(stream),
-            parseResult.GetValue(raw)));
+        command.SetAction(async parseResult =>
+        {
+            string? streamValue = parseResult.GetValue(stream);
+            bool streamMode = streamValue is not null;
+            bool streamRaw = streamValue == "raw";
+            await ExecuteAsync(
+                parseResult.GetRequiredValue(role),
+                parseResult.GetValue(brief),
+                parseResult.GetValue(briefFile),
+                parseResult.GetValue(cwd),
+                parseResult.GetValue(tier),
+                new ConfigOverrides(
+                    Backend: parseResult.GetValue(backend),
+                    Model: parseResult.GetValue(model),
+                    Effort: parseResult.GetValue(effort),
+                    Permission: parseResult.GetValue(permission),
+                    Deny: parseResult.GetValue(deny),
+                    BudgetUsd: parseResult.GetValue(budget),
+                    TimeoutSeconds: parseResult.GetValue(timeout)),
+                parseResult.GetValue(resume),
+                parseResult.GetValue(file) ?? [],
+                parseResult.GetValue(env) ?? [],
+                parseResult.GetValue(cast),
+                parseResult.GetValue(branch),
+                parseResult.GetValue(json),
+                streamMode, streamRaw,
+                parseResult.GetValue(raw));
+        });
 
         return command;
     }
@@ -82,7 +93,7 @@ public static class RunCommand
     private static async Task<int> ExecuteAsync(
         string roleName, string? briefText, string? briefFilePath, string? cwdOption, string? tierFlag,
         ConfigOverrides overrides, string? resumeSession, string[] attachFiles, string[] envEntries,
-        string? castName, string? branch, bool jsonMode, bool streamMode, bool rawMode)
+        string? castName, string? branch, bool jsonMode, bool streamMode, bool streamRaw, bool rawMode)
     {
         string cwd = Path.GetFullPath(cwdOption ?? Environment.CurrentDirectory);
 
@@ -111,6 +122,7 @@ public static class RunCommand
                 AttachFiles: attachFiles,
                 Env: ParseEnv(envEntries),
                 Stream: streamMode,
+                StreamRaw: streamRaw,
                 DiffCapBytes: CliDiffCapBytes,
                 CastBudget: castBudget,
                 MaxParallel: maxParallel,

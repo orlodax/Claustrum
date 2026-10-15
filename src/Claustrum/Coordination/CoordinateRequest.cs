@@ -14,4 +14,6 @@ public sealed record CoordinateRequest(
     ConfigOverrides Overrides,
     bool Stream,
     int DiffCapBytes,
-    Action<string>? OnStreamLine = null);
+    Action<string>? OnStreamLine = null,
+    // `--stream raw` on the CLI: echo unformatted raw lines (issue #123).
+    bool StreamRaw = false);

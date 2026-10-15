@@ -18,6 +18,8 @@ public sealed class OpencodeBackend(IPlatform platform) : IBackend
 
     public string Name => "opencode";
 
+    public IStreamFormatter? CreateStreamFormatter(string cwd) => new OpencodeStreamFormatter(cwd);
+
     public Task<Doctor> DetectAsync(BackendConfig? config, CancellationToken cancellationToken) =>
         VersionProbe.RunAsync(Name, ["--version"], config, platform, cancellationToken, detectTimeout);
 

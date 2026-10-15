@@ -30,7 +30,12 @@ public static class CoordinateCommand
         Option<decimal?> budget = new("--budget") { Description = "Budget cap in USD for the architect's own run." };
         Option<int?> timeout = new("--timeout") { Description = "Timeout in seconds." };
         Option<bool> json = new("--json") { Description = "Emit exactly one RunResult JSON document on stdout." };
-        Option<bool> stream = new("--stream") { Description = "Echo the architect's output to stderr as it runs." };
+        Option<string?> stream = new("--stream")
+        {
+            Description = "Stream output to stderr: 'readable' (default) formats progress lines, 'raw' echoes the raw backend JSON.",
+            Arity = ArgumentArity.ZeroOrOne,
+        };
+        stream.AcceptOnlyFromAmong("readable", "raw");
         Option<bool> raw = new("--raw") { Description = "Include the backend's raw response in JSON output." };
 
         Command command = new("coordinate", "Run the cast's architect headlessly over issues or a brief (docs/PLAN.md §D3).")
@@ -38,27 +43,33 @@ public static class CoordinateCommand
             cast, issues, brief, briefFile, cwd, tier, model, budget, timeout, json, stream, raw,
         };
 
-        command.SetAction(async parseResult => await ExecuteAsync(
-            parseResult.GetValue(cast),
-            parseResult.GetValue(issues),
-            parseResult.GetValue(brief),
-            parseResult.GetValue(briefFile),
-            parseResult.GetValue(cwd),
-            parseResult.GetValue(tier),
-            new ConfigOverrides(
-                Model: parseResult.GetValue(model),
-                BudgetUsd: parseResult.GetValue(budget),
-                TimeoutSeconds: parseResult.GetValue(timeout)),
-            parseResult.GetValue(json),
-            parseResult.GetValue(stream),
-            parseResult.GetValue(raw)));
+        command.SetAction(async parseResult =>
+        {
+            string? streamValue = parseResult.GetValue(stream);
+            bool streamMode = streamValue is not null;
+            bool streamRaw = streamValue == "raw";
+            await ExecuteAsync(
+                parseResult.GetValue(cast),
+                parseResult.GetValue(issues),
+                parseResult.GetValue(brief),
+                parseResult.GetValue(briefFile),
+                parseResult.GetValue(cwd),
+                parseResult.GetValue(tier),
+                new ConfigOverrides(
+                    Model: parseResult.GetValue(model),
+                    BudgetUsd: parseResult.GetValue(budget),
+                    TimeoutSeconds: parseResult.GetValue(timeout)),
+                parseResult.GetValue(json),
+                streamMode, streamRaw,
+                parseResult.GetValue(raw));
+        });
 
         return command;
     }
 
     private static async Task<int> ExecuteAsync(
         string? castName, string? issuesCsv, string? briefText, string? briefFilePath, string? cwdOption,
-        string? tierFlag, ConfigOverrides overrides, bool jsonMode, bool streamMode, bool rawMode)
+        string? tierFlag, ConfigOverrides overrides, bool jsonMode, bool streamMode, bool streamRaw, bool rawMode)
     {
         string cwd = Path.GetFullPath(cwdOption ?? Environment.CurrentDirectory);
 
@@ -80,6 +91,7 @@ public static class CoordinateCommand
                 TierFlag: tierFlag,
                 Overrides: overrides,
                 Stream: streamMode,
+                StreamRaw: streamRaw,
                 DiffCapBytes: RunCommand.CliDiffCapBytes,
                 OnStreamLine: streamMode ? SafeConsole.Error : null);
 

@@ -39,7 +39,9 @@ public sealed record DelegateRequest(
     bool AttachmentsMustBeRegular = false,
     // #121: cast-resolution warnings (built-in fallback, stored Δ) that DelegateEngine.Prepare
     // folds into RunOptions.PreRunWarnings and from there into result.json's warnings[] and stderr.
-    string[]? PreRunWarnings = null)
+    string[]? PreRunWarnings = null,
+    // `--stream raw` on the CLI: echo unformatted raw lines to stderr (issue #123).
+    bool StreamRaw = false)
 {
     /// <summary>
     /// The exact token <see cref="SystemAppendix"/> and <see cref="Env"/> values may carry in place of

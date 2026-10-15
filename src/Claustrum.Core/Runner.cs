@@ -117,6 +117,21 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
         if (!backends.TryGet(role.Backend, out IBackend? backend))
             return await FinishAsync(job, reservation, MissingBackendResult(job, role, $"backend '{role.Backend}' is not registered"), ran: false, options);
 
+        // Record the resolved backend and model for `jobs follow` (issue #123).
+        RecordBackendAsync(job, backend, role);
+
+        // Wrap OnStreamLine with the backend's stream formatter when --stream is active
+        // and not in raw mode.
+        Action<string>? streamLine = options.OnStreamLine;
+        if (streamLine is not null && !options.StreamRaw && backend.CreateStreamFormatter(request.Cwd) is { } formatter)
+            streamLine = rawLine =>
+            {
+                string? formatted = formatter.FormatLine(rawLine);
+                if (formatted is not null)
+                    streamLine(formatted);
+            };
+        RunOptions runOptions = options with { OnStreamLine = streamLine };
+
         // NOTES.md "Runner's before-snapshot is now inside a guarded section too": a bad `cwd` or any
         // other pre-spawn failure here used to escape RunCoreAsync entirely. `spec` does not exist
         // yet if this fails, so there is nothing for a `finally` to clean up.
@@ -131,17 +146,17 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
         catch (OperationCanceledException ex) when (cancellationToken.IsCancellationRequested)
         {
             // A cancel during the before-snapshot is still a cancel, not a failure (PR #75's Windows CI).
-            return await FinishAsync(job, reservation, NoProcessResult(job, role, RunStatus.Cancelled, ex.Message), ran: false, options);
+            return await FinishAsync(job, reservation, NoProcessResult(job, role, RunStatus.Cancelled, ex.Message), ran: false, runOptions);
         }
         catch (Exception ex)
         {
-            return await FinishAsync(job, reservation, FailureResult(job, role, outcome: null, ex), ran: false, options);
+            return await FinishAsync(job, reservation, FailureResult(job, role, outcome: null, ex), ran: false, runOptions);
         }
 
         ProcessOutcome outcome;
         try
         {
-            outcome = await processRunner.RunAsync(spec, options.BackendConfig, job, options.EnvPassthroughAll, options.OnStreamLine, request.Timeout, cancellationToken);
+            outcome = await processRunner.RunAsync(spec, runOptions.BackendConfig, job, runOptions.EnvPassthroughAll, streamLine, request.Timeout, cancellationToken);
         }
         catch (BackendNotFoundException ex)
         {
@@ -149,7 +164,7 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
             // the unregistered-name branch above — same BackendMissing status either way, so a
             // caller need not distinguish "no such backend" from "backend not on PATH".
             DeleteTempFiles(spec.TempFiles);
-            return await FinishAsync(job, reservation, MissingBackendResult(job, role, ex.Message), ran: false, options);
+            return await FinishAsync(job, reservation, MissingBackendResult(job, role, ex.Message), ran: false, runOptions);
         }
 
         try
@@ -165,7 +180,7 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
             if (mismatch is null or { OwnWorktree: true })
             {
                 WorktreeState after = await WorktreeSnapshot.CaptureAsync(request.Cwd, CancellationToken.None);
-                diff = await WorktreeSnapshot.DiffAsync(request.Cwd, before, after, options.DiffByteCapBytes, CancellationToken.None);
+                diff = await WorktreeSnapshot.DiffAsync(request.Cwd, before, after, runOptions.DiffByteCapBytes, CancellationToken.None);
             }
 
             ParsedOutput parsed = backend.Parse(outcome.Stdout, outcome.Stderr, outcome.ExitCode);
@@ -173,7 +188,7 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
             RunStatus status = DetermineStatus(outcome, parsed);
             BranchReceipt branch = worktree is null
                 ? new BranchReceipt(Commit: null, diff, Warnings: [])
-                : await CommitWorkAsync(worktree, mismatch, role.Name, job, extracted.Report, diff, options.DiffByteCapBytes);
+                : await CommitWorkAsync(worktree, mismatch, role.Name, job, extracted.Report, diff, runOptions.DiffByteCapBytes);
 
             RunResult result = new(
                 SchemaVersion: "1",
@@ -199,13 +214,13 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
                 Warnings: [.. extracted.Warnings, .. branch.Warnings],
                 Commit: branch.Commit);
 
-            return await FinishAsync(job, reservation, result, ran: true, options);
+            return await FinishAsync(job, reservation, result, ran: true, runOptions);
         }
         catch (Exception ex)
         {
             // `ran: true` — this catch only fires after ProcessOutcome came back, so the backend did
             // burn whatever it burned even though nothing downstream could read a cost out of it.
-            return await FinishAsync(job, reservation, FailureResult(job, role, outcome, ex), ran: true, options);
+            return await FinishAsync(job, reservation, FailureResult(job, role, outcome, ex), ran: true, runOptions);
         }
         finally
         {
@@ -461,5 +476,21 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
         foreach (string tempFile in tempFiles)
             if (File.Exists(tempFile))
                 File.Delete(tempFile);
+    }
+
+    // Written at job start so `jobs follow` can pick the right stream formatter while the job
+    // is still running (issue #123). Uses Utf8JsonWriter directly (no separate DTO type needed).
+    private static void RecordBackendAsync(JobPaths job, IBackend backend, ResolvedRole role)
+    {
+        using MemoryStream buffer = new();
+        using (Utf8JsonWriter writer = new(buffer))
+        {
+            writer.WriteStartObject();
+            writer.WriteString("backend", backend.Name);
+            writer.WriteString("model", role.Model);
+            writer.WriteEndObject();
+        }
+
+        File.WriteAllBytes(job.BackendJson, buffer.ToArray());
     }
 }

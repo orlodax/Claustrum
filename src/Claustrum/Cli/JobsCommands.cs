@@ -44,7 +44,9 @@ public static class JobsCommands
         Command budget = new("budget", "Show (or reset) one job tree's budget ledger (docs/PLAN.md §D4).") { budgetTree, budgetReset };
         budget.SetAction(async parseResult => await BudgetAsync(parseResult.GetRequiredValue(budgetTree), parseResult.GetValue(budgetReset)));
 
-        return new Command("jobs", "Inspect past and running jobs.") { list, show, logs, clean, budget };
+        Command follow = JobsFollowCommand.Build();
+
+        return new Command("jobs", "Inspect past and running jobs.") { list, show, logs, clean, budget, follow };
     }
 
     private static int List(int last)

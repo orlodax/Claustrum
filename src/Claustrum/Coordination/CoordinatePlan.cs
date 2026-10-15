@@ -46,6 +46,7 @@ public sealed record CoordinatePlan(
         AttachFiles: [],
         Env: TreeEnv(),
         Stream: Request.Stream,
+        StreamRaw: Request.StreamRaw,
         DiffCapBytes: Request.DiffCapBytes,
         CastBudget: CastBudget,
         // The architect is one run, never fanned out: max_parallel belongs to the builder it delegates

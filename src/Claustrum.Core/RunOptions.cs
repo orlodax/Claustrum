@@ -17,6 +17,7 @@ public sealed record RunOptions(
     BackendConfig? BackendConfig = null,
     bool EnvPassthroughAll = false,
     Action<string>? OnStreamLine = null,
+    bool StreamRaw = false,
     JobTreeBudget? Tree = null,
     BudgetAdmission? Admission = null,
     // Isolated runs only: the run's cwd is this worktree, and Runner stamps it on the receipt (#60),
