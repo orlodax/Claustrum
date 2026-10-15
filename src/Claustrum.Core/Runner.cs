@@ -5,6 +5,7 @@ using Claustrum.Core.Backends;
 using Claustrum.Core.Git;
 using Claustrum.Core.Jobs;
 using Claustrum.Core.Json;
+using Claustrum.Core.Live;
 using Claustrum.Core.Model;
 using Claustrum.Core.Platform;
 using Claustrum.Core.Process;
@@ -74,7 +75,6 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
             options = options with { PreRunWarnings = [.. renderWarnings, .. options.PreRunWarnings ?? []] };
 
         brief = AppendIsolationTrailer(brief, options.Worktree);
-        brief = AppendReportTrailer(brief, role);
 
         JobPaths job = jobOverride ?? JobDirectory.Create(platform);
         JobWorktreeInfo? worktree = options.Worktree;
@@ -120,6 +120,12 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
         // Record the resolved backend and model for `jobs follow` (issue #123).
         RecordBackend(job, backend, role);
 
+        // #124: a live session needs a backend that can hold one and a role that can end it (a report block);
+        // anything else runs as it always did. The report trailer comes last either way, and is the live one
+        // for a live run: "a reply without it is rejected" would keep a role from ever asking a question.
+        ILiveProtocol? liveProtocol = options.Live && role.HasReport ? backend.LiveProtocol : null;
+        brief = liveProtocol is null ? AppendReportTrailer(brief, role) : AppendLiveTrailer(brief, role);
+
         // Wrap OnStreamLine with the backend's stream formatter when --stream is active
         // and not in raw mode.
         Action<string>? streamLine = options.OnStreamLine;
@@ -142,7 +148,7 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
         try
         {
             before = await WorktreeSnapshot.CaptureAsync(request.Cwd, cancellationToken);
-            ResolvedRun run = new(role, brief, request.Cwd, request.BudgetUsd, request.ResumeSession, request.AttachFiles, request.Stream, job.SystemMd, job.Directory, request.Env);
+            ResolvedRun run = new(role, brief, request.Cwd, request.BudgetUsd, request.ResumeSession, request.AttachFiles, request.Stream, job.SystemMd, job.Directory, request.Env, Live: liveProtocol is not null);
             spec = backend.Build(run);
 
             // The servers the run was given, beside the backend and model (#128).
@@ -174,10 +180,12 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
             return await FinishAsync(job, reservation, NoProcessResult(job, role, RunStatus.Cancelled, new OperationCanceledException(cancellationToken).Message), ran: false, runOptions);
         }
 
+        LiveSession? live = liveProtocol is null ? null : new LiveSession(job, liveProtocol, role.Blind, options.ReplyTimeoutSeconds);
+
         ProcessOutcome outcome;
         try
         {
-            outcome = await processRunner.RunAsync(spec, runOptions.BackendConfig, job, runOptions.EnvPassthroughAll, streamLine, request.Timeout, cancellationToken);
+            outcome = await processRunner.RunAsync(spec, runOptions.BackendConfig, job, runOptions.EnvPassthroughAll, streamLine, request.Timeout, cancellationToken, live);
         }
         catch (BackendNotFoundException ex)
         {
@@ -263,7 +271,8 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
                 Report: extracted.Report,
                 ReportStatus: extracted.Status,
                 Warnings: [.. postWarnings ?? [], .. extracted.Warnings, .. branch.Warnings],
-                Commit: branch.Commit);
+                Commit: branch.Commit,
+                Conversation: ConversationOf(job, live));
 
             return await FinishAsync(job, reservation, result, ran: true, runOptions);
         }
@@ -271,7 +280,7 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
         {
             // `ran: true` — this catch only fires after ProcessOutcome came back, so the backend did
             // burn whatever it burned even though nothing downstream could read a cost out of it.
-            return await FinishAsync(job, reservation, FailureResult(job, role, outcome, ex), ran: true, runOptions);
+            return await FinishAsync(job, reservation, FailureResult(job, role, outcome, ex) with { Conversation = ConversationOf(job, live) }, ran: true, runOptions);
         }
         finally
         {
@@ -367,6 +376,16 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
         role.HasReport
             ? $"{brief}\n\n---\nFinish your reply with the mandatory ```claustrum-report fenced JSON block from your system prompt; a reply without it is rejected."
             : brief;
+
+    // #124: in a live session a turn that ends without the report block is a question to the human, so the
+    // trailer says so; a blind role is told it only reports. NOTES.md "Live sessions".
+    private static string AppendLiveTrailer(string brief, ResolvedRole role) => role.Blind
+        ? $"{AppendReportTrailer(brief, role)} You cannot ask questions in this session: the review is blind, so put any doubt in your findings."
+        : $"{brief}\n\n---\nThis is a live session with the human who started you. If you cannot go on without their answer, ask your question "
+            + "and end your turn WITHOUT the claustrum-report block: their reply arrives as your next message. When the work is finished, "
+            + "end your reply with the mandatory ```claustrum-report fenced JSON block from your system prompt; a turn that ends without it is taken as a question.";
+
+    private static ConversationSummary? ConversationOf(JobPaths job, LiveSession? live) => live is null ? null : new ConversationSummary(job.ConversationJsonl, live.Entries);
 
     // NOTES.md "Blind review is enforced, not requested".
     private static void EnsureBlindGate(ResolvedRole role, string brief)

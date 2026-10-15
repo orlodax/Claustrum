@@ -1,4 +1,5 @@
 using Claustrum.Core.Config;
+using Claustrum.Core.Live;
 
 namespace Claustrum.Core.Backends;
 
@@ -17,4 +18,10 @@ public interface IBackend
     /// unchanged). Called once per run when <c>--stream</c> is active.
     /// </summary>
     IStreamFormatter? CreateStreamFormatter(string cwd) => null;
+
+    /// <summary>
+    /// How this backend holds a conversation over stdin (#124), or null when it cannot: a run that asks for
+    /// a live session on such a backend simply runs as it always did.
+    /// </summary>
+    ILiveProtocol? LiveProtocol => null;
 }

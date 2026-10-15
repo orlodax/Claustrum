@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Claustrum.Core.Live;
 
 namespace Claustrum.Core.Model;
 
@@ -32,4 +33,6 @@ public sealed record RunResult(
     string? Branch = null,
     // An isolated run's branch tip after the run, when the run moved it: the runner's commit of the
     // leftovers, or the role's own (#61). Null when nothing changed or the commit failed (a warning).
-    string? Commit = null);
+    string? Commit = null,
+    // A live job only (#124): its conversation.jsonl, kept for jobs that end without a report as well.
+    ConversationSummary? Conversation = null);
