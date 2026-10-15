@@ -209,10 +209,11 @@ public sealed class CancelScenario : IDisposable
 
     /// <summary>
     /// Sends <paramref name="signal"/> once and asserts the first-signal outcome: exit 130 within <paramref name="withinMilliseconds"/>
-    /// (by default under the 2 s the old handler waited), the stderr <paramref name="cancellingLine"/> exactly once, a `cancelled`
+    /// (5 s by default: the receipts, not the clock, tell the fixed path from the old 2 s wait; an isolated coordinate took
+    /// 2127 ms on a macOS runner, 2026-10-15, PR #120), the stderr <paramref name="cancellingLine"/> exactly once, a `cancelled`
     /// receipt on stdout and on disk, the isolated run's commit holding `partial.txt`, and the backend's own `sleep` gone.
     /// </summary>
-    public async Task AssertCancelledAsync(RunningCli cli, string signal, string cancellingLine, string role, string sleep, bool isolated, int withinMilliseconds = 2000, bool group = false, int times = 1)
+    public async Task AssertCancelledAsync(RunningCli cli, string signal, string cancellingLine, string role, string sleep, bool isolated, int withinMilliseconds = 5000, bool group = false, int times = 1)
     {
         Stopwatch stopwatch = Stopwatch.StartNew();
         if (group)
