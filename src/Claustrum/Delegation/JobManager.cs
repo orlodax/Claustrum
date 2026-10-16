@@ -9,8 +9,9 @@ namespace Claustrum.Delegation;
 
 // State: running | waiting_for_input (a live job's question is open, and Question carries it; #124) | abandoned (a live job
 // whose claustrum process is gone, no result.json) | done | failed | unknown. A done job also says how it ended (Status, the RunResult's
-// own word: "needs_input" among them) and, when it stopped to ask, what (Questions; stage 3b).
-public sealed record JobStatusInfo(string State, double ElapsedSeconds, string? LastLine, QuestionInfo? Question = null, string? Status = null, ReportQuestion[]? Questions = null);
+// own word: "needs_input" among them) and, when it stopped to ask, what (Questions; stage 3b). RetriedAs is set when the job's cast
+// fallback took over (#126): everything above is then the retry's, and RetriedAs is the id to say to, wait on or cancel.
+public sealed record JobStatusInfo(string State, double ElapsedSeconds, string? LastLine, QuestionInfo? Question = null, string? Status = null, ReportQuestion[]? Questions = null, string? RetriedAs = null);
 
 // Backs MCP delegate_async/job_status/job_result (docs/PLAN.md §A6). In-memory only, so it covers
 // jobs started via delegate_async in this MCP server's own lifetime; job_status/job_result still
@@ -58,8 +59,9 @@ public sealed class JobManager
             // The task decides when a job is done; live.json only adds that a running one is waiting for its human.
             // #126: a job retried on its cast's fallback is followed to the retry, whose question and last line are the ones that matter.
             LiveJob watched = LiveJob.At(entry.Job);
+            string? retriedAs = null;
             if (watched.ReadRetry() is { } retry)
-                watched = retry;
+                (watched, retriedAs) = (retry, retry.Id);
 
             QuestionInfo? question = null;
             if (state == "running" && watched.Observe() is { State: "waiting_for_input" } waiting)
@@ -67,10 +69,19 @@ public sealed class JobManager
 
             double elapsed = (DateTimeOffset.UtcNow - entry.StartedAt).TotalSeconds;
             RunResult? finished = entry.Task.IsCompletedSuccessfully ? entry.Task.Result : null;
-            return new JobStatusInfo(state, elapsed, JobLog.LastLine(watched.LogPath), question, StatusName(finished), finished?.Questions);
+            return new JobStatusInfo(state, elapsed, JobLog.LastLine(watched.LogPath), question, StatusName(finished), finished?.Questions, retriedAs);
         }
 
-        // A job this process never started: its result.json says done; a live one (live.json) says what its session is doing (#124).
+        // A job this process never started, retried on its cast's fallback, answers as its retry does (one hop: a retry is never retried).
+        if (NamesAStoreEntry(jobId) && LiveJob.Find(jobId)?.ReadRetry() is { } started && StatusFromDisk(started.Id) is { } followed)
+            return followed with { RetriedAs = started.Id };
+
+        return StatusFromDisk(jobId);
+    }
+
+    // A job this process never started: its result.json says done; a live one (live.json) says what its session is doing (#124).
+    private static JobStatusInfo? StatusFromDisk(string jobId)
+    {
         if (!NamesAStoreEntry(jobId))
             return null;
 

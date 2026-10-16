@@ -7,6 +7,7 @@ using Claustrum.Core.IO;
 using Claustrum.Core.Jobs;
 using Claustrum.Core.Json;
 using Claustrum.Core.Model;
+using Claustrum.Live;
 using Claustrum.Roles;
 
 namespace Claustrum.Delegation;
@@ -60,9 +61,15 @@ internal static class FallbackRetry
             return noted;
         }
 
+        // The retry's host first (when the first job had one), then the first receipt's pointer: whoever follows retried_as finds a job `jobs cancel` can reach.
         JobPaths retryJob = JobDirectory.Create(AppServices.Platform);
+        List<string> notes = [];
+        if (Adopt(first, retryJob) is { } unhosted)
+            notes.Add($"job {retryJob.Id} could not be recorded as the detached host's own, so `jobs cancel` cannot reach it: {unhosted}");
         if (Rewrite(first with { RetriedAs = retryJob.Id }) is { } unwritten)
-            retry = retry with { Options = retry.Options with { PreRunWarnings = [.. retry.Options.PreRunWarnings ?? [], $"job {first.JobId}'s receipt could not be rewritten with retried_as: {unwritten}"] } };
+            notes.Add($"job {first.JobId}'s receipt could not be rewritten with retried_as: {unwritten}");
+        if (notes.Count > 0)
+            retry = retry with { Options = retry.Options with { PreRunWarnings = [.. retry.Options.PreRunWarnings ?? [], .. notes] } };
 
         return await runRetry(retry, retryJob);
     }
@@ -123,6 +130,24 @@ internal static class FallbackRetry
         ModelResolution now = Config.Load(AppServices.Platform, request.Cwd).Describe(fallback);
         string target = CastModelLines.Target(now);
         return stored == target ? [] : [CastModelLines.ResolvedChangedWarning(castName, $"{role} fallback", fallback, stored, target, now.Source ?? "")];
+    }
+
+    // A retry run by a detached host is that host's job too (the process is the same, so is the tree): its host.json is the first's, which is what
+    // `jobs cancel`, the tree's settle and a waiter's abandoned check read. Null when written or when the first job had no host; otherwise why not.
+    private static string? Adopt(RunResult first, JobPaths retryJob)
+    {
+        if (LiveJob.Find(first.JobId)?.ReadHost() is not { } host)
+            return null;
+
+        try
+        {
+            AtomicFile.WriteAllText(retryJob.HostJson, JsonSerializer.Serialize(host, LiveJsonContext.Default.HostRecord));
+            return null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return ex.Message;
+        }
     }
 
     // Null when written; otherwise why not. A receipt that cannot be rewritten must not stop the retry that was already decided.

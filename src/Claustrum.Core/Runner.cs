@@ -284,7 +284,7 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
             ErrorKind? errorKind = status == RunStatus.Failed ? parsed.ErrorKind ?? ErrorKind.Other : null;
             bool firstTurnOnly = outcome.LastTurn is null || outcome.LastTurn.Stdout.Length == outcome.Stdout.Length;
             bool? beforeAnyWork = status == RunStatus.Failed && parsed.ToolCallsCompleted is not null
-                ? ProviderErrors.BeforeAnyWork(parsed.ToolCallsCompleted, branch.Changes.ChangedFiles, treeRead: mismatch is null or { OwnWorktree: true }, firstTurnOnly)
+                ? ProviderErrors.BeforeAnyWork(parsed.ToolCallsCompleted, branch.Changes.ChangedFiles, treeRead: mismatch is null or { OwnWorktree: true }, firstTurnOnly, parsed.Steps)
                 : null;
 
             RunResult result = new(

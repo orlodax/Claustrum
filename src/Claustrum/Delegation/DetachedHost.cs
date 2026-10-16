@@ -11,7 +11,8 @@ namespace Claustrum.Delegation;
 // #124 stage 2: the body of `claustrum jobs host <id>`. Runs the job another process minted, from the request it left in the
 // job directory, exactly as that process would have in-process: the same Prepare, the same DelegateEngine.RunAsync (slot, worktree,
 // budget admission, Runner). What differs is who can cancel it: a signal, the marker `jobs cancel` leaves, or the end of the
-// coordinate job it belongs to (TreeRootWatch).
+// coordinate job it belongs to (TreeRootWatch). A cast's fallback (#126) makes the host run a second job after the first: the marker
+// that counts is the one of whichever job is running (NOTES.md "A cast can name a fallback model").
 internal static class DetachedHost
 {
     public const string RootEndedNotice = "The coordinate job that started this one has ended; this job was cancelled.";
@@ -33,7 +34,8 @@ internal static class DetachedHost
     {
         using CancellationTokenSource cancel = CancellationTokenSource.CreateLinkedTokenSource(signalled);
         using CancellationTokenSource finished = new();
-        Task watcher = WatchForCancelAsync(job, cancel, finished.Token);
+        RunningJob running = new(job);
+        Task watcher = WatchForCancelAsync(job, running, cancel, finished.Token);
         DelegateRequest? request = null;
         ResolvedRole? role = null;
         try
@@ -43,7 +45,11 @@ internal static class DetachedHost
 
             PreparedDelegation prepared = DelegateEngine.Prepare(request);
             role = prepared.Role;
-            return (await DelegateEngine.RunAsync(prepared, job, cancel.Token), false);
+            return (await DelegateEngine.RunAsync(prepared, job, (retry, retryJob) =>
+            {
+                role = retry.Role;
+                running.Job = retryJob;
+            }, cancel.Token), false);
         }
         catch (MachineryRefusedException ex)
         {
@@ -51,8 +57,9 @@ internal static class DetachedHost
         }
         catch (Exception ex)
         {
+            // The job that was running when it threw, so a retry that fails outside Runner gets its receipt too, not the first's.
             RunStatus status = cancel.IsCancellationRequested && ex is OperationCanceledException ? RunStatus.Cancelled : RunStatus.Failed;
-            return (await ReceiptForAsync(job, role ?? PlaceholderRole(request), status, ex.Message), false);
+            return (await ReceiptForAsync(running.Job, role ?? PlaceholderRole(request), status, ex.Message), false);
         }
         finally
         {
@@ -61,9 +68,17 @@ internal static class DetachedHost
         }
     }
 
+    // The job the host is running now: the one it was started for, then its retry once the cast's fallback took over (#126). Set by the
+    // run, read by the watcher on its own thread.
+    private sealed class RunningJob(JobPaths first)
+    {
+        public volatile JobPaths Job = first;
+    }
+
     // The marker is polled, not signalled: a Windows process with no console cannot be sent Ctrl-C, and one poll serves both systems.
-    // The root of the job's tree is polled on the same timer, a twelfth as often.
-    private static async Task WatchForCancelAsync(JobPaths job, CancellationTokenSource cancel, CancellationToken stop)
+    // The first job's marker and the running job's are both honoured (they are one while the first runs); the root of the job's tree
+    // is polled on the same timer, a twelfth as often.
+    private static async Task WatchForCancelAsync(JobPaths job, RunningJob running, CancellationTokenSource cancel, CancellationToken stop)
     {
         TreeRootWatch? tree = TreeRootWatch.ForEnvironment();
         using PeriodicTimer timer = new(TimeSpan.FromMilliseconds(CancelPollMs));
@@ -71,7 +86,7 @@ internal static class DetachedHost
         {
             for (int poll = 0; ; poll++)
             {
-                if (File.Exists(job.CancelRequest))
+                if (File.Exists(job.CancelRequest) || File.Exists(running.Job.CancelRequest))
                 {
                     await cancel.CancelAsync();
                     return;
@@ -79,7 +94,7 @@ internal static class DetachedHost
 
                 if (tree is not null && poll % RootCheckEveryPolls == 0 && tree.HasEnded())
                 {
-                    await CancelForEndedRootAsync(job, cancel, stop);
+                    await CancelForEndedRootAsync(running.Job, cancel, stop);
                     return;
                 }
 

@@ -6458,9 +6458,10 @@ error       {"type":"provider.quota","message":"…","status":402}
 - **"Before any work" is one predicate, `ProviderErrors.BeforeAnyWork`:** no changed file (in a tree that was actually read — a worktree `mismatch` says
   nothing about changes), a single turn (a live session that went on past its first turn had a human in it: `outcome.LastTurn` for opencode, more than
   one `result` event for claude), and the backend **counted its tool calls and none completed**. A backend that cannot count says `null` and the run is
-  never "before any work". ⚠ **Steps are not bounded, on purpose.** The brief for #126 said "at most its first step"; the real 402 above has a second
-  `step_start`, because opencode feeds the errored tool result back to the model before the provider is asked again. Bounding steps would have refused the
-  one case this exists for. What counts as work is a tool call that did not error: opencode `part.state.status` other than `error` (a call caught
+  never "before any work". ⚠ **At most two steps** (`ProviderErrors.MaxStepsBeforeAnyWork`, the owner's rule settled in the review of #127): opencode's
+  `step_start`s, claude's `num_turns` (1 in the recorded 404; not seen on a longer run); a backend that reports none (api: one request) is bounded by the rest.
+  Not one: the issue said "past the first step", but the real 402 above has a second `step_start`, because opencode feeds the errored tool result back to
+  the model before the provider is asked again, and a bound of one would have refused the one case this exists for. What counts as work is a tool call that did not error: opencode `part.state.status` other than `error` (a call caught
   pending or running counts), claude a `tool_use` with no errored `tool_result`. The text a first step wrote is not work: it was going to be redone.
   The receipt carries the answer as `before_any_work` (true/false/null), beside `error_kind` and `error_detail` (the provider's words alone, the receipt's
   `error` being the role's text before it plus the error).
@@ -6469,10 +6470,16 @@ error       {"type":"provider.quota","message":"…","status":402}
   a fallback, is not itself a retry (`fallback_of`), resumes no session (`--resume`, `jobs answer`, `coordinate --resume`: a session only its own backend
   can read) and the receipt `Qualifies` (`failed`, provider-side `error_kind`, `before_any_work`, not yet retried). It builds the retry's request from the
   first's with the model replaced and `backend` cleared, runs `Prepare` and `DelegateEngine.Validate` on it (**the blind gate again, same brief, nothing
-  added**), mints the job, **rewrites the first receipt with `retried_as` atomically before the retry starts** (so a follower can switch to it at once), and
-  runs it through the same dispatch (slot, worktree, admission). Its request.json and receipt carry `fallback_of`, stamped in `Runner.FinishAsync` so a
+  added**), mints the job, writes its `host.json` (below), **rewrites the first receipt with `retried_as` atomically before the retry starts** (so a follower
+  can switch to it at once), and runs it through the same dispatch (slot, worktree, admission). Its request.json and receipt carry `fallback_of`, stamped in `Runner.FinishAsync` so a
   refusal's receipt has it too. A fallback that cannot be used (`ConfigException`, a role that does not run on that harness, a blind-gate refusal, the
   budget spent) leaves the first receipt as it was plus a warning, rewritten the same way. Never a second retry.
+- **In a detached host the retry is the host's job too** (review of #127, F1). The retry is minted by the host process, so `FallbackRetry` copies the first job's
+  `host.json` (same pid, start time and tree) into it before anything names it, and `DetachedHost` — told by `DelegateEngine.RunAsync`'s `retryStarted` — polls
+  the `cancel` marker of whichever job it is running (the first's too, while it runs). That is what makes `jobs cancel` reach the retry, a tree's waiter stop it on
+  Ctrl-C/SIGTERM, `TreeSettler` and the root watch see it, `IsAbandoned` and `DetachedRun.AwaitResult` judge it by its host (30 s, not 3), and a failure outside
+  Runner leave the retry a receipt, not a directory that stays `pending`. Before it, `jobs cancel <retry>` said "not a detached job" and a SIGTERM to the waiter
+  left the retry running. A first job with no host (a terminal `run`, MCP) gives its retry none.
 - **Budget.** The first job's cost is charged as it always is. The retry's per-run cap is `budget − first.cost_usd` (a spent budget declines the retry);
   inside a tree the ledger admits it against what is left like any sibling job. The real 402 cost $0.0054 (the errored step was billed).
 - **`coordinate`'s architect retries one level up** (`CoordinateEngine.RunAsync` → `RunJobAsync` twice), because its job id *is* its tree: the retry is a
@@ -6484,9 +6491,12 @@ error       {"type":"provider.quota","message":"…","status":402}
 - **Followers.** The returned receipt is the retry's. A caller waiting on the first job's directory follows `retried_as` (`LiveJob.ReadRetry`): `run`'s
   terminal prompt (`LiveRun.AnswerWhileAsync`), the tree child's wait on its detached host (`DetachedRun.WaitAsync`, which for a run that may be retried
   waits up to 3 s for `retried_as` to appear after the receipt, since the rewrite lands a few milliseconds later), `job_status` of a `delegate_async` job
-  (`JobManager.GetStatus`, so a retry's question shows under the id the caller holds) and `coordinate`'s printout. **Not followed:** `jobs wait|follow|say <first id>`
-  and MCP `job_say` on the first id, which see a finished failed job whose receipt says `retried_as`. The MCP `job_result` of a `delegate_async` id answers with the
-  retry's receipt for as long as the server lives, then with the first's from disk.
+  (`JobManager.GetStatus`, so a retry's question shows under the id the caller holds, with `retried_as` in the status) and `coordinate`'s printout. Since the
+  review of #127 the verbs that take the first id follow it too, one hop (a retry is never retried), and say so on stderr (`JobRetry`) or, over MCP, in the
+  result's `retried_as`: `jobs say|reply|cancel` act on the retry, `jobs wait` and `jobs follow` go on to it once the first job's receipt is in (`LiveJob.AwaitRetryAsync` waits up to 3 s for
+  `retried_as` after a receipt that `Qualifies`; those two verbs cannot know the cast, so a provider-refused job with no fallback ends 3 s late there), and MCP
+  `job_say`/`job_status` do the same, `job_status` for a job another process started too. The MCP `job_result` of a `delegate_async` id answers with the retry's receipt for as
+  long as the server lives, then with the first's from disk.
 - **Docs.** MANUAL §6 (receipt fields), §8 (the field, the follow-up question, when a retry happens and when it does not), §15.
 
 **Measured 2026-10-16, no paid call:** `claustrum` Debug build, a fake `opencode` that replays the six events above and a fake `claude` that answers or
@@ -6503,6 +6513,11 @@ answers and a fallback on the wrong harness (`ui-reviewer`) refused naming it.
 49 skipped, 1 failed — `CastQuestionnaireTests.AsksExactlyTheEightQuestionsInPipelineOrderDemoAuthorIncluded`, which pins the question list the fallbacks are
 now added to (deliberate). Seven more failed until the fallbacks moved last and their prompts said `It runs on …` like the others; the README's cast snippet
 (pinned by `ReadmeCastExampleTests` to what `CastStore` writes) gained the two new fields.
+
+**Measured 2026-10-16 (review of #127), no paid call:** the same fakes, a detached `run` (`--detach --reply-timeout 600`) and a tree's `run --json`. The retry has its
+`host.json`; `jobs cancel <retry>` and `jobs cancel <first>` both end it `cancelled` and the host exits; SIGTERM to the tree's waiter ends the retry (waiter exit 130, the
+retry's cancelled receipt printed, no fake claude left); a killed tree root cancels the retry with the notice in *its* conversation; a killed host makes the retry
+`abandoned` (exit 6) under either id; `jobs wait|say|follow <first>` and MCP `job_status|job_say <first>` reach the retry.
 
 **Not done / limits.** No test was written (the tester's). The claude classification was never seen against a real 402/401 from claude itself. A
 retried live job's conversation is a second job's `conversation.jsonl`. The retried architect's tree is its own (above). `jobs clean` removes the first

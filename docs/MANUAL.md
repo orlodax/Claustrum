@@ -519,8 +519,8 @@ One JSON document, `schema_version: "1"`, snake_case, additive changes only:
 | `status` | runner | `success`, `failed`, `timeout`, `cancelled`, `backend_missing`, `budget_exceeded`, `needs_input` (the report asked the human something; exit 7) |
 | `error` | runner | **read it whenever `status` is not `success`** — it says which refusal or failure |
 | `error_kind`, `error_detail` | backend | `failed` runs only: why, when the backend's output says — `provider_quota` (out of credits, a rate limit: 402/429, `provider.quota`), `provider_auth` (401/403), `model_not_found` (404, `provider.no-route`), `provider_transport` (408/5xx, no answer at all), or `other`. `error_detail` is the provider's own words, without the text the role wrote before it failed. Read for **opencode** and **claude**; the other backends report `other` on a failure and `null` while it succeeds. `null` on every run that did not fail |
-| `before_any_work` | runner | `failed` runs only: `true` when the run changed no file, was a single turn and completed no tool call (a call that errored did nothing); `false` when it did work; `null` when the backend cannot count its tool calls. With a provider-side `error_kind` it is what lets a cast's fallback take over |
-| `fallback_of`, `retried_as` | runner | a cast's fallback (§8): the retry's receipt names the job it replaced in `fallback_of`; the replaced job's receipt stays as it was (`failed`, its own `error_kind`) plus `retried_as: <the retry's job id>`. `jobs show <id>` of a retried job tells you where to look |
+| `before_any_work` | runner | `failed` runs only: `true` when the run changed no file, was a single turn, completed no tool call (a call that errored did nothing) and made at most two steps (model requests: the first, and the one that hands an errored call back); `false` when it did work; `null` when the backend cannot count its tool calls. With a provider-side `error_kind` it is what lets a cast's fallback take over |
+| `fallback_of`, `retried_as` | runner | a cast's fallback (§8): the retry's receipt names the job it replaced in `fallback_of`; the replaced job's receipt stays as it was (`failed`, its own `error_kind`) plus `retried_as: <the retry's job id>`. `jobs show <id>` of a retried job tells you where to look; `jobs say|reply|wait|follow|cancel` and MCP `job_say`/`job_status` given its id go on to the retry and say so (stderr; `retried_as` in the MCP result) |
 | `backend`, `model`, `role` | resolved request | what actually ran |
 | `final_message` | backend | the agent's last message, report fence included |
 | `report` | extracted | `{data: <parsed JSON>, raw_text}` from the `claustrum-report` fence |
@@ -649,13 +649,15 @@ per-developer, git-ignored:
   retry's, with `fallback_of` and a warning: `code-reviewer: opencode:openrouter/deepseek/deepseek-v4-pro failed
   before starting (provider_quota: <the provider's words>); ran on claude:opus instead (job <the first job>)`.
   The first job's receipt keeps `status: failed` and gains `retried_as`. Not retried: a run an explicit
-  `--model`/`--backend` chose, a run that changed a file or completed a tool call, a live session past its first
+  `--model`/`--backend` chose, a run that changed a file, completed a tool call or went past its second step, a live session past its first
   turn, a continuation (`jobs answer`, `--resume`, `coordinate --resume`) whose session only its own backend can
   read, a job that is itself a retry (never a second one), a failure of another kind (a timeout, the role's own
   error, `other`). The first job's cost is charged as usual; the retry gets what is left of the run's `--budget`
   and is admitted by the tree's ledger like any sibling. A fallback that cannot be used (it does not resolve, the
-  budget is spent) leaves the first receipt as it was plus a warning saying so. A `coordinate` architect's retry is a
-  whole new coordinate job: its own tree, branch and ledger entry, rooted at its own id.
+  budget is spent) leaves the first receipt as it was plus a warning saying so. A retry run by a detached host (`run --detach`, a tree's
+  child) is that host's job too: `jobs cancel`, a tree's end and a waiter's Ctrl-C reach it like the first. Name either job: `jobs say`,
+  `reply`, `wait`, `follow`, `cancel` and MCP `job_say`/`job_status` given the first id act on the retry (one hop) and say so. A `coordinate`
+  architect's retry is a whole new coordinate job: its own tree, branch and ledger entry, rooted at its own id.
 - Each role entry and `architect` may carry an optional `resolved` field,
   `"backend:model-id"` — what the alias resolved to when the cast was created or last
   edited. Filled automatically by `cast create`/`cast new`/`cast_create`; saved before

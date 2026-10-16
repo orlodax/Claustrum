@@ -71,31 +71,39 @@ public static class JobsFollowCommand
             return ExitCodes.Usage;
         }
 
-        // Print header: job id, role, backend:model
-        SafeConsole.Error(SummarizeJob(jobDir, jobId));
-
-        JobTracker job = new(jobDir, rawMode);
-
-        // #124: on a terminal, a live job's open question is asked here and the typed line goes out as `jobs say` would.
-        if (TerminalInput.IsInteractive && job.Channel is { } channel)
-            job.Prompter = new QuestionPrompter(channel);
-
-        try
+        while (true)
         {
-            while (!Poll(job, prefix: null))
+            // Print header: job id, role, backend:model
+            SafeConsole.Error(SummarizeJob(jobDir, jobId));
+
+            JobTracker job = new(jobDir, rawMode);
+
+            // #124: on a terminal, a live job's open question is asked here and the typed line goes out as `jobs say` would.
+            if (TerminalInput.IsInteractive && job.Channel is { } channel)
+                job.Prompter = new QuestionPrompter(channel);
+
+            try
             {
-                // A typed line wakes the poll at once; a cancel still ends it, whatever the terminal read is doing.
-                Task delay = Task.Delay(PollIntervalMs, ct);
-                await (job.Prompter?.Pending is { } pending ? Task.WhenAny(delay, pending) : delay);
-                ct.ThrowIfCancellationRequested();
+                while (!Poll(job, prefix: null))
+                {
+                    // A typed line wakes the poll at once; a cancel still ends it, whatever the terminal read is doing.
+                    Task delay = Task.Delay(PollIntervalMs, ct);
+                    await (job.Prompter?.Pending is { } pending ? Task.WhenAny(delay, pending) : delay);
+                    ct.ThrowIfCancellationRequested();
+                }
             }
-        }
-        finally
-        {
-            job.Prompter?.Abandon();
-        }
+            finally
+            {
+                job.Prompter?.Abandon();
+            }
 
-        return ExitCodes.Ok;
+            // #126: a job its cast's fallback took over is followed on to the retry, whose log is the one still growing.
+            if (job.Channel is not { } ended || await ended.AwaitRetryAsync(retryPossible: true) is not { } retry)
+                return ExitCodes.Ok;
+
+            SafeConsole.Error(JobRetry.Note(ended.Id, retry.Id));
+            (jobId, jobDir) = (retry.Id, Path.Combine(jobsRoot, retry.Id));
+        }
     }
 
     internal const string ReadyLine = "watching for new jobs… (Ctrl-C to stop)";

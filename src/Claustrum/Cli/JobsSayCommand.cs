@@ -6,7 +6,8 @@ namespace Claustrum.Cli;
 
 // #124 `claustrum jobs say <id> <text>`: the human's way into a live job. One inbox message, queued for the session:
 // the answer while a question is open, a message to the running role otherwise. Exit 2 when the job is unknown, not
-// live (no live.json), done or abandoned (its claustrum process is gone), or runs a blind role.
+// live (no live.json), done or abandoned (its claustrum process is gone), or runs a blind role. A job its cast's fallback took over (#126)
+// is the retry's: the text goes to the retry, and stderr says so.
 public static class JobsSayCommand
 {
     public static Command Build()
@@ -20,8 +21,8 @@ public static class JobsSayCommand
 
     private static int Execute(string id, string text)
     {
-        LiveJob job = LiveJob.Find(JobId.Require(id))
-            ?? throw new CliUsageException($"job '{id}' not found under {JobDirectory.ResolveRoot(AppServices.Platform)}");
+        LiveJob job = JobRetry.Follow(LiveJob.Find(JobId.Require(id))
+            ?? throw new CliUsageException($"job '{id}' not found under {JobDirectory.ResolveRoot(AppServices.Platform)}"));
 
         SayResult sent = job.Say(text);
         SafeConsole.Out(sent.AnswersQuestion is { } seq ? $"queued: answer to question {seq}" : "queued: message");
