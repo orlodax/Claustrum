@@ -1,7 +1,7 @@
 # Claustrum manual
 
 The reference for using Claustrum — every verb, file, field and rule, in one place. It restates
-what the code does today (binary `0.1.0-alpha`, role library `1.0.0`; checked against the code
+what the code does today (binary `0.2.0`, role library `1.1.0`; checked against the code
 2026-10-08, #54); the *why* stays
 in [NOTES.md](../NOTES.md) and the plan in [PLAN.md](PLAN.md). Getting the binary and the backends
 onto a machine is [INSTALL.md](INSTALL.md); running it on a real task for the first time is
@@ -620,7 +620,7 @@ variable is present.
 per-developer, git-ignored:
 
 ```json
-{ "name": "default", "library": "1.0.0",
+{ "name": "default", "library": "1.1.0",
   "architect": { "mode": "host" | "spawned", "model": "<alias|backend:id>" | null, "tier": "high|xhigh|max" | null },
   "roles": {
     "builder":       { "model": "standard-coding", "backend": null, "tier": null, "max_parallel": 2 },

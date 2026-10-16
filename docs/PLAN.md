@@ -234,7 +234,7 @@ In every host the architect's reply quotes status, changed files, `shaky`, and w
 ### D1. The cast: who plays which role, chosen once, stored as a file
 ```json
 // .claustrum/casts/default.json  (committable; teammates share `cheap`, `premium`, `deepseek-only`)
-{ "name": "default", "library": "1.0.0",
+{ "name": "default", "library": "1.1.0",
   "architect": { "mode": "host" },                                       // or {"mode":"spawned","model":"claude:opus","tier":"xhigh"}
   "roles": {
     "builder":       { "model": "opencode:openrouter/deepseek/deepseek-v4-pro", "max_parallel": 3 },

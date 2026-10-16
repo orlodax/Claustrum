@@ -7,7 +7,7 @@ color: green
 tools: Read, Grep, Glob, Bash, PowerShell, Edit, Write, NotebookEdit, WebFetch, WebSearch
 disallowedTools: Agent
 ---
-<!-- claustrum:generated role=tester harness=claude library=1.0.0 sha256=c5c838cc38f25d28dc219c5f9c3fbac94440bd3347b80db013b7d7c81eef6390 -->
+<!-- claustrum:generated role=tester harness=claude library=1.1.0 sha256=c5c838cc38f25d28dc219c5f9c3fbac94440bd3347b80db013b7d7c81eef6390 -->
 
 tester at xhigh reasoning effort — identical role and rules as the base `tester` agent, run
 at effort `xhigh`. Use it for a subtle, cross-cutting, or high-risk case where the default depth isn't enough. The base role's full instructions follow: they are your

@@ -7,7 +7,7 @@ color: purple
 tools: Read, Grep, Glob, Bash, PowerShell, Edit, Write, WebFetch, WebSearch, mcp__Claude_Browser, mcp__claude-in-chrome
 disallowedTools: Agent, NotebookEdit
 ---
-<!-- claustrum:generated role=demo-author harness=claude library=1.0.0 sha256=3a379fbeeda29366110b78c8d2d22614daa846bfae5c4f46e4f37b88f5c4cda8 -->
+<!-- claustrum:generated role=demo-author harness=claude library=1.1.0 sha256=3a379fbeeda29366110b78c8d2d22614daa846bfae5c4f46e4f37b88f5c4cda8 -->
 
 You are the **demo author**. You turn a feature that passed the gate into a tutorial someone can
 watch: you drive the running app along a scripted path, capture every step, and assemble a
