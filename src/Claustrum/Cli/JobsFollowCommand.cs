@@ -98,6 +98,8 @@ public static class JobsFollowCommand
         return ExitCodes.Ok;
     }
 
+    internal const string ReadyLine = "watching for new jobs… (Ctrl-C to stop)";
+
     private static async Task<int> FollowAllAsync(string jobsRoot, bool rawMode, CancellationToken ct)
     {
         // Jobs already on disk are history, not news: only directories created after this point are followed.
@@ -106,6 +108,8 @@ public static class JobsFollowCommand
             foreach (string dir in Directory.EnumerateDirectories(jobsRoot))
                 existing.Add(Path.GetFileName(dir));
 
+        // Said once the snapshot exists, so a job started after this line is certain to be followed (a slow start missed two on macOS CI).
+        SafeConsole.Error(ReadyLine);
         Dictionary<string, JobTracker> trackers = new(StringComparer.Ordinal);
 
         while (!ct.IsCancellationRequested)
