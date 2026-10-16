@@ -121,14 +121,36 @@ public sealed class CastQuestionnaireTests : IDisposable
 
     private static BackendRegistry EveryBackendFound() => new([new FakeBackend("claude", found: true), new FakeBackend("opencode", found: true), new FakeBackend("api", found: true)]);
 
+    // The eight questions a script written before #126 was piped (`cast new < answers`) come first, in their old order; the fallbacks
+    // (#126) follow, the architect's and then each role's, so no old line shifts one slot.
     [Fact]
-    public async Task AsksExactlyTheEightQuestionsInPipelineOrderDemoAuthorIncludedAsync()
+    public async Task AsksTheEightQuestionsInPipelineOrderDemoAuthorIncludedThenEveryFallbackLastAsync()
     {
         CastQuestionnaireResult result = await CastQuestionnaire.BuildAsync(roleLibrary, EveryBackendFound(), AliasPerBackendConfig(), cwd, CancellationToken.None);
 
         Assert.Equal(
-            ["architect", "builder", "code-reviewer", "demo-author", "tester", "ui-reviewer", "builder_max_parallel", "budget"],
+            [
+                "architect", "builder", "code-reviewer", "demo-author", "tester", "ui-reviewer", "builder_max_parallel", "budget",
+                "architect_fallback", "builder_fallback", "code-reviewer_fallback", "demo-author_fallback", "tester_fallback", "ui-reviewer_fallback",
+            ],
             result.Questions.Select(question => question.Key));
+    }
+
+    [Fact]
+    public async Task EachFallbackQuestionOffersNoneFirstThenTheRolesOwnAliasesAndAcceptsFreeFormAsync()
+    {
+        CastQuestionnaireResult result = await CastQuestionnaire.BuildAsync(roleLibrary, EveryBackendFound(), AliasPerBackendConfig(), cwd, CancellationToken.None);
+
+        CastQuestion reviewer = result.Questions.Single(q => q.Key == "code-reviewer_fallback");
+        Assert.Equal(CastBuilder.NoFallback, reviewer.Options[0]);
+        Assert.Equal(["none", .. result.Questions.Single(q => q.Key == "code-reviewer").Options], reviewer.Options);
+        Assert.True(reviewer.AllowFreeForm);
+        Assert.False(reviewer.AllowNotNeeded);
+        Assert.Contains("It runs on", reviewer.Prompt, StringComparison.Ordinal);
+
+        // A browser role's fallback is offered the claude aliases alone, like its primary.
+        Assert.Equal(["none", "claude-alias"], result.Questions.Single(q => q.Key == "ui-reviewer_fallback").Options);
+        Assert.Equal("architect_fallback", CastQuestionnaire.FallbackKey(Cast.ArchitectRole));
     }
 
     // #58: the question's answer `1` is a cap now (CastBuilder stores it as 1), and the prompt that asks it
