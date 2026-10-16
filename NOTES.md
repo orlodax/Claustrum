@@ -2977,8 +2977,9 @@ the `--standalone` question and handed over the v2 error shape. A deliberately w
       produced only text (no `tool_use`), take the step sum and warn `opencode session export failed
       (<reason>): cost is the step sum, without the final text step`; any other gap is null and the
       cap, as before. ⚠ A `step_finish` has its own part id, so steps pair by order, not by id. The
-      export never changes a run's status: whatever the hook throws becomes the warning, and a
-      cancelled job skips it (it runs on `CancellationToken.None`, up to 30 uninterruptible seconds).
+      export never changes a run's status: whatever the hook throws becomes the warning. A cancelled
+      job skipped it until the #127 final review; now it gets 5 s and only a clean answer counts (NOTES.md
+      "Final review of #127", finding 3).
 
 6. **The api backend, against a live OpenRouter endpoint.** `claustrum run code-reviewer --model
    api:openrouter:deepseek/deepseek-v4-flash --brief "## Task\nSay OK.\n## Diff\nnone" --budget 0.5
@@ -6107,8 +6108,10 @@ A blind review ran the built binary in a pty under `bash -i` and with group sign
   (a resolved path would collapse `sub/../x` before the directory link `sub` was looked at), every hop must stay under the
   cwd, no directory below it on the way may be a link, and an absolute target spelled through a link to the cwd is refused
   too (the safe side). Hard links are not judged: unlike the api backend's inlining, nothing here is put in a prompt.
-- **Opt back in:** `roles.<role>.user_mcp: true`. Then `--strict-mcp-config` is not passed and claude loads what it did
-  before (user servers plus the project's `.mcp.json`). Record: `backend.json` gets `mcp_servers` (`["user"]` when opted in);
+- **Opt back in:** `roles.<role>.user_mcp: true`, in the USER config or as the role library's own default (`userMcp` in `role.json`; true
+  for ui-reviewer and demo-author since the #127 final review, whose browser servers are user or built-in config). Then `--strict-mcp-config`
+  is not passed and claude loads what it did before (user servers plus the project's `.mcp.json`). A repo's `claustrum.json` and a repo's
+  `.claustrum/roles/<role>/role.json` cannot set it: see "Final review of #127", finding 7. Record: `backend.json` gets `mcp_servers` (`["user"]` when opted in);
   `system.md` is the prompt claude receives, so it is not touched. `request.json` is unchanged.
 - **opencode (checked 2026-10-15 on 2.0.12, no model call):** no clean equivalent. The global `~/.config/opencode` config is
   merged into every run, `OPENCODE_CONFIG_CONTENT` (which Claustrum already sets) is merged on top and cannot remove a
@@ -6144,12 +6147,13 @@ through `IProcessLive`; claude's wire format is `ClaudeLiveProtocol`; `Runner` s
   is recorded and queued (a crash between the two repeats it, never loses it). An unreadable file is discarded with a `Notice`.
   **The read never blocks the pump** (review of #124, F2): files are read and parsed before `gate` is taken and deleted after
   it is released, through `PlainFile` (a FIFO or device is refused, not opened), a link is refused, and over 1 MiB (`jobs say`'s
-  own cap) is refused; each refusal deletes the file and records a `Notice` with the reason. The writes the session does
+  own cap) is refused; each refusal deletes the file and records a `Notice` with the reason. The inbox DIRECTORY is fenced too (#127
+  final review, finding 5). The writes the session does
   under `gate` (`conversation.jsonl`, `live.json`) stay there on purpose: they keep entries in `seq` order, and the job
   directory is one Claustrum created, so nothing foreign can be named there.
-  All conversation writes are single-write appends of one JSON line; `live.json` is a temp file renamed over the old one, tried 5
-  times because Windows refuses a rename while a reader holds the file. A job directory that stops taking writes costs the
-  record, never the run: the session swallows IO errors, because a throw on the pump thread would end the process.
+  All conversation writes are single-write appends of one JSON line; `live.json` is written through `AtomicFile` (a temp file renamed over
+  the old one, POSIX-semantics rename on Windows: #127 final review, finding 6; it was a plain Move retried 5 times). A job directory that
+  stops taking writes costs the record, never the run: the session swallows IO errors, because a throw on the pump thread would end the process.
 - **The clock.** `ProcessRunner` no longer owns a bare `CancelAfter`: `PausableDeadline` is that deadline with `Pause`/`Resume`
   and `Active` (running time so far). The session pauses it when a question opens and resumes it on the reply, the no-answer
   notice or the end; a run that never goes live never pauses, so non-live timeouts are as before. Measured with a fake claude
@@ -6186,8 +6190,8 @@ through `IProcessLive`; claude's wire format is `ClaudeLiveProtocol`; `Runner` s
   otherwise differs from before only by that explicit `"conversation": null`.
 - **Not measured.** The engine was exercised end to end against a fake `claude` script (reply, no human, paused clock, blind,
   warning, cancel while waiting, report on turn 1, mid-turn message); never through a real multi-turn Claustrum job, which needs
-  paid calls. Known limit: the few milliseconds between claude emitting a `result` and Claustrum reading it are a window in which
-  a message is still taken as mid-turn.
+  paid calls. The "few milliseconds" window that stood here (a message sent just before a `result` is read still counted as mid-turn)
+  is closed by `--replay-user-messages`: NOTES.md "Final review of #127", finding 4.
 - **Owner identity.** `live.json` carries `owner_pid` and `owner_started_at`; `LiveState.IsOwnerAlive()` says the pid is gone or
   now another process (start time more than 5 s apart). A session killed without reaching its end leaves `running` behind, and
   this is how a front door tells that from a live job. No owner recorded, or a process that cannot be inspected, counts alive.
@@ -6503,3 +6507,80 @@ now added to (deliberate). Seven more failed until the fallbacks moved last and 
 **Not done / limits.** No test was written (the tester's). The claude classification was never seen against a real 402/401 from claude itself. A
 retried live job's conversation is a second job's `conversation.jsonl`. The retried architect's tree is its own (above). `jobs clean` removes the first
 job's worktree like any finished job's.
+
+## Final review of #127: kept sessions, continuation cost, replayed messages, fenced inbox (2026-10-16)
+
+Core-side fixes of the final full-PR review of #127. `claude` 2.1.300 throughout. **Paid: one probe, $0.0093** (two haiku calls); everything
+else below was measured against an unreachable `ANTHROPIC_BASE_URL` (`http://127.0.0.1:9`), where claude starts, names its session in
+`init`, answers `command_lifecycle` frames and retries the API call for ever, and nothing can be billed.
+
+- **1. A `needs_input` job must be able to continue.** `claude --help`: `--no-session-persistence` means "sessions will not be saved to disk and
+  cannot be resumed". Every non-resume run passed it, so `jobs answer` / `job_answer` / `coordinate --resume` ran `--resume` against a session
+  that was never written. Measured: a session started WITH the flag, then `claude -p --resume <id>` → `No conversation found with session ID:
+  <id>` and a `result` of `subtype: error_during_execution`, `is_error: true`, `total_cost_usd: 0` (the continuation fails and the answer is
+  lost); the same session started without the flag is found and resumed (the first call is enough to write it: the unreachable API never
+  answered). Now the flag is kept only for a role that cannot end `needs_input`: a blind one (its report status is ignored, `ReadAsked`) or one
+  with no report. Every other run saves its session, which costs a transcript under `~/.claude/projects/` per run.
+- **2. A continuation is charged what it added.** Probe: `printf 'reply OK' | claude -p --model haiku --strict-mcp-config --output-format
+  stream-json --verbose --max-budget-usd 0.05` → `total_cost_usd` **0.00558612**, cache_creation 27 365 / cache_read 11 092; then `--resume` of
+  that session (`reply OK again`, `--max-budget-usd 0.0073`) → the SAME `session_id`, `total_cost_usd` **0.00931102** (= 0.00558612 + 0.0037249:
+  the session's cost is restored, as the 2026-10-08 pair in "The claude brief goes on stdin" showed), cache_creation 17 566 / cache_read 20 950.
+  - **Cost.** `ClaudeBackend` is an `IPostRunHook`: the baseline is the HIGHEST `raw.total_cost_usd` any receipt in the store (the jobs directory
+    the job itself sits in) records for the resumed `session_id` (`ClaudeSessionCost`), and the job is charged `total − baseline`. The brief
+    said the parent job's receipt for an answer continuation, otherwise the newest receipt of the session; the highest total is the same
+    figure when the parent is the latest job of its session, is right when another run resumed the session since (the parent's would charge
+    that run's cost twice), and does not depend on job ids, which sort by the second (a chain of three jobs run inside one second took the
+    first one's total as the newest in a hand test: 0.035 charged where 0.020 was owed). It costs a read of every receipt (200 by default;
+    most are skipped on a text match for the session id). The figure read is claude's own `raw.total_cost_usd`, NOT `cost_usd`: a
+    continuation's `cost_usd` is already a delta. `cost_usd` is the fallback for a receipt with no `raw`. No receipt found, or the total lower
+    than the baseline: the job is charged the whole running total (today's behaviour) with a warning saying so.
+  - **Usage is NOT subtracted** (the brief asked for it): the resumed run's `usage` is its own (its cache tokens, creation plus read, are 38 516
+    against the first call's 38 457, not ~77 000), so a subtraction would only produce nonsense. Left as claude reports it.
+  - **`--max-budget-usd` is NOT raised by the baseline** (the brief asked for `baseline + cap`). `claude --help` says only "maximum dollar
+    amount to spend on API calls", so it was measured. A fresh single-turn run that overshoots ends `error_max_budget_usd`
+    (`tests/fixtures/claude/error-max-budget.json`: cap $0.05, one turn $0.12), so the check runs after a response. The resume above ended
+    `success` with the restored total 0.00931 over its cap 0.0073, and a resume with cap $0.001, under the restored 0.0093, did not refuse
+    at once: it began the API call and retried (6 `api_retry` events in 25 s). So the flag compares THIS run's own spend; passing `baseline +
+    cap` would have loosened every continuation by what its session already cost. The cap goes through unchanged.
+  - **Not measured:** a chain through the real hook (two continuations in a row), and a live session's `usage` after several turns.
+- **3. A cancelled opencode job is charged what it spent.** A stream cut mid-turn has more `step_start` than `step_finish`, so `Parse` gave no
+  cost and the job was charged its cap. `Runner` now runs the post-run hook for a cancelled job too, with a 5 s token (it was skipped
+  because it ran on `CancellationToken.None`, up to 30 s nobody could interrupt), and keeps the hook's answer only when it carries no warning: the hook signals "I
+  fell back" with a warning, and a cancelled job's fallback (the step sum of a cut stream is a floor) stays what it was, today's figures and
+  no new warning. When the hook runs no backend process is running: `ProcessRunner` has returned, so the child was killed and awaited, or
+  the session was between two per-turn processes.
+- **4. A message claude has not taken yet is the next turn, not a missed reply.** Live claude now runs with `--replay-user-messages`; the
+  brief, and every human message sent once echoes are known to work, carries a `uuid` (last key of the line; notices carry none). Shape, from claude's own embedded schema (strings in the 2.1.300
+  binary): `{"type":"user","uuid":<the client's>,"session_id":…,"isReplay":true,"parent_tool_use_id":null,"message":{…}}`, emitted when the queued
+  message drains into a turn; the same shape replays a RESUMED session's history, so every `isReplay` line is ignored by `ParseStream`, the
+  stream formatter and `NoteRecorder` (it reads assistant and result text only). Also measured, no model call: a message sent with a `uuid`
+  produces `command_lifecycle` frames `queued` then `started` carrying `command_uuid` = that uuid (a message with none produces none); they
+  are unknown event types and print nothing. **Not seen live: the echo itself**, which needs a model response, so its timing against the
+  `result` is the documentation's, not measured. The rule (`LiveSession`): a human message is tracked from the moment it is written until its
+  echo arrives; a report-less `result` of a non-blind role while one is untaken stays `running`, with no `waiting_for_input` and no pause, and
+  the turn's text is recorded as a `Message`, not a `Question`; otherwise as before. Three guards: (a) nothing is tracked until the first echo
+  that names a message arrives (a claude that never echoes would otherwise never ask a question again); (b) a message holds back ONE
+  report-less turn at most, so an echo that never comes cannot keep the job running for ever; (c) the tracking is cleared when the session
+  ends. opencode is unchanged (its `queuedHuman` already does this per turn). Notices Claustrum sends are not tracked.
+- **5. The inbox directory is fenced.** `Tick` listed `*.json` through `inbox/` and deleted every item it listed, so an `inbox` that was a
+  link (symlink, junction) to another directory had that directory's `*.json` read and deleted. Before every listing the directory is
+  checked: a link or any reparse point is refused whatever it points at, nothing is read or deleted through it, and ONE `Notice` per session
+  says so. The inbox is always the job directory's direct child, so "resolves outside the job directory" is exactly "is a link". The check is
+  made before the listing, not atomically with it: a swap in between needs write access to the store.
+- **6. `live.json` goes through `AtomicFile.WriteAllText`** (f9c38fe: POSIX-semantics rename on Windows, a retried plain `Move` only where
+  the volume lacks them). A write that still fails costs the state, never the run, as before; the worst case under `gate` is now
+  AtomicFile's backoff (up to ~2 s) instead of 100 ms.
+- **7. Personal connectors are the operator's choice only.** `roles.<role>.user_mcp` is read from the USER config and from the role library's
+  `role.json` (item 8). Dropped, with a receipt warning that names the file: the repo's `claustrum.json` (`Config.Load` strips it from the
+  repo layer; `Config.Resolve` adds the warning to that role's `warnings`, so no front door had to change) and a repo's own
+  `.claustrum/roles/<role>/role.json` override, which would otherwise have been a second way in (`RoleLibrary.LoadRole` removes `userMcp` from
+  the override before the merge and `LoadedRole.Warnings` carries the notice). The env layer carries no roles. `backends doctor` prints origins
+  from the merged document, so a dropped repo value no longer shows as `[Repo]` and has no line of its own.
+- **8. ui-reviewer and demo-author keep their browser.** #128's `--strict-mcp-config` leaves a claude role only the repo's `.mcp.json`, and the
+  browser servers these two list under `tools` (`mcp__Claude_Browser`, `mcp__claude-in-chrome`) are user or built-in config, so headless they
+  had no browser and no warning. `role.json` has a `userMcp` field (camelCase, like `mayDelegate`; read as `RoleDefinition.UserMcp`,
+  `RenderedRole.UserMcp`), true for those two; the user config's `roles.<role>.user_mcp` still overrides it per role. The price: a
+  ui-reviewer, which is blind, now loads ALL of the operator's user-level servers (Gmail, M365, …) on every turn, not just a browser. Narrowing
+  that to a named server list is the follow-up. `sync` never wrote a browser server into `.mcp.json` (it writes `claustrum` only); MANUAL §13 said it did.
+- **Not done:** no test was written or run for these (the tester's). The echo-based rule of finding 4 has only been exercised by reading,
+  never against a claude that answers; the uuid on the brief adds a last key to the first stdin line of every live claude run.

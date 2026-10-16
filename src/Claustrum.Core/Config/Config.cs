@@ -31,6 +31,9 @@ public sealed class Config
     // The same for the repo's claustrum.json: a committed alias wins at run time, so `init` has nothing to ask for it.
     public IReadOnlySet<string> RepoModelAliases { get; init; } = new HashSet<string>();
 
+    // The roles whose `user_mcp` the repo's claustrum.json set and Load dropped (#127): Resolve says so on that role's receipt.
+    public IReadOnlySet<string> RepoUserMcpIgnored { get; init; } = new HashSet<string>();
+
     /// <summary>The repo's <c>claustrum.json</c>, or null when there is no git root or no such file.</summary>
     public string? RepoConfigPath { get; init; }
 
@@ -77,13 +80,14 @@ public sealed class Config
         string? repoPath = null;
         string? repoCandidate = null;
         HashSet<string> repoModelAliases = [];
+        string[] repoUserMcpIgnored = [];
         if (gitRoot is not null)
         {
             repoCandidate = Path.Combine(gitRoot, "claustrum.json");
             if (platform.FileExists(repoCandidate))
             {
                 repoPath = repoCandidate;
-                ConfigDocument repoDocument = ReadDocument(platform, repoPath);
+                ConfigDocument repoDocument = WithoutUserMcp(ReadDocument(platform, repoPath), out repoUserMcpIgnored);
                 if (repoDocument.Models is { } repoModels)
                     repoModelAliases.UnionWith(repoModels.Keys);
                 merged = MergeLayer(merged, repoDocument, ConfigLayer.Repo, origins);
@@ -93,7 +97,7 @@ public sealed class Config
         if (ReadEnvLayer(platform) is { } envLayer)
             merged = MergeLayer(merged, envLayer, ConfigLayer.Env, origins);
 
-        return new Config { Merged = merged, Origins = origins, UserConfigPath = userPath, UserModelAliases = userModelAliases, RepoModelAliases = repoModelAliases, RepoConfigPath = repoPath, RepoPath = repoCandidate };
+        return new Config { Merged = merged, Origins = origins, UserConfigPath = userPath, UserModelAliases = userModelAliases, RepoModelAliases = repoModelAliases, RepoUserMcpIgnored = new HashSet<string>(repoUserMcpIgnored), RepoConfigPath = repoPath, RepoPath = repoCandidate };
     }
 
     // Model class -> alias -> "[backend:]model-id" (docs/PLAN.md A7); role.json's Permission
@@ -118,7 +122,27 @@ public sealed class Config
 
         RecordFlagOrigins(role.Name, overrides);
 
-        return new ResolvedRole(role.Name, role.SystemBody, backend, modelId, effort, new PermissionPolicy(level, deny), role.Blind, role.ReportSchema is { Length: > 0 }, role.Warnings, roleSettings?.UserMcp ?? false);
+        string[]? warnings = RepoUserMcpIgnored.Contains(role.Name)
+            ? [.. role.Warnings ?? [], $"{RepoConfigPath}: roles.{role.Name}.user_mcp ignored: your personal MCP servers are attached from the user config ({UserConfigPath}) only, never from a repo"]
+            : role.Warnings;
+
+        return new ResolvedRole(role.Name, role.SystemBody, backend, modelId, effort, new PermissionPolicy(level, deny), role.Blind, role.ReportSchema is { Length: > 0 }, warnings, roleSettings?.UserMcp ?? role.UserMcp);
+    }
+
+    // #127: `user_mcp` attaches the operator's personal connectors to a headless run, which a repo's file must not decide: a cloned
+    // repo could otherwise ship `user_mcp: true`. Only the user layer (and the role library's own default) is honoured.
+    private static ConfigDocument WithoutUserMcp(ConfigDocument document, out string[] ignored)
+    {
+        if (document.Roles is not { } roles)
+        {
+            ignored = [];
+            return document;
+        }
+
+        ignored = [.. roles.Where(entry => entry.Value.UserMcp is not null).Select(entry => entry.Key)];
+        return ignored.Length == 0
+            ? document
+            : document with { Roles = roles.ToDictionary(entry => entry.Key, entry => entry.Value with { UserMcp = null }) };
     }
 
     // Exposes the alias chase for callers that only have a bare model spec, not a role — the cast

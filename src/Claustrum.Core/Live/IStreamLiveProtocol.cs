@@ -4,8 +4,11 @@ namespace Claustrum.Core.Live;
 // closes a turn (null for every other line).
 public interface IStreamLiveProtocol : ILiveProtocol
 {
-    /// <summary>One line for the child's stdin, without the line break.</summary>
-    string EncodeUserMessage(string text);
+    /// <summary>One line for the child's stdin, without the line break. A <paramref name="uuid"/> is what <see cref="ReadReplay"/> names the message by.</summary>
+    string EncodeUserMessage(string text, string? uuid = null);
 
     LiveTurn? ReadTurnEnd(string stdoutLine);
+
+    /// <summary>The stdout line that says a message was taken (#127), null for any other line or for a backend that does not say.</summary>
+    LiveReplay? ReadReplay(string stdoutLine) => null;
 }

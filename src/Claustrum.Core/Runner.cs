@@ -24,6 +24,8 @@ namespace Claustrum.Core;
 // after the process ran").
 public sealed partial class Runner(IPlatform platform, BackendRegistry backends, ProcessRunner processRunner)
 {
+    private static readonly TimeSpan cancelledPostRunBudget = TimeSpan.FromSeconds(5);
+
     public async Task<RunResult> RunAsync(RunRequest request, ResolvedRole role, RunOptions options, CancellationToken cancellationToken) =>
         await RunCoreAsync(request, role, options, jobOverride: null, cancellationToken);
 
@@ -235,23 +237,28 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
             if (outcome.LastTurn is { } lastTurn && lastTurn.Stdout.Length != outcome.Stdout.Length)
                 parsed = parsed with { FinalMessage = backend.Parse(lastTurn.Stdout, lastTurn.Stderr, outcome.ExitCode).FinalMessage };
 
-            // Issue #125: post-run enrichment for backends that can fetch cost/usage after the
-            // process has finished (opencode session export). Runs before the result is built or
-            // charged, so the enriched numbers flow into both. Best-effort: it never changes the run's
-            // status (a throw becomes a warning), and a cancelled job skips it — it runs on
-            // CancellationToken.None and can take 30 s that nobody could interrupt.
+            // Issue #125: post-run enrichment for backends that can fetch cost/usage after the process has finished (opencode session
+            // export). Runs before the result is built or charged. Best-effort: it never changes the run's status (a throw becomes a warning).
+            // A cancelled job is enriched too (#127): a stream cut mid-turn has more step_start than step_finish and would be charged its cap.
+            // No backend process is running by now (killed, or between turns); the hook gets 5 s, and only a clean answer is taken.
             string[]? postWarnings = null;
-            if (backend is IPostRunHook postRun && parsed.SessionId is { Length: > 0 } && outcome.Termination != ProcessTermination.Cancelled)
+            bool cancelled = outcome.Termination == ProcessTermination.Cancelled;
+            if (backend is IPostRunHook postRun && parsed.SessionId is { Length: > 0 })
             {
+                using CancellationTokenSource? cancelledBudget = cancelled ? new(cancelledPostRunBudget) : null;
                 PostRunResult? enriched;
                 try
                 {
-                    enriched = await postRun.PostRunAsync(parsed, postRunContext with { Stdout = outcome.Stdout }, baseline, CancellationToken.None);
+                    enriched = await postRun.PostRunAsync(parsed, postRunContext with { Stdout = outcome.Stdout }, baseline, cancelledBudget?.Token ?? CancellationToken.None);
                 }
                 catch (Exception ex)
                 {
                     enriched = new PostRunResult(null, null, $"post-run cost lookup failed ({ex.GetType().Name}: {ex.Message}): cost is what the run's own output gave");
                 }
+
+                // A cancelled job keeps what its own output gave when the hook had to fall back: today's figures, and no new warning.
+                if (cancelled && enriched?.Warning is not null)
+                    enriched = null;
 
                 if (enriched is not null)
                 {

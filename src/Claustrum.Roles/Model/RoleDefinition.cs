@@ -4,6 +4,8 @@ namespace Claustrum.Roles.Model;
 /// Deserialized `roles/&lt;role&gt;/role.json` (docs/PLAN.md §B2), after any local-override deep merge.
 /// <paramref name="Primary"/> marks a role meant to be picked as the main agent and orchestrate others
 /// (the architect); only opencode's `mode` reads it today (#85, NOTES.md "A primary role").
+/// <paramref name="UserMcp"/> is the role's default for keeping the operator's user-level MCP servers on claude
+/// (the browser roles need theirs); `roles.&lt;role&gt;.user_mcp` in the user config overrides it (#127, NOTES.md "A claude role gets the repo's MCP servers, not the operator's").
 /// </summary>
 public sealed record RoleDefinition(
     string Name,
@@ -19,7 +21,8 @@ public sealed record RoleDefinition(
     string[] NonNegotiable,
     string[]? Tools = null,
     string[]? WithoutTools = null,
-    bool Primary = false)
+    bool Primary = false,
+    bool UserMcp = false)
 {
     /// <summary>
     /// Tool names this role needs on top of what `permission` grants — the browser MCP servers, or

@@ -288,7 +288,7 @@ questions in the report.* A role that stops that way is answered with `jobs answ
 `--no-live` turns the channel off: the run is exactly what it was before it existed. Blind roles (`code-reviewer`,
 `ui-reviewer`) can only tell, not ask: a human answer could carry the rationale the blind gate withholds, so their doubts
 go into their findings. Live needs a backend that holds a conversation: claude and opencode. On claude a message sent while the role works
-reaches it at its next tool-result boundary; opencode runs one process per turn and resumes its session, so a message sent mid-turn waits for
+reaches it at its next tool-result boundary, or starts its next turn, and a question that ends a turn the human's message has not yet reached is not left open; opencode runs one process per turn and resumes its session, so a message sent mid-turn waits for
 the turn's end and goes out as the next turn, and the 85% timeout warning reaches the role only between turns (a role that works one long
 turn never gets it: tell it its deadline in the brief). For any other backend (copilot, cursor, api) the flags are accepted and change nothing;
 those roles use the fallback of *When nobody can answer live*.
@@ -577,7 +577,7 @@ Layers, later wins per key, `deny` lists concatenate:
 `sync` reads the same layers (§12): `models` aliases, and `roles.<name>.model|effort|deny`, decide the synced
 agent files. `sync --global` reads only the user file, never the repo's `claustrum.json`.
 
-`roles.<name>.user_mcp` (`true`/`false`, default `false`) keeps a claude role's user-level MCP servers (§13).
+`roles.<name>.user_mcp` (`true`/`false`) keeps a claude role's user-level MCP servers (§13). It is read from the user config only: in a repo's `claustrum.json` it is ignored, with a warning on the receipt that names the file.
 
 `backends.<name>` takes `path` only. There was an `injection` key once; nothing ever read it and it was
 removed (#56), so a config that still carries it loads, the key ignored like any other unknown one — `claude`
@@ -1029,11 +1029,15 @@ end, call `coordinate` and relay `job_status`.
 | `api` | `curl` | `OPENROUTER_API_KEY` / `ANTHROPIC_API_KEY` by model prefix | system message (with `AGENTS.md`/`CLAUDE.md` inlined, §4); **no tools**, `changed_files` always empty | yes |
 
 **MCP servers on `claude`.** A claude role runs with `--strict-mcp-config`: it gets the servers of the working
-directory's own `.mcp.json` (what `sync` writes: `claustrum` and any browser server) and nothing from your user
-config, so your personal connectors are not attached to headless runs and do not cost tokens on every turn. A
-`.mcp.json` that is a link leaving the directory, a pipe or device, or not valid JSON is refused with a warning on the
-receipt, and the run then has no MCP servers. To keep your user-level servers for a role, set
-`"roles": { "<role>": { "user_mcp": true } }` in `claustrum.json` or the user config. The servers a run was given are
+directory's own `.mcp.json` (what `sync` writes there is the `claustrum` server only; any other server is yours) and
+nothing from your user config, so your personal connectors are not attached to headless runs and do not cost tokens on
+every turn. A `.mcp.json` that is a link leaving the directory, a pipe or device, or not valid JSON is refused with a
+warning on the receipt, and the run then has no MCP servers. To keep your user-level servers for a role, set
+`"roles": { "<role>": { "user_mcp": true } }` in your **user** config; a repo's `claustrum.json` (and a repo's
+`.claustrum/roles/<role>/role.json` `userMcp`) cannot attach your personal connectors and is ignored with a warning.
+The `ui-reviewer` and `demo-author` ship with `user_mcp` on, because their browser servers (`mcp__Claude_Browser`,
+`mcp__claude-in-chrome`) come from your user or built-in config, not from `.mcp.json`; set it to `false` for a role
+in the user config to take that back (the role then has no browser). The servers a run was given are
 in the job's `backend.json` (`mcp_servers`; `["user"]` when opted in). `opencode` has no way to leave its global
 config out of a run, so its roles still see those servers.
 

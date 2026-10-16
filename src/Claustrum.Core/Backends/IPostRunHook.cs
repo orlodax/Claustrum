@@ -5,9 +5,10 @@ namespace Claustrum.Core.Backends;
 
 /// <summary>
 /// Optional run enrichment: a backend that can fetch cost/usage from outside its own stream (e.g. a
-/// session export command) implements this. Runner calls <see cref="PreRunAsync"/> before the process
-/// starts and <see cref="PostRunAsync"/> after Parse and before ChargeAsync, skipping the latter when
-/// the job was cancelled. Neither may change the run's status: Runner catches whatever they throw.
+/// session export command, or the receipts of an earlier run of the session) implements this. Runner calls
+/// <see cref="PreRunAsync"/> before the process starts and <see cref="PostRunAsync"/> after Parse and before ChargeAsync;
+/// for a cancelled job the latter gets 5 s and a result that carries a warning is discarded (#127). Neither may change
+/// the run's status: Runner catches whatever they throw.
 /// </summary>
 public interface IPostRunHook
 {
