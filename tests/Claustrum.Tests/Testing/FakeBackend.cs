@@ -9,9 +9,12 @@ namespace Claustrum.Tests.Testing;
 // ScriptedBackend already uses for Runner, unreachable here since Claustrum.Tests has no reference to
 // Claustrum.Core.Tests (HomeRedirectPlatform.cs's own doc comment). `command`/`args`/`parseResult` are
 // null exactly when a caller (CastQuestionnaireTests) never reaches Build/Parse at all.
-public sealed class FakeBackend(string name, bool found, string? command = null, string[]? args = null, ParsedOutput? parseResult = null) : IBackend
+public sealed class FakeBackend(string name, bool found, string? command = null, string[]? args = null, ParsedOutput? parseResult = null, string? harness = null) : IBackend
 {
     public string Name => name;
+
+    /// <summary>The harness the role is judged and rendered for (#130): the backend's own name unless a test stands in for an ACP backend.</summary>
+    public string Harness => harness ?? name;
 
     /// <summary>The ResolvedRun the last Build call received — DoctorProbeTests asserts on the brief/budget it carries.</summary>
     public ResolvedRun? LastRun { get; private set; }

@@ -1,0 +1,4 @@
+{"jsonrpc":"2.0","id":"init-1","method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{"fs":{"readTextFile":false,"writeTextFile":false},"terminal":false},"clientInfo":{"name":"claustrum-measure","version":"0"}}}
+{"jsonrpc":"2.0","id":"load-2","method":"session/load","params":{"sessionId":"ses_ebac264f9ffeynEyOP134zTxuD","cwd":"/tmp/claude-1000/-home-orlodax-repos-Claustrum/95abf445-ce92-49a4-b6b9-0cfde217b268/scratchpad/measure/work","mcpServers":[]}}
+{"jsonrpc":"2.0","id":"config-3","method":"session/set_config_option","params":{"sessionId":"ses_ebac264f9ffeynEyOP134zTxuD","configId":"model","value":"openrouter/deepseek/deepseek-v4-flash"}}
+{"jsonrpc":"2.0","id":"prompt-10","method":"session/prompt","params":{"sessionId":"ses_ebac264f9ffeynEyOP134zTxuD","prompt":[{"type":"text","text":"Reply with exactly the single word PLUM and nothing else."}]}}

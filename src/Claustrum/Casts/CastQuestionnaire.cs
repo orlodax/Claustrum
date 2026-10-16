@@ -43,9 +43,11 @@ public static class CastQuestionnaire
 
         // A role is offered only the aliases that land on a harness its role.json lists (#43): the
         // demo-author and ui-reviewer are claude-only, and `run` refuses them anywhere else. Free-form
-        // answers stay open, so the prompt says where the role runs.
+        // answers stay open, so the prompt says where the role runs. An ACP backend plays its harness's
+        // roles (#130), as CastHarnessCheck judges it; an unregistered name stands for itself.
+        string HarnessOfModel(string model) => backends.TryGet(backendOf[model], out IBackend? backend) ? backend.Harness : backendOf[model];
         string[] HarnessesOf(string role) => roleLibrary.LoadRole(role, cwd).Definition.Harnesses;
-        string[] OptionsFor(string[] harnesses) => [.. modelOptions.Where(model => harnesses.Contains(backendOf[model], StringComparer.Ordinal))];
+        string[] OptionsFor(string[] harnesses) => [.. modelOptions.Where(model => harnesses.Contains(HarnessOfModel(model), StringComparer.Ordinal))];
 
         List<CastQuestion> questions = [];
         HashSet<string> keys = [];

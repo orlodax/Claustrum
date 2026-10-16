@@ -127,6 +127,11 @@ never overwritten.
 | `cursor`   | role prefixed to the prompt, fed on stdin         | `--mode plan` for read-only rungs, else `-f`; deny by prompt rule |
 | `copilot`  | per-job agent file                                | `--allow-all-tools --deny-tool "shell(git push)"`      |
 | `api`      | system message; no tools                          | reasoning-only roles                                   |
+| `acp-opencode` | opt-in: the same `OPENCODE_CONFIG_CONTENT` agent, driven over the Agent Client Protocol (`opencode acp`) | same as `opencode` |
+
+ACP backends are opt-in (`--backend acp-opencode`, or a model alias `acp-opencode:<model>`); the
+native backends stay the defaults, and a new ACP harness is one `IAcpHarness` row plus one recorded
+transcript.
 
 Adding a backend is one class implementing `IBackend` (detect, build argv, parse output) and one
 registry line. Claustrum launches backends on the OS it runs on — the Windows binary talks to

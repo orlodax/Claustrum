@@ -1,0 +1,5 @@
+{"jsonrpc":"2.0","id":"init-1","method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{"fs":{"readTextFile":false,"writeTextFile":false},"terminal":false},"clientInfo":{"name":"claustrum","version":"0.2.0"}}}
+{"jsonrpc":"2.0","id":"new-2","method":"session/new","params":{"cwd":"/tmp/claude-1000/-home-orlodax-repos-Claustrum/95abf445-ce92-49a4-b6b9-0cfde217b268/scratchpad/smoke-a","mcpServers":[]}}
+{"jsonrpc":"2.0","id":"config-3","method":"session/set_config_option","params":{"sessionId":"ses_eba6623ccffeLFV79J29JwzcYX","configId":"model","value":"opencode/deepseek-v4.1-flash-free"}}
+{"jsonrpc":"2.0","id":"config-4","method":"session/set_config_option","params":{"sessionId":"ses_eba6623ccffeLFV79J29JwzcYX","configId":"mode","value":"claustrum-builder"}}
+{"jsonrpc":"2.0","id":"prompt-5","method":"session/prompt","params":{"sessionId":"ses_eba6623ccffeLFV79J29JwzcYX","prompt":[{"type":"text","text":"create hello.txt containing hi\n\n---\nFinish your reply with the mandatory \u0060\u0060\u0060claustrum-report fenced JSON block from your system prompt; a reply without it is rejected."}]}}

@@ -7,6 +7,12 @@ public interface IBackend
 {
     string Name { get; }
 
+    /// <summary>
+    /// The harness family the role is rendered for, and the name role.json <c>harnesses</c> lists (#130): an ACP backend returns its
+    /// harness's (<c>acp-opencode</c> → <c>opencode</c>), every other backend its own name.
+    /// </summary>
+    string Harness => Name;
+
     Task<Doctor> DetectAsync(BackendConfig? config, CancellationToken cancellationToken);
 
     ProcessSpec Build(ResolvedRun run);

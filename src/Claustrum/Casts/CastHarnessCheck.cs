@@ -20,11 +20,12 @@ public static class CastHarnessCheck
             return null;
 
         string backend = config.ResolveModelBackend(modelSpec);
-        if (!backends.TryGet(backend, out _))
+        if (!backends.TryGet(backend, out IBackend? chosen))
             return null;
 
+        // An ACP backend plays the roles of its harness (#130): `acp-opencode` is judged as `opencode`.
         string[] harnesses = library.LoadRole(role, cwd).Definition.Harnesses;
-        if (harnesses.Contains(backend, StringComparer.Ordinal))
+        if (harnesses.Contains(chosen.Harness, StringComparer.Ordinal))
             return null;
 
         string otherwise = fallback ? $", or '{CastBuilder.NoFallback}'" : role switch

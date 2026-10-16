@@ -194,15 +194,19 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
             return turnSpec;
         }
 
-        LiveSession? live = liveProtocol is null ? null : new LiveSession(job, liveProtocol, role.Blind, options.ReplyTimeoutSeconds, resumeTurn: liveProtocol is IResumeLiveProtocol ? ResumeTurn : null);
+        // An ACP backend (#130) holds one process for the whole run: its driver carries each next message to the agent instead, and is
+        // what ProcessRunner feeds, wrapping the live session when there is one.
+        Func<string, string, ProcessSpec>? resumeTurn = liveProtocol is not IResumeLiveProtocol ? null : backend is IDuplexBackend duplex ? duplex.CarryTurn : ResumeTurn;
+        LiveSession? live = liveProtocol is null ? null : new LiveSession(job, liveProtocol, role.Blind, options.ReplyTimeoutSeconds, resumeTurn: resumeTurn);
 
         // #124 stage 3b: the role's `claustrum-note:` lines. A live session owns its file's numbering, so it writes them (LiveSession.RecordNote).
         NoteRecorder notes = new(job, live: live);
+        IProcessLive? driver = backend is IDuplexBackend duplexBackend ? duplexBackend.CreateDriver(run, job, live) : live;
 
         ProcessOutcome outcome;
         try
         {
-            outcome = await processRunner.RunAsync(spec, runOptions.BackendConfig, job, runOptions.EnvPassthroughAll, notes.Tap(streamLine), request.Timeout, cancellationToken, live);
+            outcome = await processRunner.RunAsync(spec, runOptions.BackendConfig, job, runOptions.EnvPassthroughAll, notes.Tap(streamLine), request.Timeout, cancellationToken, driver);
         }
         catch (BackendNotFoundException ex)
         {

@@ -6735,3 +6735,208 @@ during the run: only `ClaudeBackend` passes a cap (`--max-budget-usd`). An ACP c
   replaced by ACP transcripts.
 - Not touched: `Backends/Claude/*`, `Backends/Api/*`, `Live/LiveSession.cs` and the job file contract,
   `ILiveProtocol`/`IStreamLiveProtocol`, `Claustrum.Roles/Sync`, the `BackendsCommands*AuthTests`.
+
+## ACP backend: cost on a paid model, measured before the parser was designed (2026-10-16, issue #130)
+
+The owner's decision on #130 asked for one more number before anything was built: on a **paid** model, is
+`usage_update.cost` per turn or a running total, and does it agree with `opencode session export`'s `info.cost`
+(what the native adapter's `IPostRunHook` reads)? Only $0 free models had been measured. Probe: a throwaway Python
+ACP client (`measure_cost.py`, scratchpad), scrubbed env plus `OPENROUTER_API_KEY` (opencode's stored login, as
+`EnvAllowList` forwards it), `opencode acp` 2.0.30, model `openrouter/deepseek/deepseek-v4-flash` (the owner's
+`cheap-coding` alias). `openrouter/deepseek/deepseek-chat` was tried first and refused by the account's OpenRouter
+guardrails and ZDR setting — that refusal arrives as a JSON-RPC **error on the prompt** (`-32603`,
+`data.errorName: "provider.invalid-request"`), not as a turn, which is a shape the parser now handles. Total spend
+for the whole measurement: **$0.00199**.
+
+**M** = measured here.
+
+| Step | `usage_update.cost.amount` | turn's own cost (delta) | `PromptResponse.usage` (this turn) |
+|---|---|---|---|
+| process 1, turn 1 ("PINEAPPLE") | 0.000788515 | 0.000788515 | in 8615, out 4, thought 21 |
+| process 1, turn 2 ("MANGO") | 0.0010218936 | 0.0002333786 | in 207, out 1, cachedRead 8448 |
+| process 1, turn 3 ("KIWI") | 0.0018094076 | 0.000787514 | in 8612, out 1 |
+| `session export` after process 1 | **0.0018094076** = the last `usage_update` | | export tokens: in 17966, out 11, reasoning 103, cache read 8448 |
+| process 2: `session/load` of the same session, turn 4 ("PLUM") | 0.0019851832 | 0.0001757756 | in 200, out 1, cachedRead 8448 |
+| `session export` after process 2 | **0.0019851832** = the last `usage_update` | | |
+
+- **Cost is the session's running total (M)**, exactly as the ACP schema says of `Cost.amount` ("cumulative session
+  cost"), and **it equals `session export` `info.cost` to the last digit (M)**, with the same opencode session id
+  (`session export <acpSessionId>` works, with or without `--standalone`). A run's own cost is therefore *last
+  `usage_update` − the total before the run*; a fresh session's baseline is $0, and a resumed one needs a baseline
+  the way the native adapter's `PreRunAsync` export gives one, because **no `usage_update` arrives during a
+  `session/load` replay (M)**.
+- **`PromptResponse.usage` is per turn (M)**: turn 2 reports 207 input + 8448 cached-read, not a total. A run's usage
+  is the sum over its own prompts, no baseline needed. The sum of the four turns' `inputTokens` (17 634) is not
+  the export's `input` (18 166): the export counts from opencode's own bookkeeping, so the two differ by a few hundred
+  tokens; cost does not differ at all.
+- **`session/load` (M)**: `agentCapabilities.loadSession: true`; the replay comes as `user_message_chunk` /
+  `agent_thought_chunk` / `agent_message_chunk` for every earlier turn, **before** the `session/load` response, then
+  `configOptions` in that response; the model must be set again after the load.
+- **String JSON-RPC ids round-trip (M)**: `"id":"prompt-10"` comes back verbatim. The client uses `<method>-<n>`
+  ids on purpose: the agent→client log (`stdout.log`) is then self-describing, and `Parse` can tell a `session/new`
+  response from a `session/load` one and a prompt's from a `set_config_option`'s without the client half.
+- **A wrong model fails at `set_config_option` (M)**, before any prompt: `-32602 "Invalid params: model not found:
+  <id>"`, `data: {providerId, modelId}`. Free of charge, and the run can stop right there.
+- **`opencode acp` exits 0 within 30–40 ms of stdin EOF (M)**: closing stdin after the last `PromptResponse` is a
+  clean end, no kill needed.
+- Config options a session offers (M): `model`, `effort`, `mode`; `set_config_option` answers with the whole
+  `configOptions` list.
+
+⇒ **Design consequence.** The parser takes cost from the last `usage_update` as a running total and usage as the sum of
+the run's `PromptResponse.usage`; the per-harness table says so in two named fields, so a harness that reports per-turn
+cost (none measured) is a table change, not a parser change. For `acp-opencode`, a resumed run's baseline is the same
+`session export` the native backend uses.
+
+### The ACP backend as built (2026-10-16)
+
+`acp-opencode` is the first row of a generic ACP client. Opt-in only: `--backend acp-opencode` or an alias
+`acp-opencode:<model>`; the native `opencode` backend is untouched and stays the default.
+
+**Where it lives.** `Core/Backends/Acp/`:
+- `AcpBackend` (the `IBackend`, `IDuplexBackend` and `IPostRunHook`);
+- `IAcpHarness` (the table row) and `OpencodeAcpHarness` (its first row);
+- `AcpSession` (the driver);
+- `AcpTranscript` (the one reader of the agent's half);
+- `AcpFrame`/`AcpRequestId`, `AcpWriter` (every outgoing frame), `AcpPermission`, `AcpJson`;
+- `AcpLiveProtocol`, `AcpStreamFormatter`.
+
+Outgoing frames are `Utf8JsonWriter`, incoming ones `JsonDocument`, as for every other backend's wire format, so no
+`JsonSerializerContext` was added and the AOT gate needed nothing. `OpencodeSessionExport` was moved out of
+`OpencodeBackend` unchanged, so both backends read `session export` the same way. `OpencodeBackend.BuildConfigContent`
+is now internal and writes the ACP run's agent too.
+
+**The seam: `IDuplexBackend`.** `IBackend` is batch: `Build`, then `ProcessRunner` waits for the exit, then `Parse`.
+ACP needs a driver for **every** run, live or not, because the brief itself goes over stdin as a JSON-RPC request.
+- `Runner` asks a duplex backend for the driver (`CreateDriver(run, job, live)`) and hands that to `ProcessRunner` in
+  place of the `LiveSession`.
+- `ProcessRunner`, `LiveSession` and the live interfaces are unchanged. The driver is a non-per-turn `IProcessLive`,
+  so the runner hands it stdin and every stdout line, the way it does for claude's stream session.
+- `Build` launches `opencode acp` with the agent in `OPENCODE_CONFIG_CONTENT` and no `StdinText`.
+
+**Why the driver wraps `LiveSession` in its per-turn shape.** A live ACP run keeps one process, but its turns follow
+`IResumeLiveProtocol`'s rules, not the stream shape's.
+- A message sent mid-turn must wait for the turn to end: opencode refuses a second `session/prompt` with -32603
+  ("Session already has an active ACP prompt"). That is the per-turn rule: `queuedHuman`, the notices, and the
+  85 % timeout warning at `TakeQueued`, exactly as on the native opencode backend.
+- The stream shape's question detection leans on claude's replay echoes (`--replay-user-messages`, #127), and ACP
+  has none.
+- So `AcpLiveProtocol` is an `IResumeLiveProtocol`. After each answered prompt, `AcpSession` calls
+  `live.TurnEnded(0|1, text, error)`, then `live.NextTurnAsync`, and sends what comes back as the next `session/prompt`.
+- The "process" `NextTurnAsync` returns is a **carrier**: a `ProcessSpec` that is never launched, its `StdinText` the
+  message (`AcpLiveProtocol.Carry`/`Message`; Runner's `resumeTurn` is `IDuplexBackend.CarryTurn` for these backends).
+- `LiveSession` only needs a non-null session id to ask for a next turn, so `ReadTurn` names the placeholder `"acp"`.
+  The real session belongs to `AcpSession`.
+
+**String request ids.** The client numbers every request `<tag>-<n>`: `init-1`, then `new-2` or `load-2`, then
+`config-3…`, then `prompt-N`. They come back verbatim, so `stdout.log` alone says which response answers what, and
+`Parse` needs no client half. `AcpFrame.Answers` falls back to the result's shape (`stopReason`, `sessionId`) for an
+agent that does not hand ids back as sent. A `session/load` answer and a `set_config_option` answer look alike, so
+those two are read by tag only. The client's own half is `acp-client.jsonl` in the job directory: the frames written
+to stdin, in order.
+
+**What ends a run.**
+- Batch: stdin closes after the prompt's answer, and opencode exits 0 within 30–40 ms (measured). `ReportDelivered`
+  is set at that answer, so a kill after it is housekeeping.
+- Any error answering the handshake (`initialize`, `session/new`/`load`, a config option) closes stdin at once. A
+  model opencode does not know therefore fails at `set_config_option` in about a second. That is `model_not_found`
+  at $0 and `before_any_work`, so a cast's fallback can take over.
+- A kill (timeout, cancel) is `ProcessRunner`'s: it kills the tree, then cancels the driver's token.
+- A harness that does not exit on stdin EOF would hold a batch run until its timeout: nothing kills it after the
+  close. opencode exits in 30–40 ms (measured); a kill after EOF would be a `ProcessRunner` change.
+
+**What a run is charged (2026-10-16, after the blind review).** The stream's running total moves once per turn,
+just before the prompt's answer: `opencode-report.jsonl`, one turn of six tool calls, has a single `usage_update`
+(line 88) among its 84 updates. So a run killed or timed out in turn 2 still shows turn 1's total, and a run refused
+at the prompt (-32603) or killed in its first turn shows none. The first build charged that figure as is: a floor
+under-charges the ledger, the same defect as an incomplete step sum in `OpencodeBackend.Parse`. This replaces the
+measured section's design consequence above.
+- `AcpTranscript.Settled`: a prompt was answered, that turn brought a `usage_update` total (`LastTurnPriced`: a
+  turn that failed part-way, a -32603 after some steps, may bring none, and the figure is then an earlier turn's),
+  no turn update of the run's session (`agent_message_chunk`, `agent_thought_chunk`, `tool_call`,
+  `tool_call_update`, `usage_update`, `plan`) came after the last answer, and no `session/load` happened. `Parse`
+  gives the running total only then, else null. A handshake refusal stays $0.
+- The hook runs `session export` after **every** run with a session id, fresh or resumed, as the native backend
+  does. The run's cost is the export's `info.cost`, less the pre-run export on a resumed session. A handshake
+  refusal reads nothing: nothing was prompted.
+- When the export fails, a settled stream's figure stands with the warning `session total unavailable (…): cost is
+  the stream's last usage_update`. Otherwise the cost stays null and the tree charges the cap (`… cost unknown,
+  charged the cap`). A resumed session whose pre-run total could not be read is the cap too, since `Parse` gives
+  null for a loaded session. A total that went down between the two reads is the cap.
+- A cancelled job gets 5 s for the export and drops a result that carries a warning (#127). There, when the export
+  fails, `Parse`'s figure is what is charged: the settled total, or the cap.
+- Not covered: a live run killed after its next prompt was sent but before the agent's first update for it reads
+  as settled, because only the client's half (`acp-client.jsonl`) shows that prompt. The export prices it right;
+  only when the export fails too is the floor charged.
+- `jobs follow` (`AcpStreamFormatter`) prints the stream's running total as it arrives. On a resumed session that
+  is the session's lifetime total, not this run's: the formatter has no baseline.
+- Usage is never re-read: each `PromptResponse.usage` is that turn's own, so a run's usage is the sum of its
+  answered turns, and a turn cut off adds none.
+
+**Final message and tool calls.** A turn cut off with text (a timeout, a kill) gives the final message: its last
+words, not the turn before's. A turn that carried the report still wins over a chosen text that has none.
+`ToolCallsCompleted`, #126's "before any work", counts for a one-turn run only every tool call whose last status is
+not `failed`, a call given no status included (ACP's default is `pending`): as on the native backend, a shape not
+seen errs towards no retry.
+
+**A `#<variant>` model id (#35).** opencode's ACP `model` option refuses `id#variant` with -32602, which would read
+as `model_not_found` and start a cast's fallback, while `opencode run --model id#variant` accepts it. ACP exposes
+the variant as the `effort` option, whose values follow the model (`low`/`high`/`max`/`default` once
+`opencode/deepseek-v4.1-flash-free` is set, measured 2026-10-16). So `OpencodeAcpHarness.Prepare` splits the id at
+the first `#` and sets `model`, then `effort`, then `mode`. An invalid variant fails at `set_config_option effort`,
+loudly, as a -32602 that is not `model_not_found`: only an error that carries `data.modelId` is. Measured the same
+day on the free model: `#bogus` is refused with `-32602 "Invalid params: effort not found: bogus"`, `data: {effort}`,
+a `failed` receipt with `error_kind: other` at $0; `#high` runs.
+
+**How a harness is added.** One `IAcpHarness`: name, exe, args, version args, `CostIsRunningTotal`,
+`LoadsSessions`, `Prepare` (env plus the config options to set, in order) and `SessionTotalAsync` (the session's
+total outside the stream, which prices every run and gives a resumed run's baseline; null when the harness has none,
+and then only a settled stream's figure is charged, with a warning). Then one
+`new AcpBackend(platform, new XAcpHarness(platform))` line in `BackendRegistry` and one recorded transcript.
+`IBackend.Harness` makes the role render for the harness's own name: role.json `harnesses`, the cast check, the cast
+questionnaire's offered aliases and `doctor`'s auth line all read it. `run`'s role.json check looks the resolved
+backend up and judges its harness, so a refusal names both (`'acp-opencode' (harness 'opencode')`).
+
+**Not done, on purpose.**
+- No `elicitation.form`: below `full` the agent config denies opencode's question tool, and without the capability
+  opencode falls back to a text question (measured). A question is a report-less turn.
+- No `terminal/*` or `fs/*`: they are not advertised, and the measured harnesses never use them. A request for any
+  method but `session/request_permission` gets -32601.
+- No `session/cancel`: the kill is the cancel.
+- Child-session updates are ignored. Updates naming another session than the run's are not read, so a subagent's
+  text is not the role's reply.
+- `request_permission` is answered allow-once unless a deny pattern names the command. A denied call with no
+  reject option gets the `cancelled` outcome, never the first option. Deny matching splits the command on
+  `&&` `||` `;` `|` `&` and newlines, and nothing finer.
+- `claustrum-note:` lines are not recorded as they are printed: `NoteRecorder` reads whole events, and ACP streams
+  the reply in chunks. A live run's turn text, notes included, lands in `conversation.jsonl` when the turn ends
+  (`LiveSession.EndTurn`); a batch run's notes are only in its final message.
+- No doctor advisory: only cursor's doctor entry carries one (a test holds that), and the README and the manual
+  already say the backend is opt-in.
+
+**Traps met while building it (measured 2026-10-16, opencode 2.0.30).**
+- **A `session/load` replay carries tool calls too.** It sends `tool_call` and `tool_call_update` frames, not only
+  `user_message_chunk`/`agent_thought_chunk`/`agent_message_chunk`; the earlier measurement had no tools in its
+  history. The transcript drops everything said before the handshake's answers, tool statuses included, or a resumed
+  run would count the history's tool calls as its own. The stream formatter prints nothing before the session is open.
+- **Each tool call's `name` arrives once.** `name` (`shell`, `write`) comes on the first `tool_call` only; later
+  `tool_call_update`s carry `kind` (`execute`). Read naively, every label became `EXECU`.
+- **A turn can say several messages.** One comes before a tool call and one after, each with its own `messageId`.
+  Glued together they read "I'll match it.Created …", so the transcript puts a blank line between messages.
+
+**Control on the built binary (2026-10-16, after the gate; the AOT publish of this branch, opencode 2.0.30, $0).**
+Role `builder`, brief "Create hello.txt containing exactly "hi", then run `git push origin HEAD`. Do not commit anything.",
+model `opencode/deepseek-v4.1-flash-free`, `--no-live --json`, a fresh repo whose `origin` is a local bare repo.
+
+| | native `opencode` (job 20261016-203405-05d5c8fe) | `acp-opencode` (job 20261016-203454-302bbf94) |
+|---|---|---|
+| status / report | `success`, `report_status: ok`, report `partial` | `success`, `report_status: ok`, report `blocked` |
+| changed files / push | `hello.txt` added, `hi`; origin still has 0 refs | same |
+| deny | opencode's config: "Permission denied: shell" on each push attempt | same words, from the same config; **zero** `request_permission` reached the client |
+| usage / cost | in 10 567, out 1 619, cache read 76 288; $0 | in 12 654, out 1 606, cache read 77 056; $0 (export answered, no warning) |
+| time | 49.5 s | 33.5 s |
+
+The two report statuses are the role's own words for the same refused push. The ACP transcript shows the frames in the
+order the design says: `init-1`, `new-2`, `config-3` (model), `config-4` (mode `claustrum-builder`), `prompt-5`,
+`end_turn`. A third run with `…-free#high` (job 20261016-203605-19de3355) settles the one question the confirm pass
+left open: after `config-5` (mode) the answer still reports `effort: high`, so setting `mode` last does not reset the
+variant.

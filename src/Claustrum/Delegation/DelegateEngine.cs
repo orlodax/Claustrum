@@ -62,9 +62,10 @@ public static class DelegateEngine
         }
 
         string tierModelClass = AppServices.RoleRenderer.TierModelClass(request.Role, request.Tier, request.Cwd);
-        string harness = config.ResolveBackend(request.Role, tierModelClass, request.Overrides);
-        RequireSupportedHarness(request.Role, harness, request.Cwd);
+        string backendName = config.ResolveBackend(request.Role, tierModelClass, request.Overrides);
+        RequireSupportedHarness(request.Role, backendName, request.Cwd);
 
+        string harness = HarnessOf(backendName);
         RenderedRole rendered = AppServices.RoleRenderer.Render(request.Role, request.Tier, harness, request.Cwd);
 
         // Call-site data appended after the renderer, never a template token: `coordinate` puts the
@@ -137,7 +138,7 @@ public static class DelegateEngine
         try
         {
             string tierModelClass = AppServices.RoleRenderer.TierModelClass(request.Role, request.Tier, request.Cwd);
-            string harness = config.ResolveBackend(request.Role, tierModelClass, request.Overrides);
+            string harness = HarnessOf(config.ResolveBackend(request.Role, tierModelClass, request.Overrides));
             ResolvedRole today = config.Resolve(AppServices.RoleRenderer.Render(request.Role, request.Tier, harness, request.Cwd), request.Overrides);
             string now = Describe(today.Backend, today.Model, pin.Permission is null ? null : PermissionLevelParser.ToConfigString(today.Permission.Level));
             return now == was ? null : $"job {request.ParentJobId} ran as {was}; today's configuration would run it as {now} — the continuation stays on {was}, the one its session belongs to";
@@ -582,23 +583,28 @@ public static class DelegateEngine
         }
     }
 
+    // An ACP backend renders the role for its harness (`opencode`), the name role.json `harnesses` lists (#130); an unknown name is its own.
+    private static string HarnessOf(string backend) => AppServices.Backends.TryGet(backend, out IBackend? chosen) ? chosen.Harness : backend;
+
     // role.json `harnesses` is where a role is written to run (#43): anywhere else it fails to render
     // (demo-author's and ui-reviewer's browser part is claude-only) or runs without the tools it needs,
     // so it is refused here, before Render and before any job exists. Only a backend Claustrum knows is
-    // checked: an unknown name is left to Render (a claude-only part fails there) or to Runner's
-    // backend_missing, as before. Cast entries arrive as overrides, so the message cannot tell a flag
-    // from the cast and names every source.
-    private static void RequireSupportedHarness(string role, string harness, string cwd)
+    // checked, by its harness (`acp-opencode` plays opencode's roles, #130): an unknown name is left to Render
+    // (a claude-only part fails there) or to Runner's backend_missing, as before. Cast entries arrive as
+    // overrides, so the message cannot tell a flag from the cast and names every source.
+    private static void RequireSupportedHarness(string role, string backendName, string cwd)
     {
-        if (!AppServices.Backends.TryGet(harness, out _))
+        if (!AppServices.Backends.TryGet(backendName, out IBackend? backend))
             return;
 
+        string harness = backend.Harness;
         string[] supported = AppServices.RoleLibrary.LoadRole(role, cwd).Definition.Harnesses;
         if (!supported.Contains(harness, StringComparer.Ordinal))
         {
+            string resolved = harness == backendName ? $"'{harness}'" : $"'{backendName}' (harness '{harness}')";
             throw new RoleRenderException(
                 $"role '{role}' runs on {string.Join(", ", supported)} only (its role.json `harnesses`), but this run resolved it to "
-                + $"'{harness}' through --backend/--model, the cast or claustrum.json — point it at one of those there; or, if this "
+                + $"{resolved} through --backend/--model, the cast or claustrum.json — point it at one of those there; or, if this "
                 + $"repo ships the role's parts for '{harness}', add it to `harnesses` in .claustrum/roles/{role}/role.json");
         }
     }

@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Claustrum.Core;
 using Claustrum.Core.Backends;
+using Claustrum.Core.Backends.Acp;
 using Claustrum.Core.Backends.Claude;
 using Claustrum.Core.Backends.Opencode;
 using Claustrum.Core.Config;
@@ -60,13 +61,36 @@ public sealed class LiveJobHarness : IDisposable
         Job = JobDirectory.Create(platform);
     }
 
+    private LiveJobHarness(FakeAcpTurn[] turns, decimal startingCostUsd, int lingerAfterEofSeconds)
+    {
+        FakeAcpAgent.RequirePosixShell();
+        Directory.CreateDirectory(Cwd);
+        platform = new HomeRedirectPlatform(Path.Combine(root, "home"));
+        InputLog = Path.Combine(root, "input.log");
+        ArgvLog = Path.Combine(root, "argv.log");
+        Directory.CreateDirectory(Path.Combine(root, "acp"));
+        acp = new FakeAcpAgent(Path.Combine(root, "acp"), turns, startingCostUsd, lingerAfterEofSeconds);
+        backend = new BackendConfig(acp.ScriptPath);
+        backendName = "acp-opencode";
+        model = "opencode/fake";
+        runner = new Runner(platform, new BackendRegistry([new AcpBackend(platform, new OpencodeAcpHarness(platform))]), new ProcessRunner(platform));
+        Job = JobDirectory.Create(platform);
+    }
+
     /// <summary>A live job on a fake opencode (#124 stage 3a): one process per turn, the session resumed.</summary>
     public static LiveJobHarness ForOpencode(FakeOpencodeTurn[] turns, decimal startingCostUsd = 0m) => new(turns, startingCostUsd);
 
+    /// <summary>A job on a fake `opencode acp` (#130): one process holds the whole session, each turn a `session/prompt`.</summary>
+    public static LiveJobHarness ForAcp(FakeAcpTurn[] turns, decimal startingCostUsd = 0m, int lingerAfterEofSeconds = 0) => new(turns, startingCostUsd, lingerAfterEofSeconds);
+
     private readonly FakeOpencode? opencode;
+    private readonly FakeAcpAgent? acp;
 
     /// <summary>The fake opencode behind a <see cref="ForOpencode"/> harness.</summary>
     public FakeOpencode Opencode => opencode ?? throw new InvalidOperationException("this harness runs the fake claude");
+
+    /// <summary>The fake `opencode acp` behind a <see cref="ForAcp"/> harness.</summary>
+    public FakeAcpAgent Acp => acp ?? throw new InvalidOperationException("this harness does not run the fake ACP agent");
 
     public JobPaths Job { get; }
 
@@ -87,11 +111,14 @@ public sealed class LiveJobHarness : IDisposable
         int replyTimeoutSeconds = 60,
         TimeSpan? timeout = null,
         CancellationToken? cancel = null,
-        string? resumeSession = null)
+        string? resumeSession = null,
+        string[]? deny = null,
+        string? modelId = null,
+        string brief = "do it")
     {
-        ResolvedRole role = new("builder", "system prompt", backendName, model, "high", new PermissionPolicy(PermissionLevel.EditShell, []), blind, hasReport);
+        ResolvedRole role = new("builder", "system prompt", backendName, modelId ?? model, "high", new PermissionPolicy(PermissionLevel.EditShell, deny ?? []), blind, hasReport);
         RunRequest request = new(
-            Role: "builder", Brief: "do it", BriefFile: null, Cwd: Cwd, Backend: null, Model: null, Effort: null,
+            Role: "builder", Brief: brief, BriefFile: null, Cwd: Cwd, Backend: null, Model: null, Effort: null,
             Permission: null, BudgetUsd: null, Timeout: timeout, ResumeSession: resumeSession, AttachFiles: [], Env: [], Stream: false);
         RunOptions options = new(DiffByteCapBytes: 200_000, BackendConfig: backend, Live: live, ReplyTimeoutSeconds: replyTimeoutSeconds);
         return Task.Run(() => runner.RunAsync(request, role, options, Job, cancel ?? TestContext.Current.CancellationToken), CancellationToken.None);
