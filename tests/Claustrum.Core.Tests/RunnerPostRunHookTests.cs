@@ -158,17 +158,53 @@ public sealed class RunnerPostRunHookTests : IDisposable
         Assert.Equal(cwd, backend.PostRunContext.Spec.Cwd);
     }
 
-    // A cancelled job runs the hook on CancellationToken.None, where an export could take 30 s nobody could interrupt.
+    // #127 finding 3: a cancelled job is enriched too (a stream cut mid-turn has no cost and would be charged its cap), on a 5 s token, not on
+    // CancellationToken.None. Before that change a cancelled job was never asked; the old case also passed for the wrong reason (no session id).
+    private static ScriptedBackend CancelledSession() =>
+        ScriptedBackend.Shell("sleep 30", "ping -n 31 127.0.0.1 > nul", new ParsedOutput("cut", "ses_1", null, null, [], null, false));
+
     [Fact]
-    public async Task ACancelledJobIsNotAskedForItsPostRunAsync()
+    public async Task ACancelledJobWithASessionIsAskedForItsPostRunAndChargedTheCleanAnswerAsync()
     {
-        HookedBackend backend = new(ScriptedBackend.Sleep(30), postRun: (_, _, _) => new PostRunResult(9m, null, "must not appear"));
+        HookedBackend backend = new(CancelledSession(), postRun: (_, _, _) => new PostRunResult(0.42m, null, null));
+
         RunResult result = await RunAsync(backend, cancelAfter: TimeSpan.FromMilliseconds(700));
 
         Assert.Equal(RunStatus.Cancelled, result.Status);
-        Assert.Equal(0, backend.PostRunCalls);
-        Assert.NotEqual(9m, result.CostUsd);
-        Assert.DoesNotContain("must not appear", result.Warnings);
+        Assert.Equal(1, backend.PostRunCalls);
+        Assert.Equal(0.42m, result.CostUsd);
+    }
+
+    // The hook says "I fell back" with a warning; a cancelled job keeps what its own output gave and gets no new warning.
+    [Fact]
+    public async Task ACancelledJobDiscardsAHookAnswerThatCarriesAWarningAsync()
+    {
+        HookedBackend backend = new(CancelledSession(), postRun: (_, _, _) => new PostRunResult(9m, null, "export failed: fell back"));
+
+        RunResult result = await RunAsync(backend, cancelAfter: TimeSpan.FromMilliseconds(700));
+
+        Assert.Equal(RunStatus.Cancelled, result.Status);
+        Assert.Equal(1, backend.PostRunCalls);
+        Assert.Null(result.CostUsd);
+        Assert.DoesNotContain(result.Warnings, warning => warning.Contains("export failed", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task ACancelledJobsPostRunTokenIsBoundedAtAboutFiveSecondsAsync()
+    {
+        TimeSpan? waited = null;
+        HookedBackend backend = new(CancelledSession(), postRun: (_, _, _) => null, asyncPostRun: async (_, _, _, token) =>
+        {
+            System.Diagnostics.Stopwatch clock = System.Diagnostics.Stopwatch.StartNew();
+            await Task.Delay(TimeSpan.FromMinutes(1), token).ContinueWith(_ => { }, TaskScheduler.Default);
+            waited = clock.Elapsed;
+            return null;
+        });
+
+        RunResult result = await RunAsync(backend, cancelAfter: TimeSpan.FromMilliseconds(700));
+
+        Assert.Equal(RunStatus.Cancelled, result.Status);
+        Assert.InRange(waited?.TotalSeconds ?? -1, 4.0, 12.0);
     }
 
     // The baseline export swallows its own cancellation, so Runner has to look again before it starts the process (review of #127).

@@ -77,6 +77,9 @@ public sealed class FakeOpencode
     /// <summary>How many `session export` calls ran.</summary>
     public int Exports => File.Exists(Path.Combine(directory, "exports")) ? File.ReadAllLines(Path.Combine(directory, "exports")).Length : 0;
 
+    /// <summary>Makes `session export` fail (exit 1, nothing on stdout) from now on, as an opencode whose database is gone.</summary>
+    public void FailExports() => File.WriteAllText(Path.Combine(directory, "export-fails"), "1");
+
     /// <summary>`"backends":{"opencode":{"path":"…"}}` for a claustrum.json.</summary>
     public string BackendJson => "\"opencode\":{\"path\":\"" + ScriptPath.Replace("\\", "\\\\", StringComparison.Ordinal) + "\"}";
 
@@ -126,6 +129,7 @@ public sealed class FakeOpencode
         case "$1" in
           session)
             echo "$*" >> "$dir/exports"
+            [ -e "$dir/export-fails" ] && exit 1
             printf '{"info":{"cost":%s,"tokens":{"input":10,"output":5,"reasoning":0,"cache":{"read":0,"write":0}}},"messages":[]}\n' "$(cat "$dir/total")"
             exit 0 ;;
           run) ;;

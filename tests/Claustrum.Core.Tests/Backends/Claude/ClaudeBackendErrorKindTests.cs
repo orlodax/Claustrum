@@ -148,4 +148,25 @@ public sealed class ClaudeBackendErrorKindTests
         Assert.Null(parsed.ErrorKind);
         Assert.Null(parsed.ToolCallsCompleted);
     }
+
+    // #127: a replayed user line (an echo of a message taken, or a resumed session's history) is not an event of the run, so an errored tool_result
+    // in it cannot "forget" a call that really did run.
+    [Fact]
+    public void AReplayedErroredToolResultDoesNotForgetAToolCall()
+    {
+        string replayed = /*lang=json,strict*/ """{"type":"user","isReplay":true,"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","is_error":true,"content":"x"}]}}""";
+
+        Assert.Equal(1, backend.Parse(Stream(Init, ToolUse("t1"), replayed, failed), "", 1).ToolCallsCompleted);
+    }
+
+    [Fact]
+    public void ALiveRunsReplayedMessageIsNotATurnAndASingleResultStaysSingle()
+    {
+        string echo = /*lang=json,strict*/ """{"type":"user","uuid":"u-1","isReplay":true,"message":{"role":"user","content":[{"type":"text","text":"hi"}]}}""";
+
+        ParsedOutput parsed = backend.Parse(Stream(Init, echo, failed), "", 1);
+
+        Assert.Equal(0, parsed.ToolCallsCompleted);
+        Assert.Equal(1, parsed.Steps);
+    }
 }

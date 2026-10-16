@@ -20,8 +20,11 @@ public sealed class ClaudeBackendBuildTests
         string? resume = null,
         bool stream = false,
         Dictionary<string, string>? env = null,
-        string brief = "do the thing") => new(
-            Role: new ResolvedRole("builder", "system body", "claude", "sonnet", effort, permission, Blind: false, HasReport: true),
+        string brief = "do the thing",
+        bool blind = false,
+        bool hasReport = true,
+        bool live = false) => new(
+            Role: new ResolvedRole("builder", "system body", "claude", "sonnet", effort, permission, Blind: blind, HasReport: hasReport),
             Brief: brief,
             Cwd: "/repo",
             BudgetUsd: budget,
@@ -30,7 +33,8 @@ public sealed class ClaudeBackendBuildTests
             Stream: stream,
             SystemPromptFilePath: "/job/system.md",
             JobDirectory: "/job",
-            Env: env ?? []);
+            Env: env ?? [],
+            Live: live);
 
     [Fact]
     public void ReadOnlySetsPlanModeAndAllowedTools()
@@ -44,7 +48,6 @@ public sealed class ClaudeBackendBuildTests
             "--strict-mcp-config",
             "--permission-mode", "plan", "--permission-prompts", "none",
             "--allowedTools", "Read,Glob,Grep,Bash(git diff*),Bash(git log*),Bash(git show*),Bash(git status*),Bash(gh pr *),Bash(gh issue *)",
-            "--no-session-persistence",
             "--effort", "high",
         ], spec.Args);
     }
@@ -71,7 +74,6 @@ public sealed class ClaudeBackendBuildTests
             "--strict-mcp-config",
             "--permission-mode", "acceptEdits", "--permission-prompts", "none",
             "--disallowedTools", "Bash",
-            "--no-session-persistence",
             "--effort", "high",
         ], spec.Args);
     }
@@ -89,7 +91,6 @@ public sealed class ClaudeBackendBuildTests
             "--permission-mode", "acceptEdits", "--permission-prompts", "none",
             "--allowedTools", "Edit,Write,Read,Glob,Grep,Bash(*)",
             "--disallowedTools", "Bash(git push),Bash(git push *)",
-            "--no-session-persistence",
             "--effort", "high",
         ], spec.Args);
     }
@@ -166,7 +167,6 @@ public sealed class ClaudeBackendBuildTests
             "--append-system-prompt-file", "/job/system.md",
             "--strict-mcp-config",
             "--dangerously-skip-permissions", "--permission-prompts", "none",
-            "--no-session-persistence",
             "--effort", "high",
         ], spec.Args);
     }
@@ -223,13 +223,57 @@ public sealed class ClaudeBackendBuildTests
         Assert.Equal("sess-123", spec.Args[index + 1]);
     }
 
+    // #127: a non-blind role with a report can end needs_input, which `jobs answer` continues with --resume: its session must be saved.
     [Fact]
-    public void NoResumeKeepsNoSessionPersistence()
+    public void ANonBlindRoleWithAReportSavesItsSession()
     {
         ProcessSpec spec = backend.Build(MakeRun(new PermissionPolicy(PermissionLevel.Full, []), resume: null));
 
-        Assert.Contains("--no-session-persistence", spec.Args);
+        Assert.DoesNotContain("--no-session-persistence", spec.Args);
         Assert.DoesNotContain("--resume", spec.Args);
+    }
+
+    // A blind role's report status is ignored (it cannot ask), and a role with no report has nothing to resume for.
+    [Theory]
+    [InlineData(true, true)]
+    [InlineData(true, false)]
+    [InlineData(false, false)]
+    public void ARoleThatCannotEndNeedsInputKeepsNoSessionPersistence(bool blind, bool hasReport)
+    {
+        ProcessSpec spec = backend.Build(MakeRun(new PermissionPolicy(PermissionLevel.Full, []), blind: blind, hasReport: hasReport));
+
+        Assert.Contains("--no-session-persistence", spec.Args);
+    }
+
+    [Fact]
+    public void AResumeNeverCarriesNoSessionPersistenceWhateverTheRole()
+    {
+        ProcessSpec spec = backend.Build(MakeRun(new PermissionPolicy(PermissionLevel.Full, []), resume: "sess-1", blind: true, hasReport: false));
+
+        Assert.DoesNotContain("--no-session-persistence", spec.Args);
+    }
+
+    // #127 finding 4: --replay-user-messages is what lets Claustrum see a human message claude has taken; the brief's stdin line carries a uuid
+    // that the echo names.
+    [Fact]
+    public void ALiveRunReplaysUserMessagesAndPutsAUuidOnTheBriefLine()
+    {
+        ProcessSpec spec = backend.Build(MakeRun(new PermissionPolicy(PermissionLevel.Full, []), live: true));
+
+        int input = Array.IndexOf(spec.Args, "--input-format");
+        Assert.Equal(["--input-format", "stream-json", "--replay-user-messages"], spec.Args[input..(input + 3)]);
+        string line = Assert.Single(spec.StdinText!.Split('\n', StringSplitOptions.RemoveEmptyEntries));
+        using System.Text.Json.JsonDocument document = System.Text.Json.JsonDocument.Parse(line);
+        Assert.True(Guid.TryParse(document.RootElement.GetProperty("uuid").GetString(), out _));
+    }
+
+    [Fact]
+    public void AOneShotRunHasNeitherTheReplayFlagNorAUuid()
+    {
+        ProcessSpec spec = backend.Build(MakeRun(new PermissionPolicy(PermissionLevel.Full, [])));
+
+        Assert.DoesNotContain("--replay-user-messages", spec.Args);
+        Assert.Equal("do the thing", spec.StdinText);
     }
 
     [Fact]
@@ -325,7 +369,6 @@ public sealed class ClaudeBackendBuildTests
             "--permission-mode", "plan", "--permission-prompts", "none",
             "--allowedTools", "Read,Glob,Grep,Bash(git diff*),Bash(git log*),Bash(git show*),Bash(git status*),Bash(gh pr *),Bash(gh issue *)",
             "--disallowedTools", "Agent,Task",
-            "--no-session-persistence",
             "--effort", "high",
         ], spec.Args);
     }
@@ -343,7 +386,6 @@ public sealed class ClaudeBackendBuildTests
             "--permission-mode", "plan", "--permission-prompts", "none",
             "--disallowedTools", "Edit,Write,NotebookEdit",
             "--disallowedTools", "Agent,Task",
-            "--no-session-persistence",
             "--effort", "high",
         ], spec.Args);
     }
@@ -361,7 +403,6 @@ public sealed class ClaudeBackendBuildTests
             "--permission-mode", "acceptEdits", "--permission-prompts", "none",
             "--disallowedTools", "Bash",
             "--disallowedTools", "Agent,Task",
-            "--no-session-persistence",
             "--effort", "high",
         ], spec.Args);
     }
@@ -379,7 +420,6 @@ public sealed class ClaudeBackendBuildTests
             "--permission-mode", "acceptEdits", "--permission-prompts", "none",
             "--allowedTools", "Edit,Write,Read,Glob,Grep,Bash(*)",
             "--disallowedTools", "Agent,Task",
-            "--no-session-persistence",
             "--effort", "high",
         ], spec.Args);
     }
@@ -396,12 +436,11 @@ public sealed class ClaudeBackendBuildTests
             "--strict-mcp-config",
             "--dangerously-skip-permissions", "--permission-prompts", "none",
             "--disallowedTools", "Agent,Task",
-            "--no-session-persistence",
             "--effort", "high",
         ], spec.Args);
     }
 
-    // Resume drops --no-session-persistence, but --effort still follows the tree block before
+    // A resume never carries --no-session-persistence, and --effort still follows the tree block before
     // --resume. Since #68 no positional follows the argv at all (the brief is on stdin), so the
     // variadic --disallowedTools has nothing to swallow whatever comes last.
     [Fact]

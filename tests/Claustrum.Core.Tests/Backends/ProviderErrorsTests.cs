@@ -1,4 +1,5 @@
 using Claustrum.Core.Backends;
+using Claustrum.Core.Backends.Opencode;
 using Claustrum.Core.Model;
 
 namespace Claustrum.Core.Tests.Backends;
@@ -83,4 +84,32 @@ public sealed class ProviderErrorsTests
 
     [Fact]
     public void ABackendThatCannotCountItsToolCallsIsNeverBeforeAnyWork() => Assert.False(ProviderErrors.BeforeAnyWork(null, [], treeRead: true, firstTurnOnly: true));
+
+    // #126 (final review, 2026-10-16): "before any work" is bounded at two model requests. The real 402 had exactly two (the second after its errored call).
+    [Theory]
+    [InlineData(null, true)]
+    [InlineData(1, true)]
+    [InlineData(2, true)]
+    [InlineData(3, false)]
+    [InlineData(9, false)]
+    public void BeforeAnyWorkIsBoundedAtTwoSteps(int? steps, bool expected) =>
+        Assert.Equal(expected, ProviderErrors.BeforeAnyWork(0, [], treeRead: true, firstTurnOnly: true, steps));
+
+    [Fact]
+    public void TheStepBoundDoesNotOverrideTheOtherConditions()
+    {
+        Assert.False(ProviderErrors.BeforeAnyWork(1, [], treeRead: true, firstTurnOnly: true, steps: 1));
+        Assert.False(ProviderErrors.BeforeAnyWork(0, oneChange, treeRead: true, firstTurnOnly: true, steps: 1));
+        Assert.False(ProviderErrors.BeforeAnyWork(0, [], treeRead: true, firstTurnOnly: false, steps: 1));
+    }
+
+    [Fact]
+    public void TheRealOpencode402HasTwoStepsSoItIsStillBeforeAnyWork()
+    {
+        string stdout = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "fixtures", "opencode", "quota-402.jsonl"));
+        ParsedOutput parsed = new OpencodeBackend(platform: null!).Parse(stdout, stderr: "", exitCode: 1);
+
+        Assert.Equal(2, parsed.Steps);
+        Assert.True(ProviderErrors.BeforeAnyWork(parsed.ToolCallsCompleted, [], treeRead: true, firstTurnOnly: true, parsed.Steps));
+    }
 }

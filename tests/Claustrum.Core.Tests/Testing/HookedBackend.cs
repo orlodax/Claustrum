@@ -8,7 +8,8 @@ namespace Claustrum.Core.Tests.Testing;
 public sealed class HookedBackend(
     ScriptedBackend inner,
     Func<PostRunContext, PreRunBaseline?>? preRun = null,
-    Func<ParsedOutput, PostRunContext, PreRunBaseline?, PostRunResult?>? postRun = null) : IBackend, IPostRunHook
+    Func<ParsedOutput, PostRunContext, PreRunBaseline?, PostRunResult?>? postRun = null,
+    Func<ParsedOutput, PostRunContext, PreRunBaseline?, CancellationToken, Task<PostRunResult?>>? asyncPostRun = null) : IBackend, IPostRunHook
 {
     public string Name => inner.Name;
 
@@ -40,6 +41,6 @@ public sealed class HookedBackend(
         PostRunCalls++;
         PostRunContext = context;
         PostRunBaseline = baseline;
-        return Task.FromResult(postRun?.Invoke(parsed, context, baseline));
+        return asyncPostRun is not null ? asyncPostRun(parsed, context, baseline, cancellationToken) : Task.FromResult(postRun?.Invoke(parsed, context, baseline));
     }
 }

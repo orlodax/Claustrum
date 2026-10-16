@@ -85,4 +85,43 @@ public sealed class FallbackMcpTests(AppServicesHomeFixture fixture) : IDisposab
         Assert.Equal(firstId, Str(result, "fallback_of"));
         Assert.Equal("failed", Str(Receipt(firstId), "status"));
     }
+
+    // #126 final review: job_status names the retry (retried_as) and job_say to the id the caller holds is taken by the retry, naming it; the retry's
+    // own id, and a job that was never retried, carry no retried_as.
+    [Fact]
+    public async Task JobStatusReportsRetriedAsAndJobSayOnTheFirstIdReachesTheRetryAsync()
+    {
+        FallbackSetup.Apply(repo, FakeRefusals.RealQuotaEvents());
+        repo.Script(new FakeClaudeScript { Turns = [FakeClaudeTurn.Ask("which database?"), FakeClaudeTurn.Report("done on the fallback")] });
+        string firstId = Str(Parse(ClaustrumTools.DelegateStart(role: "builder", brief: "hi", cwd: repo.Repo)), "job_id");
+
+        JsonElement status = default;
+        await LiveJobHarness.WaitUntilAsync(() => (status = Parse(ClaustrumTools.JobStatus(firstId))).GetProperty("state").GetString() == "waiting_for_input", "the retry to ask");
+        string retryId = Str(Receipt(firstId), "retried_as");
+
+        Assert.Equal(retryId, Str(status, "retried_as"));
+        Assert.False(Parse(ClaustrumTools.JobStatus(retryId)).TryGetProperty("retried_as", out JsonElement own) && own.ValueKind != JsonValueKind.Null);
+
+        // One hop, from the first id: the message is the retry's answer, and the result names the job that took it.
+        JsonElement said = Parse(ClaustrumTools.JobSay(firstId, "sqlite"));
+        Assert.Equal(1, said.GetProperty("answers_question").GetInt32());
+        Assert.Equal(retryId, Str(said, "retried_as"));
+        await LiveJobHarness.WaitUntilAsync(() => File.ReadAllText(JobFile(retryId, "conversation.jsonl")).Contains("sqlite", StringComparison.Ordinal), "the retry to take the answer");
+        Assert.False(Directory.Exists(JobFile(firstId, "inbox")) && Directory.GetFiles(JobFile(firstId, "inbox")).Length > 0);
+        await LiveJobHarness.WaitUntilAsync(() => Parse(ClaustrumTools.JobStatus(firstId)).GetProperty("state").GetString() == "done", "the job to finish");
+    }
+
+    [Fact]
+    public async Task AJobThatWasNeverRetriedReportsNoRetriedAsAsync()
+    {
+        FallbackSetup.Apply(repo, FakeRefusals.RealQuotaEvents(), fallback: null);
+        repo.Script(new FakeClaudeScript { Summary = "x" });
+        string jobId = Str(Parse(ClaustrumTools.DelegateStart(role: "builder", brief: "hi", cwd: repo.Repo)), "job_id");
+
+        await LiveJobHarness.WaitUntilAsync(() => Parse(ClaustrumTools.JobStatus(jobId)).GetProperty("state").GetString() is "done" or "failed", "the job to end");
+
+        JsonElement status = Parse(ClaustrumTools.JobStatus(jobId));
+        Assert.False(status.TryGetProperty("retried_as", out JsonElement retried) && retried.ValueKind != JsonValueKind.Null);
+        Assert.Equal("failed", Str(Receipt(jobId), "status"));
+    }
 }

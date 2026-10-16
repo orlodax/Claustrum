@@ -113,7 +113,6 @@ public sealed class ClaudeBackendMcpTests : IDisposable
         [
             "--permission-mode", "plan", "--permission-prompts", "none",
             "--allowedTools", "Read,Glob,Grep,Bash(git diff*),Bash(git log*),Bash(git show*),Bash(git status*),Bash(gh pr *),Bash(gh issue *)",
-            "--no-session-persistence",
             "--effort", "high",
         ], spec.Args[mode..]);
     }
