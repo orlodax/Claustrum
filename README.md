@@ -86,7 +86,7 @@ Who plays which role is decided once and stored as a file, `.claustrum/casts/<na
 committable and shared:
 
 ```json
-{ "name": "default", "library": "1.0.0",
+{ "name": "default", "library": "1.1.0",
   "architect": { "mode": "host", "model": null, "tier": null, "resolved": null, "fallback": null, "resolved_fallback": null },
   "roles": {
     "builder":       { "model": "opencode:openrouter/deepseek/deepseek-v4-pro", "backend": null, "tier": null, "max_parallel": 3, "resolved": null, "fallback": "claude:sonnet", "resolved_fallback": null },
@@ -174,6 +174,7 @@ dotnet tool install -g Claustrum
 
 Then [docs/TEST-DRIVE.md](docs/TEST-DRIVE.md) walks the first run on a real task, step by step,
 and [docs/MANUAL.md](docs/MANUAL.md) is the reference for every verb, file, field and rule.
+Coming from 0.1.x? [docs/UPGRADING.md](docs/UPGRADING.md) says what to do once.
 
 ## Licence
 

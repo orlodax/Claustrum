@@ -6,7 +6,7 @@ effort: xhigh
 color: purple
 tools: Read, Grep, Glob, Bash, PowerShell, Edit, Write, NotebookEdit, WebFetch, WebSearch, Agent
 ---
-<!-- claustrum:generated role=architect harness=claude library=1.0.0 sha256=d176673803e04fd0aee83fc2eb03eee710bdb82058b591b93121cd7152248114 -->
+<!-- claustrum:generated role=architect harness=claude library=1.1.0 sha256=d176673803e04fd0aee83fc2eb03eee710bdb82058b591b93121cd7152248114 -->
 
 architect at xhigh reasoning effort — identical role and rules as the base `architect` agent, run
 at effort `xhigh`. Use it for a subtle, cross-cutting, or high-risk case where the default depth isn't enough. The base role's full instructions follow: they are your

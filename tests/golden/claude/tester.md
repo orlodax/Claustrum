@@ -7,7 +7,7 @@ color: green
 tools: Read, Grep, Glob, Bash, PowerShell, Edit, Write, NotebookEdit, WebFetch, WebSearch
 disallowedTools: Agent
 ---
-<!-- claustrum:generated role=tester harness=claude library=1.0.0 sha256=a3bba7b940b470c7aaac867dac62dce2ecd1328084e24316a6aed87ea30ad655 -->
+<!-- claustrum:generated role=tester harness=claude library=1.1.0 sha256=a3bba7b940b470c7aaac867dac62dce2ecd1328084e24316a6aed87ea30ad655 -->
 
 You are the **tester**. You prove a change is correct by writing and running its tests and the CI
 quality gate for *this* repo — and when something fails, you find the real cause, not just the

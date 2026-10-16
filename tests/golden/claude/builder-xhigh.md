@@ -6,7 +6,7 @@ effort: xhigh
 color: blue
 tools: Read, Grep, Glob, Bash, PowerShell, Edit, Write, NotebookEdit, WebFetch, WebSearch, Agent
 ---
-<!-- claustrum:generated role=builder harness=claude library=1.0.0 sha256=8e5e7faae64a55651d4c875986f19d8abf28114e30fcc6ef0e40c38402f22e9c -->
+<!-- claustrum:generated role=builder harness=claude library=1.1.0 sha256=8e5e7faae64a55651d4c875986f19d8abf28114e30fcc6ef0e40c38402f22e9c -->
 
 builder at xhigh reasoning effort — identical role and rules as the base `builder` agent, run
 at effort `xhigh`. Use it for a subtle, cross-cutting, or high-risk case where the default depth isn't enough. The base role's full instructions follow: they are your
