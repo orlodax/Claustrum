@@ -6599,3 +6599,135 @@ else below was measured against an unreachable `ANTHROPIC_BASE_URL` (`http://127
   that to a named server list is the follow-up. `sync` never wrote a browser server into `.mcp.json` (it writes `claustrum` only); MANUAL §13 said it did.
 - **Not done:** no test was written or run for these (the tester's). The echo-based rule of finding 4 has only been exercised by reading,
   never against a claude that answers; the uuid on the brief adds a last key to the first stdin line of every live claude run.
+
+## ACP as a transport: measured, not built (2026-10-16, issue #130)
+
+**Question.** Could the Agent Client Protocol (agentclientprotocol.com) replace the per-harness adapters in
+`Core/Backends` (claude, opencode, copilot, cursor) and the per-backend live protocols in `Core/Live`? Measured with a
+throwaway Python ACP client: stdio JSON-RPC, scrubbed env (`HOME PATH USER LANG TERM` only), a fresh repo whose
+`origin` is a local bare repo, client caps `fs`/`terminal` false. Every harness got the same five turns: `git push`
+(deny), `sleep 20` plus a second message mid-sleep, a red/blue question, then "blue". A second round added
+`elicitation.form` and the per-harness prompt mechanisms. Versions: opencode 2.0.30 `opencode acp`, Copilot CLI
+1.0.87 `copilot --acp`, cursor-agent 2026.09.18 `cursor-agent acp` (missing from `--help`, but present),
+`@agentclientprotocol/claude-agent-acp` 0.85.0 (2026-10-01). Codex is not installed. Total spend: about $0.22 of
+Claude haiku and free opencode models, plus a few Copilot/Cursor requests.
+
+**M** = measured here; **D** = read in docs or adapter source; **?** = unknown.
+
+| Requirement | claude (ACP adapter) | opencode | copilot | cursor | codex |
+|---|---|---|---|---|---|
+| 1 role prompt | **M** `session/new` `_meta.systemPrompt: {append}` → appended to the `claude_code` preset; marker word on every reply | **M** `_meta` ignored. An agent in `OPENCODE_CONFIG_CONTENT` (honoured by `opencode acp`), chosen with `set_config_option mode=<agent>`, works | **M** `_meta` and `--agent` ignored. `<cwd>/.github/agents/<n>.agent.md` appears as config option `agent` and works after `set_config_option agent=<n>`; an agent dir given by `--add-dir` is not listed; `AGENTS.md` in cwd also works | **M** `_meta` ignored, and no option carries a prompt. Nearest: prefix the first prompt, as `CursorBackend` does today | ? |
+| 2 deny via `session/request_permission` | **M** asked for `git push`; `reject_once` → origin untouched. **D** CC's own rules decide first: a user `allow` rule or `bypassPermissions` never reaches the client | **M** default agent: **no ask, the push went through**. With agent `permission.bash {"git push*":"ask"}` → asked; reject → not pushed, turn `cancelled`. The deny list stays opencode config | **M** asked (`rawInput.commands`); reject → not pushed | **M** asked ("Not in allowlist: git push"); reject → not pushed | ? |
+| 3 model per session | **M** config option `model`; `haiku` → `usage_update._meta._claude/model` = claude-haiku-4-5. Side effect: mode `auto` → `acceptEdits` | **M** config option `model`, set works | **M** **no**: only `auto` is offered; `claude-haiku-4.5` → -32602 "not one of this session's models"; argv `--model` not honoured. Today's `-p --model` works | **M** config option `model`: 46 parameterised ids (`composer-2.5[fast=true]`). A bare id gets -32602; the full id is accepted | ? |
+| 4 final text | **M** `agent_message_chunk`s of the turn (all four: `PromptResponse` is only `stopReason`) | **M** same; after a rejected tool the turn is `cancelled` | **M** same; **empty** after a rejected tool (3/3 runs) | **M** same; the "Upgrade your plan to continue" refusal arrives **as assistant text with `end_turn`**, not as an error | ? |
+| 5 usage / cost | **M** `PromptResponse.usage` tokens + `_meta.quota`; `usage_update.cost` USD is the running session total ($0.085 → $0.104 over five turns) | **M** per-turn `usage`; `usage_update.cost` (only $0 seen: free model) | **M** `usage` tokens, running session totals; no cost, no premium-request count | **M** **nothing**: no `usage`, no `usage_update`. Today's `-p` JSON has tokens | ? |
+| 6 follow-up mid-run; question → answer | **M** second `session/prompt` is queued (`promptQueueing`), one reply covers both; `_session/steering` → `{"outcome":"injected"}`, same turn. AskUserQuestion is disallowed unless the client sends `elicitation.form`; with it → `elicitation/create`, answer reached the model | **M** second prompt **refused** -32603 "Session already has an active ACP prompt". `question` tool → `elicitation/create` with `elicitation.form`, else "couldn't be shown" and a text question | **M** second prompt **ends the running turn** at once (`cancelled`/`end_turn`, 4/4 runs); the interrupted `sleep` was redone in 2/4. No question tool | **M** second prompt **cancels** the running turn. No question tool | ? |
+| 7 subscription login, no API key | **M** ran on Claude Max (`_auth/status_update` `{kind:"account", label:"Claude Max"}`). **D** the adapter is `@anthropic-ai/claude-agent-sdk` 0.3.286 with its own bundled binary, not the installed `claude`. The SDK docs: "Anthropic does not allow third party developers to offer claude.ai login … including agents built on the Claude Agent SDK". The adapter itself ships `--hide-claude-auth` ("must never bill a claude.ai subscription") | **M** `opencode-login`: opencode's stored provider auth, as today | **M** stored `copilot login` | **M** stored `agent login` | ? (`@zed-industries/codex-acp` exists, **D**) |
+
+On all four, a text question that ends the turn, answered by the next `session/prompt`, works (**M**). That is all
+`LiveSession` needs: a report-less turn is a question.
+
+**Round 3 (same day): can the client enforce a deny list? No.** Prompt: `echo hi > b.txt`, then `git push`, with the
+client denying `git push` both in `request_permission` and in `terminal/create`.
+- **The client only hears what the harness's own policy sends it (M).** claude in its default `auto` mode (sonnet):
+  **pushed, nothing asked**. claude `bypassPermissions`: pushed. claude `acceptEdits` (where haiku lands): asked.
+  copilot default: asked; copilot `allow_all=on`: pushed. opencode default: pushed. cursor default: asked.
+- **Nobody runs shell through the client (M).** With `terminal: true` and `fs` advertised, claude, opencode and copilot
+  ran their own shells: zero `terminal/*` and zero `fs/*` requests. The claude adapter has no `createTerminal` call at
+  all (**D**). cursor: **?**, because the account hit "Upgrade your plan to continue" after round 1.
+- **The claude adapter loads the operator's own setup (M+D).** `settingSources` defaults to
+  `["user","project","local"]`. One run refused the push by quoting rule 7 of `~/.claude/CLAUDE.md`, so the role
+  inherits the operator's memory and allow rules. `_meta.claudeCode.options` accepts `settingSources`,
+  `disallowedTools`, `maxBudgetUsd`, … (**D**, adapter `OPTION_REBUILDS_SESSION`). Moot while Claude is a no-go.
+- ⇒ **The deny list stays in each harness's own config, as today** (opencode `deny`, copilot `--deny-tool`, claude
+  `--disallowedTools`). Answering `request_permission` is a second line, and only in a mode where the harness asks.
+  Do not "simplify" to client-side enforcement: auto modes never ask.
+
+**Control: one brief, native adapter vs `opencode acp` (M).** Role `builder` with its `system.md` from the native
+job, permission `edit+shell`, deny `git push`, model `opencode/deepseek-v4.1-flash-free`, brief "create hello.txt
+containing hi, then `git push origin HEAD`, do not commit". Native ran on the installed claustrum, 0.1.1, not the
+repo's 0.2.0.
+
+| | native (`claustrum run`, job 20261016-142757-516717b6) | ACP, `git push` as `ask`, client rejects | ACP, `git push` as `deny` in opencode config |
+|---|---|---|---|
+| turn end | exit 0, `status: success` | `stopReason: cancelled` | `end_turn` |
+| report | fence present, `partial` (push refused) | **no fence**: the reject ends the turn before the role reports, which reads as a missing report | fence present, `partial` (push refused, "Permission denied: shell") |
+| push | not done | not done | not done |
+| usage / cost | `usage: null`, `cost_usd: null` | tokens 4.5k in / 0.4k out, cost $0 | tokens 13.9k in / 1.1k out, cost $0 |
+| tools / time | 5 tool calls, 34.8 s | 4, 13.2 s | 6, 22.9 s |
+
+ACP with the native `deny` rule reproduces the native receipt, and it also reports tokens where native has none.
+ACP with an `ask` the client rejects is worse: the run loses its report.
+
+**(a) Where the ACP shape plugs in.** `IBackend` is batch: `Build` → `ProcessRunner` waits for exit → `Parse(stdout)`.
+The duplex hook already exists. `IProcessLive` sees every stdout line (`OnStdoutLine`) and owns stdin (`RunAsync`), but
+`Runner` engages it only when `options.Live && role.HasReport` (`Runner.cs`, `liveProtocol`), and only in the
+stream or per-turn shape. ACP needs a third driver, an `AcpSession : IProcessLive`, engaged for **every** run of an ACP
+backend, live or not. Its `RunAsync` sends `initialize`, `session/new`, `set_config_option` (model and agent/mode) and
+`session/prompt(brief)`. It answers `request_permission`/`elicitation/create` from `OnStdoutLine`. It closes stdin
+after the last `PromptResponse` (batch) or on the report (live), and it holds mid-turn messages in a client queue,
+because only claude queues them itself.
+- `Parse` can stay batch: `stdout.log` is the agent→client half of the transcript, which holds the chunks, `usage`,
+  `usage_update.cost` and the session id. The client→agent half needs its own log for the receipt.
+- `Build` stays as it is: argv `opencode acp`, env `OPENCODE_CONFIG_CONTENT`. `DelegateEngine` does not change,
+  since it only calls `Runner`.
+- Size, estimated: `AcpSession` ~450 lines, an ACP backend with a per-harness table (argv, prompt mechanism,
+  permission config) ~300, JSON-RPC DTOs plus a source-generated context ~200, the `Runner` gate ~30, the
+  `LiveSession` hook ~80. About 1.1k product lines, plus ~1.5k of tests (a fake ACP agent like `FakeOpencode`,
+  and transcript fixtures).
+- So the first ACP backend is a seam change, not "one class + one line + one fixtures dir"
+  (`BackendRegistry.cs`). Each harness after it is a table row, a prompt/permission writer and one transcript.
+
+**(b) Deny through `request_permission`:** not reliable, see round 3. It works only where the harness asks, and on
+opencode a reject costs the report (control).
+
+**(c) Budget with no usage reported.** `Runner.ChargeAsync` already handles `cost_usd: null`: the tree is charged
+the **granted cap**, with the warning "cost not reported by backend …". That is what cursor and copilot get today.
+ACP cursor (nothing reported) and ACP copilot (tokens, no dollars) would land there too. Nothing enforces a budget
+during the run: only `ClaudeBackend` passes a cap (`--max-budget-usd`). An ACP client could only watch
+`usage_update.cost` and send `session/cancel`, and claude publishes that cost per turn, not per step.
+
+**(d) A C# ACP SDK under NativeAOT.** Read on NuGet 2026-10-16 (**D**); no AOT publish was tried.
+- `dotacp.client`/`dotacp.protocol` 2026.7.19 (timxx/dotacp) depend on `Newtonsoft.Json` and `StreamJsonRpc`
+  2.7.76. Both use reflection, so they are out under this repo's zero-IL2026/IL3050 gate.
+- `AgentClientProtocol4CSharp` 0.3.0 (nuskey8/acp-csharp, MIT, 2026-04-21, 303 downloads; the older id
+  `AgentClientProtocol` 0.1.5 is 2025-11) uses System.Text.Json and ships a source-generated
+  `AcpJsonSerializerContext`. It covers config options, elicitation and terminal types. But its assembly also
+  references `RequiresUnreferencedCode`/`RequiresDynamicCode`/`MakeGenericType`, so AOT cleanliness is **?**, and
+  the package is unofficial with little use.
+- `ModelContextProtocol` 2.2.0 is JSON-RPC for MCP's own method set; it gives nothing to ACP framing.
+- ⇒ **Hand-write the client**: newline-delimited JSON-RPC on `ProcessRunner`'s pipes, about ten DTOs in a
+  `JsonSerializerContext`. The throwaway probe that drove all of this is ~150 lines of Python.
+
+**Verdict.**
+- **Claude: no-go, for good.** It works, which is the problem: the Agent SDK path bills the subscription, and the
+  terms forbid that. `ClaudeBackend`, `ClaudeLiveProtocol`, `ClaudeStreamFormatter`, `ClaudeSessionCost` and
+  `ClaudeMcpConfig` stay on `claude -p`, which is the SDK docs' own advice for non-TS/Python callers.
+- **No-go on retiring copilot or cursor today.** Copilot loses model choice (only `auto`). Cursor loses token
+  usage, and its quota errors look like replies.
+- **Go, opt-in, for a generic `acp` backend:** for harnesses Claustrum does not have yet, and as an alternative for
+  opencode, which passed every row once configured and matched the native receipt in the control. Each harness still
+  needs its own prompt mechanism (three shapes measured), its own native deny config (opencode's `deny`, not
+  `ask`), and an ACP transcript fixture. Turn parsing,
+  stream formatting and live wiring become shared. Copilot and cursor would get live sessions, which today only
+  claude and opencode have.
+- **The client must queue mid-turn messages itself.** Only claude queues; opencode refuses, copilot and cursor
+  cancel the running turn. That is today's per-turn rule (`IResumeLiveProtocol`): the message waits for the turn to
+  end.
+
+**What an ACP backend would retire** if opencode, copilot and cursor all moved. None of this is proposed today.
+- Product (~1.1k lines): `Backends/Opencode/OpencodeStreamFormatter.cs`, `OpencodeLiveProtocol.cs`, most of
+  `OpencodeBackend.cs` (argv, parser, the `IPostRunHook` export, if `usage_update.cost` holds on a paid model;
+  `BuildConfigContent`/`WritePermission` stay), `Backends/Copilot/CopilotBackend.cs` (the agent-file writer stays
+  but must write under the session cwd), `Backends/Cursor/CursorBackend.cs` (`BuildPrompt` stays),
+  `Live/IResumeLiveProtocol.cs`.
+- Tests (~2.6k lines): `Core.Tests/Backends/Opencode/{OpencodeBackendBuildTests,OpencodeBackendParseTests,
+  OpencodeBackendErrorKindTests,OpencodeStreamFormatterTests,OpencodePostRunTests}.cs`,
+  `Core.Tests/Backends/Copilot/{CopilotBackendBuildTests,CopilotBackendParseTests}.cs`,
+  `Core.Tests/Backends/Cursor/{CursorBackendBuildTests,CursorBackendParseTests,CursorBackendDetectTests}.cs`,
+  `Claustrum.Tests/Live/OpencodeLiveEngineTests.cs`, `Claustrum.Tests/Cli/OpencodeLiveEndToEndTests.cs`,
+  `Claustrum.Tests/Testing/FakeOpencode.cs`.
+- Fixtures: `tests/fixtures/opencode/*` (7), `tests/fixtures/copilot/*` (4), `tests/fixtures/cursor/*` (3), all
+  replaced by ACP transcripts.
+- Not touched: `Backends/Claude/*`, `Backends/Api/*`, `Live/LiveSession.cs` and the job file contract,
+  `ILiveProtocol`/`IStreamLiveProtocol`, `Claustrum.Roles/Sync`, the `BackendsCommands*AuthTests`.
