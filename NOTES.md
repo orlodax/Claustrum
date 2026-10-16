@@ -6490,13 +6490,17 @@ error       {"type":"provider.quota","message":"…","status":402}
   retried architect (a different backend) holds a live session.
 - **Followers.** The returned receipt is the retry's. A caller waiting on the first job's directory follows `retried_as` (`LiveJob.ReadRetry`): `run`'s
   terminal prompt (`LiveRun.AnswerWhileAsync`), the tree child's wait on its detached host (`DetachedRun.WaitAsync`, which for a run that may be retried
-  waits up to 3 s for `retried_as` to appear after the receipt, since the rewrite lands a few milliseconds later), `job_status` of a `delegate_async` job
+  waits for `retried_as` to appear after the receipt through `LiveJob.AwaitRetryAsync`, below), `job_status` of a `delegate_async` job
   (`JobManager.GetStatus`, so a retry's question shows under the id the caller holds, with `retried_as` in the status) and `coordinate`'s printout. Since the
   review of #127 the verbs that take the first id follow it too, one hop (a retry is never retried), and say so on stderr (`JobRetry`) or, over MCP, in the
-  result's `retried_as`: `jobs say|reply|cancel` act on the retry, `jobs wait` and `jobs follow` go on to it once the first job's receipt is in (`LiveJob.AwaitRetryAsync` waits up to 3 s for
-  `retried_as` after a receipt that `Qualifies`; those two verbs cannot know the cast, so a provider-refused job with no fallback ends 3 s late there), and MCP
+  result's `retried_as`: `jobs say|reply|cancel` act on the retry, `jobs wait` and `jobs follow` go on to it once the first job's receipt is in (`LiveJob.AwaitRetryAsync` waits for
+  `retried_as` after a receipt that `Qualifies` while the host lives, 2 s after it is gone, 60 s at most; those two verbs cannot know the cast, so a
+  provider-refused job with no fallback ends late there), and MCP
   `job_say`/`job_status` do the same, `job_status` for a job another process started too. The MCP `job_result` of a `delegate_async` id answers with the retry's receipt for as
   long as the server lives, then with the first's from disk.
+  ⚠ **`AwaitRetryAsync` reads result.json once per poll** (2026-10-16, #132): it used to ask `ReadRetry()` and then read the receipt again for
+  `Qualifies`, and a `retried_as` rewrite landing between the two made the second read fail `Qualifies` (already retried), so the waiter took "no retry",
+  printed the first job's receipt with `retried_as` in it and exited 1 (macOS CI, three runs of `DetachedFallbackRetryEndToEndTests`). Do not split it again.
 - **Docs.** MANUAL §6 (receipt fields), §8 (the field, the follow-up question, when a retry happens and when it does not), §15.
 
 **Measured 2026-10-16, no paid call:** `claustrum` Debug build, a fake `opencode` that replays the six events above and a fake `claude` that answers or

@@ -183,14 +183,16 @@ internal sealed class LiveJob
         DateTimeOffset? hostGoneAt = null;
         while (true)
         {
-            if (ReadRetry() is { } retry)
-                return retry;
+            // One read per poll (2026-10-16, #132): a rewrite landing between a ReadRetry() and a second read made the named retry fail
+            // Qualifies (retried_as set), so the waiter printed the first job's receipt, retried_as and all, and exited 1.
+            RunResult? receipt = ReadResult();
+            if (receipt?.RetriedAs is { } named)
+                return Find(named);
 
             if (!retryPossible)
                 return null;
 
             // Measured on CI (2026-10-16): a fixed 3 s, and giving up on a receipt read mid-write, both took a first job's 402 for final.
-            RunResult? receipt = ReadResult();
             if (receipt is not null && !FallbackRetry.Qualifies(receipt))
                 return null;
 
