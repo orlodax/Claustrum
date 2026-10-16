@@ -37,14 +37,18 @@ public static class ProviderErrors
         return ErrorKind.Other;
     }
 
+    /// <summary>The most model requests a run may have made and still be "before any work": the first, and the one that hands an errored tool call back.</summary>
+    public const int MaxStepsBeforeAnyWork = 2;
+
     /// <summary>
     /// The one place "before any work" is decided: the run changed no file (in a tree that was actually read), it was a single turn (no
-    /// human spoke to it after the first), and the backend counted its tool calls and none completed. A backend that cannot count says
-    /// null and the run is never "before any work". Steps are not bounded: a tool call that errored did nothing, and the 2026-10-15 402
-    /// that started #126 has a second `step_start` after its errored `subagent` call (NOTES.md "A cast can name a fallback").
+    /// human spoke to it after the first), the backend counted its tool calls and none completed, and it made at most
+    /// <see cref="MaxStepsBeforeAnyWork"/> <paramref name="steps"/> (opencode's `step_start`s, claude's `num_turns`; null when the backend
+    /// reports none, then the rest decide). A backend that cannot count tool calls says null and the run is never "before any work". The
+    /// 2026-10-15 402 that started #126 has exactly two steps, the second after its errored `subagent` call (NOTES.md "A cast can name a fallback").
     /// </summary>
-    public static bool BeforeAnyWork(int? toolCallsCompleted, ChangedFile[] changedFiles, bool treeRead, bool firstTurnOnly) =>
-        toolCallsCompleted == 0 && changedFiles.Length == 0 && treeRead && firstTurnOnly;
+    public static bool BeforeAnyWork(int? toolCallsCompleted, ChangedFile[] changedFiles, bool treeRead, bool firstTurnOnly, int? steps = null) =>
+        toolCallsCompleted == 0 && changedFiles.Length == 0 && treeRead && firstTurnOnly && steps is null or <= MaxStepsBeforeAnyWork;
 
     /// <summary>The kind as the receipt writes it: <c>provider_quota</c>.</summary>
     public static string Name(ErrorKind kind) => JsonSerializer.Serialize(kind, ClaustrumJsonContext.Default.ErrorKind).Trim('"');

@@ -169,10 +169,21 @@ public static class DelegateEngine
     /// <see cref="DelegateRequest.JobIdToken"/> here, at the last moment. A run that its provider refused before it did any work is
     /// retried once on the cast's fallback (#126, <see cref="FallbackRetry"/>); the receipt returned is then the retry's.
     /// </summary>
-    public static async Task<RunResult> RunAsync(PreparedDelegation prepared, JobPaths? job, CancellationToken cancellationToken)
+    public static Task<RunResult> RunAsync(PreparedDelegation prepared, JobPaths? job, CancellationToken cancellationToken) =>
+        RunAsync(prepared, job, retryStarted: null, cancellationToken);
+
+    /// <summary>
+    /// The same, for a caller that must know which job it is running at any moment (the detached host's cancel watch): <paramref name="retryStarted"/>
+    /// is told the retry and the job minted for it, after both exist and before the retry starts.
+    /// </summary>
+    internal static async Task<RunResult> RunAsync(PreparedDelegation prepared, JobPaths? job, Action<PreparedDelegation, JobPaths>? retryStarted, CancellationToken cancellationToken)
     {
         RunResult first = await RunOnceAsync(prepared, job, cancellationToken);
-        return await FallbackRetry.RunAsync(prepared, first, Prepare, (retry, retryJob) => RunOnceAsync(retry, retryJob, cancellationToken));
+        return await FallbackRetry.RunAsync(prepared, first, Prepare, (retry, retryJob) =>
+        {
+            retryStarted?.Invoke(retry, retryJob);
+            return RunOnceAsync(retry, retryJob, cancellationToken);
+        });
     }
 
     /// <summary>

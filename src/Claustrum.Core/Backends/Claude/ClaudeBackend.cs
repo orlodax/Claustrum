@@ -265,7 +265,7 @@ public sealed class ClaudeBackend(IPlatform platform) : IBackend, IPostRunHook
         // is the last turn's too, unless a message that crossed the report on stdin made a turn after it: then
         // the turn that carries the report stays the final message.
         ParsedOutput parsed = BuildFromResult(result, exitCode, reportedEdits);
-        parsed = parsed with { ToolCallsCompleted = results == 1 ? toolCalls.Count : null };
+        parsed = parsed with { ToolCallsCompleted = results == 1 ? toolCalls.Count : null, Steps = results == 1 ? NumTurns(result) : null };
         if (parsed.ErrorKind == ErrorKind.Other && assistantError is not null)
             parsed = parsed with { ErrorKind = ClassifyAssistantError(assistantError) };
 
@@ -365,6 +365,10 @@ public sealed class ClaudeBackend(IPlatform platform) : IBackend, IPostRunHook
         TryGetInt(usage, "output_tokens"),
         TryGetInt(usage, "cache_read_input_tokens"),
         TryGetInt(usage, "cache_creation_input_tokens"));
+
+    // #126: the result's own count of model requests (recorded: 1 for the 404 of tests/fixtures/claude/error.txt).
+    private static int? NumTurns(JsonElement result) =>
+        result.TryGetProperty("num_turns", out JsonElement turns) && turns.ValueKind == JsonValueKind.Number && turns.TryGetInt32(out int count) ? count : null;
 
     private static int? TryGetInt(JsonElement parent, string propertyName) =>
         parent.TryGetProperty(propertyName, out JsonElement property) && property.TryGetInt32(out int value) ? value : null;

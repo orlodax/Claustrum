@@ -22,6 +22,9 @@ internal sealed class LiveJob
 {
     private const int MaxMessageBytes = 1024 * 1024;
 
+    private const int RetryPolls = 12;
+    private const int RetryPollMs = 250;
+
     private readonly string directory;
     private readonly SyncRoot fence;
 
@@ -164,6 +167,28 @@ internal sealed class LiveJob
     /// watching this job for a question or an end follows to it.
     /// </summary>
     public LiveJob? ReadRetry() => ReadResult()?.RetriedAs is { } retry ? Find(retry) : null;
+
+    /// <summary>The job a caller that names this one is talking to: its retry when there is one, else itself. One hop, since a retry is never retried.</summary>
+    public LiveJob Current => ReadRetry() ?? this;
+
+    /// <summary>
+    /// <see cref="ReadRetry"/>, waiting for it when <paramref name="retryPossible"/> and the receipt is one the fallback may still take over: the
+    /// rewrite that names the retry lands a few hundred milliseconds after the receipt itself (the retry is prepared in between), so a receipt
+    /// that <see cref="FallbackRetry.Qualifies"/> is given ~3 s to show it before it is taken for final.
+    /// </summary>
+    public async Task<LiveJob?> AwaitRetryAsync(bool retryPossible)
+    {
+        for (int poll = 0; ; poll++)
+        {
+            if (ReadRetry() is { } retry)
+                return retry;
+
+            if (!retryPossible || ReadResult() is not { } receipt || !FallbackRetry.Qualifies(receipt) || poll >= RetryPolls)
+                return null;
+
+            await Task.Delay(RetryPollMs);
+        }
+    }
 
     /// <summary>
     /// Asks the job's detached host to end the job `cancelled`, with its receipt (the host polls for the marker this leaves). Refused

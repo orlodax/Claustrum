@@ -8,7 +8,7 @@ namespace Claustrum.Cli;
 // #124 stage 2 `claustrum jobs cancel <id>`: ends a detached job. The host polls for the marker this leaves and ends the job `cancelled`
 // with its receipt, as Ctrl-C ends an in-process run; this waits for that receipt and prints its summary line. Exit 0 once the job has
 // ended, 2 when it is unknown, not detached, done or abandoned (nothing to cancel), 4 when the host has not finished within two minutes,
-// 6 when the host died without a receipt.
+// 6 when the host died without a receipt. Given a job its cast's fallback took over (#126), it cancels the retry, which runs in the same host.
 public static class JobsCancelCommand
 {
     private static readonly TimeSpan receiptWait = TimeSpan.FromMinutes(2);
@@ -23,8 +23,8 @@ public static class JobsCancelCommand
 
     private static async Task<int> ExecuteAsync(string id)
     {
-        LiveJob job = LiveJob.Find(JobId.Require(id))
-            ?? throw new CliUsageException($"job '{id}' not found under {JobDirectory.ResolveRoot(AppServices.Platform)}");
+        LiveJob job = JobRetry.Follow(LiveJob.Find(JobId.Require(id))
+            ?? throw new CliUsageException($"job '{id}' not found under {JobDirectory.ResolveRoot(AppServices.Platform)}"));
 
         job.RequestCancel();
         SafeConsole.Error($"cancelling {job.Id}…");

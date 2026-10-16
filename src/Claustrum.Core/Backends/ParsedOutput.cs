@@ -6,7 +6,7 @@ namespace Claustrum.Core.Backends;
 // ReportedEdits is a hint only; WorktreeSnapshot's git diff is truth (docs/PLAN.md A2).
 // #126: ErrorKind/ErrorDetail are the backend's own account of a provider refusal (null when it gave none or the run succeeded), and
 // ToolCallsCompleted the tool calls that ran to completion (null when the backend cannot count: then the run is never "before any work",
-// ProviderErrors.BeforeAnyWork).
+// ProviderErrors.BeforeAnyWork), Steps the model requests it made (null when the backend reports none; bounded by that same predicate).
 public sealed record ParsedOutput(
     string FinalMessage,
     string? SessionId,
@@ -17,4 +17,5 @@ public sealed record ParsedOutput(
     bool IsError,
     ErrorKind? ErrorKind = null,
     string? ErrorDetail = null,
-    int? ToolCallsCompleted = null);
+    int? ToolCallsCompleted = null,
+    int? Steps = null);

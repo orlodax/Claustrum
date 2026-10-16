@@ -154,7 +154,9 @@ public sealed class ClaustrumTools
         "nobody will answer it. 'failed' means the job threw after it was started instead of finishing with a " +
         "RunResult (e.g. a blind-gate rejection) — call job_result for the underlying error. State 'unknown' " +
         "means no such job id. A 'done' job also reports status (its RunResult's) and, when status is 'needs_input' — the role stopped " +
-        "because it could not ask live — its questions ([{key, prompt, options, allow_free_form}]): ask the user and continue it with job_answer.")]
+        "because it could not ask live — its questions ([{key, prompt, options, allow_free_form}]): ask the user and continue it with job_answer. " +
+        "retried_as is set when the cast's fallback took the job over (the model's provider refused it before it did anything): everything else here is then " +
+        "the retry's, job_say to this id reaches it, and retried_as is its own id.")]
     public static string JobStatus(string jobId)
     {
         JobStatusInfo status = AppServices.JobManager.GetStatus(jobId) ?? new JobStatusInfo("unknown", 0, null);
@@ -166,14 +168,19 @@ public sealed class ClaustrumTools
         "Talk to a live delegate_async or coordinate job: answer the question job_status shows (state 'waiting_for_input'), or, " +
         "while it runs, send its role a message. Returns {answers_question, state}; an error when the job is " +
         "unknown, not live, done or abandoned (its claustrum process is gone). A blind role (role.json blind:true, e.g. " +
-        "code-reviewer, ui-reviewer) never asks and receives no human input: job_say to its job is refused.")]
+        "code-reviewer, ui-reviewer) never asks and receives no human input: job_say to its job is refused. A job the cast's fallback took " +
+        "over is answered through its retry: retried_as in the result is the job that took the message.")]
     public static string JobSay(
         string jobId,
         [Description("The answer or message.")] string text) =>
         McpExceptionBoundary.Guard(() =>
         {
             LiveJob job = LiveJob.Find(jobId) ?? throw new McpException($"job '{jobId}' not found");
-            return JsonSerializer.Serialize(job.Say(text), McpJsonContext.Default.SayResult);
+
+            // #126: a job its cast's fallback took over is the retry's to answer; the result names the job that took the message.
+            LiveJob current = job.Current;
+            SayResult said = current.Say(text);
+            return JsonSerializer.Serialize(current == job ? said : said with { RetriedAs = current.Id }, McpJsonContext.Default.SayResult);
         });
 
     [McpServerTool(Name = "job_answer")]

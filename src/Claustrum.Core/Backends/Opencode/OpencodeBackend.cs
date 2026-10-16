@@ -96,10 +96,10 @@ public sealed class OpencodeBackend(IPlatform platform) : IBackend, IPostRunHook
         if (scan.ErrorMessage is not null)
             finalMessage = finalMessage.Length == 0 ? scan.ErrorMessage : $"{finalMessage}\n\n{scan.ErrorMessage}";
 
-        // #126: the provider's refusal, when the error event is one, and the tool calls that ran to completion (an errored one did nothing).
+        // #126: the provider's refusal, when the error event is one, the tool calls that ran to completion (an errored one did nothing) and the steps.
         return new ParsedOutput(
             finalMessage, scan.SessionId, cost, usage, [], scan.LastEvent, IsError: exitCode != 0 || scan.ErrorMessage is not null,
-            ErrorKind: scan.ErrorKind, ErrorDetail: scan.ErrorMessage, ToolCallsCompleted: scan.ToolCalls.Values.Count(completed => completed));
+            ErrorKind: scan.ErrorKind, ErrorDetail: scan.ErrorMessage, ToolCallsCompleted: scan.ToolCalls.Values.Count(completed => completed), Steps: scan.StepStarts.Count);
     }
 
     private sealed record StepScan(
