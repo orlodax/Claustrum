@@ -335,7 +335,8 @@ public sealed class TreeRoutingEndToEndTests : IDisposable
                 $"exit {exit}\nstdout: {run.Stdout}\nstderr: {run.Stderr}\nresult.json: {(File.Exists(receipt) ? File.ReadAllText(receipt) : "(none)")}"
                 + $"\nconversation: {(File.Exists(conversation) ? File.ReadAllText(conversation) : "(none)")}"
                 + $"\ncancel marker: {(new FileInfo(marker).LinkTarget is { } target ? $"link to {target}" : File.Exists(marker) ? "a plain file" : "absent")}"
-                + $"; outside: [{string.Join(", ", Directory.GetFileSystemEntries(outside))}]; host alive: {fixture.HostAlive(id)}";
+                + $"; outside: [{string.Join(", ", Directory.GetFileSystemEntries(outside))}]; host alive: {fixture.HostAlive(id)}"
+                + $"\nhost.log: {(File.Exists(Path.Combine(fixture.JobDir(id), "host.log")) ? File.ReadAllText(Path.Combine(fixture.JobDir(id), "host.log")) : "(none)")}";
             Assert.True(exit == ExitCodes.Cancelled, Evidence());
             JsonElement result = OneDocument(run.Stdout);
             Assert.True(result.GetProperty("status").GetString() == "cancelled", Evidence());
