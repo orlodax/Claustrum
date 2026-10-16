@@ -116,10 +116,19 @@ public sealed class CancelScenario : IDisposable
             return File.Exists(path) ? path : null;
         }
 
+        // Exists then list is a race the run under test can win (it creates or removes worktrees/ meanwhile): a vanished
+        // directory is "not yet", like a missing one (CI-local run, 2026-10-16).
         string worktrees = Path.Combine(root, ".claustrum", "worktrees");
-        return Directory.Exists(worktrees)
-            ? Directory.GetDirectories(worktrees).Select(dir => Path.Combine(dir, "partial.txt")).FirstOrDefault(File.Exists)
-            : null;
+        try
+        {
+            return Directory.Exists(worktrees)
+                ? Directory.GetDirectories(worktrees).Select(dir => Path.Combine(dir, "partial.txt")).FirstOrDefault(File.Exists)
+                : null;
+        }
+        catch (DirectoryNotFoundException)
+        {
+            return null;
+        }
     }
 
     /// <summary>

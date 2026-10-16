@@ -22,7 +22,8 @@ internal sealed class LiveJob
 {
     private const int MaxMessageBytes = 1024 * 1024;
 
-    private const int RetryPolls = 12;
+    private static readonly TimeSpan retryCap = TimeSpan.FromSeconds(60);
+    private static readonly TimeSpan retryGrace = TimeSpan.FromSeconds(2);
     private const int RetryPollMs = 250;
 
     private readonly string directory;
@@ -173,18 +174,32 @@ internal sealed class LiveJob
 
     /// <summary>
     /// <see cref="ReadRetry"/>, waiting for it when <paramref name="retryPossible"/> and the receipt is one the fallback may still take over: the
-    /// rewrite that names the retry lands a few hundred milliseconds after the receipt itself (the retry is prepared in between), so a receipt
-    /// that <see cref="FallbackRetry.Qualifies"/> is given ~3 s to show it before it is taken for final.
+    /// rewrite that names the retry lands after the receipt itself, written by the same host. So the wait lasts while that host lives (and
+    /// two seconds after), not a guessed few seconds, and a receipt not yet readable is waited for, never taken for "no retry".
     /// </summary>
     public async Task<LiveJob?> AwaitRetryAsync(bool retryPossible)
     {
-        for (int poll = 0; ; poll++)
+        DateTimeOffset giveUp = DateTimeOffset.UtcNow + retryCap;
+        DateTimeOffset? hostGoneAt = null;
+        while (true)
         {
             if (ReadRetry() is { } retry)
                 return retry;
 
-            if (!retryPossible || ReadResult() is not { } receipt || !FallbackRetry.Qualifies(receipt) || poll >= RetryPolls)
+            if (!retryPossible)
                 return null;
+
+            // Measured on CI (2026-10-16): a fixed 3 s, and giving up on a receipt read mid-write, both took a first job's 402 for final.
+            RunResult? receipt = ReadResult();
+            if (receipt is not null && !FallbackRetry.Qualifies(receipt))
+                return null;
+
+            DateTimeOffset now = DateTimeOffset.UtcNow;
+            if (ReadHost() is not { } host || !host.IsAlive())
+                hostGoneAt ??= now;
+
+            if (now >= giveUp || now - hostGoneAt > retryGrace)
+                return ReadRetry();
 
             await Task.Delay(RetryPollMs);
         }
