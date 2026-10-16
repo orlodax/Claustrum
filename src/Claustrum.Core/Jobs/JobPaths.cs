@@ -14,6 +14,9 @@ public sealed record JobPaths(string Id, string Directory, string RequestJson, s
 
     public string InboxDirectory => Path.Combine(Directory, "inbox");
 
+    // The client→agent half of an ACP run's transcript (#130), one frame per line; stdout.log is the agent→client half.
+    public string AcpClientLog => Path.Combine(Directory, "acp-client.jsonl");
+
     // A detached job (`run --detach`, #124 stage 2) is run by a `claustrum jobs host` process of its own: what it is to run,
     // who it is, where its console output goes, and the marker `jobs cancel` leaves for it.
     public string HostRequestJson => Path.Combine(Directory, "host-request.json");

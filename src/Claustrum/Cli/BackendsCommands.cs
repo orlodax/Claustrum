@@ -90,7 +90,8 @@ public static class BackendsCommands
 
             if (probe)
             {
-                Console.WriteLine($"  auth:    {AuthStatusFor(backend.Name)}");
+                // An ACP backend logs in as its harness does (#130): acp-opencode reports opencode's auth.
+                Console.WriteLine($"  auth:    {AuthStatusFor(backend.Harness)}");
                 Console.WriteLine($"  os:      {OsStatusFor(doctor.Path, cwd)}");
                 Console.WriteLine($"  probe:   {await ProbeLineAsync(backend, doctor, config, probeSkipped)}");
             }

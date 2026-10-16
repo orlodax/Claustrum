@@ -336,7 +336,9 @@ guessing at a decision that is the human's. Blind roles never do this; their dou
   `conversation.jsonl` as a `message` from the role (the file is created if the run is not live; a live session numbers and writes
   them itself) and `jobs follow` shows it as `· <text>`. One-way: nothing answers it. The job's `conversation` field then points at the file. A repeat of a note is recorded once, at
   most 200 per job. Only a JSON event's assistant text is read (not a tool's output), so on a backend whose output arrives as one document at
-  the end (cursor, api), notes appear when the run ends.
+  the end (cursor, api), notes appear when the run ends. On the ACP backends (`acp-opencode`) a note is not recorded as it is printed,
+  because the reply arrives in chunks: in a live run the turn's whole text, notes included, lands in `conversation.jsonl` when the turn
+  ends; in a batch run (`--no-live`) the notes are only in the final message.
 
 #### Questions inside a tree
 
@@ -1029,6 +1031,24 @@ end, call `coordinate` and relay `job_status`.
 | `cursor` | Cursor's `cursor-agent` installer (not the npm package of that name) | `cursor-agent login` or `CURSOR_API_KEY` | role prefixed to the prompt, fed on **stdin**; `-f` always (an untrusted workspace is a fast exit 1) | **none**; usage tokens only |
 | `copilot` | `npm i -g @github/copilot` | logged in (`~/.copilot/config.json`) or `COPILOT_GITHUB_TOKEN`/`GH_TOKEN`/`GITHUB_TOKEN` | per-job `.agent.md` via `--add-dir`, agent `claustrum-<role>` | **none** (`assistant.usage` is suppressed in JSON mode); `--reasoning-effort` is omitted for `auto` |
 | `api` | `curl` | `OPENROUTER_API_KEY` / `ANTHROPIC_API_KEY` by model prefix | system message (with `AGENTS.md`/`CLAUDE.md` inlined, §4); **no tools**, `changed_files` always empty | yes |
+| `acp-opencode` | opencode (as above) | opencode's | the same `OPENCODE_CONFIG_CONTENT` agent, chosen with `session/set_config_option`: `model`, then `effort` (only for a `#variant` model id), then `mode`; the brief as the first `session/prompt` | yes: `opencode session export` after every run (a continued session: after minus before); if the export fails, only a fresh run whose last turn finished and was priced keeps the stream's last `usage_update`, every other run charges the cap with a warning |
+
+**ACP backends.** `acp-opencode` drives `opencode acp` over the Agent Client Protocol (JSON-RPC on the process's own
+stdin and stdout) instead of `opencode run`. It is opt-in: pick it with `--backend acp-opencode` or a model alias
+`acp-opencode:<model>`; nothing resolves to it by default, and the native `opencode` backend stays the default for
+opencode models. Live sessions work as on the native backends: `jobs say`, `jobs answer` (which continues the
+session with `session/load`) and `jobs follow`, whose cost figure is the session's running total (on a continued
+session, what it cost before included). `backends.acp-opencode.path` in `claustrum.json` overrides the binary, for
+the run and for the `session export` that prices it. Every run is priced from `opencode session export` after it
+ends; a continued session is charged the total after, less the total read before it started. When the export fails,
+a fresh run whose last turn finished and was priced keeps the stream's last `usage_update`; every other case (a turn
+cut off, a continued session) charges the cap, with a warning on the receipt. The session's config options are set in
+the order `model`, then `effort` (only when the model id carries a `#<variant>`, which becomes its value), then
+`mode` (the role's agent). The job directory keeps both halves of the
+conversation: `stdout.log` is what the agent sent, `acp-client.jsonl` what Claustrum sent, one JSON frame per line.
+The deny list is enforced by opencode's own config, exactly as on the native backend; Claustrum also refuses a
+permission request whose command a deny pattern names, but that is a backup, since a harness that allows a command
+never asks.
 
 **MCP servers on `claude`.** A claude role runs with `--strict-mcp-config`: it gets the servers of the working
 directory's own `.mcp.json` (what `sync` writes there is the `claustrum` server only; any other server is yours) and

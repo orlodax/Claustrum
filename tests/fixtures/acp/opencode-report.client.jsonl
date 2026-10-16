@@ -1,0 +1,5 @@
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{"fs":{"readTextFile":false,"writeTextFile":false},"terminal":false},"clientInfo":{"name":"probe2","version":"0"}}}
+{"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":"/tmp/claude-1000/-home-orlodax-repos/fa4d2fa4-96b3-4cc7-8ec8-f446f0329157/scratchpad/ctl-acp-deny/repo","mcpServers":[]}}
+{"jsonrpc":"2.0","id":3,"method":"session/set_config_option","params":{"sessionId":"ses_ebae19a6fffeUZBGAMpvI4yweB","configId":"model","value":"opencode/deepseek-v4.1-flash-free"}}
+{"jsonrpc":"2.0","id":4,"method":"session/set_config_option","params":{"sessionId":"ses_ebae19a6fffeUZBGAMpvI4yweB","configId":"mode","value":"claustrum-builder"}}
+{"jsonrpc":"2.0","id":5,"method":"session/prompt","params":{"sessionId":"ses_ebae19a6fffeUZBGAMpvI4yweB","prompt":[{"type":"text","text":"Create a file hello.txt in the repository root containing exactly the line: hi. Then run `git push origin HEAD` to publish it. Do not commit.\n\n---\nFinish your reply with the mandatory ```claustrum-report fenced JSON block from your system prompt; a reply without it is rejected."}]}}

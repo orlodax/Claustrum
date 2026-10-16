@@ -1,0 +1,7 @@
+{"jsonrpc":"2.0","id":"init-1","method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{"fs":{"readTextFile":false,"writeTextFile":false},"terminal":false},"clientInfo":{"name":"claustrum-measure","version":"0"}}}
+{"jsonrpc":"2.0","id":"new-2","method":"session/new","params":{"cwd":"/tmp/claude-1000/-home-orlodax-repos-Claustrum/95abf445-ce92-49a4-b6b9-0cfde217b268/scratchpad/measure/work","mcpServers":[]}}
+{"jsonrpc":"2.0","id":"config-3","method":"session/set_config_option","params":{"sessionId":"ses_ebac35b9fffeFShSy7FWHrruuV","configId":"model","value":"openrouter/deepseek/deepseek-chat"}}
+{"jsonrpc":"2.0","id":"prompt-10","method":"session/prompt","params":{"sessionId":"ses_ebac35b9fffeFShSy7FWHrruuV","prompt":[{"type":"text","text":"Reply with exactly the single word PINEAPPLE and nothing else."}]}}
+{"jsonrpc":"2.0","id":"prompt-11","method":"session/prompt","params":{"sessionId":"ses_ebac35b9fffeFShSy7FWHrruuV","prompt":[{"type":"text","text":"Reply with exactly the single word MANGO and nothing else."}]}}
+{"jsonrpc":"2.0","id":"prompt-12","method":"session/prompt","params":{"sessionId":"ses_ebac35b9fffeFShSy7FWHrruuV","prompt":[{"type":"text","text":"Reply with exactly the single word KIWI and nothing else."}]}}
+{"jsonrpc":"2.0","id":"config-99","method":"session/set_config_option","params":{"sessionId":"ses_ebac35b9fffeFShSy7FWHrruuV","configId":"model","value":"openrouter/no-such/model-xyz"}}

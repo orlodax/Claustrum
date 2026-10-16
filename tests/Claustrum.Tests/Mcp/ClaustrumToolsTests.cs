@@ -57,18 +57,28 @@ public sealed class ClaustrumToolsTests(AppServicesHomeFixture fixture) : IDispo
     }
 
     [Fact]
+    public void ListBackendsIncludesTheOptInAcpBackend()
+    {
+        string json = ClaustrumTools.ListBackends();
+
+        using JsonDocument document = JsonDocument.Parse(json);
+        Assert.Equal(["claude", "api", "opencode", "copilot", "cursor", "acp-opencode"], document.RootElement.EnumerateArray().Select(entry => entry.GetString()));
+    }
+
+    [Fact]
     public async Task DoctorReportsOneEntryPerRegisteredBackendAsync()
     {
         string json = await ClaustrumTools.DoctorAsync(CancellationToken.None);
 
         using JsonDocument document = JsonDocument.Parse(json);
         JsonElement backends = document.RootElement.GetProperty("backends");
-        Assert.Equal(5, backends.GetArrayLength());
+        Assert.Equal(6, backends.GetArrayLength());
         Assert.Equal("claude", backends[0].GetProperty("name").GetString());
         Assert.Equal("api", backends[1].GetProperty("name").GetString());
         Assert.Equal("opencode", backends[2].GetProperty("name").GetString());
         Assert.Equal("copilot", backends[3].GetProperty("name").GetString());
         Assert.Equal("cursor", backends[4].GetProperty("name").GetString());
+        Assert.Equal("acp-opencode", backends[5].GetProperty("name").GetString());
     }
 
     // Issue #17: BackendDoctorEntry.Advisories mirrors Doctor.Advisories — every entry carries the
