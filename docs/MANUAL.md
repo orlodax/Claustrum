@@ -1,7 +1,7 @@
 # Claustrum manual
 
 The reference for using Claustrum — every verb, file, field and rule, in one place. It restates
-what the code does today (binary `0.2.0`, role library `1.1.0`; checked against the code
+what the code does today (binary `0.3.0`, role library `1.1.0`; checked against the code
 2026-10-08, #54); the *why* stays
 in [NOTES.md](../NOTES.md) and the plan in [PLAN.md](PLAN.md). Getting the binary and the backends
 onto a machine is [INSTALL.md](INSTALL.md); running it on a real task for the first time is
@@ -1148,7 +1148,7 @@ created. Budget ledgers live beside them under `budget/<tree>/`.
 
 ## 16. Not in v1, and not verified
 
-Deliberately out: a pipeline state machine in C#, `opencode serve`/ACP/Copilot SDK transports,
+Deliberately out: a pipeline state machine in C#, `opencode serve`/Copilot SDK transports (ACP is opt-in, `acp-opencode` only),
 YAML config, ui-reviewer on non-Claude harnesses, Windows↔WSL path translation, the `mc-*`
 metaconcert roles.
 
