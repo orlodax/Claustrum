@@ -326,18 +326,23 @@ public sealed class TreeRoutingEndToEndTests : IDisposable
             await run.SendSigintAsync(DetachedRepo.Ct);
             int exit = await run.WaitForExitAsync(exitLimit, DetachedRepo.Ct);
 
-            // macOS CI exited 1 here once (2026-10-15) with no way to see why: say everything the run left.
+            // macOS CI failed here three ways (2026-10-15/16) and the receipt alone never said who cancelled the job: every check
+            // below reports everything the run left, conversation (a root-watch notice would be there) and marker included.
             string receipt = Path.Combine(fixture.JobDir(id), "result.json");
-            Assert.True(
-                exit == ExitCodes.Cancelled,
+            string conversation = Path.Combine(fixture.JobDir(id), "conversation.jsonl");
+            string marker = Path.Combine(fixture.JobDir(id), "cancel");
+            string Evidence() =>
                 $"exit {exit}\nstdout: {run.Stdout}\nstderr: {run.Stderr}\nresult.json: {(File.Exists(receipt) ? File.ReadAllText(receipt) : "(none)")}"
-                + $"\ncancel marker: {(File.Exists(Path.Combine(fixture.JobDir(id), "cancel")) ? "exists" : "absent")}; outside: [{string.Join(", ", Directory.GetFileSystemEntries(outside))}]");
+                + $"\nconversation: {(File.Exists(conversation) ? File.ReadAllText(conversation) : "(none)")}"
+                + $"\ncancel marker: {(new FileInfo(marker).LinkTarget is { } target ? $"link to {target}" : File.Exists(marker) ? "a plain file" : "absent")}"
+                + $"; outside: [{string.Join(", ", Directory.GetFileSystemEntries(outside))}]; host alive: {fixture.HostAlive(id)}";
+            Assert.True(exit == ExitCodes.Cancelled, Evidence());
             JsonElement result = OneDocument(run.Stdout);
-            Assert.Equal("cancelled", result.GetProperty("status").GetString());
+            Assert.True(result.GetProperty("status").GetString() == "cancelled", Evidence());
             Assert.Equal(id, result.GetProperty("job_id").GetString());
-            Assert.Contains("could not be made", result.GetProperty("error").GetString(), StringComparison.Ordinal);
-            Assert.Empty(Directory.GetFileSystemEntries(outside));
-            Assert.True(fixture.HostAlive(id), "the job was not told to stop, so its host is still running it");
+            Assert.True((result.GetProperty("error").GetString() ?? "").Contains("could not be made", StringComparison.Ordinal), Evidence());
+            Assert.True(Directory.GetFileSystemEntries(outside).Length == 0, Evidence());
+            Assert.True(fixture.HostAlive(id), $"the job was not told to stop, so its host is still running it\n{Evidence()}");
         }
         finally
         {

@@ -160,6 +160,8 @@ public sealed class RunnerPostRunHookTests : IDisposable
 
     // #127 finding 3: a cancelled job is enriched too (a stream cut mid-turn has no cost and would be charged its cap), on a 5 s token, not on
     // CancellationToken.None. Before that change a cancelled job was never asked; the old case also passed for the wrong reason (no session id).
+    // Cancelled after 3 s, not 700 ms: on a slow windows-latest runner the cancel landed before `cmd` had started, so the job ended
+    // cancelled before any spawn and there was rightly no session to enrich (CI, 2026-10-16).
     private static ScriptedBackend CancelledSession() =>
         ScriptedBackend.Shell("sleep 30", "ping -n 31 127.0.0.1 > nul", new ParsedOutput("cut", "ses_1", null, null, [], null, false));
 
@@ -168,7 +170,7 @@ public sealed class RunnerPostRunHookTests : IDisposable
     {
         HookedBackend backend = new(CancelledSession(), postRun: (_, _, _) => new PostRunResult(0.42m, null, null));
 
-        RunResult result = await RunAsync(backend, cancelAfter: TimeSpan.FromMilliseconds(700));
+        RunResult result = await RunAsync(backend, cancelAfter: TimeSpan.FromSeconds(3));
 
         Assert.Equal(RunStatus.Cancelled, result.Status);
         Assert.Equal(1, backend.PostRunCalls);
@@ -181,7 +183,7 @@ public sealed class RunnerPostRunHookTests : IDisposable
     {
         HookedBackend backend = new(CancelledSession(), postRun: (_, _, _) => new PostRunResult(9m, null, "export failed: fell back"));
 
-        RunResult result = await RunAsync(backend, cancelAfter: TimeSpan.FromMilliseconds(700));
+        RunResult result = await RunAsync(backend, cancelAfter: TimeSpan.FromSeconds(3));
 
         Assert.Equal(RunStatus.Cancelled, result.Status);
         Assert.Equal(1, backend.PostRunCalls);
@@ -201,7 +203,7 @@ public sealed class RunnerPostRunHookTests : IDisposable
             return null;
         });
 
-        RunResult result = await RunAsync(backend, cancelAfter: TimeSpan.FromMilliseconds(700));
+        RunResult result = await RunAsync(backend, cancelAfter: TimeSpan.FromSeconds(3));
 
         Assert.Equal(RunStatus.Cancelled, result.Status);
         Assert.InRange(waited?.TotalSeconds ?? -1, 4.0, 12.0);
