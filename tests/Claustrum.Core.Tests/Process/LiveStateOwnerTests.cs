@@ -9,6 +9,34 @@ public sealed class LiveStateOwnerTests
     private static LiveState Owned(int pid, DateTimeOffset? startedAt) =>
         new(LiveStatus.Running, null, DateTimeOffset.UtcNow, 0, pid, startedAt);
 
+    // The launcher records a detached host, and the tests a fake coordinate root, by reading StartTime right after Process.Start.
+    // macOS CI failed only where such a live process had to read as alive (2026-10-16): this says whether that read holds there.
+    [Fact]
+    public void AChildRecordedRightAfterItsStartIsAlive()
+    {
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("a POSIX `sleep` stands in for the child; Windows records its hosts through the same API.");
+
+        System.Diagnostics.ProcessStartInfo info = new("/bin/sleep", ["30"]) { UseShellExecute = false };
+        using System.Diagnostics.Process child = System.Diagnostics.Process.Start(info) ?? throw new InvalidOperationException("no child");
+        try
+        {
+            DateTimeOffset recorded = new(child.StartTime);
+            Thread.Sleep(1500);
+            using System.Diagnostics.Process again = System.Diagnostics.Process.GetProcessById(child.Id);
+            DateTimeOffset reread = again.StartTime.ToUniversalTime();
+
+            Assert.True(
+                Owned(child.Id, recorded).IsOwnerAlive(),
+                $"pid {child.Id}: recorded {recorded:O}, re-read {reread:O}, skew {(reread - recorded).TotalMilliseconds} ms, exited {again.HasExited}");
+        }
+        finally
+        {
+            child.Kill();
+            child.WaitForExit();
+        }
+    }
+
     [Fact]
     public void TheRunningProcessIsAliveWithItsOwnStartTime()
     {
