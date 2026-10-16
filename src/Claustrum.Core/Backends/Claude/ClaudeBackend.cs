@@ -18,7 +18,7 @@ namespace Claustrum.Core.Backends.Claude;
 // from stdin when argv carries none. Parse tells single-object `json` from `stream-json` JSONL by
 // parsing stdout as one JSON document first (a JSONL stream has trailing content, which JsonDocument
 // rejects). Every run is stream-json since 2026-10-15; the single-document form still parses.
-public sealed class ClaudeBackend(IPlatform platform) : IBackend
+public sealed class ClaudeBackend(IPlatform platform) : IBackend, IPostRunHook
 {
     private static readonly TimeSpan detectTimeout = TimeSpan.FromSeconds(10);
 
@@ -51,10 +51,10 @@ public sealed class ClaudeBackend(IPlatform platform) : IBackend
         // MCP delegate) with nothing to show for the whole run. `--stream` now only gates the stderr echo.
         args.AddRange(["--output-format", "stream-json", "--verbose"]);
 
-        // A live session (#124) feeds the brief and every later message as stream-json user turns on a stdin
-        // that stays open; without the flag claude would read stdin once, as the prompt, and stop.
+        // A live session (#124) feeds the brief and every later message as stream-json user turns on a stdin that stays open; without
+        // the flag claude would read stdin once, as the prompt, and stop. --replay-user-messages echoes each message when claude takes it (#127).
         if (run.Live)
-            args.AddRange(["--input-format", "stream-json"]);
+            args.AddRange(["--input-format", "stream-json", "--replay-user-messages"]);
 
         args.AddRange(["--model", run.Role.Model]);
         args.AddRange(["--append-system-prompt-file", run.SystemPromptFilePath]);
@@ -76,9 +76,8 @@ public sealed class ClaudeBackend(IPlatform platform) : IBackend
         if (run.Env.ContainsKey(BudgetLedger.TreeVariable))
             args.AddRange(["--disallowedTools", SubagentTools]);
 
-        // A resumed session must keep its own persisted history; --no-session-persistence would
-        // wipe exactly the state --resume is asking to reuse.
-        if (!resuming)
+        // needs_input is continued with --resume, which a session that was never saved cannot do (#127): only a role that cannot end that way drops it.
+        if (!resuming && (run.Role.Blind || !run.Role.HasReport))
             args.Add("--no-session-persistence");
 
         if (run.BudgetUsd is { } budget)
@@ -92,7 +91,7 @@ public sealed class ClaudeBackend(IPlatform platform) : IBackend
 
         // On argv the brief showed in every process listing: a `pgrep -f` pattern a brief quoted matched
         // the job running it (#68, measured 2026-10-08). Stdin also lifts the argv length cap.
-        string stdinText = run.Live ? ClaudeLiveProtocol.Instance.EncodeUserMessage(run.Brief) + "\n" : run.Brief;
+        string stdinText = run.Live ? ClaudeLiveProtocol.Instance.EncodeUserMessage(run.Brief, Guid.NewGuid().ToString()) + "\n" : run.Brief;
         return new ProcessSpec(Name, [.. args], run.Cwd, run.Env, [], StdinText: stdinText, McpServers: mcp.Servers, Warnings: mcp.Warning is { } warning ? [warning] : null);
     }
 
@@ -116,6 +115,36 @@ public sealed class ClaudeBackend(IPlatform platform) : IBackend
         {
             return ParseStream(trimmed, stderr, exitCode);
         }
+    }
+
+    // IPostRunHook (#127; NOTES.md "A claude continuation is charged what it added"): `--resume` restores the session's running total into
+    // `total_cost_usd`, so a continuation is charged the total minus the last receipt's. Usage is the run's own on `--resume` (measured), and is left alone.
+    Task<PreRunBaseline?> IPostRunHook.PreRunAsync(PostRunContext context, CancellationToken cancellationToken)
+    {
+        if (context.ResumeSession is not { Length: > 0 } sessionId)
+            return Task.FromResult<PreRunBaseline?>(null);
+
+        decimal? before = Path.GetDirectoryName(Path.TrimEndingDirectorySeparator(context.JobDirectory)) is { Length: > 0 } jobsRoot
+            ? ClaudeSessionCost.Before(jobsRoot, context.JobDirectory, sessionId)
+            : null;
+
+        return Task.FromResult<PreRunBaseline?>(new PreRunBaseline(before, null, before is null ? "no receipt in the job store names this session" : null));
+    }
+
+    Task<PostRunResult?> IPostRunHook.PostRunAsync(ParsedOutput parsed, PostRunContext context, PreRunBaseline? baseline, CancellationToken cancellationToken)
+    {
+        // A baseline only applies when the run really continued that session: `--resume` keeps the id.
+        if (baseline is null || parsed.CostUsd is not { } total || parsed.SessionId != context.ResumeSession)
+            return Task.FromResult<PostRunResult?>(null);
+
+        PostRunResult result = baseline.CostUsd switch
+        {
+            null => new PostRunResult(null, null, $"what claude session {context.ResumeSession} had cost before this run is unknown ({baseline.Failure}): charged its whole running total"),
+            { } before when total < before => new PostRunResult(null, null, "the resumed session's total is lower than its last receipt's: charged the whole running total"),
+            { } before => new PostRunResult(total - before, null, null),
+        };
+
+        return Task.FromResult<PostRunResult?>(result);
     }
 
     private static List<string> PermissionArgs(PermissionPolicy permission) => permission.Level switch
@@ -203,6 +232,11 @@ public sealed class ClaudeBackend(IPlatform platform) : IBackend
                     continue;
 
                 sawEvent = true;
+
+                // A replayed user message (#127) is an echo, not an event of the run: --resume can replay the session's whole history.
+                if (ClaudeLiveProtocol.IsReplay(root))
+                    continue;
+
                 string? type = TryGetString(root, "type");
                 if (type == "result")
                 {

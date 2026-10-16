@@ -32,6 +32,10 @@ public sealed class ClaudeStreamFormatter(string cwd) : IStreamFormatter
         if (root.ValueKind != JsonValueKind.Object || GetString(root, "type") is not { } type)
             return Passthrough(rawLine);
 
+        // An echo of a message claude took, or the resumed session's history (--replay-user-messages, #127): it prints nothing.
+        if (ClaudeLiveProtocol.IsReplay(root))
+            return null;
+
         long? timestampMs = TryGetTimestamp(root);
 
         // result: the one place the total is known, so the one line that shows it.

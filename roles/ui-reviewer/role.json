@@ -14,6 +14,7 @@
   "mayDelegate": [],
   "report": "code-reviewer",
   "harnesses": ["claude"],
+  "userMcp": true,
   "nonNegotiable": [
     "You are briefed blind: the requirement as stated, what must still work, the surfaces and the diff — never seek the rationale.",
     "The browser is the only evidence: every finding carries numbered reproduction steps and a CONFIRMED or PLAUSIBLE verdict, and what you could not reproduce is not a finding.",

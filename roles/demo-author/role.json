@@ -18,6 +18,7 @@
   "mayDelegate": [],
   "report": "demo-author",
   "harnesses": ["claude"],
+  "userMcp": true,
   "nonNegotiable": [
     "You record what passed the gate: after it is green, on a commit that contains the feature — never a merge, never uncommitted changes — and that commit goes in your manifest.",
     "The deck is made to leave the building — nothing reaches it that the repo would not publish, and a deck recorded against non-demo data is marked internal, its video too.",

@@ -82,6 +82,7 @@ public sealed class RoleLibrary
         }
 
         RoleDefinition definition;
+        string[]? warnings = null;
         try
         {
             JsonNode mergedNode = baseNode;
@@ -89,6 +90,12 @@ public sealed class RoleLibrary
             {
                 JsonNode overrideNode = JsonNode.Parse(localRoleJson)
                     ?? throw new RoleRenderException($"role '{role}': '{localRoleJsonPath}' parsed to null");
+
+                // #127: personal connectors are the operator's choice (user config) or the library's default, never a repo's: a cloned
+                // repo's override could otherwise attach them. The same rule drops roles.<role>.user_mcp from a repo's claustrum.json.
+                if (overrideNode is JsonObject overrideObject && overrideObject.Remove("userMcp"))
+                    warnings = [$"role '{role}': 'userMcp' in '{localRoleJsonPath}' ignored: a repo cannot attach your personal MCP servers; set roles.{role}.user_mcp in your user config"];
+
                 mergedNode = DeepMerge(baseNode, overrideNode);
             }
 
@@ -102,7 +109,7 @@ public sealed class RoleLibrary
             throw new RoleRenderException($"role '{role}': '{localRoleJsonPath}': {ex.Message}");
         }
 
-        return new LoadedRole(definition, localRoleMd ?? ReadEmbedded($"{role}/ROLE.md"), isLocalOverride);
+        return new LoadedRole(definition, localRoleMd ?? ReadEmbedded($"{role}/ROLE.md"), isLocalOverride, warnings);
     }
 
     /// <summary>

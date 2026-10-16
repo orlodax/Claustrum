@@ -36,7 +36,7 @@ public sealed class RoleRenderer(RoleLibrary library)
 
         string body = TemplateRenderer.Render(loaded.RoleMdTemplate, token => ResolveToken(token, role, tier, harness, cwd, roleTier, definition));
         string houseRules = library.ReadShared("_shared/house-rules.md").Trim();
-        List<string> warnings = [];
+        List<string> warnings = [.. loaded.Warnings ?? []];
 
         // #55: the api backend cannot read files, so for it alone the rules ride in the system prompt.
         if (harness == "api" && cwd is not null)
@@ -55,7 +55,8 @@ public sealed class RoleRenderer(RoleLibrary library)
             Deny: definition.Deny,
             ReportSchema: definition.Report,
             Blind: definition.Blind,
-            Warnings: warnings.Count > 0 ? [.. warnings] : null);
+            Warnings: warnings.Count > 0 ? [.. warnings] : null,
+            UserMcp: definition.UserMcp);
     }
 
     /// <summary>

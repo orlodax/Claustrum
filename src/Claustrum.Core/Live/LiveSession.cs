@@ -56,6 +56,14 @@ public sealed class LiveSession(
     private readonly Channel<bool> wake = Channel.CreateUnbounded<bool>(new UnboundedChannelOptions { SingleReader = true });
     private bool turnInFlight = true;
     private bool queuedHuman;
+
+    // Stream only (claude, #127): the human messages written to stdin that claude has not yet echoed as taken, and those of them that already
+    // stopped one report-less turn from being a question. `replaySeen` is the first echo that names a message: before it, nothing is tracked,
+    // because a claude that never echoes would keep every later question from being asked.
+    private readonly HashSet<string> unreplayed = [];
+    private readonly HashSet<string> heldBack = [];
+    private bool replaySeen;
+    private bool inboxFenceSaid;
     private string? sessionId;
     private PausableDeadline? deadline;
     private LiveStatus state = LiveStatus.Running;
@@ -116,7 +124,26 @@ public sealed class LiveSession(
 
     public void OnStdoutLine(string line)
     {
-        if (stream?.ReadTurnEnd(line) is not { } turn)
+        if (stream is null)
+            return;
+
+        if (stream.ReadReplay(line) is { } replay)
+        {
+            lock (gate)
+            {
+                // Only an echo that names its message proves the matching works.
+                if (replay.Uuid is { } taken)
+                {
+                    replaySeen = true;
+                    unreplayed.Remove(taken);
+                    heldBack.Remove(taken);
+                }
+            }
+
+            return;
+        }
+
+        if (stream.ReadTurnEnd(line) is not { } turn)
             return;
 
         lock (gate)
@@ -273,6 +300,13 @@ public sealed class LiveSession(
             return;
         }
 
+        // Stream: a human message claude has not echoed yet is what it takes as its next turn, so this turn's question is already answered (#127).
+        if (HumanMessageNotYetTaken())
+        {
+            Append(ConversationParty.Role, ConversationKind.Message, turn.Text);
+            return;
+        }
+
         int question = Append(ConversationParty.Role, ConversationKind.Question, turn.Text);
 
         // The human spoke while this turn ran (per-turn only): that message is the answer, and it starts the next turn.
@@ -302,11 +336,17 @@ public sealed class LiveSession(
                 return;
         }
 
-        List<InboxItem> inbox = ReadInbox();
+        List<InboxItem> inbox = ReadInbox(out string? fenced);
         lock (gate)
         {
             if (state == LiveStatus.Done)
                 return;
+
+            if (fenced is not null && !inboxFenceSaid)
+            {
+                inboxFenceSaid = true;
+                Append(ConversationParty.Claustrum, ConversationKind.Notice, $"The inbox directory is {fenced}: nothing is read from it or deleted through it, so no message sent with `jobs say` reaches the role.");
+            }
 
             foreach (InboxItem item in inbox)
             {
@@ -338,8 +378,12 @@ public sealed class LiveSession(
     // Oldest first by file name (`<ticks>-<random>.json`). Files still being written never match: the writer renames
     // them into place. An item with neither message nor reason is an empty text; a file that cannot be read right now
     // (still open for writing on Windows) is left out and tried again on the next tick.
-    private List<InboxItem> ReadInbox()
+    private List<InboxItem> ReadInbox(out string? fenced)
     {
+        fenced = InboxRefusal();
+        if (fenced is not null)
+            return [];
+
         string[] files;
         try
         {
@@ -359,6 +403,21 @@ public sealed class LiveSession(
         }
 
         return items;
+    }
+
+    // The inbox is a directory this session made inside the job directory, so a link in its place (a symlink, a junction) is not one: listing
+    // it and deleting what is listed would reach whatever it points at, outside the store (#127 review). Refused whatever it points at.
+    private string? InboxRefusal()
+    {
+        try
+        {
+            DirectoryInfo inbox = new(job.InboxDirectory);
+            return inbox.Exists && (inbox.LinkTarget is not null || inbox.Attributes.HasFlag(FileAttributes.ReparsePoint)) ? "a link" : null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
     }
 
     // Only a regular, unlinked file of at most MaxInboxBytes is read: a FIFO named `*.json` would block the read
@@ -418,7 +477,7 @@ public sealed class LiveSession(
         bool replying = state == LiveStatus.WaitingForInput;
         Append(ConversationParty.Human, replying ? ConversationKind.Reply : ConversationKind.Message, text);
         toldOnce = false;
-        Send(text);
+        Send(text, human: true);
 
         if (replying)
             Resume();
@@ -469,6 +528,8 @@ public sealed class LiveSession(
 
         queued.Clear();
         queuedHuman = false;
+        unreplayed.Clear();
+        heldBack.Clear();
         SetState(LiveStatus.Done);
         deadline?.Resume();
         outbox.Writer.TryComplete();
@@ -481,7 +542,7 @@ public sealed class LiveSession(
         Send(text);
     }
 
-    private void Send(string text)
+    private void Send(string text, bool human = false)
     {
         if (resume is not null)
         {
@@ -489,7 +550,23 @@ public sealed class LiveSession(
             wake.Writer.TryWrite(true);
         }
         else if (stream is not null)
-            outbox.Writer.TryWrite(stream.EncodeUserMessage(text));
+        {
+            // Only a human message, and only once echoes are known to work, is numbered: the others are written as they always were.
+            string? uuid = human && replaySeen ? Guid.NewGuid().ToString() : null;
+            if (uuid is not null)
+                unreplayed.Add(uuid);
+
+            outbox.Writer.TryWrite(stream.EncodeUserMessage(text, uuid));
+        }
+    }
+
+    // True when a human message is waiting that this turn's end has not yet been held for. Every one waiting is marked held, so a message whose
+    // echo never comes keeps one turn from being a question, not all of them.
+    private bool HumanMessageNotYetTaken()
+    {
+        bool fresh = unreplayed.Any(uuid => !heldBack.Contains(uuid));
+        heldBack.UnionWith(unreplayed);
+        return fresh;
     }
 
     private void SetState(LiveStatus next)
@@ -540,26 +617,13 @@ public sealed class LiveSession(
         return seq;
     }
 
-    // live.json is replaced whole (temp file, then rename): a reader sees the old state or the new one.
-    // Windows refuses the rename while a reader holds the file, so it is tried a few times.
+    // live.json is replaced whole (temp file, then rename): a reader sees the old state or the new one. AtomicFile owns the Windows rename
+    // that a plain Move loses to a reader holding the file (f9c38fe); a write that still fails costs the state, never the run.
     private void Publish()
     {
         LiveState snapshot = new(state, questionSeq, since, replyTimeoutSeconds, Environment.ProcessId, ownerStartedAt);
         string json = JsonSerializer.Serialize(snapshot, ClaustrumJsonContext.Default.LiveState);
-        string temp = job.LiveJson + ".tmp";
-        for (int attempt = 0; attempt < 5; attempt++)
-        {
-            try
-            {
-                File.WriteAllText(temp, json);
-                File.Move(temp, job.LiveJson, overwrite: true);
-                return;
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-            {
-                Thread.Sleep(20);
-            }
-        }
+        Guarded(() => AtomicFile.WriteAllText(job.LiveJson, json));
     }
 
     // A job directory that stops taking writes costs the conversation record, never the run: the process is
