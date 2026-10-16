@@ -1,5 +1,24 @@
 # Upgrading Claustrum
 
+## 0.2.x → 0.3.0
+
+Nothing to do. 0.3.0 adds one backend and fixes one race. Every existing backend, cast and receipt
+behaves as it did, and the role library stays `1.1.0`, so synced repos show no drift.
+
+### What's new
+
+- **`acp-opencode`, an opt-in backend.** It drives `opencode acp` over the Agent Client Protocol
+  instead of `opencode run`. The role prompt and the deny list are the same as on the native
+  `opencode` backend. Nothing resolves to it by default. Pick it with
+  `--backend acp-opencode --model opencode/<id>`, or a model alias `acp-opencode:<model>`.
+  - Batch runs and live sessions (`jobs say`, `answer`, `follow`) work through it.
+  - It reports token usage, and its cost comes from `opencode session export` like the native
+    backend's.
+  - Each job also keeps `acp-client.jsonl`: what Claustrum sent, next to `stdout.log`.
+  - See the MANUAL's "ACP backends" paragraph.
+- **A detached fallback retry is no longer lost.** Before, a waiter could print the first job's
+  receipt and exit 1 while the retry ran unwatched (#132).
+
 ## 0.1.x → 0.2.0
 
 0.2.0 changes how a repo is set up, and some runs that used to work silently now stop and ask. Read

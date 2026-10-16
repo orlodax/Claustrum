@@ -179,7 +179,7 @@ dotnet tool install -g Claustrum
 
 Then [docs/TEST-DRIVE.md](docs/TEST-DRIVE.md) walks the first run on a real task, step by step,
 and [docs/MANUAL.md](docs/MANUAL.md) is the reference for every verb, file, field and rule.
-Coming from 0.1.x? [docs/UPGRADING.md](docs/UPGRADING.md) says what to do once.
+Upgrading? [docs/UPGRADING.md](docs/UPGRADING.md) says what each release asks of you.
 
 ## Licence
 

@@ -36,7 +36,7 @@ install -m 0755 src/Claustrum/bin/Release/net10.0/linux-x64/publish/claustrum ~/
 claustrum --version
 ```
 
-Expect `0.2.0+<commit>`. `dotnet build` leaves no executable at all (the project is
+Expect `0.3.0+<commit>`. `dotnet build` leaves no executable at all (the project is
 `PackAsTool`), so it has to be a publish. Windows form and other RIDs: [INSTALL.md §1c](INSTALL.md).
 
 ### 2. Ask the doctor what this machine has
