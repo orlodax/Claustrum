@@ -20,6 +20,7 @@
   </ItemGroup>
   <ItemGroup>
     <Content Include="..\fixtures\gh\**\*" LinkBase="fixtures\gh" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\fixtures\opencode\quota-402.jsonl" LinkBase="fixtures\opencode" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\..\README.md" Link="README.md" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>
