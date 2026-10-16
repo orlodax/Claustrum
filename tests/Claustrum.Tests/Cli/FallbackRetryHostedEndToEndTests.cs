@@ -76,9 +76,17 @@ public sealed class FallbackRetryHostedEndToEndTests : IDisposable
         CliResult process = await fixture.RunBuilderAsync(tree, "--json");
         await stop.CancelAsync();
 
-        Assert.True(process.ExitCode == ExitCodes.Ok, process.Stderr + process.Stdout);
+        // ubuntu and macOS CI printed the first job's 402 receipt here (2026-10-16) and the cut-off stdout never said why: report
+        // every job's receipt and host log in full.
+        string Evidence() =>
+            $"exit {process.ExitCode}\nstderr: {process.Stderr}\nstdout: {process.Stdout}\n"
+            + string.Join("\n", fixture.JobIds().Select(id =>
+                $"--- {id}: result.json {(File.Exists(Path.Combine(fixture.JobDir(id), "result.json")) ? File.ReadAllText(Path.Combine(fixture.JobDir(id), "result.json")) : "(none)")}"
+                + $"\n    host.log {(File.Exists(Path.Combine(fixture.JobDir(id), "host.log")) ? File.ReadAllText(Path.Combine(fixture.JobDir(id), "host.log")) : "(none)")}"
+                + $"\n    files [{string.Join(", ", Directory.GetFileSystemEntries(fixture.JobDir(id)).Select(Path.GetFileName))}]"));
+        Assert.True(process.ExitCode == ExitCodes.Ok, Evidence());
         JsonElement printed = OneDocument(process.Stdout);
-        Assert.Equal("success", Str(printed, "status"));
+        Assert.True(Str(printed, "status") == "success", Evidence());
         Assert.Equal("claude", Str(printed, "backend"));
         string retryId = Str(printed, "job_id");
         string firstId = Assert.Single(fixture.JobIds(), id => id != retryId && fixture.Json(id, "host.json") is not null);
