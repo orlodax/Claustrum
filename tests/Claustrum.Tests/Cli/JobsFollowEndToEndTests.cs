@@ -185,7 +185,7 @@ public sealed class JobsFollowEndToEndTests : IDisposable
         RequirePosixSignals();
         MakeJob("20260101-000000-aaaaaaaa", stdoutLog: SaysHello + "\n");
         using RunningCli follow = repo.StartCli("jobs", "follow");
-        await Task.Delay(1500, Ct);
+        await follow.WaitUntilAsync(() => Lf(follow.Stderr).Contains(JobsFollowCommand.ReadyLine, StringComparison.Ordinal), "follow's snapshot", wait, Ct);
 
         string directory = MakeJob("20261015-163517-22930bff", stdoutLog: SaysDone + "\n");
         await follow.WaitUntilAsync(() => follow.Stderr.Contains("SAYS  all done", StringComparison.Ordinal), "the new job's line", wait, Ct);
@@ -209,7 +209,7 @@ public sealed class JobsFollowEndToEndTests : IDisposable
     {
         RequirePosixSignals();
         using RunningCli follow = repo.StartCli("jobs", "follow");
-        await Task.Delay(1000, Ct);
+        await follow.WaitUntilAsync(() => Lf(follow.Stderr).Contains(JobsFollowCommand.ReadyLine, StringComparison.Ordinal), "follow's snapshot", wait, Ct);
         string directory = MakeJob("20261015-170000-0badc0de", stdoutLog: null);
         await Task.Delay(1500, Ct);
         Assert.DoesNotContain("following", follow.Stderr, StringComparison.Ordinal);
@@ -226,7 +226,7 @@ public sealed class JobsFollowEndToEndTests : IDisposable
     {
         RequirePosixSignals();
         using RunningCli follow = repo.StartCli("jobs", "follow");
-        await Task.Delay(1000, Ct);
+        await follow.WaitUntilAsync(() => Lf(follow.Stderr).Contains(JobsFollowCommand.ReadyLine, StringComparison.Ordinal), "follow's snapshot", wait, Ct);
         MakeJob("20261015-170000-aaaaaaaa", stdoutLog: SaysHello + "\n");
         MakeJob("20261015-170000-bbbbbbbb", stdoutLog: SaysDone + "\n");
 
