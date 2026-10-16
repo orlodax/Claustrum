@@ -119,12 +119,24 @@ jobs:
         run: dotnet nuget push nupkg/*.nupkg --api-key "$NUGET_API_KEY" --source https://api.nuget.org/v3/index.json --skip-duplicate
 
   release:
-    needs: [publish, pack]
+    needs: [version, publish, pack]
     if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
     steps:
+      # Before the download: a checkout cleans the workspace. Only the notes and their extractor are needed.
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            docs/UPGRADING.md
+            scripts/release-notes.sh
+          sparse-checkout-cone-mode: false
+      # The release body is this version's section of docs/UPGRADING.md (empty when it has none); GitHub's
+      # generated notes follow it.
+      - run: sh scripts/release-notes.sh "$VERSION" docs/UPGRADING.md > release-body.md
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
@@ -138,5 +150,6 @@ jobs:
             artifacts/claustrum-*
             artifacts/SHA256SUMS.txt
             artifacts/*.nupkg
+          body_path: release-body.md
           generate_release_notes: true
           prerelease: ${{ contains(github.ref_name, '-') }}
