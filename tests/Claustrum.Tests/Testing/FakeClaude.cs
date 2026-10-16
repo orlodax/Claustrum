@@ -47,6 +47,9 @@ public sealed record FakeClaudeScript
     /// <summary>When set, the one-shot reply names this `session_id`, so the job has a session `--resume` can continue.</summary>
     public string? SessionId { get; init; }
 
+    /// <summary>The `total_cost_usd` the one-shot reply reports: claude's running total for the session, which a `--resume` run restores (#127).</summary>
+    public decimal TotalCostUsd { get; init; } = 0.01m;
+
     public bool Fail { get; init; }
 
     /// <summary>
@@ -75,7 +78,8 @@ public sealed record FakeClaudeScript
 /// <param name="LingerSeconds">How long the process stays alive after the `result`, as a claude that is slow to exit once it has reported.</param>
 /// <param name="ReportJson">The exact JSON of the `claustrum-report` fence this turn ends with (a `needs_input` report), instead of <paramref name="Summary"/>'s; no single quote.</param>
 /// <param name="TotalCostUsd">The session's running cost at this turn's `result`; by default it rises per turn from claude's measured $0.2037 / $0.2278.</param>
-public sealed record FakeClaudeTurn(string Text, string? Summary = null, bool EchoReply = false, int SleepSeconds = 0, decimal? TotalCostUsd = null, int ReadMidTurn = 0, int LingerSeconds = 0, string? ReportJson = null)
+/// <param name="ReplayTaken">Prints the `--replay-user-messages` echo (`type:user`, `isReplay:true`, the message's `uuid`) of the line this turn answers, before its events, as claude does when it takes a message into a turn (#127). A line with no `uuid` is echoed with none.</param>
+public sealed record FakeClaudeTurn(string Text, string? Summary = null, bool EchoReply = false, int SleepSeconds = 0, decimal? TotalCostUsd = null, int ReadMidTurn = 0, int LingerSeconds = 0, string? ReportJson = null, bool ReplayTaken = false)
 {
     public static FakeClaudeTurn Ask(string question, int sleepSeconds = 0) => new(question, SleepSeconds: sleepSeconds);
 
@@ -138,7 +142,7 @@ public static class FakeClaude
         string isError = script.Fail ? "true" : "false";
         string type = script.StreamLines.Length > 0 ? "\"type\":\"result\"," : "";
         string session = script.SessionId is { } id ? "\"session_id\":\"" + id + "\"," : "";
-        return "{" + type + session + "\"result\":\"" + result + "\",\"total_cost_usd\":0.01,\"is_error\":" + isError + "}";
+        return "{" + type + session + "\"result\":\"" + result + "\",\"total_cost_usd\":" + script.TotalCostUsd.ToString(System.Globalization.CultureInfo.InvariantCulture) + ",\"is_error\":" + isError + "}";
     }
 
     // A JSON document as the content of a JSON string: backslashes and quotes escaped.
@@ -153,6 +157,7 @@ public static class FakeClaude
         // brief's line: `cat` would wait for an end that comes after this script has exited.
         string stdinTarget = script.StdinLog is { } stdin ? $"'{stdin}'" : "/dev/null";
         text.Append($"case \" $*\" in *\" --input-format \"*) IFS= read -r brief; printf '%s\\n' \"$brief\" > {stdinTarget};; *) cat > {stdinTarget};; esac\n");
+        text.Append(SessionPersistence(script));
         text.Append(script.MarkerLog is { } start ? $"echo start >> '{start}'\n" : "");
         text.Append(script.SleepSeconds > 0 ? $"sleep {script.SleepSeconds}\n" : "");
         foreach ((string path, string content) in script.Writes)
@@ -172,6 +177,21 @@ public static class FakeClaude
         return text.ToString();
     }
 
+    // The flag is honoured as the real claude does (measured 2026-10-16, #127): a session started with --no-session-persistence is never saved, so
+    // `--resume` of it ends `error_during_execution`, "No conversation found", for $0. Only a session this script saw started with the flag is
+    // refused (recorded in `unsaved-sessions` beside the script): a resume of an id it never saw, as tests that write a receipt by hand do, still runs.
+    private static string SessionPersistence(FakeClaudeScript script)
+    {
+        string session = script.SessionId ?? "";
+        return "resume=''; nosave=0; prev=''\n"
+            + "for a in \"$@\"; do [ \"$prev\" = '--resume' ] && resume=\"$a\"; [ \"$a\" = '--no-session-persistence' ] && nosave=1; prev=\"$a\"; done\n"
+            + "unsaved=\"$(dirname \"$0\")/unsaved-sessions\"\n"
+            + "if [ -n \"$resume\" ] && grep -qx -- \"$resume\" \"$unsaved\" 2>/dev/null; then\n"
+            + "  printf '%s\\n' '{\"type\":\"result\",\"subtype\":\"error_during_execution\",\"is_error\":true,\"total_cost_usd\":0,\"errors\":[\"No conversation found with session ID: '\"$resume\"'\"]}'\n"
+            + "  exit 1\nfi\n"
+            + (session.Length > 0 ? $"[ \"$nosave\" = 1 ] && [ -z \"$resume\" ] && echo '{session}' >> \"$unsaved\"\n" : "");
+    }
+
     private static string LiveText(FakeClaudeScript script)
     {
         FakeClaudeTurn[] turns = script.Turns ?? [];
@@ -185,7 +205,7 @@ public static class FakeClaude
             text.Append(command).Append('\n');
 
         string record = script.LiveInputLog is { } log ? $"printf '%s\\n' \"$line\" >> '{log}'; " : "";
-        text.Append("n=0\nsaid=''\ntake() { " + record + "said=$(printf '%s' \"$line\" | sed -n 's/.*\"text\":\"\\(.*\\)\"}\\]}}.*/\\1/p'); }\n");
+        text.Append("n=0\nsaid=''\ntake() { " + record + "said=$(printf '%s' \"$line\" | sed -n 's/.*\"text\":\"\\(.*\\)\"}\\]}}.*/\\1/p'); uuid=$(printf '%s' \"$line\" | sed -n 's/.*\"uuid\":\"\\([^\"]*\\)\".*/\\1/p'); }\n");
         text.Append("while IFS= read -r line; do\n  n=$((n+1))\n  take\n  case $n in\n");
         for (int i = 0; i < turns.Length; i++)
             text.Append(i == turns.Length - 1 ? "  *)" : $"  {i + 1})").Append(' ').Append(TurnCommands(turns[i], i)).Append(";;\n");
@@ -210,7 +230,11 @@ public static class FakeClaude
         string sleep = turn.SleepSeconds > 0 ? $"sleep {turn.SleepSeconds}; " : "";
         string mid = turn.ReadMidTurn > 0 ? $"k=0; while [ $k -lt {turn.ReadMidTurn} ] && IFS= read -r line; do k=$((k+1)); take; done; " : "";
         string linger = turn.LingerSeconds > 0 ? $"; sleep {turn.LingerSeconds}" : "";
-        return $"{mid}{sleep}printf '%s\\n' '{assistant}'; printf '%s\\n' '{head}{echo}{tail}'{linger}";
+        // claude echoes a message the moment it takes it into a turn, i.e. before the turn's events (#127).
+        string replay = turn.ReplayTaken
+            ? "printf '%s\\n' '{\"type\":\"user\",\"uuid\":\"'\"$uuid\"'\",\"session_id\":\"fake-session\",\"isReplay\":true,\"parent_tool_use_id\":null,\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"echo\"}]}}'; "
+            : "";
+        return $"{mid}{sleep}{replay}printf '%s\\n' '{assistant}'; printf '%s\\n' '{head}{echo}{tail}'{linger}";
     }
 
     // cmd's `>>` opens the file unshared: two runs appending at once lose one line to "file in use"

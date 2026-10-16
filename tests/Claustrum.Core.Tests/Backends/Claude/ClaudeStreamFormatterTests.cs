@@ -150,6 +150,30 @@ public sealed partial class ClaudeStreamFormatterTests
         Assert.Matches(@"^\d{2}:\d{2}:\d{2} SAYS  The build failed", formatter.FormatLine(line));
     }
 
+    // #127: --replay-user-messages echoes each message claude takes (and a resumed session's history); none of it is an event worth a line.
+    [Theory]
+    [InlineData(/*lang=json,strict*/ """{"type":"user","uuid":"u-1","session_id":"s","isReplay":true,"parent_tool_use_id":null,"message":{"role":"user","content":[{"type":"text","text":"hello"}]}}""")]
+    [InlineData(/*lang=json,strict*/ """{"type":"user","session_id":"s","isReplay":true,"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t","is_error":true,"content":"Exit code 1"}]}}""")]
+    public void AReplayedUserLinePrintsNothing(string line)
+    {
+        ClaudeStreamFormatter formatter = new("/work/repo");
+
+        Assert.Null(formatter.FormatLine(line));
+        Assert.Null(formatter.FormatLine(line, replayed: true));
+    }
+
+    // Only the marker decides: the same shape without isReplay (a real tool result) still prints its failure.
+    [Fact]
+    public void AUserLineThatIsNotAReplayStillPrintsItsFailure()
+    {
+        ClaudeStreamFormatter formatter = new("");
+
+        string? printed = formatter.FormatLine(/*lang=json,strict*/ """{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t","is_error":true,"content":"Exit code 1"}]}}""");
+
+        Assert.NotNull(printed);
+        Assert.Contains("Exit code 1", printed, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void AReplayedTotalAndAReplayedFailureShowDashesToo()
     {
