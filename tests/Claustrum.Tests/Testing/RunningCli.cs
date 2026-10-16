@@ -161,7 +161,10 @@ public sealed class RunningCli : IDisposable
         startInfo.ArgumentList.Add($"kill -{signal} {process.Id}");
         using Process kill = Process.Start(startInfo) ?? throw new InvalidOperationException("sh failed to start");
         await kill.WaitForExitAsync(cancellationToken);
-        Assert.Equal(0, kill.ExitCode);
+        // `kill` failing means the process was already gone: say how it ended instead of a bare 0-vs-1 (macOS CI, 2026-10-16).
+        Assert.True(
+            kill.ExitCode == 0,
+            $"kill -{signal} {process.Id} failed: the process {(process.HasExited ? $"had already exited with {process.ExitCode}" : "is still alive")}\nstdout: {Stdout}\nstderr: {Stderr}");
     }
 
     /// <summary>
