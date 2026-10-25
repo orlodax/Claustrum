@@ -1,0 +1,627 @@
+<meta charset="utf-8">
+<title>Metaconcert on Claustrum</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@75..125,400..900&family=Instrument+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap">
+<style>
+/* Design note: argument page — claim, then the figure that carries it. Cool slate against the
+   manual's amber, same bracket-and-mono language, so the two read as one house. */
+:root{
+  --bg:#0D1218; --panel:#161E27; --panel-2:#1F2A36;
+  --fg:#E8EEF4; --muted:#8798A8;
+  --acc:#4FC3D9; --ok:#5FBF9E; --warn:#FF8070;
+  --line:rgba(135,152,168,.24); --line-hi:rgba(79,195,217,.45);
+  --fill:rgba(135,152,168,.10); --fill-acc:rgba(79,195,217,.13);
+  --fill-warn:rgba(255,107,91,.12); --fill-ok:rgba(95,191,158,.13);
+  color-scheme:dark;
+  --display:"Archivo","Arial Narrow",system-ui,sans-serif;
+  --body:"Instrument Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  --col:68ch;
+}
+@media (prefers-color-scheme:light){
+  :root:not([data-theme="dark"]){
+    --bg:#ECF1F4; --panel:#FAFCFD; --panel-2:#DFE7ED;
+    --fg:#111821; --muted:#536270;
+    --acc:#10697C; --ok:#1C6752; --warn:#B33A28;
+    --line:rgba(17,24,33,.18); --line-hi:rgba(16,105,124,.5);
+    --fill:rgba(17,24,33,.05); --fill-acc:rgba(16,105,124,.09);
+    --fill-warn:rgba(179,58,40,.09); --fill-ok:rgba(28,103,82,.10);
+    color-scheme:light;
+  }
+}
+:root[data-theme="light"]{
+  --bg:#ECF1F4; --panel:#FAFCFD; --panel-2:#DFE7ED;
+  --fg:#111821; --muted:#536270;
+  --acc:#10697C; --ok:#1C6752; --warn:#B33A28;
+  --line:rgba(17,24,33,.18); --line-hi:rgba(16,105,124,.5);
+  --fill:rgba(17,24,33,.05); --fill-acc:rgba(16,105,124,.09);
+  --fill-warn:rgba(179,58,40,.09); --fill-ok:rgba(28,103,82,.10);
+  color-scheme:light;
+}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--fg);font-family:var(--body);font-size:16px;line-height:1.62;-webkit-font-smoothing:antialiased}
+body::before{content:"";position:fixed;inset:0 0 auto;height:env(safe-area-inset-top,0px);z-index:10;background:var(--bg)}
+.wrap{padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));max-width:1080px;margin:0 auto}
+h1,h2,h3{font-family:var(--display);text-wrap:balance;margin:0}
+h1{font-size:clamp(30px,6.2vw,52px);font-weight:800;font-stretch:88%;letter-spacing:-.015em;line-height:1.03}
+h2{font-size:clamp(21px,3.3vw,28px);font-weight:700;font-stretch:90%;line-height:1.14}
+h3{font-size:15.5px;font-weight:700}
+p,li{max-width:var(--col)}
+a{color:var(--acc);text-underline-offset:3px}
+code,kbd{font-family:var(--mono);font-size:.88em}
+.lbl{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+
+.mast{border-bottom:1px solid var(--line);padding-block:clamp(26px,6vw,54px) 22px}
+.mast .eyebrow{display:flex;flex-wrap:wrap;gap:8px 18px;align-items:baseline;margin-bottom:18px}
+.mast h1 span{color:var(--acc)}
+.lede{font-size:clamp(17px,2.3vw,20px);line-height:1.5;margin:18px 0 0}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:20px;max-width:none}
+.chip{font-family:var(--mono);font-size:11px;letter-spacing:.06em;border:1px solid var(--line);padding:4px 8px;color:var(--muted);background:var(--panel)}
+.chip.hot{border-color:var(--line-hi);color:var(--acc)}
+.chip.bad{border-color:var(--warn);color:var(--warn)}
+.chip.good{border-color:var(--ok);color:var(--ok)}
+
+nav.toc{position:sticky;top:env(safe-area-inset-top,0px);z-index:9;background:var(--bg);border-bottom:1px solid var(--line)}
+nav.toc ol{list-style:none;margin:0 auto;padding-block:10px;display:flex;gap:18px;overflow-x:auto;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));max-width:1080px;scrollbar-width:thin;-webkit-mask-image:linear-gradient(to right,#000 calc(100% - 30px),transparent);mask-image:linear-gradient(to right,#000 calc(100% - 30px),transparent)}
+nav.toc li{max-width:none;flex:0 0 auto}
+nav.toc a{font-family:var(--mono);font-size:11.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);text-decoration:none;white-space:nowrap}
+nav.toc a:hover,nav.toc a:focus-visible{color:var(--acc)}
+
+section{padding-block:clamp(32px,5.4vw,56px);border-bottom:1px solid var(--line)}
+.shead{display:flex;flex-wrap:wrap;gap:4px 14px;align-items:baseline;margin-bottom:6px}
+.num{font-family:var(--mono);font-size:12px;color:var(--acc);letter-spacing:.1em}
+.sub{color:var(--muted);margin:10px 0 24px;font-size:15.5px}
+.claim{font-size:clamp(17px,2.2vw,19.5px);line-height:1.5;border-left:2px solid var(--acc);padding-left:18px;margin:0 0 22px}
+
+.panel{position:relative;background:var(--panel);border:1px solid var(--line);padding:clamp(15px,2.4vw,24px)}
+.panel.hi{border-color:var(--line-hi)}
+.panel::before,.panel::after{content:"";position:absolute;width:9px;height:9px;border:2px solid var(--acc)}
+.panel::before{top:-1px;left:-1px;border-right:0;border-bottom:0}
+.panel::after{bottom:-1px;right:-1px;border-left:0;border-top:0}
+.panel.plainp::before,.panel.plainp::after{display:none}
+.panel+.panel{margin-top:13px}
+.panel p,.panel li{max-width:none;font-size:14.5px}
+.panel h3+p{margin-top:9px}
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,290px),1fr));gap:13px}
+.grid3{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,235px),1fr));gap:13px}
+.grid2>*,.grid3>*{min-width:0}
+
+figure{margin:22px 0 0;background:var(--panel);border:1px solid var(--line);padding:clamp(14px,2.2vw,22px)}
+figure svg{display:block;max-width:100%;height:auto;color:var(--fg)}
+figcaption{font-size:13.5px;color:var(--muted);margin-top:14px;padding-top:12px;border-top:1px solid var(--line);max-width:var(--col)}
+figcaption b{color:var(--fg);font-weight:600}
+svg text{fill:currentColor;font-family:var(--mono);font-size:12px}
+svg .t-s{font-size:10.5px}
+svg .t-l{font-size:14px;font-weight:700}
+svg .mut{fill:var(--muted)}
+svg .ac{fill:var(--acc)}
+svg .wn{fill:var(--warn)}
+svg .okc{fill:var(--ok)}
+svg .bx{fill:var(--fill);stroke:currentColor;stroke-width:1.1}
+svg .bx-a{fill:var(--fill-acc);stroke:var(--acc);stroke-width:1.4}
+svg .bx-w{fill:var(--fill-warn);stroke:var(--warn);stroke-width:1.2}
+svg .bx-o{fill:var(--fill-ok);stroke:var(--ok);stroke-width:1.2}
+svg .bx-d{fill:none;stroke:currentColor;stroke-width:1;stroke-dasharray:4 3;opacity:.7}
+svg .ed{stroke:currentColor;stroke-width:1.2;fill:none}
+svg .ed-a{stroke:var(--acc);stroke-width:1.5;fill:none}
+svg .ed-w{stroke:var(--warn);stroke-width:1.3;fill:none}
+svg .ed-d{stroke:currentColor;stroke-width:1.1;fill:none;stroke-dasharray:4 3;opacity:.75}
+svg .hair{stroke:currentColor;stroke-width:.8;opacity:.32}
+
+.cmd{font-family:var(--mono);font-size:13px;background:var(--panel-2);border:1px solid var(--line);border-left:2px solid var(--acc);padding:11px 14px;overflow-x:auto;white-space:pre}
+pre{font-family:var(--mono);font-size:12.5px;line-height:1.65;background:var(--panel-2);border:1px solid var(--line);padding:14px 16px;overflow-x:auto;margin:0}
+pre b{color:var(--acc);font-weight:500}
+pre i{color:var(--muted);font-style:normal}
+.note{border-left:2px solid var(--acc);padding:2px 0 2px 16px;color:var(--muted);font-size:14.5px;margin:18px 0 0}
+.note strong{color:var(--fg)}
+.note.bad{border-left-color:var(--warn)}
+ul.plain{list-style:none;padding:0;margin:0;display:grid;gap:9px}
+ul.plain li{display:grid;grid-template-columns:1.7rem minmax(0,1fr);gap:10px;font-size:14.5px;max-width:none}
+ul.plain .m{font-family:var(--mono);color:var(--acc);font-size:12px;line-height:1.7}
+ul.plain .m.x{color:var(--warn)}
+ul.plain .m.v{color:var(--ok)}
+.tw{overflow-x:auto;border:1px solid var(--line);background:var(--panel)}
+table{border-collapse:collapse;width:100%;min-width:560px;font-size:14px}
+th,td{text-align:left;padding:10px 13px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-family:var(--mono);font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);font-weight:500;white-space:nowrap}
+tbody tr:last-child td{border-bottom:0}
+td code{color:var(--acc)}
+td.k{font-family:var(--mono);font-size:12.5px;white-space:nowrap}
+.yn{font-family:var(--mono);font-size:11px;white-space:nowrap}
+.yn.y{color:var(--ok)} .yn.n{color:var(--warn)} .yn.p{color:var(--acc)}
+footer{padding-block:32px 44px;color:var(--muted);font-size:13.5px}
+:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+@media (max-width:560px){.cmd,pre{font-size:11.5px}}
+</style>
+
+<header class="mast wrap">
+  <div class="eyebrow">
+    <span class="lbl">Design note</span>
+    <span class="lbl" style="color:var(--acc)">Claustrum × metaconcert</span>
+    <span class="lbl">not in v1 · a design note</span>
+  </div>
+  <h1>Metaconcert<br>on <span>Claustrum</span></h1>
+  <p class="lede">Why a protocol written for one harness belongs in the binary that was built to free a
+  pipeline from one harness — and the four mechanisms it inherits by moving.</p>
+  <div class="chips">
+    <span class="chip hot">one skill source → 5 hosts + a console</span>
+    <span class="chip">members as OS processes, not subagents</span>
+    <span class="chip good">3 of 5 ceilings gain a lever</span>
+    <span class="chip bad">needs a typed membrane in core</span>
+  </div>
+  <p class="note"><strong>The short version.</strong> Metaconcert needs a trigger in a chat session, eight
+  isolated contexts, a model and a tool grant per member, and three stops for a human. Claustrum already
+  ships five of those six. The sixth — a per-member typed membrane — is the one thing worth building.</p>
+</header>
+
+<nav class="toc" aria-label="Sections">
+  <ol>
+    <li><a href="#why">01 Why here</a></li>
+    <li><a href="#ceilings">02 What it changes</a></li>
+    <li><a href="#dispatch">03 One dispatch</a></li>
+    <li><a href="#director">04 Where the director lives</a></li>
+    <li><a href="#roles">05 How roles resolve</a></li>
+  </ol>
+</nav>
+
+<main>
+
+<section id="why" class="wrap">
+  <div class="shead"><span class="num">01</span><h2>Why here</h2></div>
+  <p class="claim">Metaconcert is Claude-Code-shaped: <code>.claude/agents/</code>, <code>.claude/skills/</code>,
+  the <code>Agent</code> tool, one model family. There is no second runtime for it, and Claustrum is not
+  merely a convenient candidate — it is the machine whose entire premise is “one role source, any harness”.</p>
+
+  <figure>
+    <svg viewBox="0 0 760 472" role="img" aria-label="Two topologies compared. Today, one Claude host session holds the director and dispatches eight members as subagents in the same session, sharing one ambient layer and one model family; opencode, Cursor, Copilot CLI and the bare binary have no trigger and no runtime. With Claustrum, five hosts plus a console all carry the same synced metaconcert skill, all funnel through one core with two doors, and the core spawns each member on the backend its cast entry names, each a separate process with its own working directory.">
+      <defs>
+        <marker id="a1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+        </marker>
+        <marker id="a1c" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="var(--acc)"/>
+        </marker>
+      </defs>
+
+      <text class="t-l wn" x="0" y="15">TODAY</text>
+      <text class="t-s mut" x="76" y="15">metaconcert runs in exactly one place</text>
+
+      <rect class="bx" x="290" y="26" width="180" height="40"/>
+      <text class="t-s" x="302" y="44">Claude Code / desktop</text>
+      <text class="t-s mut" x="302" y="59">the director (a skill)</text>
+
+      <line class="ed" x1="380" y1="66" x2="380" y2="96" marker-end="url(#a1)"/>
+      <text class="t-s mut" x="388" y="86">Agent tool</text>
+
+      <rect class="bx" x="185" y="96" width="40" height="24"/>
+      <rect class="bx" x="235" y="96" width="40" height="24"/>
+      <rect class="bx" x="285" y="96" width="40" height="24"/>
+      <rect class="bx" x="335" y="96" width="40" height="24"/>
+      <rect class="bx" x="385" y="96" width="40" height="24"/>
+      <rect class="bx" x="435" y="96" width="40" height="24"/>
+      <rect class="bx" x="485" y="96" width="40" height="24"/>
+      <rect class="bx" x="535" y="96" width="40" height="24"/>
+      <text class="t-s mut" x="185" y="138">8 members · subagents in the same session · one ambient layer · one model family</text>
+
+      <text class="t-s wn" x="0" y="172">✕ opencode</text>
+      <text class="t-s wn" x="110" y="172">✕ Cursor</text>
+      <text class="t-s wn" x="200" y="172">✕ Copilot CLI</text>
+      <text class="t-s wn" x="320" y="172">✕ VS Code</text>
+      <text class="t-s wn" x="420" y="172">✕ the bare binary</text>
+      <text class="t-s mut" x="560" y="172">no trigger, no runtime</text>
+
+      <line class="hair" x1="0" y1="196" x2="760" y2="196"/>
+
+      <text class="t-l ac" x="0" y="222">WITH CLAUSTRUM</text>
+      <text class="t-s mut" x="150" y="222">the same protocol, five hosts and a console</text>
+
+      <rect class="bx-a" x="4" y="236" width="140" height="34"/><text class="t-s" x="14" y="257">claude</text>
+      <rect class="bx-a" x="155" y="236" width="140" height="34"/><text class="t-s" x="165" y="257">opencode</text>
+      <rect class="bx-a" x="306" y="236" width="140" height="34"/><text class="t-s" x="316" y="257">cursor</text>
+      <rect class="bx-a" x="457" y="236" width="140" height="34"/><text class="t-s" x="467" y="257">copilot / VS Code</text>
+      <rect class="bx-d" x="608" y="236" width="148" height="34"/><text class="t-s mut" x="618" y="257">console · no host</text>
+
+      <path class="ed-a" d="M74,270 L74,286 L682,286"/>
+      <path class="ed-a" d="M225,270 L225,286"/><path class="ed-a" d="M376,270 L376,286"/>
+      <path class="ed-a" d="M527,270 L527,286"/><path class="ed-d" d="M682,270 L682,286"/>
+      <path class="ed-a" d="M380,286 L380,302" marker-end="url(#a1c)"/>
+      <text class="t-s ac" x="388" y="298">/metaconcert · one skill source, rendered per host</text>
+
+      <rect class="bx-a" x="90" y="302" width="580" height="44"/>
+      <text class="t-l" x="104" y="322">claustrum</text>
+      <text class="t-s mut" x="200" y="322">one core · two doors</text>
+      <text class="t-s" x="104" y="338">delegate (MCP) · claustrum run (shell) · the gate, the cast, the receipts</text>
+
+      <path class="ed-a" d="M380,346 L380,362"/>
+      <path class="ed-a" d="M60,362 L700,362"/>
+      <path class="ed-a" d="M60,362 L60,378" marker-end="url(#a1c)"/>
+      <path class="ed-a" d="M188,362 L188,378" marker-end="url(#a1c)"/>
+      <path class="ed-a" d="M316,362 L316,378" marker-end="url(#a1c)"/>
+      <path class="ed-a" d="M444,362 L444,378" marker-end="url(#a1c)"/>
+      <path class="ed-d" d="M572,362 L572,378" marker-end="url(#a1c)"/>
+      <path class="ed-a" d="M700,362 L700,378" marker-end="url(#a1c)"/>
+
+      <rect class="bx" x="2" y="378" width="116" height="32"/><text class="t-s" x="12" y="398">claude</text>
+      <rect class="bx" x="130" y="378" width="116" height="32"/><text class="t-s" x="140" y="398">opencode</text>
+      <rect class="bx" x="258" y="378" width="116" height="32"/><text class="t-s" x="268" y="398">copilot</text>
+      <rect class="bx" x="386" y="378" width="116" height="32"/><text class="t-s" x="396" y="398">cursor</text>
+      <rect class="bx-d" x="514" y="378" width="116" height="32"/><text class="t-s mut" x="524" y="398">api</text>
+      <rect class="bx" x="642" y="378" width="116" height="32"/><text class="t-s" x="652" y="398">acp-opencode</text>
+
+      <text class="t-s" x="4" y="428">each member = one OS process · own working directory · cleared environment · optionally its own git worktree</text>
+      <text class="t-s ac" x="4" y="444">a model per member, across vendors — which is ceiling 1’s only named lever</text>
+      <text class="t-s mut" x="4" y="462">dashed = not usable here: api carries no tools, and the console is the one host Claustrum does not have yet</text>
+    </svg>
+    <figcaption><b>The difference is the middle row.</b> Without it, the trigger and the dispatch are the
+    same harness’s features and the protocol inherits that harness’s limits. With it, the trigger is a
+    rendered skill and the dispatch is a process — and neither has to come from the same vendor as the
+    other.</figcaption>
+  </figure>
+
+  <div class="tw" style="margin-top:14px">
+    <table>
+      <thead><tr><th>Metaconcert needs</th><th>Claustrum today</th><th></th></tr></thead>
+      <tbody>
+        <tr><td>A <code>/</code>-command trigger in the human’s chat session</td><td><code>sync</code> renders a skill into claude, opencode, cursor, copilot and VS Code</td><td class="yn y">have it</td></tr>
+        <tr><td>One director text, a per-host dispatch line</td><td><code>{{part:…}}</code> with per-harness files and a <code>.default</code> fallback</td><td class="yn y">have it</td></tr>
+        <tr><td>An isolated fresh context per member</td><td><code>delegate</code> / <code>claustrum run</code>: separate process, own cwd, cleared env</td><td class="yn y">have it</td></tr>
+        <tr><td>A model per member</td><td>Model classes resolved through the cast, across vendors</td><td class="yn y">have it</td></tr>
+        <tr><td>Three tool grants: read-only / +shell / +edit</td><td>The exact three rungs: <code>readonly</code>, <code>shell</code>, <code>edit+shell</code>, with per-backend deny lists</td><td class="yn y">have it</td></tr>
+        <tr><td>No nesting — a member must not spawn members</td><td><code>mayDelegate: []</code> withholds the <code>Agent</code> tool at render time</td><td class="yn y">have it</td></tr>
+        <tr><td>Three human stops mid-run</td><td>Works in <code>architect: host</code>; impossible in unattended <code>coordinate</code></td><td class="yn p">partly</td></tr>
+        <tr><td>Per-member typed membrane (<code>receives</code> / <code>never</code>)</td><td>A single <code>blind: true</code> flag and four forbidden brief sections</td><td class="yn n">to build</td></tr>
+        <tr><td>Run-time member discovery</td><td>Embedded library + local override, not an open glob</td><td class="yn n">to build</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="note">“Available to anyone who runs the executable” holds for the dispatch, not the trigger: a
+  slash command needs a chat host. The console row above is the honest completion of that sentence, and it
+  has a precedent — the cast questionnaire already specifies an interactive TTY fallback
+  “for people working outside any chat”.</p>
+</section>
+
+<section id="ceilings" class="wrap">
+  <div class="shead"><span class="num">02</span><h2>What it changes about the membrane</h2></div>
+  <p class="claim">Metaconcert names five ceilings on member independence and finds a lever for one of them.
+  Three of the other four turn out to be properties of <em>dispatch</em>, not of the protocol — and
+  dispatch is exactly what moves.</p>
+
+  <figure>
+    <svg viewBox="0 0 760 370" role="img" aria-label="The five ceilings, with what changes under process dispatch. Shared priors gains a full lever: a model per member across vendors. The shared ambient layer gains a partial one: members on different harnesses no longer carry an identical layer. Harness-forwarded parent state is a hypothesis with a ready test, since a separate process has no parent session. Member tool grants gain a lever inside a run through per-job git worktrees. A director that holds everything gains a partial lever: the inbound gate and an outbound leak check become mechanical, while the deciding stays discipline.">
+      <defs>
+        <marker id="a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="var(--acc)"/>
+        </marker>
+      </defs>
+      <text class="t-s mut" x="0" y="14">CEILING</text>
+      <text class="t-s mut" x="200" y="14">TODAY</text>
+      <text class="t-s ac" x="334" y="14">UNDER PROCESS DISPATCH</text>
+
+      <line class="hair" x1="0" y1="22" x2="760" y2="22"/>
+
+      <text class="t-l mut" x="0" y="52">1</text>
+      <text class="t-s" x="20" y="46">shared priors</text>
+      <text class="t-s mut" x="20" y="61">never decorrelates weights</text>
+      <rect class="bx" x="200" y="32" width="96" height="26"/><text class="t-s mut" x="208" y="49">partial</text>
+      <path class="ed-a" d="M298,45 L328,45" marker-end="url(#a2)"/>
+      <rect class="bx-o" x="334" y="32" width="424" height="26"/>
+      <text class="t-s okc" x="344" y="49">a model per member, any vendor — the lever, always there</text>
+
+      <text class="t-l mut" x="0" y="106">2</text>
+      <text class="t-s" x="20" y="100">shared ambient layer</text>
+      <text class="t-s mut" x="20" y="115">~28,500 tokens, identical</text>
+      <rect class="bx-w" x="200" y="86" width="96" height="26"/><text class="t-s wn" x="208" y="103">no lever</text>
+      <path class="ed-a" d="M298,99 L328,99" marker-end="url(#a2)"/>
+      <rect class="bx" x="334" y="86" width="424" height="26"/>
+      <text class="t-s" x="344" y="103">different harness, different layer. Present, not identical.</text>
+
+      <text class="t-l mut" x="0" y="160">3</text>
+      <text class="t-s" x="20" y="154">forwarded parent state</text>
+      <text class="t-s mut" x="20" y="169">stale gitStatus got through</text>
+      <rect class="bx-w" x="200" y="140" width="96" height="26"/><text class="t-s wn" x="208" y="157">no lever</text>
+      <path class="ed-a" d="M298,153 L328,153" marker-end="url(#a2)"/>
+      <rect class="bx-d" x="334" y="140" width="424" height="26"/>
+      <text class="t-s ac" x="344" y="157">a child process has no parent session — a ready hypothesis</text>
+
+      <text class="t-l mut" x="0" y="214">4</text>
+      <text class="t-s" x="20" y="208">member tool grants</text>
+      <text class="t-s mut" x="20" y="223">one grep reaches it</text>
+      <rect class="bx" x="200" y="194" width="96" height="26"/><text class="t-s mut" x="208" y="211">between runs</text>
+      <path class="ed-a" d="M298,207 L328,207" marker-end="url(#a2)"/>
+      <rect class="bx-o" x="334" y="194" width="424" height="26"/>
+      <text class="t-s okc" x="344" y="211">per-job worktree on a branch without it — inside a run</text>
+
+      <text class="t-l mut" x="0" y="268">5</text>
+      <text class="t-s" x="20" y="262">the director holds all</text>
+      <text class="t-s mut" x="20" y="277">withholding mechanical</text>
+      <rect class="bx-w" x="200" y="248" width="96" height="26"/><text class="t-s wn" x="208" y="265">discipline</text>
+      <path class="ed-a" d="M298,261 L328,261" marker-end="url(#a2)"/>
+      <rect class="bx" x="334" y="248" width="424" height="26"/>
+      <text class="t-s" x="344" y="265">the gate refuses; the leak check is mechanical. Deciding stays.</text>
+
+      <line class="hair" x1="0" y1="298" x2="760" y2="298"/>
+      <text class="t-s okc" x="0" y="320">solid green = a lever the protocol does not have today</text>
+      <text class="t-s ac" x="396" y="320">dashed = claimed as hypothesis, not as result</text>
+      <text class="t-s mut" x="0" y="342">Ceiling 4’s holes stay named: a member holding Bash can still reach other refs, and mc-historian</text>
+      <text class="t-s mut" x="0" y="356">needs repo-history — so tree scoping is per member, never global.</text>
+    </svg>
+    <figcaption><b>Ceiling 3 is the interesting one.</b> The protocol records that the snapshot’s origin —
+    parent-forwarded rather than harness-computed — is inference, not observation. Dispatching one member
+    as a process settles it by experiment: if the stale snapshot disappears, it was forwarded. That result
+    is worth more to metaconcert than any amount of file sharing, and it is a one-member test.</figcaption>
+  </figure>
+
+  <div class="grid2" style="margin-top:14px">
+    <div class="panel plainp">
+      <h3>Self-report becomes a receipt</h3>
+      <p>The protocol states that member self-report is not verification, and that the only mechanical check
+      is the size of the prompt the director built. Claustrum measures from outside the agent:
+      <code>files_changed</code> comes from before/after git snapshots rather than the agent’s word, with
+      cost and duration per job and a job tree linked by a parent id.</p>
+      <p>The ledger’s weakest fields — prompt-size proxy, wall-clock, per-member cost, which phases
+      actually ran — stop being director-written prose. For a project whose stated bottleneck is thirty
+      entries with a control arm, and whose figures currently live in a gitignored file nobody else can
+      check, that is the main prize.</p>
+    </div>
+    <div class="panel plainp">
+      <h3>The outbound check the protocol admits it cannot mechanise</h3>
+      <p>When a member leaks quarantine-class material into a section meant to flow onward, the director
+      must <em>detect</em> it and must not repair it — repairing makes it the classifier. Detection by
+      match against the held set forms no view at all, and the recovery policy is already fully specified:
+      re-dispatch on the original <code>receives</code>, defect in general terms, never quote the material
+      back, one retry, then record <code>leaked</code>.</p>
+      <p class="note" style="margin-top:12px">A runner executes that policy exactly. This is the one place
+      where the tool is <strong>better at the protocol than a human director</strong>, because the step is
+      one the protocol itself classifies as discipline.</p>
+    </div>
+  </div>
+</section>
+
+<section id="dispatch" class="wrap">
+  <div class="shead"><span class="num">03</span><h2>One dispatch, end to end</h2></div>
+  <p class="claim">What a member call becomes when it goes through the binary instead of the
+  <code>Agent</code> tool.</p>
+
+  <figure>
+    <svg viewBox="0 0 760 300" role="img" aria-label="Six stages. The director composes a brief from the member's receives list. The gate refuses it if it carries an artifact on the never list, exiting with code two. The core snapshots the repository with git, then spawns the member as a process with a cleared environment, its own working directory and the permission flags its grant implies. The member runs. The core snapshots again, so changed files come from git rather than from the agent, and extracts the typed report. A receipt with cost, duration and prompt size returns to the director and the ledger.">
+      <defs>
+        <marker id="a3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+        </marker>
+        <marker id="a3w" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="var(--warn)"/>
+        </marker>
+      </defs>
+
+      <rect class="bx" x="0" y="34" width="112" height="44"/>
+      <text class="t-s" x="10" y="52">1 · COMPOSE</text><text class="t-s mut" x="10" y="68">the director</text>
+      <line class="ed" x1="112" y1="56" x2="128" y2="56" marker-end="url(#a3)"/>
+
+      <rect class="bx-a" x="128" y="34" width="112" height="44"/>
+      <text class="t-s ac" x="138" y="52">2 · GATE</text><text class="t-s mut" x="138" y="68">claustrum</text>
+      <line class="ed" x1="240" y1="56" x2="256" y2="56" marker-end="url(#a3)"/>
+
+      <rect class="bx" x="256" y="34" width="112" height="44"/>
+      <text class="t-s" x="266" y="52">3 · SPAWN</text><text class="t-s mut" x="266" y="68">one process</text>
+      <line class="ed" x1="368" y1="56" x2="384" y2="56" marker-end="url(#a3)"/>
+
+      <rect class="bx" x="384" y="34" width="112" height="44"/>
+      <text class="t-s" x="394" y="52">4 · RUN</text><text class="t-s mut" x="394" y="68">the member</text>
+      <line class="ed" x1="496" y1="56" x2="512" y2="56" marker-end="url(#a3)"/>
+
+      <rect class="bx-o" x="512" y="34" width="112" height="44"/>
+      <text class="t-s okc" x="522" y="52">5 · MEASURE</text><text class="t-s mut" x="522" y="68">from git</text>
+      <line class="ed" x1="624" y1="56" x2="640" y2="56" marker-end="url(#a3)"/>
+
+      <rect class="bx" x="640" y="34" width="112" height="44"/>
+      <text class="t-s" x="650" y="52">6 · RECEIPT</text><text class="t-s mut" x="650" y="68">to the ledger</text>
+
+      <text class="t-s mut" x="0" y="104">brief built from</text>
+      <text class="t-s mut" x="0" y="118">the receives list</text>
+      <text class="t-s mut" x="0" y="132">and nothing else</text>
+
+      <text class="t-s wn" x="128" y="104">refuses a brief</text>
+      <text class="t-s wn" x="128" y="118">carrying a never-</text>
+      <text class="t-s wn" x="128" y="132">class artifact</text>
+
+      <text class="t-s mut" x="256" y="104">cleared env · own</text>
+      <text class="t-s mut" x="256" y="118">cwd or worktree ·</text>
+      <text class="t-s mut" x="256" y="132">grant → deny flags</text>
+
+      <text class="t-s mut" x="384" y="104">fresh context on</text>
+      <text class="t-s mut" x="384" y="118">the backend its cast</text>
+      <text class="t-s mut" x="384" y="132">entry names</text>
+
+      <text class="t-s mut" x="512" y="104">before/after git</text>
+      <text class="t-s mut" x="512" y="118">snapshot · typed</text>
+      <text class="t-s mut" x="512" y="132">report extracted</text>
+
+      <text class="t-s mut" x="640" y="104">cost · duration ·</text>
+      <text class="t-s mut" x="640" y="118">prompt size ·</text>
+      <text class="t-s mut" x="640" y="132">phase and source</text>
+
+      <path class="ed-w" d="M184,78 L184,172" marker-end="url(#a3w)"/>
+      <rect class="bx-w" x="128" y="172" width="400" height="40"/>
+      <text class="t-s wn" x="140" y="190">exit 2 · “blind role: brief carries rationale”</text>
+      <text class="t-s mut" x="140" y="206">a refusal at the runner, not advice in a prompt</text>
+
+      <line class="hair" x1="0" y1="242" x2="760" y2="242"/>
+      <text class="t-s" x="0" y="264">Today the gate reads four forbidden section names and one boolean. For metaconcert it must read the member’s own</text>
+      <text class="t-s" x="0" y="278">receives and never lists — the same refusal, per member and per artifact. That generalisation is the real work.</text>
+      <text class="t-s mut" x="0" y="296">Stage 2 also runs on the way back: the outbound leak check against the held set.</text>
+    </svg>
+    <figcaption><b>Stage 2 is the whole argument.</b> Everything else Claustrum already does for its own
+    roles. Enforcement that lives in a runner rather than in a prompt is the difference between a protocol
+    that asks and one that refuses — and ceiling 5 is precisely the gap between those two.</figcaption>
+  </figure>
+</section>
+
+<section id="director" class="wrap">
+  <div class="shead"><span class="num">04</span><h2>Where the director lives</h2></div>
+  <p class="claim">Metaconcert becomes Claustrum’s second synced <em>skill</em>, with eight roles beneath
+  it — not a role Claustrum runs. The reason is the stops, not role drift.</p>
+
+  <figure>
+    <svg viewBox="0 0 760 248" role="img" aria-label="Two placements. Allowed: the director is the skill in the host chat session, so each of the three stops reaches the human and the run continues after they choose. Forbidden: a spawned headless architect as director, where the three stops have nobody to reach, so the director would have to choose — which the protocol forbids it to do.">
+        <defs>
+        <marker id="a4" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+        </marker>
+      </defs>
+      <text class="t-l okc" x="0" y="15">ALLOWED</text>
+      <text class="t-s mut" x="92" y="15">architect: host</text>
+      <rect class="bx-o" x="0" y="26" width="350" height="36"/>
+      <text class="t-s" x="12" y="48">the host chat session <tspan class="okc">is</tspan> the director</text>
+      <rect class="bx" x="0" y="78" width="104" height="26"/><text class="t-s" x="10" y="95">◆ divergence</text>
+      <rect class="bx" x="112" y="78" width="104" height="26"/><text class="t-s" x="122" y="95">◆ open quest.</text>
+      <rect class="bx" x="224" y="78" width="104" height="26"/><text class="t-s" x="234" y="95">◆ reconcile</text>
+      <path class="ed" d="M164,104 L164,126" marker-end="url(#a4)"/>
+      <rect class="bx-o" x="92" y="126" width="146" height="30"/><text class="t-s okc" x="104" y="146">the human answers</text>
+      <path class="ed" d="M164,156 L164,178" marker-end="url(#a4)"/>
+      <text class="t-s mut" x="92" y="192">the run continues</text>
+      <text class="t-s mut" x="0" y="222">a freshly dispatched director would be less context-saturated</text>
+      <text class="t-s mut" x="0" y="238">than a /clear’d session, so drift is not the objection</text>
+
+      <line class="hair" x1="380" y1="6" x2="380" y2="230"/>
+
+      <text class="t-l wn" x="410" y="15">FORBIDDEN</text>
+      <text class="t-s mut" x="516" y="15">coordinate · unattended</text>
+      <rect class="bx-w" x="410" y="26" width="350" height="36"/>
+      <text class="t-s" x="422" y="48">a spawned headless architect as director</text>
+      <rect class="bx" x="410" y="78" width="104" height="26"/><text class="t-s" x="420" y="95">◆ divergence</text>
+      <rect class="bx" x="522" y="78" width="104" height="26"/><text class="t-s" x="532" y="95">◆ open quest.</text>
+      <rect class="bx" x="634" y="78" width="104" height="26"/><text class="t-s" x="644" y="95">◆ reconcile</text>
+      <path class="ed-w" d="M574,104 L574,126" marker-end="url(#a4)"/>
+      <rect class="bx-w" x="502" y="126" width="146" height="30"/><text class="t-s wn" x="514" y="146">nobody to reach</text>
+      <text class="t-l wn" x="622" y="147">✕</text>
+      <text class="t-s wn" x="410" y="178">it would have to choose — and “if asked to choose,</text>
+      <text class="t-s wn" x="410" y="192">decline” becomes unsatisfiable</text>
+      <text class="t-s mut" x="410" y="222">the stops are the product; an unattended run</text>
+      <text class="t-s mut" x="410" y="238">deletes the product and keeps the cost</text>
+    </svg>
+    <figcaption><b>Worth stating precisely, because the repo gives a different reason.</b> Its integration
+    note warns against an architect-as-director on role-drift grounds. Under Claustrum that warning weakens
+    — a spawned director starts with no project history at all. What does not weaken is the human
+    requirement: three stops, three answers, no way to automate them.</figcaption>
+  </figure>
+</section>
+
+<section id="roles" class="wrap">
+  <div class="shead"><span class="num">05</span><h2>How roles resolve</h2></div>
+  <p class="claim">The protocol is versioned by its author, not by Claustrum releases. So the member set is
+  <em>synced</em> from the metaconcert repo at a pinned version — and a project may still add or override
+  members locally, which is what a new domain needs.</p>
+
+  <figure>
+    <svg viewBox="0 0 760 362" role="img" aria-label="Role resolution. The metaconcert repository at a pinned library version is synced into a project directory of upstream members, tracked by a per-file hash in a manifest. Three sources are then resolved in order: local members win over synced upstream members, which win over whatever is embedded in the binary. The resolver lists every member with its source, and the run plan the human approves prints that source beside each name.">
+      <defs>
+        <marker id="a5" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+        </marker>
+        <marker id="a5c" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="var(--acc)"/>
+        </marker>
+      </defs>
+
+      <rect class="bx-a" x="0" y="0" width="246" height="42"/>
+      <text class="t-s ac" x="12" y="19">github.com/orlodax/metaconcert</text>
+      <text class="t-s mut" x="12" y="34">mc-library 1.2.0 — its own version</text>
+
+      <path class="ed-a" d="M80,42 L80,70" marker-end="url(#a5c)"/>
+      <text class="t-s ac" x="90" y="60">claustrum mc sync</text>
+
+      <rect class="bx" x="0" y="70" width="246" height="52"/>
+      <text class="t-s mut" x="12" y="88">2 · UPSTREAM</text>
+      <text class="t-s" x="12" y="103">.claustrum/members/mc/</text>
+      <text class="t-s mut" x="12" y="118">pinned version · hashed in a manifest</text>
+
+      <rect class="bx-o" x="0" y="132" width="246" height="52"/>
+      <text class="t-s okc" x="12" y="150">3 · LOCAL · wins</text>
+      <text class="t-s" x="12" y="165">.claustrum/members/mc-*/</text>
+      <text class="t-s mut" x="12" y="180">new members, new domains, overrides</text>
+
+      <rect class="bx" x="0" y="194" width="246" height="52"/>
+      <text class="t-s mut" x="12" y="212">1 · EMBEDDED</text>
+      <text class="t-s" x="12" y="227">in the binary</text>
+      <text class="t-s mut" x="12" y="242">a floor: a fresh checkout still runs</text>
+
+      <path class="ed-a" d="M246,96 L270,96"/>
+      <path class="ed-a" d="M246,158 L270,158"/>
+      <path class="ed-d" d="M246,220 L270,220"/>
+      <path class="ed-a" d="M270,96 L270,220"/>
+      <path class="ed-a" d="M270,158 L330,158" marker-end="url(#a5c)"/>
+
+      <rect class="bx-a" x="330" y="122" width="150" height="72"/>
+      <text class="t-s ac" x="340" y="142">RESOLVE</text>
+      <text class="t-s" x="340" y="158">parse each</text>
+      <text class="t-s" x="340" y="172">## MEMBRANE block</text>
+      <text class="t-s mut" x="340" y="188">invalid → refused</text>
+
+      <path class="ed-a" d="M480,158 L500,158" marker-end="url(#a5c)"/>
+
+      <rect class="bx" x="500" y="70" width="258" height="176"/>
+      <text class="t-s mut" x="512" y="90">THE RUN PLAN YOU APPROVE</text>
+      <line class="hair" x1="512" y1="98" x2="746" y2="98"/>
+      <text class="t-s" x="512" y="116">mc-observer</text><text class="t-s mut" x="640" y="116">upstream 1.2.0</text>
+      <text class="t-s" x="512" y="134">mc-cartographer</text><text class="t-s mut" x="640" y="134">upstream 1.2.0</text>
+      <text class="t-s" x="512" y="152">mc-diagnostician</text><text class="t-s mut" x="640" y="152">upstream 1.2.0</text>
+      <text class="t-s" x="512" y="170">mc-adversary</text><text class="t-s okc" x="640" y="170">local · override</text>
+      <text class="t-s" x="512" y="188">mc-topology</text><text class="t-s okc" x="640" y="188">local · new</text>
+      <text class="t-s" x="512" y="206">mc-blastradius</text><text class="t-s okc" x="640" y="206">local · new</text>
+      <line class="hair" x1="512" y1="218" x2="746" y2="218"/>
+      <text class="t-s wn" x="512" y="236">falsify · unstaffed — a roster defect</text>
+
+      <text class="t-s okc" x="0" y="268">resolve in order: 3 local → 2 upstream → 1 embedded · first match wins</text>
+      <line class="hair" x1="0" y1="284" x2="760" y2="284"/>
+      <text class="t-s ac" x="0" y="304">Every member’s source is printed, because a local file that silently overrides an upstream one</text>
+      <text class="t-s ac" x="0" y="318">changes the membrane — and an unnoticed change to it is the failure class this protocol exists to catch.</text>
+      <text class="t-s mut" x="0" y="340">mc sync --check exits 2 on drift, for CI · an unmarked or hand-edited file is never overwritten,</text>
+      <text class="t-s mut" x="0" y="354">as with every other sync target.</text>
+    </svg>
+    <figcaption><b>Three sources, one printed answer.</b> Upstream is the protocol’s truth and moves on its
+    own cadence; local is where a second domain lives — the <code>infra</code> sketch in the member template
+    needs a <code>map</code> and an <code>attack</code> member that have no business upstream. The embedded
+    floor means a fresh checkout with no network still runs.</figcaption>
+  </figure>
+
+  <div class="grid2" style="margin-top:14px">
+    <div class="panel plainp">
+      <h3>The surface</h3>
+      <pre>claustrum mc sync          <i># fetch pinned upstream</i>
+claustrum mc sync --check  <i># exit 2 on drift (CI)</i>
+claustrum mc members       <i># what resolved, and from where</i>
+claustrum mc members --json
+claustrum mc new &lt;name&gt;    <i># local member from template</i></pre>
+      <p class="note" style="margin-top:13px">The director calls <code>mc members --json</code> instead of
+      globbing a directory. It gets the same discovery in every host, plus two things a glob cannot give:
+      the <code>## MEMBRANE</code> block already parsed and validated, and the source of each member.</p>
+    </div>
+    <div class="panel plainp">
+      <h3>Why not vendor the members into the binary</h3>
+      <p>Because then a protocol fix needs a Claustrum release. The member set is the protocol’s
+      <em>content</em>; Claustrum is its runtime. Pinning <code>mc-library: "1.2.0"</code> the way the
+      existing library version is pinned keeps the two release cadences apart and still makes a run
+      reproducible.</p>
+      <p>It also keeps the direction of authority right: where this page and the metaconcert repository
+      disagree about the protocol, the repository is correct and the sync is what fixes it.</p>
+    </div>
+  </div>
+  <p class="note bad"><strong>One translation step is real work.</strong> Upstream members are Claude-format
+  markdown with a <code>## MEMBRANE</code> block; Claustrum’s renderer wants role metadata and a typed
+  membrane. The import parses one into the other, which means the MEMBRANE block’s grammar becomes a
+  compatibility surface between two repositories — versioned, and worth a golden test per member.</p>
+</section>
+
+</main>
+
+<footer class="wrap">
+  <p><span class="lbl">Status</span><br>
+  A design note, not a plan of record. <code>mc-*</code> metaconcert roles are on Claustrum’s explicit
+  “not in v1” list and nothing here is scheduled. Metaconcert itself is <code>efficacy n = 0</code>, so
+  the order that makes sense is a measurement first and an implementation only if it pays off.</p>
+  <p style="margin-top:14px"><span class="lbl">See also</span><br>
+  <a href="https://github.com/orlodax/metaconcert">orlodax/metaconcert</a> — the protocol, and the field
+  manual that goes with it · <a href="https://github.com/orlodax/Claustrum">orlodax/Claustrum</a> — the
+  runtime, <code>docs/PLAN.md</code> for the milestones and <code>NOTES.md</code> for the dated decisions.</p>
+</footer>
