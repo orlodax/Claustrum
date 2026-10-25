@@ -166,7 +166,10 @@ dotnet publish src/Claustrum/Claustrum.csproj -c Release -r linux-x64 -p:Publish
 
 Contribution rules — style, comment ceiling, linear history, issues on the
 [project board](https://github.com/users/orlodax/projects/6) — are in [AGENTS.md](AGENTS.md);
-design rationale in [NOTES.md](NOTES.md).
+design rationale in [NOTES.md](NOTES.md), with one standing design note of its own:
+[docs/metaconcert-on-claustrum.html](docs/metaconcert-on-claustrum.html) — why the
+[metaconcert](https://github.com/orlodax/metaconcert) protocol would run on Claustrum, and what the
+`mc-*` roles on `docs/PLAN.md`'s *not in v1* list would cost.
 
 ## Install
 
