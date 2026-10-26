@@ -352,6 +352,32 @@ public sealed class TreeRoutingEndToEndTests : IDisposable
         }
     }
 
+    // #139: the host polls the marker every 250 ms and must count only the plain file LiveJob.RequestCancel writes. File.Exists is true
+    // for a dangling link on Unix, so a link at the marker cancelled the job (macOS CI), and the Ctrl-C test above only passed by winning a race.
+    [Fact]
+    public async Task ADanglingLinkAtTheCancelMarkerDoesNotCancelTheHostedJobAsync()
+    {
+        fixture.Repo.Script(Working());
+        CliResult started = await fixture.Repo.RunAsync("run", "builder", "--brief", "x", "--detach");
+        string id = started.Stdout.Trim();
+        await DetachedRepo.WaitUntilAsync(() => fixture.LiveState(id) == "running", "the detached job to run");
+        string marker = Path.Combine(fixture.JobDir(id), "cancel");
+
+        TestLinks.Create(marker, Path.Combine(fixture.JobDir(id), "nowhere"));
+        await Task.Delay(TimeSpan.FromMilliseconds(1500), DetachedRepo.Ct);
+
+        Assert.Equal("running", fixture.LiveState(id));
+        Assert.True(fixture.HostAlive(id), "a link is not a cancel request, so the host is still running the job");
+        Assert.False(File.Exists(Path.Combine(fixture.JobDir(id), "result.json")), "no receipt: the job was not cancelled");
+
+        // The plain file is still honoured once the link is gone: the job ends the way `jobs cancel` ends any other.
+        File.Delete(marker);
+        CliResult cancel = await fixture.Repo.RunAsync("jobs", "cancel", id);
+        Assert.True(cancel.ExitCode == ExitCodes.Ok, cancel.Stderr);
+        Assert.Equal("cancelled", fixture.ResultStatus(id));
+        await fixture.WaitForHostGoneAsync(id);
+    }
+
     [Fact]
     public async Task EveryHostedChildIsRecordedUnderItsTreeAsync()
     {
