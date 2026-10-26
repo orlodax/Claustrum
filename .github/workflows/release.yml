@@ -28,6 +28,19 @@ jobs:
             version="${GITHUB_REF_NAME#v}"
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
+      # A tag while any UPGRADING.md heading still says Unreleased (notes the version bump did not fold in) stops here, before
+      # anything is built or pushed to NuGet; the release job reads the same section again for its body.
+      - if: github.ref_type == 'tag'
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            docs/UPGRADING.md
+            scripts/release-notes.sh
+          sparse-checkout-cone-mode: false
+      - if: github.ref_type == 'tag'
+        env:
+          VERSION: ${{ steps.derive.outputs.version }}
+        run: sh scripts/release-notes.sh "$VERSION" docs/UPGRADING.md > /dev/null
 
   publish:
     needs: version

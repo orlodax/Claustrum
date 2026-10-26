@@ -91,6 +91,12 @@ cases the machine cannot; when a rule is ambiguous, resolve it toward them.
 - Every GitHub issue goes on the project board (https://github.com/users/orlodax/projects/6) with a
   Status and Start/Target dates in the same step that creates it.
 - Commits that resolve an issue cite it (`Closes #n`).
+- A PR that changes what a user of the binary sees (a flag, a config key or default, a receipt field, a bug they could
+  hit) adds its note to `docs/UPGRADING.md` under the `→ Unreleased` heading at the top (`## <last release's x.y>.x →
+  Unreleased`; create it if absent), in the same PR, never at release time. The version bump renames that heading to the version
+  (or folds its notes into that version's section): `scripts/release-notes.sh` publishes the section whose heading ends
+  in `→ <version>`, and a tag while any heading still says Unreleased stops the release workflow before anything is
+  built or published. A blocked tag needs a commit that fixes the heading and a new tag; re-running cannot pass.
 
 ## Layout
 

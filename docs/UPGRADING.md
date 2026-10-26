@@ -1,5 +1,18 @@
 # Upgrading Claustrum
 
+## 0.3.x → Unreleased
+
+### What changes
+
+- **A `null` budget in a config file now turns the default cap off (#137).** `"defaults": {"budget_usd": null}` in
+  your user config or a repo's `claustrum.json` used to read as an absent key, so the earlier layer's cap still
+  applied: the built-in $5, or the number your user config set. It now means no default cap, so a hand-written `null`
+  goes from that cap to none. `claustrum init` only ever writes numbers.
+  - `CLAUSTRUM_BUDGET_USD=none` (or `=null`) does the same from the environment. Before, a non-number there was
+    ignored, so a variable already set to `none` goes from a cap to none too.
+  - `--budget` and a cast's `budget_usd` still win over it.
+  - `backends doctor` shows it as `defaults.budget_usd = none  [User]`.
+
 ## 0.2.x → 0.3.0
 
 Nothing to do. 0.3.0 adds one backend and fixes one race. Every existing backend, cast and receipt
