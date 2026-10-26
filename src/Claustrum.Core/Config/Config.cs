@@ -268,7 +268,7 @@ public sealed class Config
         },
         Roles: [],
         Backends: [],
-        Defaults: new DefaultsSettings(TimeoutSeconds: 1800, BudgetUsd: 5m, EnvPassthrough: "allowlist"),
+        Defaults: new DefaultsSettings(TimeoutSeconds: 1800, BudgetUsd: new DefaultBudget(5m), EnvPassthrough: "allowlist"),
         Jobs: new JobsSettings(KeepLast: 200));
 
     private static ConfigDocument TrackDefaults(ConfigDocument doc, ConfigLayer layer, Dictionary<string, ConfigLayer> origins)
@@ -398,7 +398,7 @@ public sealed class Config
     private static ConfigDocument? ReadEnvLayer(IPlatform platform)
     {
         int? timeoutSeconds = ParseInt(platform.GetEnvironmentVariable("CLAUSTRUM_TIMEOUT_SECONDS"));
-        decimal? budgetUsd = ParseDecimal(platform.GetEnvironmentVariable("CLAUSTRUM_BUDGET_USD"));
+        DefaultBudget? budgetUsd = ParseBudget(platform.GetEnvironmentVariable("CLAUSTRUM_BUDGET_USD"));
         string? envPassthrough = platform.GetEnvironmentVariable("CLAUSTRUM_ENV_PASSTHROUGH");
 
         return timeoutSeconds is null && budgetUsd is null && envPassthrough is null
@@ -409,6 +409,9 @@ public sealed class Config
     private static int? ParseInt(string? value) =>
         int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int result) ? result : null;
 
-    private static decimal? ParseDecimal(string? value) =>
-        decimal.TryParse(value, NumberStyles.Number, CultureInfo.InvariantCulture, out decimal result) ? result : null;
+    // #137: a variable cannot carry JSON's null, so "none" (doctor's word) or "null" (the file's) turns the default cap off.
+    private static DefaultBudget? ParseBudget(string? value) =>
+        value?.Trim().ToLowerInvariant() is "none" or "null" ? new DefaultBudget(null)
+        : decimal.TryParse(value, NumberStyles.Number, CultureInfo.InvariantCulture, out decimal usd) ? new DefaultBudget(usd)
+        : null;
 }

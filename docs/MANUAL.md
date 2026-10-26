@@ -579,6 +579,11 @@ Layers, later wins per key, `deny` lists concatenate:
 `sync` reads the same layers (§12): `models` aliases, and `roles.<name>.model|effort|deny`, decide the synced
 agent files. `sync --global` reads only the user file, never the repo's `claustrum.json`.
 
+`defaults.budget_usd` is the per-run cap when there is no `--budget` and no active cast (§10). `null` turns that
+default off, and an absent key leaves the earlier layer's value, so a `null` in your user config holds until a repo's
+`claustrum.json` sets a number. `CLAUSTRUM_BUDGET_USD=none` (or `=null`) does the same from the environment. `backends doctor` shows
+it as `defaults.budget_usd = none  [User]`. `0` is a $0 cap, not "no cap", and a string in the file is refused.
+
 `roles.<name>.user_mcp` (`true`/`false`) keeps a claude role's user-level MCP servers (§13). It is read from the user config only: in a repo's `claustrum.json` it is ignored, with a warning on the receipt that names the file.
 
 `backends.<name>` takes `path` only. There was an `injection` key once; nothing ever read it and it was
@@ -807,7 +812,8 @@ Three different caps, and only one of them is shared:
 
 1. `--budget` on a call (or `defaults.budget_usd`, built-in $5) is the per-run cap handed to the
    backend (`--max-budget-usd` on claude); the cast's `budget_usd` becomes this cap when no flag is
-   given.
+   given. `defaults.budget_usd: null` (or `CLAUSTRUM_BUDGET_USD=none`/`=null`) means no default cap: a run
+   with no `--budget` and no cast is then uncapped, and opens no tree ledger (§7).
 2. `--probe`'s $0.50 is per probe request.
 3. **The tree ledger** is what `budget_usd` really caps: every process that carries
    `CLAUSTRUM_PARENT_JOB=<tree id>` is a member, `<CLAUSTRUM_HOME>/budget/<tree>/` holds one entry
