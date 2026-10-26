@@ -16,6 +16,6 @@
     <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
     <Authors>Dario Orlovich</Authors>
     <RepositoryUrl>https://github.com/orlodax/Claustrum</RepositoryUrl>
-    <Version>0.3.0</Version>
+    <Version>0.4.0</Version>
   </PropertyGroup>
 </Project>
