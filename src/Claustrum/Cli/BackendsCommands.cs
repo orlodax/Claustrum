@@ -336,8 +336,8 @@ public static class BackendsCommands
         {
             if (defaults.TimeoutSeconds is { } timeoutSeconds)
                 PrintLine(config, "defaults.timeout_seconds", timeoutSeconds.ToString());
-            if (defaults.BudgetUsd is { } budgetUsd)
-                PrintLine(config, "defaults.budget_usd", budgetUsd.ToString());
+            if (defaults.BudgetUsd is { } budget)
+                PrintLine(config, "defaults.budget_usd", budget.Usd?.ToString() ?? "none");
             if (defaults.EnvPassthrough is { } envPassthrough)
                 PrintLine(config, "defaults.env_passthrough", envPassthrough);
         }

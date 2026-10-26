@@ -81,7 +81,7 @@ public sealed class ConfigTests
 
         CoreConfig config = CoreConfig.Load(platform, repoDir);
 
-        Assert.Equal(42.5m, config.Merged.Defaults?.BudgetUsd);
+        Assert.Equal(42.5m, config.Merged.Defaults?.BudgetUsd?.Usd);
         Assert.Equal(ConfigLayer.Env, config.Origins["defaults.budget_usd"]);
     }
 

@@ -6940,3 +6940,35 @@ order the design says: `init-1`, `new-2`, `config-3` (model), `config-4` (mode `
 `end_turn`. A third run with `…-free#high` (job 20261016-203605-19de3355) settles the one question the confirm pass
 left open: after `config-5` (mode) the answer still reports `effort: high`, so setting `mode` last does not reset the
 variant.
+
+## `defaults.budget_usd: null` turns the default cap off (2026-10-26, issue #137)
+
+With no cast, a run's cap was `--budget` > `defaults.budget_usd`, built-in $5, and no layer could switch it off:
+`MergeDefaults` keeps `incoming ?? existing`, so a file's `"budget_usd": null` read as an absent key and the $5 came
+back (measured on 0.3.0, `15acfdb`). The only way out was a number too large to bind, which receipts and
+`backends doctor` then showed as if it were a cap.
+
+**Decision: an explicit JSON `null`, kept apart from an absent key.**
+- Not `0`: a $0 cap already means something (`--max-budget-usd 0` on claude, a tree ledger that refuses every
+  child), and a sentinel would take that meaning away. `0` stays a $0 cap.
+- Not `"none"` in a file: a cast already says "cap disabled" with `budget_usd: null` (PLAN §D1), and `null` is what
+  the owner wrote first, expecting exactly this. A string is refused with what to write instead (exit 2, file named).
+- `null` in a file; `CLAUSTRUM_BUDGET_USD=none` in the environment, which cannot carry a null (an empty variable is no
+  variable on Windows). `=null` is accepted there too: the blind review found the file's spelling silently ignored,
+  leaving the $5 on. Any other word is still ignored, as before. `backends doctor` prints `defaults.budget_usd = none  [User]`.
+
+**How the null survives deserialisation.** `DefaultsSettings.BudgetUsd` is a `DefaultBudget?`, the way a cast's is
+a `CastBudget?`: null means the layer says nothing, `new DefaultBudget(null)` means it turns the cap off. An absent key
+never reaches a converter and stays the constructor parameter's `null`. A null token reaches one only if it handles
+null, so `DefaultBudgetJsonConverter` is a `JsonConverter<DefaultBudget?>` on the property with `HandleNull => true`.
+Measured the same day on the built binary: with that override removed, a user file's `"budget_usd": null` printed
+`defaults.budget_usd = 5  [Builtin]` again. The merge needed no change, since a layer's "none" is no longer null and
+`incoming ?? existing` keeps it, origin included. Nothing serialises `ConfigDocument` today (`init` merges JSON
+nodes), but the property is `WhenWritingNull` so that a silent layer is omitted rather than written as `null`, which would
+read back as "no default cap".
+
+**What "none" means downstream.** The merged `Usd` is null, which `CastResolution.ApplyBudget` already read as no
+cap: `--budget N` and an active cast's `budget_usd` still win over it, so a cap stays something chosen per run or per
+cast. Inside a job tree with no cast, a null default yields no tree budget and so no ledger, the outcome a cast's
+`null` already had (`DelegateEngine`, the §D4 comment). PLAN §D1's `--budget none` was never built and is not part
+of this: `--budget` still takes a number only.

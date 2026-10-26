@@ -96,15 +96,16 @@ public static class DelegateEngine
         // docs/PLAN.md §D4: inside a job tree (CLAUSTRUM_PARENT_JOB, §D2) the cast's budget_usd is the
         // whole tree's, so it goes to the ledger instead of straight to this one run — Runner clamps
         // the child to what is left, which is why the per-run cap it starts from is only an explicit
-        // --budget. A cast that says unlimited yields no tree budget to share, and no tree at all
-        // leaves the §D1 precedence exactly as it was (NOTES.md "Tree budget accounting is a file
-        // ledger").
-        decimal? treeBudget = CastResolution.ApplyBudget(flagBudget: null, request.CastBudget, config.Merged.Defaults?.BudgetUsd);
+        // --budget. A cast that says unlimited, or no cast and a config whose budget_usd is null
+        // (#137), yields no tree budget to share, and no tree at all leaves the §D1 precedence exactly
+        // as it was (NOTES.md "Tree budget accounting is a file ledger").
+        decimal? configBudget = config.Merged.Defaults?.BudgetUsd?.Usd;
+        decimal? treeBudget = CastResolution.ApplyBudget(flagBudget: null, request.CastBudget, configBudget);
         JobTreeBudget? tree = BudgetLedger.TreeIdFor(AppServices.Platform) is { } treeId && treeBudget is { } shared
             ? new JobTreeBudget(treeId, shared, Math.Max(1, request.MaxParallel ?? 1))
             : null;
         decimal? budgetUsd = tree is null
-            ? CastResolution.ApplyBudget(request.Overrides.BudgetUsd, request.CastBudget, config.Merged.Defaults?.BudgetUsd)
+            ? CastResolution.ApplyBudget(request.Overrides.BudgetUsd, request.CastBudget, configBudget)
             : request.Overrides.BudgetUsd;
 
         int timeoutSeconds = request.Overrides.TimeoutSeconds ?? config.Merged.Defaults?.TimeoutSeconds ?? DefaultTimeoutSeconds;
