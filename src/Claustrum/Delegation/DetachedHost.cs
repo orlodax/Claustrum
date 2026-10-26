@@ -86,7 +86,7 @@ internal static class DetachedHost
         {
             for (int poll = 0; ; poll++)
             {
-                if (File.Exists(job.CancelRequest) || File.Exists(running.Job.CancelRequest))
+                if (IsCancelRequested(job.CancelRequest) || IsCancelRequested(running.Job.CancelRequest))
                 {
                     await cancel.CancelAsync();
                     return;
@@ -106,6 +106,11 @@ internal static class DetachedHost
         {
         }
     }
+
+    // #139: only the plain file LiveJob.RequestCancel writes counts (`jobs cancel`, a waiter that gets Ctrl-C, SIGTERM or SIGHUP,
+    // the coordinate-end sweep). File.Exists is true for a dangling link on Unix (an lstat fallback, measured 2026-10-26), so a link
+    // planted at the marker cancelled the job.
+    private static bool IsCancelRequested(string marker) => new FileInfo(marker) is { Exists: true, LinkTarget: null };
 
     // The Notice first, so the conversation says why; then the cancel, which ends the job with its receipt like any other.
     private static async Task CancelForEndedRootAsync(JobPaths job, CancellationTokenSource cancel, CancellationToken stop)
