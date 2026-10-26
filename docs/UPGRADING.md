@@ -1,6 +1,9 @@
 # Upgrading Claustrum
 
-## 0.3.x → Unreleased
+## 0.3.x → 0.4.0
+
+Nothing to do, unless a config file of yours says `"budget_usd": null` or you set `CLAUSTRUM_BUDGET_USD=none`: read the
+first item below. The role library stays `1.1.0`, so synced repos show no drift.
 
 ### What changes
 
