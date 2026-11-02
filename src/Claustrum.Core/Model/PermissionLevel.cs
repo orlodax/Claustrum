@@ -9,10 +9,11 @@ public enum PermissionLevel
 {
     ReadOnly,
 
-    // Read the tree, run commands, change nothing. The level a review role that has to *operate* the
+    // Read the tree and run commands, without the edit tools. The level a review role that has to *operate* the
     // code needs — ui-reviewer starts a dev server and drives a browser but is forbidden to edit —
     // which ReadOnly cannot express (it withholds the shell) and EditShell over-grants (review
-    // finding: ui-reviewer shipped as edit+shell purely because this rung did not exist).
+    // finding: ui-reviewer shipped as edit+shell purely because this rung did not exist). Not a sandbox:
+    // a command can still write, and the role's deny list is the guard (#140, 2026-11-02).
     Shell,
 
     Edit,

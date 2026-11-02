@@ -30,6 +30,15 @@ public sealed class OpencodeBackend(IPlatform platform) : IBackend, IPostRunHook
     // #144: `external_directory` and `edit` patterns below `full` (WriteHeadlessGuards, WriteEdit).
     public bool HonoursReadDirs => true;
 
+    public string? ReadDirRefusal(string dir, PermissionLevel level) => ReadDirRefusalFor(dir, level);
+
+    // opencode's matcher has no escape: a `*` or `?` in a path is a wildcard there, and a `\` is read as `/` (2.0.30), so the rule
+    // would name other directories too. `full` writes no rules at all.
+    internal static string? ReadDirRefusalFor(string dir, PermissionLevel level) =>
+        level != PermissionLevel.Full && (dir.IndexOfAny(['*', '?']) >= 0 || (!OperatingSystem.IsWindows() && dir.Contains('\\')))
+            ? $"opencode cannot name {dir} exactly (its path has *, ? or \\)"
+            : null;
+
     public RunTrace? Trace(string stdout) => OpencodeTrace.Read(stdout);
 
     public Task<Doctor> DetectAsync(BackendConfig? config, CancellationToken cancellationToken) =>
@@ -376,6 +385,7 @@ public sealed class OpencodeBackend(IPlatform platform) : IBackend, IPostRunHook
     // 2026-09-22). v2 removed the OPENCODE_PERMISSION env var v1.18.31 read all this from.
     internal static string BuildConfigContent(string agentName, string systemPromptFilePath, PermissionPolicy permission, string[]? readDirs = null)
     {
+        string[] given = [.. (readDirs ?? []).Where(dir => ReadDirRefusalFor(dir, permission.Level) is null)];
         using MemoryStream buffer = new();
         using (Utf8JsonWriter writer = new(buffer))
         {
@@ -384,10 +394,10 @@ public sealed class OpencodeBackend(IPlatform platform) : IBackend, IPostRunHook
             writer.WriteStartObject(agentName);
             writer.WriteString("mode", "primary");
             writer.WriteString("prompt", $"{{file:{systemPromptFilePath}}}");
-            WritePermission(writer, permission, readDirs ?? []);
+            WritePermission(writer, permission, given);
             writer.WriteEndObject();
             writer.WriteEndObject();
-            WritePermission(writer, permission, readDirs ?? []);
+            WritePermission(writer, permission, given);
             writer.WriteEndObject();
         }
 
@@ -477,15 +487,15 @@ public sealed class OpencodeBackend(IPlatform platform) : IBackend, IPostRunHook
         writer.WriteEndObject();
     }
 
-    // #143: claude's read-only git shell (ReadOnlyShell), denied everywhere else. The write guards and the role's deny list come after
-    // the allows because the last matching rule wins, as in WriteBashRules.
+    // #143: claude's read-only git shell (ReadOnlyShell), denied everywhere else. The guards and the role's deny list come after the
+    // allows because the last matching rule wins, as in WriteBashRules.
     private static void WriteReadOnlyBashRules(Utf8JsonWriter writer, IReadOnlyList<string> deny)
     {
         writer.WriteStartObject("bash");
         writer.WriteString("*", "deny");
         foreach (string command in ReadOnlyShell.Commands)
             writer.WriteString(command, "allow");
-        foreach (string guard in ReadOnlyShell.OpencodeWriteGuards)
+        foreach (string guard in ReadOnlyShell.OpencodeGuards)
             writer.WriteString(guard, "deny");
         foreach (string pattern in deny)
         {

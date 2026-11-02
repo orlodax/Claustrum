@@ -53,6 +53,12 @@ public interface IBackend
     bool ReadDirsWritableAt(PermissionLevel level) => false;
 
     /// <summary>
+    /// Why <see cref="Build"/> leaves <paramref name="dir"/> out at <paramref name="level"/>, or null when it applies it (#144): a path the
+    /// harness's permission syntax cannot fence. Dispatch names a configured dir it refuses; the automatic git common dir goes silently.
+    /// </summary>
+    string? ReadDirRefusal(string dir, PermissionLevel level) => null;
+
+    /// <summary>
     /// What a finished run's stdout says about its tool calls, for <see cref="EnvironmentClassifier"/> (#145). Null when this backend's
     /// stream is not read for them: cursor, copilot and api are unclassified, and their receipts carry dispatch and report issues only.
     /// </summary>

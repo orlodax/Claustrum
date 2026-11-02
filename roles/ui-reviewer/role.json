@@ -10,7 +10,7 @@
   },
   "permission": "shell",
   "tools": ["mcp__Claude_Browser", "mcp__claude-in-chrome"],
-  "deny": ["git push"],
+  "deny": ["git push", "git checkout", "git switch", "git reset", "git restore", "git stash", "git commit", "git clean", "git rebase", "git merge"],
   "mayDelegate": [],
   "report": "code-reviewer",
   "harnesses": ["claude"],

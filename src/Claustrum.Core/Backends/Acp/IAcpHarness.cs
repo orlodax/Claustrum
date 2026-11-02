@@ -1,3 +1,5 @@
+using Claustrum.Core.Model;
+
 namespace Claustrum.Core.Backends.Acp;
 
 // One row of the ACP table (#130): what differs between harnesses the generic client drives. The protocol, the turn parsing, the
@@ -21,6 +23,9 @@ public interface IAcpHarness
 
     /// <summary>Whether <see cref="Prepare"/> applies <c>ResolvedRun.ReadDirs</c>, read-only below <c>full</c>: <see cref="IBackend.HonoursReadDirs"/> (#144).</summary>
     bool HonoursReadDirs => false;
+
+    /// <summary><see cref="IBackend.ReadDirRefusal"/> for the harness's own permission config.</summary>
+    string? ReadDirRefusal(string dir, PermissionLevel level) => null;
 
     /// <summary>The role's environment and config options for a run. Pure and repeatable: Build and CreateDriver both call it.</summary>
     AcpHarnessSetup Prepare(ResolvedRun run);

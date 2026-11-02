@@ -331,9 +331,10 @@ public static class BackendsCommands
         if (config.Merged.ReadDirs is { } readDirs)
             PrintLine(config, "read_dirs", string.Join(", ", readDirs));
 
-        foreach ((string glob, ProjectSettings project) in config.Merged.Projects ?? [])
+        foreach ((string glob, ProjectSettings? entry) in config.Merged.Projects ?? [])
         {
-            // Both keys share the project's origin: only the user layer can set them (Config.Load).
+            // A JSON null arrives whatever the annotation says; both keys share the project's origin (only the user layer sets them).
+            ProjectSettings project = entry ?? throw ProjectAccess.NullProject(config.UserConfigPath, glob);
             if (project.ReadDirs is { } projectDirs)
                 PrintLine(config, $"projects.{glob}.read_dirs", string.Join(", ", projectDirs), $"projects.{glob}");
             if (project.WorktreeHook is { } hook)
