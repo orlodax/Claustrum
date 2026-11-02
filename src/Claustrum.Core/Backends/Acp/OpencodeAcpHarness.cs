@@ -1,4 +1,5 @@
 using Claustrum.Core.Backends.Opencode;
+using Claustrum.Core.Model;
 using Claustrum.Core.Platform;
 
 namespace Claustrum.Core.Backends.Acp;
@@ -22,6 +23,8 @@ public sealed class OpencodeAcpHarness(IPlatform platform) : IAcpHarness
 
     // The native backend's config, read dirs included (#144): `external_directory` and `edit` patterns, never at `full`.
     public bool HonoursReadDirs => true;
+
+    public string? ReadDirRefusal(string dir, PermissionLevel level) => OpencodeBackend.ReadDirRefusalFor(dir, level);
 
     public AcpHarnessSetup Prepare(ResolvedRun run)
     {

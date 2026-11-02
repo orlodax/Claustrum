@@ -40,10 +40,13 @@ public static class WorktreeHook
     // Null when the hook exited 0; otherwise the exit code and the first line it wrote to stderr, or why it never ran to the end.
     private static async Task<string?> FailureAsync(string[] argv, string worktreePath, IPlatform platform, bool envPassthroughAll, CancellationToken cancellationToken)
     {
+        if (Program(argv, platform) is not { } program)
+            return $"{argv[0]} not found on PATH";
+
         try
         {
             Dictionary<string, string> environment = EnvAllowList.Build(platform, new Dictionary<string, string>(), envPassthroughAll);
-            (int exitCode, _, string stderr) = await CommandProcess.RunAsync(argv[0], worktreePath, argv[1..], timeout, cancellationToken, environment);
+            (int exitCode, _, string stderr) = await CommandProcess.RunAsync(program.Executable, worktreePath, program.Args, timeout, cancellationToken, environment);
             if (exitCode == 0)
                 return null;
 
@@ -57,6 +60,25 @@ public static class WorktreeHook
         catch (Exception ex) when (ex is Win32Exception or InvalidOperationException or IOException or UnauthorizedAccessException)
         {
             return $"could not be started: {ex.Message}";
+        }
+    }
+
+    // #146 review: .NET looks for a bare name in Claustrum's own cwd before PATH on Unix, and a cloned repo matching the glob could
+    // commit an executable `chcon` there. So: an absolute path as is, a bare name on PATH only, from an absolute PATH entry.
+    private static ResolvedBinary? Program(string[] argv, IPlatform platform)
+    {
+        string program = argv[0].Trim();
+        if (Path.IsPathFullyQualified(program))
+            return new ResolvedBinary(program, argv[1..]);
+
+        try
+        {
+            ResolvedBinary found = BinaryLocator.Locate(program, argv[1..], config: null, platform);
+            return Path.IsPathFullyQualified(found.Executable) ? found : null;
+        }
+        catch (BackendNotFoundException)
+        {
+            return null;
         }
     }
 }

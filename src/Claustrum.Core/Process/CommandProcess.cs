@@ -44,26 +44,29 @@ public static class CommandProcess
         // child stdin inheritance hung git").
         process.StandardInput.Close();
 
-        Task<string> stdoutTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
-        Task<string> stderrTask = process.StandardError.ReadToEndAsync(cancellationToken);
-
         using CancellationTokenSource timeoutSource = new(timeout);
         using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutSource.Token);
+
+        // The reads are bounded by the timeout too: a background child the tool left (`sh -c "watcher &"`) holds stdout and stderr
+        // open after the tool exits, and a read waiting for their end outlasted every timeout (#146 review, 2026-11-02).
+        Task<string> stdoutTask = process.StandardOutput.ReadToEndAsync(linked.Token);
+        Task<string> stderrTask = process.StandardError.ReadToEndAsync(linked.Token);
+        string stdout;
+        string stderr;
         try
         {
             await process.WaitForExitAsync(linked.Token);
+            stdout = await stdoutTask;
+            stderr = await stderrTask;
         }
         catch (OperationCanceledException)
         {
-            process.Kill(entireProcessTree: true);
+            KillTree(process);
             await process.WaitForExitAsync(CancellationToken.None);
             if (timeoutSource.IsCancellationRequested)
                 throw new TimeoutException($"{exe} {string.Join(' ', args)} timed out after {timeout.TotalSeconds}s");
             throw;
         }
-
-        string stdout = await stdoutTask;
-        string stderr = await stderrTask;
 
         // The terminal's signal reached this child through the shared process group before the token was cancelled
         // (SignalExit): a cancel, not the tool saying no, for every git/gh call made under a run's token.
@@ -71,5 +74,17 @@ public static class CommandProcess
             cancellationToken.ThrowIfCancellationRequested();
 
         return (process.ExitCode, stdout, stderr);
+    }
+
+    // A tool that already exited has no tree left to kill: a child it put in the background was handed to init and is not ours to find.
+    private static void KillTree(System.Diagnostics.Process process)
+    {
+        try
+        {
+            process.Kill(entireProcessTree: true);
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception)
+        {
+        }
     }
 }

@@ -434,7 +434,7 @@ The stdio server. Logging goes to stderr; stdout is the protocol.
 | `architect` | no | edit+shell | `git push` | builder, code-reviewer, ui-reviewer, tester, demo-author | claude, opencode, cursor, copilot | frontier-reasoning at every tier |
 | `builder` | no | edit+shell | `git push` | architect (to ask, not to delegate work) | claude, opencode, cursor, copilot | frontier-coding at every tier |
 | `code-reviewer` | **yes** | readonly | — | — | claude, opencode, cursor, copilot, **api** | standard-coding → frontier-coding |
-| `ui-reviewer` | **yes** | shell (run, never edit) | `git push` | — | claude only (its browser part) | frontier-coding at every tier |
+| `ui-reviewer` | **yes** | shell (run commands, no edit tools) | `git push`, `checkout`, `switch`, `reset`, `restore`, `stash`, `commit`, `clean`, `rebase`, `merge` | — | claude only (its browser part) | frontier-coding at every tier |
 | `tester` | no | edit+shell | `git push` | — | claude, opencode, cursor, copilot | standard-coding at every tier |
 | `demo-author` | no — briefed sighted | edit+shell (it writes its deck) | 24 git verbs: `push`, the common ones that stage or commit (`add`, `commit`, `apply`, `update-index`, `read-tree`, …) and that move `HEAD`, refs or the tree (`checkout`, `reset`, `stash`, `merge`, `pull`, `update-ref`, …) — not every one (`branch -f`/`-D`, `worktree remove`, `tag`, `notes` stay open); read-only git stays open, `merge-base` included | — | claude only (its browser part) | standard-coding, one tier |
 
@@ -666,35 +666,47 @@ A job's tools work inside its working directory. Three user-config keys let it r
 - **Projects.** Each `projects` key is a glob (`*`, `?`; case-sensitive except on Windows) matched against the name of the
   **main checkout**: the directory that holds the repo's `.git`. A job worktree (`…/odoo-altus/.claustrum/worktrees/<job id>`)
   and a linked worktree of your own (`~/repos/devkit-59-fix`, whose `.git` points into `~/repos/devkit/.git`) match as their
-  main checkout does (`odoo-altus`, `devkit`). Every matching project's `read_dirs` adds to the global ones.
+  main checkout does (`odoo-altus`, `devkit`). A bare repo's worktrees match on the bare repo's name without its `.git`
+  (`proj.git` matches as `proj`). Every matching project's `read_dirs` adds to the global ones. A project set to `null` is
+  refused (exit 2) naming it.
 - **The git common dir comes for free.** A job in a linked worktree, which is every isolated job, also reads the main
-  checkout's `.git`, so `git log`, `git diff` and a reviewer reading git's metadata work there. No key is needed.
+  checkout's `.git`, so `git log`, `git diff` and a reviewer reading git's metadata work there. No key is needed. It is added
+  only when it lies outside the run's own git tree (a run in `<repo>/src` gets nothing extra), never when it holds that tree
+  (a bare repo with its worktrees inside it), and never to a backend that would make it writable (copilot and cursor at
+  `edit` and `edit+shell`), since a write there reaches every worktree's branches.
+- **Trust what you list.** claude's `--add-dir` also loads that dir's own `.claude/skills`, `.claude/commands` and
+  `.claude/agents`, and copilot's loads its `.github/skills` and `.github/agents`. A read dir is a directory you trust, not
+  any checkout you happen to want readable.
 - **What is said at dispatch** (on stderr before the job starts, and first in the receipt's `warnings`): a configured dir that
   does not exist (dropped, plus a `missing_directory` issue); a dir that is the working directory or holds it (dropped: a
   read-only directory around the job's own tree would forbid its edits; one inside it is dropped silently, since the job
-  reads it anyway); a backend that cannot reach the dirs at all (`read_dirs_unsupported`); a backend that can reach them only
-  read-write at the run's level.
-- **`worktree_hook`** is an argv, never a shell string. `{worktree}` becomes the job worktree's absolute path. It runs in
-  that worktree, with the backends' environment allow-list, right after the worktree is cut, checked out (`--branch`) or
+  reads it anyway); a backend that cannot reach the dirs at all (`read_dirs_unsupported`); a dir the backend cannot fence
+  because of a character in its path (dropped, plus a `read_dirs_unsupported` issue: see the table); a backend that can reach
+  them only read-write at the run's level.
+- **`worktree_hook`** is an argv, never a shell string. `{worktree}` becomes the job worktree's absolute path. Its program
+  is an absolute path, used as is, or a bare name looked up on `PATH` only, never in the current directory (a cloned repo
+  could ship a `chcon` of its own); a relative path such as `bin/x` is refused at dispatch. It runs in that worktree, with the backends' environment allow-list, right after the worktree is cut, checked out (`--branch`) or
   reopened for a continuation, and before the role starts. Every matching project's hook runs, in config order. It has
-  120 s. A non-zero exit, a program that is not there or a timeout is a warning and a `worktree_hook_failed` issue (the
-  command, the exit code and the first line of its stderr), and the job runs all the same. A hook that succeeds leaves
+  120 s, its output included: a hook that leaves a child in the background holding its output (`sh -c "watcher &"`) is
+  reported as timed out after 120 s, and that child keeps running. A non-zero exit, a program not found on `PATH` or a
+  timeout is a warning and a `worktree_hook_failed` issue (the command, the exit code and the first line of its stderr),
+  and the job runs all the same. A hook that succeeds leaves
   nothing on the receipt. A run that is not isolated has no worktree and runs no hook.
 
 What each backend does with the read dirs (the configured ones and the git common dir):
 
 | Backend | Below `full` | At `edit` and `edit+shell` |
 |---|---|---|
-| `claude` | `--add-dir <dir>` each | also `--disallowedTools "Edit(//<dir>/**)"`: Write, Edit, NotebookEdit and a Bash redirect into the dir are refused |
-| `opencode`, `acp-opencode` | `external_directory` allows `<dir>` and `<dir>/*`, everything else stays denied | `edit` denies `<dir>` and `<dir>/*` |
+| `claude` | `--add-dir <dir>` each | also `--disallowedTools "Edit(//<dir>/**)"`: Write, Edit, NotebookEdit and a Bash redirect into the dir are refused. A dir whose path has `(`, `)` or `,` is not given: claude's list parser cannot keep it read-only |
+| `opencode`, `acp-opencode` | `external_directory` allows `<dir>` and `<dir>/*`, everything else stays denied. A dir whose path has `*`, `?` or (outside Windows) `\` is not given: opencode cannot name it exactly | `edit` denies `<dir>` and `<dir>/*` |
 | `copilot` | `--add-dir <dir>` at `readonly` and `shell`; this also loads the dir's `.github/skills` and `.github/agents` | already `--allow-all-paths`: **read-write**, and dispatch says so |
 | `cursor` | `--add-dir <dir>` | **read-write**, and dispatch says so |
 | `api` | nothing: it has no file tools. Configured dirs are reported `read_dirs_unsupported` at dispatch | — |
 
 At `full` nothing is added: every backend reaches every path there. Read-only holds for each harness's file tools. A shell
 command is not a file tool: on opencode at `shell` and `edit+shell`, `echo x > <read dir>/f` still writes. On claude a Bash
-redirect is caught, but a script that opens the file itself is not. claude's `--add-dir` also loads that dir's
-`.claude/skills`, `.claude/commands` and `.claude/agents`. cursor reads files outside its workspace at every level anyway.
+redirect is caught, but a script that opens the file itself is not. cursor reads files outside its workspace at every level
+anyway. copilot and cursor take `--add-dir` as a whole argument, so no path character needs refusing there.
 
 `backends.<name>` takes `path` only. There was an `injection` key once; nothing ever read it and it was
 removed (#56), so a config that still carries it loads, the key ignored like any other unknown one — `claude`
@@ -1181,14 +1193,14 @@ config out of a run, so its roles still see those servers.
 
 **Which MCP tools a `shell` role may call.** At `shell` claude runs in `dontAsk` mode, which denies every tool call the
 allow-list does not name, an MCP tool's included: `mcp__*` approves nothing. So a server's tools are callable only when its
-server is named, as `mcp__<server>__*`:
+server is named, as `mcp__<server>__*`, and only two places can name one:
 
-- the servers of the repo's `.mcp.json` that the run was given (without `user_mcp`);
-- the servers the role library's own `role.json` lists in `tools` (`mcp__Claude_Browser` names `Claude_Browser`); a repo's
+- the role library's own `role.json` `tools` (`mcp__Claude_Browser` names `Claude_Browser`); a repo's
   `.claustrum/roles/<role>/role.json` override does not add any;
 - `roles.<role>.mcp_servers` from your user config (§7).
 
-With `user_mcp` your other user-level servers stay attached but are denied. Name the browser you use, for example
+A repo's `.mcp.json` servers stay attached but are denied: a cloned repo must not grant a role tools. With `user_mcp` your
+other user-level servers are the same: attached, denied. Name the browser you use, for example
 `"roles": { "ui-reviewer": { "mcp_servers": ["chrome"] } }`. A name with characters other than letters, digits, `_` and
 `-` is spelled with `_` there, as Claude Code spells it in tool names.
 
@@ -1196,11 +1208,18 @@ Permission levels and what each backend does with them:
 
 | Level | Roles | `claude` | `opencode` | `cursor` | `copilot` |
 |---|---|---|---|---|---|
-| `readonly` | code-reviewer | `--permission-mode plan` + read-only tool list (`Read`, `Glob`, `Grep`, `git diff`/`log`/`show`/`status`/`rev-parse`, `gh pr`, `gh issue`), plus the same deny rules as `edit+shell` (its `gh pr *` would otherwise allow `gh pr merge`) | edit deny; bash denied except the same read-only git and `gh` commands, with a redirect (`>`), `--output` and `gh pr checkout` denied | prompt rule (advisory) | `--mode plan --deny-tool write --deny-tool shell` |
-| `shell` | ui-reviewer | `--permission-mode dontAsk` (not plan): `Read`, `Glob`, `Grep`, `Bash(*)` and the named MCP servers allowed, `--disallowedTools Edit,Write,NotebookEdit`, plus the deny rules | edit deny, bash allow with deny patterns | prompt rule | `--mode plan --deny-tool write` + deny patterns |
+| `readonly` | code-reviewer | `--permission-mode plan` + read-only tool list (`Read`, `Glob`, `Grep`, and as words: `git diff`, `log`, `show`, `status`, `rev-parse`, `gh pr view`/`diff`/`list`/`checks`, `gh issue view`/`list`), plus the role's deny rules | edit deny; bash denied except the same commands, and those refused too when the command holds a quote, `$`, a backtick, `\` or `/`, `{`, `<`, `>`, `--output`, `--no-index` or `--ext-diff` | prompt rule (advisory) | `--mode plan --deny-tool write --deny-tool shell` |
+| `shell` | ui-reviewer | `--permission-mode dontAsk` (not plan): `Read`, `Glob`, `Grep`, `Bash(*)` and the role's named MCP servers allowed, `--disallowedTools Edit,Write,NotebookEdit`, plus the deny rules. Not a sandbox: a command can still write and delete, and the deny list is the guard | edit deny, bash allow with deny patterns | prompt rule | `--mode plan --deny-tool write` + deny patterns |
 | `edit` | — | `acceptEdits` + `--disallowedTools Bash` | edit allow, bash deny | prompt rule | `--allow-all-tools --allow-all-paths --deny-tool shell` |
 | `edit+shell` | architect, builder, tester, demo-author | `acceptEdits`, built-in tools + `Bash(*)`, `--disallowedTools "Bash(<deny>),Bash(<deny> *)"` per deny entry; MCP tools are outside the allow-list | edit allow, bash allow, `<deny>` and `<deny> *` deny | prompt rule | `--allow-all-tools --allow-all-paths --deny-tool "shell(<deny>)"` per entry |
 | `full` | — | `--dangerously-skip-permissions` | `--auto` | `-f --sandbox disabled` | `--allow-all` |
+
+**`readonly` on opencode** matches each shell command on its raw text, so whatever could make that text differ from what bash
+runs is refused, and the accepted cost is real: a pipe only when every command in it is on the list (`git log | head` is
+refused for `head`), no `2>&1`, no `--format='…'`, and no `/` at all, because opencode reads `\` as `/` before matching. So `git
+diff -- src/x.cs`, `git log origin/main..HEAD` and `gh issue view 1 -R owner/repo` are refused; `git diff HEAD~3`,
+`git log --oneline -20` and `git show <sha>` work, and the file tools read the tree. On claude a quote, a path or `--no-index`
+in an allowed command is not refused by Claustrum (#148).
 
 Where a harness has no native deny mechanism (cursor) the deny list is a rule in the prompt, and
 `doctor` calls it advisory. Everywhere else a deny entry is a guard on how a command is written,

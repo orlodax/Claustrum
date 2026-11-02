@@ -2672,6 +2672,10 @@ kept three of the four roles from loading.
 
 ### `shell` rung: what plan mode actually blocks (2026-09-22)
 
+*Corrected 2026-11-02 (#140): the claude half of what follows no longer holds. claude's `shell` runs in `dontAsk`, not plan
+mode, and its Bash can write and delete ("claude's shell level leaves plan mode"). The "house precedent on claude" below is
+history. copilot's `shell` still runs in `--mode plan` exactly as measured here.*
+
 The rung promises "run commands, change nothing", and the guarantee is carried by **plan mode's
 command-string analyser**, not by the permission layer: `--deny-tool write` explicitly exempts shell
 invocations (box 3). One paid request (the **fourth**, `premiumRequests: 1`) went to probing the
@@ -7088,9 +7092,9 @@ job read a directory it legitimately needed. The fix is not opencode-only: every
   2, before any job). A missing dir is dropped with a warning and a grouped `missing_directory` issue (`first: dispatch`). A
   dir that is the cwd or holds it is dropped with a warning: claude's `Edit(//<dir>/**)` deny would also match the job's own
   tree. A dir inside the cwd is dropped silently.
-- The git common dir is added per run cwd (`ReadDirsFor`): it is inside a main checkout, so it is not added there, and it is
-  outside a linked or job worktree. `RunIsolatedAsync` recomputes it for the worktree it cut, so every isolated job reads
-  `<main>/.git`.
+- The git common dir is added per run (`ReadDirsFor`): outside the run's git top level, so not for a main checkout or a
+  subdirectory of one, but for a linked or job worktree. `RunIsolatedAsync` recomputes it for the worktree it cut, so every
+  isolated job reads `<main>/.git` (the review round below adds its exceptions).
 - `IBackend.HonoursReadDirs` false with configured dirs gives a warning and a `read_dirs_unsupported` issue. The git common
   dir alone says nothing (api has no file tools). `IBackend.ReadDirsWritableAt(level)` gives a warning, true for copilot and
   cursor at `edit` and `edit+shell`.
@@ -7129,6 +7133,37 @@ never run. A read dir inside the main checkout but outside a job's worktree is d
 cannot reach it. `--add-dir` on claude also loads that dir's `.claude/skills`, `commands` and `agents`; this is from the
 docs, not measured.
 
+**Review round (2026-11-02), as ruled by the architect:**
+- **Paths a harness cannot fence are not given** (`IBackend.ReadDirRefusal`, said at dispatch with a `read_dirs_unsupported`
+  issue).
+  - claude 2.1.316 splits `--disallowedTools` on `,` and spaces outside parentheses it tracks with a flag, not a depth, and no
+    escape helps. For `/home/u/Odoo (copy) 2/shared` the Edit deny named no path, while `--add-dir` made the dir
+    auto-accepted for edits (replayed with the review's port of its splitter). So at claude's edit levels a dir with `(`, `)`
+    or `,` is left out; below them it is still `--add-dir`ed.
+  - opencode has no escape for `*` and `?`, and reads `\` as `/`, so a dir with those is left out at every level below
+    `full`.
+  - copilot and cursor take `--add-dir` as one whole argument and refuse nothing.
+- **The automatic git common dir:**
+  - It is added only when it lies outside the run's **git top level**. A run in `<repo>/src` no longer gets `<repo>/.git`.
+  - It is never added when it holds that tree: a bare `proj.git` with `git worktree add main` inside it would have put
+    `Edit(//…/proj.git/**)` over the job's own files.
+  - It is never handed to a backend whose `ReadDirsWritableAt(level)` is true (cursor and copilot at the edit levels), since a
+    write there reaches every worktree's refs. It goes silently, being automatic.
+  - A bare common dir is its own `MainCheckout`, and projects match its name without `.git` (`proj.git` → `proj`).
+- **The hook program:**
+  - On Unix .NET looks for a bare name in Claustrum's own cwd before PATH. A cloned repo matching the glob could commit a
+    `chcon`.
+  - Now an absolute program runs as is, and a bare name is looked up on PATH only, through `BinaryLocator`, from an absolute
+    entry. A relative path with a separator is a ConfigException.
+  - Probe: a `probe-in-cwd` placed in the dispatch cwd gave `probe-in-cwd not found on PATH` and never ran.
+  - The same flaw in `GitProcess` and other bare-name spawns is #150, not touched here.
+- **A hook's background child:** `["sh","-c","sleep 600 &"]` used to block the hook for as long as the child lived, because
+  the output reads honoured only the caller's token. `CommandProcess` now bounds the reads by the timeout too and then kills
+  the tree. Probe: the run reported `timed out after 120 s` after 2 min 0.6 s. The orphaned `sleep` survives, reparented to
+  init, so it is no longer in the tree to kill. This applies to git and gh calls as well, bounded by their own timeouts.
+- `"projects": {"x": null}` is a ConfigException naming `projects.x`, at dispatch and in `backends doctor`. It was a
+  NullReferenceException.
+
 **The hook (#146).** `WorktreeHook` runs each matching `worktree_hook` argv, `{worktree}` replaced in every argument. It runs
 in the worktree, under `EnvAllowList` (`CommandProcess` now takes an explicit environment), with 120 s. It runs inside
 `RunIsolatedAsync`'s try, after the worktree is cut, checked out or reopened and before Runner, so a cancel in it is the
@@ -7149,8 +7184,38 @@ on the list. `git status`, `git rev-parse --git-common-dir` and `git log` ran in
 through the git common dir. `gh pr checkout` rewrites the worktree.
 
 **Not measured.** Whether claude's own permission layer stops `git diff --output=x` or `git diff > x` at readonly: in plan
-mode haiku refused both by itself, so the rule never ran. claude's readonly is unchanged apart from `git rev-parse*`. The
-`gh pr *` and `gh issue *` allows still let a reviewer merge, close or comment on GitHub, on both backends. That is #148.
+mode haiku refused both by itself, so the rule never ran.
+
+### Review round (2026-11-02): the raw text has to be trustworthy
+
+The blind review read the binary further. Each shell `command` node is matched on its **raw source text** (plus its
+redirect), not on what bash will run, so the first guards were walked around, replayed with a port of opencode's matcher:
+- `git difftool -y -x 'touch ~/pwned' HEAD~1 HEAD` passed `git diff*`: arbitrary execution;
+- `git log -1 "--out""put=f"` and `--ou\tput=f` passed `*--output*`;
+- `gh pr  checkout 12` (two spaces), `gh pr "checkout" 12` and `gh issue develop 12 --checkout` passed `gh pr *` / `gh issue *`;
+- `git diff --no-index -- /dev/null .env` read any file, past the `.env` guard and `external_directory`.
+
+**Now** (`ReadOnlyShell`):
+- **Allows:** verbs as words only, never `verb*`: `git diff`, `git log`, `git show`, `git status` (bare and `<verb> *`),
+  `git rev-parse *`, `gh pr view|diff|checks *`, `gh pr list`, `gh issue view *`, `gh issue list`.
+- **Denies, after the allows:** every character that lets the raw text differ from what runs (`"`, `'`, a backtick, `$`,
+  `\`, `{` for brace expansion), then `>`, `<`, `--output`, `--no-index` and `--ext-diff`.
+- **Replayed** with the review's matcher port (`tools/ocmatch.py`) on 41 commands: all twelve bypasses above, `$(…)`, a
+  backtick, `<(…)`, `--outpu{t,x}`, `2>&1`, `--format='…'`, `gh pr merge` and `gh issue close` are denied. `git diff`,
+  `git diff HEAD~1`, `--stat`, `git log --oneline -5`, `git show HEAD`, `git status --short`, `git rev-parse …` and the gh
+  read verbs pass.
+
+⚠ **`*\*` refuses every `/` too.** opencode's matcher turns `\` into `/` on both sides before matching, so a backslash and a
+slash are one character to it. `git diff -- src/foo.cs`, `git log origin/main..HEAD`, `git diff main...feature/x` and
+`gh issue view 1 -R o/r` are refused. Dropping the guard would reopen `--ou\tput=f`, and the matcher has no escape, so there
+is no middle ground. The file tools read the tree, and a range without a slash (`HEAD~3`, a sha) works.
+
+**Residual:**
+- A glob (`*`, `?`) cannot be refused, since both are wildcards in the matcher. A file a repo ships named `--output=x` could
+  be reached through `git log --outpu?=x`. This needs a planted file plus a model that writes such a command.
+- The same narrowed list now goes to claude's readonly, which closes `git difftool` and gh's write verbs there too. Whether
+  claude's own matcher is fooled by quote-splitting or by `git diff --no-index` was not measured. That and the gh write verbs'
+  history are #148.
 
 ## claude's shell level leaves plan mode (2026-11-02, issue #140)
 
@@ -7165,20 +7230,23 @@ servers):
 - a bare `mcp__probea` allow and `mcp__probeb__*` both let the tool run, and an unlisted server was denied;
 - **`mcp__*` approved nothing**, as the docs say;
 - Bash ran, `echo hi > out.txt` and a `python3 -c open(...)` included: the level's line is the edit tools, as on opencode's
-  `shell`;
+  `shell`. **By design** (the owner's own #140 proposal): `shell` runs commands and the approved MCP tools, with no edit tools.
+  It is not a sandbox, and the deny list is the guard. The ui-reviewer's grew from `git push` to the verbs that move or
+  rewrite a checkout too (`checkout`, `switch`, `reset`, `restore`, `stash`, `commit`, `clean`, `rebase`, `merge`);
 - Write was "No such tool available", and `git push` was denied.
 
 `default` and `manual` are accepted by the CLI too; only `dontAsk` was measured.
 
 **Which servers are named** (`ApprovedMcpServers`, the owner's narrow choice):
-- the `.mcp.json` servers `ClaudeMcpConfig.Select` gave the run (none with `user_mcp`);
 - `mcp__<server>` entries in the role **library's** own `role.json` `tools`, never a repo override's;
 - `roles.<role>.mcp_servers`, user layer only.
+
+A repo's `.mcp.json` servers are **not** approved (architect's ruling after the review, 2026-11-02). The repo controls that
+file, so approving its servers would let a cloned repo grant a role tools, against #127's rule. They stay attached and are
+denied under dontAsk.
 
 Each name is spelled `[A-Za-z0-9_-]` with everything else turned into `_`, in the `__*` form. With `user_mcp` every other
 user-level server stays attached and denied. Measured on this machine, a headless user_mcp run sees plugin servers, the
 user servers `chrome`, `odoo-tek` and `cloudways`, and claude.ai connectors, but no `claude-in-chrome` or `Claude_Browser`.
 So a ui-reviewer here needs `mcp_servers: ["chrome"]`. Auto-approving every user server would have handed a blind reviewer
-odoo-tek writes and cloudways deletions. Narrowing what `user_mcp` attaches is #129. A shell-level role **without**
-`user_mcp` gets every `.mcp.json` server approved, the `claustrum` server that `sync` writes included. ui-reviewer, today's
-only `shell` role, has `user_mcp` on.
+odoo-tek writes and cloudways deletions. Narrowing what `user_mcp` attaches is #129.

@@ -25,6 +25,8 @@ public sealed class AcpBackend(IPlatform platform, IAcpHarness harness) : IBacke
 
     public bool HonoursReadDirs => harness.HonoursReadDirs;
 
+    public string? ReadDirRefusal(string dir, PermissionLevel level) => harness.ReadDirRefusal(dir, level);
+
     public ILiveProtocol? LiveProtocol => AcpLiveProtocol.Instance;
 
     public IStreamFormatter? CreateStreamFormatter(string cwd) => new AcpStreamFormatter(cwd);

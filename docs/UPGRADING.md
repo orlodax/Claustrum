@@ -27,22 +27,34 @@ environment got in its way. Read the first item below. The role library's text c
 - **The report shapes gain an optional `blocked_by` (#145).** It holds what in the environment stopped the role: strings,
   or `{what, where}`. Each entry becomes an issue.
 - `jobs list` gives the status column three more characters, so `success_with_issues` fits.
-- **A ui-reviewer on claude can use its browser now, if you name it (#140).** The `shell` level no longer runs claude in
-  plan mode, which told the model to change nothing, so a walk that writes app data was refused. It runs in `dontAsk`
-  mode: `Read`, `Glob`, `Grep` and `Bash` run, the edit tools stay off, and an MCP server's tools run only when its server
-  is named. Add the browser server you use to your user config:
+- **A claude `shell` job can now write and delete through Bash (#140).** The `shell` level (the ui-reviewer's) no longer runs
+  claude in plan mode. Plan mode told the model to change nothing, so a walk that writes app data was refused, and it also
+  stopped a command that writes. It runs in `dontAsk` mode now: `Read`, `Glob`, `Grep` and every `Bash` command run, and the
+  edit tools stay off. A command can write and delete files, as on opencode's `shell`. The deny list is the guard: the
+  ui-reviewer's now also refuses `git checkout`, `switch`, `reset`, `restore`, `stash`, `commit`, `clean`, `rebase` and
+  `merge`. `shell` is not a sandbox.
+- **A ui-reviewer on claude can use its browser, if you name it (#140).** An MCP server's tools run only when its server is
+  named: in the role library's `tools`, or in your user config, e.g.
   `"roles": { "ui-reviewer": { "mcp_servers": ["chrome"] } }`. Without it the role's browser calls are denied. A repo's
-  `claustrum.json` cannot set `mcp_servers`.
-- **opencode's `readonly` gets the read-only git shell claude's has (#143).** A code-reviewer on `opencode` or
-  `acp-opencode` can now run `git diff`, `log`, `show`, `status` and `rev-parse`, `gh pr` and `gh issue`. Every other
-  command stays denied, and so do a redirect (`>`), `--output` and `gh pr checkout`. claude's `readonly` also allows
-  `git rev-parse` now.
+  `.mcp.json` servers stay attached and are denied too, and a repo's `claustrum.json` cannot set `mcp_servers`.
+- **opencode's `readonly` gets a narrow read-only git shell (#143).** A code-reviewer on `opencode` or `acp-opencode` can run
+  `git diff`, `git log`, `git show`, `git status`, `git rev-parse`, `gh pr view`/`diff`/`list`/`checks` and
+  `gh issue view`/`list`, as words. Everything else is denied. Those commands are refused too when they hold a quote, `$`,
+  a backtick, a `\` or a `/`, `{`, `<`, `>`, `--output`, `--no-index` or `--ext-diff`. So pipes into other commands,
+  `2>&1`, `--format='…'` and any path (`git diff -- src/x.cs`, `origin/main`) do not work there.
+  - claude's `readonly` uses the same narrowed list: it adds `git rev-parse`, and it drops `git difftool` and gh's write
+    verbs, which `git diff*` and `gh pr *` used to allow. A command claude's own matcher still lets through is #148.
 - **Jobs can read directories outside their tree (#144).** There are three new user-config keys: `read_dirs`,
   `projects.<glob>.read_dirs` and `projects.<glob>.worktree_hook` (#146). See the MANUAL §7 "Directories a job may read".
-  - A job in a linked worktree, which is every isolated job, can also read the main checkout's `.git` now.
+  - A job in a linked worktree, which is every isolated job, can also read the main checkout's `.git`, except on copilot
+    and cursor at `edit` and `edit+shell`, which would make it writable.
   - A repo's `claustrum.json` cannot set these keys: they are ignored, with a warning.
-  - A relative path in `read_dirs` stops the dispatch with exit 2.
+  - A relative path in `read_dirs`, a relative `worktree_hook` program or a `null` project stops the dispatch with exit 2.
   - On `copilot` and `cursor` at `edit` and `edit+shell` the dirs are read-write, and the dispatch says so.
+  - A dir whose path claude (`(`, `)`, `,`, at the edit levels) or opencode (`*`, `?`, `\`) cannot fence is not given,
+    and the dispatch says so.
+  - A read dir's own agent config is loaded (claude: `.claude/skills`, `commands`, `agents`; copilot: `.github/skills`,
+    `agents`). List directories you trust.
 
 ## 0.3.x → 0.4.0
 

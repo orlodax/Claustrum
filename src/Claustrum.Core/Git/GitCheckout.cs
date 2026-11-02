@@ -5,11 +5,21 @@ namespace Claustrum.Core.Git;
 /// <summary>
 /// Where a checkout's git metadata lives (#144), read from files, no git spawned. <see cref="TopLevel"/> holds the <c>.git</c> entry;
 /// <see cref="CommonDir"/> is that <c>.git</c> directory, or for a linked worktree the <c>commondir</c> of the directory its <c>.git</c>
-/// file names (<c>gitdir:</c>). <see cref="MainCheckout"/> is the common dir's parent when the common dir is called <c>.git</c>, else the
-/// top level itself (a submodule, a separate git dir): a job worktree's own name is its job id, so projects match on this one.
+/// file names (<c>gitdir:</c>). <see cref="MainCheckout"/> is the common dir's parent when the common dir is called <c>.git</c>, the common
+/// dir itself when it is a bare repo (its worktrees inside it), else the top level (a submodule, a separate git dir). A job worktree's own
+/// name is its job id, so projects match on <see cref="ProjectName"/>: the main checkout's name, a bare repo's without its `.git`.
 /// </summary>
-public sealed record GitCheckout(string TopLevel, string CommonDir, string MainCheckout)
+public sealed record GitCheckout(string TopLevel, string CommonDir, string MainCheckout, bool Bare = false)
 {
+    public string ProjectName
+    {
+        get
+        {
+            string name = Path.GetFileName(MainCheckout);
+            return Bare && name.Length > 4 && name.EndsWith(".git", StringComparison.OrdinalIgnoreCase) ? name[..^4] : name;
+        }
+    }
+
     /// <summary>The checkout <paramref name="startDirectory"/> is in, or null outside git or when its <c>.git</c> file cannot be read.</summary>
     public static GitCheckout? Find(string startDirectory, IPlatform platform)
     {
@@ -24,9 +34,17 @@ public sealed record GitCheckout(string TopLevel, string CommonDir, string MainC
         if (commonDir is null)
             return null;
 
-        string mainCheckout = Path.GetFileName(commonDir) == ".git" && Path.GetDirectoryName(commonDir) is { Length: > 0 } parent ? parent : topLevel;
-        return new GitCheckout(topLevel, commonDir, mainCheckout);
+        if (Path.GetFileName(commonDir) == ".git" && Path.GetDirectoryName(commonDir) is { Length: > 0 } parent)
+            return new GitCheckout(topLevel, commonDir, parent);
+
+        bool bare = IsBare(commonDir, platform);
+        return new GitCheckout(topLevel, commonDir, bare ? commonDir : topLevel, bare);
     }
+
+    // `git clone --bare x proj.git` writes `bare = true` under [core]; a separate git dir or a submodule's says false or nothing.
+    private static bool IsBare(string commonDir, IPlatform platform) =>
+        platform.ReadRegularFileText(Path.Combine(commonDir, "config"), out _) is { } config
+        && config.Split('\n').Any(line => line.Replace(" ", "", StringComparison.Ordinal).Replace("\t", "", StringComparison.Ordinal).Trim().Equals("bare=true", StringComparison.OrdinalIgnoreCase));
 
     // `gitdir: <path>`, absolute, or relative to the directory the file sits in (worktree.useRelativePaths).
     private static string? GitDirOf(string dotGitFile, string topLevel, IPlatform platform)

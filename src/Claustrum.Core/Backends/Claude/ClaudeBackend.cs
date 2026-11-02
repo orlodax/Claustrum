@@ -27,7 +27,8 @@ public sealed class ClaudeBackend(IPlatform platform) : IBackend, IPostRunHook
 
     // --permission-prompts none is passed for every level, including Full, so a headless run never
     // blocks on a prompt regardless of mode. ReadOnly's --allowedTools additionally lets a blind
-    // code-reviewer read the diff it was asked to review (git/gh are read-only queries, not edits).
+    // code-reviewer read the diff it was asked to review (ReadOnlyShell: read-only git and gh verbs).
+    // Not measured: whether claude's matcher can be fooled by quote-splitting or `git diff --no-index`; residual under #148.
     private static readonly string readOnlyTools = string.Join(',', ["Read", "Glob", "Grep", .. ReadOnlyShell.Commands.Select(command => $"Bash({command})")]);
 
     // Claude Code's native subagent tool: `Agent` on 2.1.278, `Task` on older builds — an unknown
@@ -40,6 +41,8 @@ public sealed class ClaudeBackend(IPlatform platform) : IBackend, IPostRunHook
     public ILiveProtocol? LiveProtocol => ClaudeLiveProtocol.Instance;
 
     public bool HonoursReadDirs => true;
+
+    public string? ReadDirRefusal(string dir, PermissionLevel level) => ReadDirRefusalFor(dir, level);
 
     public RunTrace? Trace(string stdout) => ClaudeTrace.Read(stdout);
 
@@ -72,7 +75,7 @@ public sealed class ClaudeBackend(IPlatform platform) : IBackend, IPostRunHook
         if (mcp.ConfigPath is not null)
             args.AddRange(["--mcp-config", mcp.ConfigPath]);
 
-        args.AddRange(PermissionArgs(run.Role.Permission, ApprovedMcpServers(run, mcp)));
+        args.AddRange(PermissionArgs(run.Role.Permission, ApprovedMcpServers(run.Role)));
         args.AddRange(ReadDirArgs(run.ReadDirs, run.Role.Permission.Level));
 
         // Spawned by `coordinate` (§D3): a native subagent would run outside the cast and outside
@@ -164,7 +167,7 @@ public sealed class ClaudeBackend(IPlatform platform) : IBackend, IPostRunHook
         _ => throw new ArgumentOutOfRangeException(nameof(permission)),
     };
 
-    // Deny applies here too: `Bash(gh pr *)` in readOnlyTools also matches `gh pr merge` (#54).
+    // Deny applies here too (#54): the role's own list holds on top of readOnlyTools.
     private static List<string> ReadOnlyArgs(string[] deny)
     {
         List<string> args = ["--permission-mode", "plan", "--permission-prompts", "none", "--allowedTools", readOnlyTools];
@@ -185,16 +188,13 @@ public sealed class ClaudeBackend(IPlatform platform) : IBackend, IPostRunHook
         return args;
     }
 
-    // What a shell-level run may call unasked: the `.mcp.json` servers Claustrum gave it (none with user_mcp, whose servers stay attached
-    // but denied) and the role's own (library `tools`, user config `mcp_servers`). Spelled as claude spells them in tool names.
-    private static string[] ApprovedMcpServers(ResolvedRun run, McpSelection mcp)
-    {
-        IEnumerable<string> given = run.Role.UserMcp ? [] : mcp.Servers;
-        return [.. given.Concat(run.Role.McpServers ?? [])
+    // What a shell-level run may call unasked: the role's own servers (library `tools`, user config `mcp_servers`), never a repo's
+    // `.mcp.json` ones, which a cloned repo controls (#127's rule): those stay attached and are denied. Spelled as claude's tool names.
+    private static string[] ApprovedMcpServers(ResolvedRole role) =>
+        [.. (role.McpServers ?? [])
             .Where(server => !string.IsNullOrWhiteSpace(server))
             .Select(server => string.Concat(server.Trim().Select(c => char.IsAsciiLetterOrDigit(c) || c is '_' or '-' ? c : '_')))
             .Distinct(StringComparer.Ordinal)];
-    }
 
     // #144: below full (whose bypass reaches every path already) each read dir becomes a working directory. At the edit levels an
     // `Edit(//<dir>/**)` deny keeps it read-only: one rule stopped Write, Edit, NotebookEdit and a Bash redirect there (measured 2026-11-02).
@@ -204,16 +204,24 @@ public sealed class ClaudeBackend(IPlatform platform) : IBackend, IPostRunHook
         if (readDirs is not { Length: > 0 } || level == PermissionLevel.Full)
             return args;
 
-        foreach (string dir in readDirs)
+        string[] given = [.. readDirs.Where(dir => ReadDirRefusalFor(dir, level) is null)];
+        foreach (string dir in given)
             args.AddRange(["--add-dir", dir]);
         if (level is PermissionLevel.Edit or PermissionLevel.EditShell)
         {
-            foreach (string dir in readDirs)
+            foreach (string dir in given)
                 args.AddRange(["--disallowedTools", EditDenyRule(dir)]);
         }
 
         return args;
     }
+
+    // claude 2.1.316 splits --disallowedTools on `,` and spaces outside parentheses it tracks with a flag, not a depth, and no escape
+    // helps: for `/x/Odoo (copy) 2` the Edit deny named no path (replayed 2026-11-02), and an added dir is auto-accepted at acceptEdits.
+    private static string? ReadDirRefusalFor(string dir, PermissionLevel level) =>
+        level is PermissionLevel.Edit or PermissionLevel.EditShell && dir.IndexOfAny(['(', ')', ',']) >= 0
+            ? $"claude cannot keep {dir} read-only (its path has ( ) or ,)"
+            : null;
 
     // `//` anchors at the filesystem root, and a Windows path is matched in POSIX form, `C:\x` as `/c/x`. Gitignore's pattern
     // characters are escaped, so the rule names the directory as spelled (code.claude.com/docs/en/permissions, read 2026-11-02).

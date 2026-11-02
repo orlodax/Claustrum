@@ -136,7 +136,7 @@ public static class DelegateEngine
             Live: request.Live && AppServices.Backends.TryGet(resolved.Backend, out IBackend? liveBackend) && liveBackend.LiveProtocol is not null,
             ReplyTimeoutSeconds: request.ReplyTimeoutSeconds,
             FallbackOf: request.FallbackOf,
-            ReadDirs: NullIfEmpty(access.ReadDirsFor(request.Cwd)),
+            ReadDirs: NullIfEmpty(access.ReadDirsFor(access.TopLevel ?? request.Cwd, WithGitCommonDir(resolved))),
             PreRunIssues: preRunIssues.Length > 0 ? preRunIssues : null);
 
         return new PreparedDelegation(request, resolved, options, budgetUsd, timeoutSeconds, requestPermission, access);
@@ -494,7 +494,7 @@ public static class DelegateEngine
                 Worktree = worktree,
                 PreRunWarnings = NullIfEmpty([.. WithFreeWarning(isolatedOptions.PreRunWarnings, worktree) ?? [], .. hookWarnings]),
                 PreRunIssues = NullIfEmpty([.. isolatedOptions.PreRunIssues ?? [], .. hookIssues]),
-                ReadDirs = bound.Access is { } access ? NullIfEmpty(access.ReadDirsFor(worktree.Path)) : isolatedOptions.ReadDirs,
+                ReadDirs = bound.Access is { } access ? NullIfEmpty(access.ReadDirsFor(worktree.Path, WithGitCommonDir(role))) : isolatedOptions.ReadDirs,
             };
             return await AppServices.Runner.RunAsync(isolatedRunRequest, role, worktreeOptions, job, cancellationToken);
         }
@@ -535,6 +535,11 @@ public static class DelegateEngine
     }
 
     private static T[]? NullIfEmpty<T>(T[] items) => items.Length > 0 ? items : null;
+
+    // #144 review: the git common dir is handed over only where it stays read-only. It is automatic, so a backend that would grant it
+    // read-write (cursor, copilot at the edit levels) silently goes without it: a write there reaches every worktree's refs.
+    private static bool WithGitCommonDir(ResolvedRole role) =>
+        !(AppServices.Backends.TryGet(role.Backend, out IBackend? backend) && backend.ReadDirsWritableAt(role.Permission.Level));
 
     // #106: trash a `--branch` free could not delete rides on the receipt as a warning, never a failure.
     private static string[]? WithFreeWarning(string[]? warnings, JobWorktreeInfo worktree) =>
