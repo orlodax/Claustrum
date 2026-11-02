@@ -7070,3 +7070,115 @@ quote `HTTP 403`. So the classifier never reads the output of a read, search, ed
 - `FallbackRetry.Qualifies` requires `failed`, so a `success_with_issues` job is never retried. A failed job keeps #126's
   before-any-work rule unchanged.
 - `DoctorProbe` says `OK, with N environment issue(s)`.
+
+## Read dirs and the worktree hook (2026-11-02, issues #144, #146)
+
+**Why.** On 2026-10-29 every `acp-opencode` job was refused every read outside its worktree (`Permission denied:
+external_directory`): the Odoo sources reviewers check against, the main checkout's `.git`, other repos. The cause was
+`WriteHeadlessGuards` writing `external_directory: deny` below `full`. An `ask` would be approved by `--auto`, so nothing let a
+job read a directory it legitimately needed. The fix is not opencode-only: every backend gets the same set, applied its own way.
+
+**Shape** (`ProjectAccess`, resolved in `DelegateEngine.Prepare`, so before a detached job is minted):
+- `read_dirs`, `projects.<glob>.read_dirs` and `projects.<glob>.worktree_hook`, from the user layer only. `Config.Load` drops
+  them from a repo's `claustrum.json` the way it drops `user_mcp` (#127), and `Resolve` puts the warning on every receipt.
+- A project glob matches the **main checkout's** name. `GitCheckout.Find` reads `.git` (a directory, or a file's `gitdir:`
+  and then that directory's `commondir`), and the main checkout is the common dir's parent when that is called `.git`.
+  So a job worktree (named by its job id) and a user-made linked worktree both match their repo's name.
+- Every entry is checked, the matching projects' and the others'. A relative path is a `ConfigException` naming the key (exit
+  2, before any job). A missing dir is dropped with a warning and a grouped `missing_directory` issue (`first: dispatch`). A
+  dir that is the cwd or holds it is dropped with a warning: claude's `Edit(//<dir>/**)` deny would also match the job's own
+  tree. A dir inside the cwd is dropped silently.
+- The git common dir is added per run cwd (`ReadDirsFor`): it is inside a main checkout, so it is not added there, and it is
+  outside a linked or job worktree. `RunIsolatedAsync` recomputes it for the worktree it cut, so every isolated job reads
+  `<main>/.git`.
+- `IBackend.HonoursReadDirs` false with configured dirs gives a warning and a `read_dirs_unsupported` issue. The git common
+  dir alone says nothing (api has no file tools). `IBackend.ReadDirsWritableAt(level)` gives a warning, true for copilot and
+  cursor at `edit` and `edit+shell`.
+- `full` gets nothing on any backend: it reaches every path already, and its argv and config stay as they were.
+
+**Measured 2026-11-02** (opencode 2.0.30 with deepseek-v4-flash; claude 2.1.316 with haiku; scratch repos under /tmp;
+about $0.24 in all):
+- opencode, read from the binary first. An external file's `read`/`edit` resource is its absolute path. `external_directory`
+  is checked against `<parent dir>/*`, or `<dir>/*` for a directory target (a grep path, a shell workdir, a `cd` argument).
+  The matcher turns `*` into `.*`, so `*` crosses `/`, and the last matching rule wins.
+- opencode, live. With `{"*":"deny","<shared>/*":"allow"}`, a file two levels below `shared` was read, and a sibling
+  `shared2` was refused. The grep tool on `<shared>` itself worked. An exact `"<dir>":"allow"` alone did **not** allow a
+  file in it. Claustrum still writes the exact entry next to `<dir>/*`, because `worktree_remove` asks `edit` for the
+  directory's own path.
+- opencode at `edit+shell` with `edit: {"*":"allow","<dir>":"deny","<dir>/*":"deny"}`:
+  - the write tool, the edit tool and a write into `.git` all got `Permission denied: edit`;
+  - a write in the cwd went through;
+  - a shell `ls` with its workdir in the dir worked, and `cd <outside> && ls` was refused;
+  - **`echo z > <dir>/f` wrote the file.** Bash is path-checked only at its workdir and `cd` targets. That was true before
+    this change too.
+- claude at `acceptEdits` with `--add-dir <dir> --disallowedTools "Edit(//<dir>/**)"`: Write, Edit and **NotebookEdit** (a
+  separate run) were refused, and so was a Bash `echo z > <dir>/redir.txt`. One `Edit(...)` rule covers them all. Read and
+  `git rev-parse` worked. A Read of a file **outside** every working dir also worked, at acceptEdits, dontAsk and plan alike:
+  the bare `Read` Claustrum allows reads anywhere. So on claude `--add-dir` matters for the edit levels (acceptEdits
+  auto-accepts edits in an added dir, hence the deny) and for `blockReadsOutsideWorkingDirectories` users, not for plain reads.
+- copilot 1.0.98 at `readonly` (plan mode). A file in a `--add-dir` dir was read, and one outside was refused ("no
+  interactive user response"). That shows only with `--disallow-temp-dir`: by default copilot lets any path under /tmp
+  through.
+- cursor-agent 2026.09.18 at `readonly` (plan mode) read a file outside its workspace and every `--add-dir` root, under `~`
+  too. Its reads were never fenced. What `--add-dir` changes at the edit levels is unmeasured.
+- opencode 2.0.30 `run --standalone` stalled right after its `serve --stdio` child logged `cli starting`, with empty stdout,
+  in 7 of about 16 runs on 2026-11-02. The pre-change config stalled too, so it is not this change. Not investigated.
+
+**Not done.** Symlinked read dirs: opencode matches the spelling given, claude resolves links. Windows paths are written but
+never run. A read dir inside the main checkout but outside a job's worktree is dropped at dispatch, so the isolated job
+cannot reach it. `--add-dir` on claude also loads that dir's `.claude/skills`, `commands` and `agents`; this is from the
+docs, not measured.
+
+**The hook (#146).** `WorktreeHook` runs each matching `worktree_hook` argv, `{worktree}` replaced in every argument. It runs
+in the worktree, under `EnvAllowList` (`CommandProcess` now takes an explicit environment), with 120 s. It runs inside
+`RunIsolatedAsync`'s try, after the worktree is cut, checked out or reopened and before Runner, so a cancel in it is the
+usual `cancelled` receipt with the worktree undone. A non-zero exit, a program that cannot start or a timeout gives a warning
+plus a `worktree_hook_failed` issue (`where` is the command, `what` is the exit and the first stderr line), and the job runs.
+Measured with a fake backend: `exited 3: boom`, then `success_with_issues`.
+
+## opencode readonly gets a read-only git shell (2026-11-02, issue #143)
+
+A code-reviewer on opencode had no shell (`bash: deny`), so it could not read a diff. In a linked worktree it could not even
+read git's metadata. Readonly now writes claude's allow-list (`ReadOnlyShell.Commands`, which adds `git rev-parse*` on both
+backends) as `bash: {"*":"deny", <allows>, <guards>:"deny", <role deny>:"deny"}`. The last match wins.
+
+**The guards (`*>*`, `*--output*`, `gh pr checkout*`) are measured, not cautious.** opencode's shell resource is the whole
+command, redirect included. With only the allows, `git diff > diff.txt` and `git log --oneline -1 --output=log.txt` both
+**created their files** (2026-11-02, 2.0.30). With the guards both got `Permission denied: shell`. So did `ls`, which is not
+on the list. `git status`, `git rev-parse --git-common-dir` and `git log` ran in the linked worktree, and `.git/HEAD` read
+through the git common dir. `gh pr checkout` rewrites the worktree.
+
+**Not measured.** Whether claude's own permission layer stops `git diff --output=x` or `git diff > x` at readonly: in plan
+mode haiku refused both by itself, so the rule never ran. claude's readonly is unchanged apart from `git rev-parse*`. The
+`gh pr *` and `gh issue *` allows still let a reviewer merge, close or comment on GitHub, on both backends. That is #148.
+
+## claude's shell level leaves plan mode (2026-11-02, issue #140)
+
+`shell` kept readonly's `--permission-mode plan`. Plan mode also tells the model to change nothing, so a ui-reviewer whose
+walk writes app data came back `blocked` without opening a browser (job `20261026-121557-5a29c69e`). Under plan mode with
+`--permission-prompts none` no MCP tool could be approved anyway.
+
+**Now:** `--permission-mode dontAsk --permission-prompts none --allowedTools "Read,Glob,Grep,Bash(*),mcp__<server>__*…"
+--disallowedTools Edit,Write,NotebookEdit`, plus the deny rules. Measured with haiku (2026-11-02, 2.1.316, fake stdio MCP
+servers):
+- init said `"permissionMode":"dontAsk"`;
+- a bare `mcp__probea` allow and `mcp__probeb__*` both let the tool run, and an unlisted server was denied;
+- **`mcp__*` approved nothing**, as the docs say;
+- Bash ran, `echo hi > out.txt` and a `python3 -c open(...)` included: the level's line is the edit tools, as on opencode's
+  `shell`;
+- Write was "No such tool available", and `git push` was denied.
+
+`default` and `manual` are accepted by the CLI too; only `dontAsk` was measured.
+
+**Which servers are named** (`ApprovedMcpServers`, the owner's narrow choice):
+- the `.mcp.json` servers `ClaudeMcpConfig.Select` gave the run (none with `user_mcp`);
+- `mcp__<server>` entries in the role **library's** own `role.json` `tools`, never a repo override's;
+- `roles.<role>.mcp_servers`, user layer only.
+
+Each name is spelled `[A-Za-z0-9_-]` with everything else turned into `_`, in the `__*` form. With `user_mcp` every other
+user-level server stays attached and denied. Measured on this machine, a headless user_mcp run sees plugin servers, the
+user servers `chrome`, `odoo-tek` and `cloudways`, and claude.ai connectors, but no `claude-in-chrome` or `Claude_Browser`.
+So a ui-reviewer here needs `mcp_servers: ["chrome"]`. Auto-approving every user server would have handed a blind reviewer
+odoo-tek writes and cloudways deletions. Narrowing what `user_mcp` attaches is #129. A shell-level role **without**
+`user_mcp` gets every `.mcp.json` server approved, the `claustrum` server that `sync` writes included. ui-reviewer, today's
+only `shell` role, has `user_mcp` on.

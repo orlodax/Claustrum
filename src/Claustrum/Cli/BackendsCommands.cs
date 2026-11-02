@@ -324,6 +324,20 @@ public static class BackendsCommands
                 PrintLine(config, $"roles.{roleName}.deny", string.Join(", ", settings.Deny));
             if (settings.UserMcp is { } userMcp)
                 PrintLine(config, $"roles.{roleName}.user_mcp", userMcp ? "true" : "false");
+            if (settings.McpServers is { } mcpServers)
+                PrintLine(config, $"roles.{roleName}.mcp_servers", string.Join(", ", mcpServers));
+        }
+
+        if (config.Merged.ReadDirs is { } readDirs)
+            PrintLine(config, "read_dirs", string.Join(", ", readDirs));
+
+        foreach ((string glob, ProjectSettings project) in config.Merged.Projects ?? [])
+        {
+            // Both keys share the project's origin: only the user layer can set them (Config.Load).
+            if (project.ReadDirs is { } projectDirs)
+                PrintLine(config, $"projects.{glob}.read_dirs", string.Join(", ", projectDirs), $"projects.{glob}");
+            if (project.WorktreeHook is { } hook)
+                PrintLine(config, $"projects.{glob}.worktree_hook", string.Join(' ', hook), $"projects.{glob}");
         }
 
         foreach ((string backendName, BackendConfig backendConfig) in config.Merged.Backends ?? [])
@@ -346,9 +360,9 @@ public static class BackendsCommands
             PrintLine(config, "jobs.keep_last", keepLast.ToString());
     }
 
-    private static void PrintLine(Config config, string key, string value)
+    private static void PrintLine(Config config, string key, string value, string? originKey = null)
     {
-        string layer = config.Origins.TryGetValue(key, out ConfigLayer found) ? found.ToString() : nameof(ConfigLayer.Builtin);
+        string layer = config.Origins.TryGetValue(originKey ?? key, out ConfigLayer found) ? found.ToString() : nameof(ConfigLayer.Builtin);
         Console.WriteLine($"  {key} = {value}  [{layer}]");
     }
 }

@@ -1,5 +1,6 @@
 using Claustrum.Core.Config;
 using Claustrum.Core.Live;
+using Claustrum.Core.Model;
 using Claustrum.Core.Tracing;
 
 namespace Claustrum.Core.Backends;
@@ -44,6 +45,12 @@ public interface IBackend
     /// does, a run with configured read dirs is told at dispatch that this backend cannot reach them.
     /// </summary>
     bool HonoursReadDirs => false;
+
+    /// <summary>
+    /// Whether the read dirs <see cref="Build"/> applies are writable at <paramref name="level"/> (#144): true where the harness can only
+    /// grant a directory whole (copilot, cursor at the edit levels), which dispatch says out loud. Read only when <see cref="HonoursReadDirs"/>.
+    /// </summary>
+    bool ReadDirsWritableAt(PermissionLevel level) => false;
 
     /// <summary>
     /// What a finished run's stdout says about its tool calls, for <see cref="EnvironmentClassifier"/> (#145). Null when this backend's

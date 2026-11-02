@@ -23,6 +23,8 @@ public sealed class AcpBackend(IPlatform platform, IAcpHarness harness) : IBacke
 
     public bool CanResume => harness.LoadsSessions;
 
+    public bool HonoursReadDirs => harness.HonoursReadDirs;
+
     public ILiveProtocol? LiveProtocol => AcpLiveProtocol.Instance;
 
     public IStreamFormatter? CreateStreamFormatter(string cwd) => new AcpStreamFormatter(cwd);

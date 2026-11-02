@@ -25,6 +25,11 @@ public sealed class CursorBackend(IPlatform platform) : IBackend
 
     public string Name => "cursor";
 
+    public bool HonoursReadDirs => true;
+
+    // A workspace root is granted whole: at the edit levels cursor may write a read dir as freely as its workspace.
+    public bool ReadDirsWritableAt(PermissionLevel level) => level is PermissionLevel.Edit or PermissionLevel.EditShell;
+
     // The advisory holds whether or not the binary is here: it describes cursor-agent itself, not
     // this install, so a machine without cursor is told the same thing before it installs one.
     public async Task<Doctor> DetectAsync(BackendConfig? config, CancellationToken cancellationToken)
@@ -41,6 +46,14 @@ public sealed class CursorBackend(IPlatform platform) : IBackend
         List<string> args = ["-p", "--output-format", "json", "--model", run.Role.Model];
         args.AddRange(PermissionArgs(run.Role.Permission));
         args.AddRange(["--workspace", run.Cwd]);
+
+        // #144: an extra workspace root per read dir, below full. Measured 2026-11-02 (plan mode): cursor read a file outside every root
+        // all the same, so its reads were never fenced; whether --add-dir changes what the edit levels may write is unmeasured.
+        if (run.ReadDirs is { Length: > 0 } readDirs && run.Role.Permission.Level != PermissionLevel.Full)
+        {
+            foreach (string dir in readDirs)
+                args.AddRange(["--add-dir", dir]);
+        }
 
         // Confirmed live with the session_id a previous run returned: the resumed chat kept its
         // history (122 input tokens for the follow-up turn) and answered about the file it had made.

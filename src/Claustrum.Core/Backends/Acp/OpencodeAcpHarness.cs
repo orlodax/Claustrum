@@ -20,12 +20,15 @@ public sealed class OpencodeAcpHarness(IPlatform platform) : IAcpHarness
 
     public bool LoadsSessions => true;
 
+    // The native backend's config, read dirs included (#144): `external_directory` and `edit` patterns, never at `full`.
+    public bool HonoursReadDirs => true;
+
     public AcpHarnessSetup Prepare(ResolvedRun run)
     {
         string agentName = $"claustrum-{run.Role.Name}";
         Dictionary<string, string> env = new(StringComparer.Ordinal)
         {
-            ["OPENCODE_CONFIG_CONTENT"] = OpencodeBackend.BuildConfigContent(agentName, run.SystemPromptFilePath, run.Role.Permission),
+            ["OPENCODE_CONFIG_CONTENT"] = OpencodeBackend.BuildConfigContent(agentName, run.SystemPromptFilePath, run.Role.Permission, run.ReadDirs),
 
             // A one-shot headless run has no UI to live-update, and the watcher costs an inotify
             // instance: at the host's `fs.inotify.max_user_instances` the server stops dead after

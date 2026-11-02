@@ -10,8 +10,9 @@ namespace Claustrum.Core.Process;
 // Not for backends: those go through ProcessRunner, which owns the env allow-list and the job logs.
 public static class CommandProcess
 {
+    // `environment`, when given, is the child's whole environment (a worktree_hook's is EnvAllowList's, #146); null inherits this process's, as git and gh always did.
     public static async Task<(int ExitCode, string Stdout, string Stderr)> RunAsync(
-        string exe, string cwd, string[] args, TimeSpan timeout, CancellationToken cancellationToken)
+        string exe, string cwd, string[] args, TimeSpan timeout, CancellationToken cancellationToken, IReadOnlyDictionary<string, string>? environment = null)
     {
         ProcessStartInfo startInfo = new()
         {
@@ -26,6 +27,14 @@ public static class CommandProcess
         };
         foreach (string arg in args)
             startInfo.ArgumentList.Add(arg);
+
+        // .NET pre-fills Environment with this process's own; cleared first, or the allow-list is dead (NOTES.md "Env allow-list is dead…").
+        if (environment is not null)
+        {
+            startInfo.Environment.Clear();
+            foreach (KeyValuePair<string, string> entry in environment)
+                startInfo.Environment[entry.Key] = entry.Value;
+        }
 
         using System.Diagnostics.Process process = new() { StartInfo = startInfo };
         process.Start();

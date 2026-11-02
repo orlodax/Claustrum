@@ -113,6 +113,15 @@ public static class DelegateEngine
             ? new PermissionPolicy(RequirePermissionLevel(permissionValue), request.Overrides.Deny ?? [])
             : null;
 
+        // #144/#146: what the user config lets the job read outside its tree and runs on its worktree, said here, before the job starts.
+        // A backend that cannot reach the read dirs, or only read-write, is named now; the warnings stay off the request (resume.json).
+        ProjectAccess access = ProjectAccess.Resolve(config.Merged, config.UserConfigPath, request.Cwd, AppServices.Platform);
+        (string[] backendWarnings, EnvironmentIssue[] backendIssues) = AppServices.Backends.TryGet(resolved.Backend, out IBackend? target)
+            ? access.ForBackend(target, resolved.Permission.Level)
+            : ([], []);
+        string[] preRunWarnings = [.. request.PreRunWarnings ?? [], .. access.Warnings, .. backendWarnings];
+        EnvironmentIssue[] preRunIssues = [.. access.Issues, .. backendIssues];
+
         BackendConfig? backendConfig = null;
         config.Merged.Backends?.TryGetValue(resolved.Backend, out backendConfig);
         RunOptions options = new(
@@ -122,13 +131,15 @@ public static class DelegateEngine
             OnStreamLine: request.OnStreamLine,
             StreamRaw: request.StreamRaw,
             Tree: tree,
-            PreRunWarnings: request.PreRunWarnings,
+            PreRunWarnings: preRunWarnings.Length > 0 ? preRunWarnings : null,
             // #124: a live session needs a backend that holds a conversation (LiveProtocol); a request for any other is dropped here.
             Live: request.Live && AppServices.Backends.TryGet(resolved.Backend, out IBackend? liveBackend) && liveBackend.LiveProtocol is not null,
             ReplyTimeoutSeconds: request.ReplyTimeoutSeconds,
-            FallbackOf: request.FallbackOf);
+            FallbackOf: request.FallbackOf,
+            ReadDirs: NullIfEmpty(access.ReadDirsFor(request.Cwd)),
+            PreRunIssues: preRunIssues.Length > 0 ? preRunIssues : null);
 
-        return new PreparedDelegation(request, resolved, options, budgetUsd, timeoutSeconds, requestPermission);
+        return new PreparedDelegation(request, resolved, options, budgetUsd, timeoutSeconds, requestPermission, access);
     }
 
     // What today's configuration would run the role as, said when it is not what the continued job ran as. `request` is still the
@@ -472,7 +483,19 @@ public static class DelegateEngine
             // exactly the job's directory under the main checkout (a link planted at or above it inlines nothing).
             role = AppServices.RoleRenderer.WithRulesFrom(role, worktree.Path, new RulesAnchor(request.Cwd, job.Id));
             RunRequest isolatedRunRequest = BuildRunRequest(bound, worktree.Path);
-            RunOptions worktreeOptions = isolatedOptions with { Worktree = worktree, PreRunWarnings = WithFreeWarning(isolatedOptions.PreRunWarnings, worktree) };
+
+            // #146: after the worktree exists and before the role starts, inside this try, so a cancel in a hook is a `cancelled`
+            // receipt with the worktree undone. #144: the worktree's own read dirs, which hold the main checkout's git common dir.
+            (string[] hookWarnings, EnvironmentIssue[] hookIssues) = bound.Access is { WorktreeHooks.Length: > 0 } hooked
+                ? await WorktreeHook.RunAsync(hooked.WorktreeHooks, worktree.Path, AppServices.Platform, isolatedOptions.EnvPassthroughAll, cancellationToken)
+                : ([], []);
+            RunOptions worktreeOptions = isolatedOptions with
+            {
+                Worktree = worktree,
+                PreRunWarnings = NullIfEmpty([.. WithFreeWarning(isolatedOptions.PreRunWarnings, worktree) ?? [], .. hookWarnings]),
+                PreRunIssues = NullIfEmpty([.. isolatedOptions.PreRunIssues ?? [], .. hookIssues]),
+                ReadDirs = bound.Access is { } access ? NullIfEmpty(access.ReadDirsFor(worktree.Path)) : isolatedOptions.ReadDirs,
+            };
             return await AppServices.Runner.RunAsync(isolatedRunRequest, role, worktreeOptions, job, cancellationToken);
         }
         catch (BranchRefusedException ex)
@@ -510,6 +533,8 @@ public static class DelegateEngine
             throw;
         }
     }
+
+    private static T[]? NullIfEmpty<T>(T[] items) => items.Length > 0 ? items : null;
 
     // #106: trash a `--branch` free could not delete rides on the receipt as a warning, never a failure.
     private static string[]? WithFreeWarning(string[]? warnings, JobWorktreeInfo worktree) =>

@@ -19,6 +19,11 @@ public sealed class CopilotBackend(IPlatform platform) : IBackend
 
     public string Name => "copilot";
 
+    public bool HonoursReadDirs => true;
+
+    // The edit levels already pass `--allow-all-paths`: every directory is read-write there, a read dir included.
+    public bool ReadDirsWritableAt(PermissionLevel level) => level is PermissionLevel.Edit or PermissionLevel.EditShell;
+
     public Task<Doctor> DetectAsync(BackendConfig? config, CancellationToken cancellationToken) =>
         VersionProbe.RunAsync(Name, ["--version"], config, platform, cancellationToken, detectTimeout);
 
@@ -45,6 +50,14 @@ public sealed class CopilotBackend(IPlatform platform) : IBackend
             "--stream", "off",
         ];
         args.AddRange(PermissionArgs(run.Role.Permission));
+
+        // #144: where paths are verified (readonly, shell) a read dir needs `--add-dir`, which also loads its `.github/skills` and
+        // `.github/agents`. Measured 2026-11-02 (1.0.98, plan mode): a file there was read, one outside refused unless under /tmp.
+        if (run.ReadDirs is { Length: > 0 } readDirs && run.Role.Permission.Level is PermissionLevel.ReadOnly or PermissionLevel.Shell)
+        {
+            foreach (string dir in readDirs)
+                args.AddRange(["--add-dir", dir]);
+        }
 
         // `--model auto` and `--reasoning-effort` are mutually exclusive: copilot 1.0.87 exits 1
         // before its first API call with `Model "auto" does not support reasoning effort

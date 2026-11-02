@@ -16,6 +16,8 @@ public sealed class RoleRenderer(RoleLibrary library)
     // StackOverflowException would otherwise kill the process past any catch (review finding #3).
     private const int MaxPartDepth = 8;
 
+    private const string McpToolPrefix = "mcp__";
+
     /// <summary>
     /// The tier's model class only — no ROLE.md rendering — so a caller can pick the harness a role
     /// will actually run on before <see cref="Render"/> needs one (review finding #2 "harness chosen
@@ -56,8 +58,18 @@ public sealed class RoleRenderer(RoleLibrary library)
             ReportSchema: definition.Report,
             Blind: definition.Blind,
             Warnings: warnings.Count > 0 ? [.. warnings] : null,
-            UserMcp: definition.UserMcp);
+            UserMcp: definition.UserMcp,
+            McpServers: LibraryMcpServers(cwd is null ? definition : library.LoadRole(role, cwd: null).Definition));
     }
+
+    // #140: `mcp__<server>` (or `mcp__<server>__<tool>`) in the library's own role.json `tools`, never a repo override's: a repo naming
+    // `mcp__<personal server>` there would have a shell-level run call that server unasked (roles.<role>.mcp_servers is the user's way in).
+    private static string[] LibraryMcpServers(RoleDefinition libraryDefinition) =>
+        [.. libraryDefinition.ExtraTools
+            .Where(tool => tool.StartsWith(McpToolPrefix, StringComparison.Ordinal))
+            .Select(tool => tool[McpToolPrefix.Length..].Split("__", 2)[0])
+            .Where(server => server.Length > 0)
+            .Distinct(StringComparer.Ordinal)];
 
     /// <summary>
     /// <paramref name="role"/> with an api run's inlined rule files re-read from <paramref name="rulesCwd"/>

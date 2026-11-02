@@ -1,4 +1,5 @@
 using Claustrum.Core;
+using Claustrum.Core.Config;
 using Claustrum.Core.Model;
 
 namespace Claustrum.Delegation;
@@ -7,14 +8,16 @@ namespace Claustrum.Delegation;
 // config layers, the rendered role with its appendix, the backend a model alias names, the job tree
 // and the three per-run numbers (issue #23). The original request rides along because the run still
 // needs its brief, env and attachments. Only the job id is missing, and the one caller that must
-// write it down before it exists (`coordinate`) leaves DelegateRequest.JobIdToken in its place.
+// write it down before it exists (`coordinate`) leaves DelegateRequest.JobIdToken in its place. Access is what the user config grants
+// the job (#144, #146): an isolated run reads it again for its worktree's read dirs and hooks.
 public sealed record PreparedDelegation(
     DelegateRequest Request,
     ResolvedRole Role,
     RunOptions Options,
     decimal? BudgetUsd,
     int TimeoutSeconds,
-    PermissionPolicy? Permission)
+    PermissionPolicy? Permission,
+    ProjectAccess? Access = null)
 {
     /// <summary>
     /// This delegation bound to the job that will run it: every <see cref="DelegateRequest.JobIdToken"/>

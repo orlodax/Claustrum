@@ -7,4 +7,7 @@ public sealed record ConfigDocument(
     Dictionary<string, RoleSettings>? Roles,
     Dictionary<string, BackendConfig>? Backends,
     DefaultsSettings? Defaults,
-    JobsSettings? Jobs);
+    JobsSettings? Jobs,
+    // #144, #146: what a job may read outside its tree and what runs on its worktree. The user layer's only: Config.Load drops both from a repo.
+    string[]? ReadDirs = null,
+    Dictionary<string, ProjectSettings>? Projects = null);
