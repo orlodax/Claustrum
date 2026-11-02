@@ -56,7 +56,7 @@ internal static partial class TracePath
 
     public static bool IsGitHub(Uri url) => url.Host.ToLowerInvariant() is "github.com" or "www.github.com" or "api.github.com" or "raw.githubusercontent.com";
 
-    private static bool IsAbsolute(string slashed) =>
+    public static bool IsAbsolute(string slashed) =>
         slashed.StartsWith('/') || (slashed.Length >= 3 && char.IsAsciiLetter(slashed[0]) && slashed[1] == ':' && slashed[2] == '/');
 
     // Not after a word character, `:` or `/` (so neither `$HOME/x` nor a URL's `//host/path`); a drive path on Windows.

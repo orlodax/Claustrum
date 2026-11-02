@@ -586,9 +586,9 @@ for what the caller found before the job started.
 | `plan_mode` | a claude session started in `plan` mode for a role at `shell` or above (a `readonly` role runs in plan mode by design) |
 | `auth` | the program's own error line, at its start: gh's `HTTP 401:`/`403:`/`404:`, `GraphQL: Could not resolve to a …`, its not-logged-in lines (`gh auth login`) and `error connecting to …`; git's `fatal: Authentication failed`, `fatal: could not read Username`, `… Permission denied (publickey)` and `unable to access …: returned error: 401/403`, read only after a `fetch`, `pull`, `push`, `clone` or `ls-remote`; curl's `curl: (22) … returned error: …`; a fetch tool's status. A 401 or 403 counts from any host except the app under test (`localhost`, `127.*`, `::1`); a 404 only from gh, or from a curl or fetch to `github.com`, `api.github.com` or `raw.githubusercontent.com` (a private repository answers 404 to a request without credentials) |
 | `missing_directory` | a tool says a path does not exist, and that path is the job's cwd or inside one of its read dirs (§7, `read_dirs`); a missing read dir found at dispatch arrives with `first: dispatch` |
-| `container_permission` | a line of a command's output starts with `PermissionError: [Errno 13]` (SELinux on Fedora) or docker's `permission denied while trying to connect to the Docker daemon` |
+| `container_permission` | a line of a command's output starts with `PermissionError: [Errno 13]` (SELinux on Fedora), also after Compose's `odoo-1  \| ` or pytest's `E   `, or with docker's `permission denied while trying to connect to the Docker daemon` (or `…to the docker API`, as Docker 29 and Compose 5 say it) |
 | `test_gate_red` | the role's report lists a `failed` test whose `fault_in` is not `"test"` (a test the tester found wrong and fixed is not red), or gives `failed` as a number above 0; test-runner output in the log is never parsed |
-| `reported_blocker` | the report's `blocked_by` entries (an empty one, or one that says `none`, `n/a`, `nothing`, `-`, is skipped), or `"status": "blocked"` with no `blocked_by` |
+| `reported_blocker` | the report's `blocked_by` entries (an empty one, or one that says exactly `none`, `n/a`, `nothing`, `-`, `no blockers`, `nothing blocked me` or `no blocking issues`, is skipped), or `"status": "blocked"` with no `blocked_by` |
 | `read_dirs_unsupported`, `worktree_hook_failed` | found at dispatch, before the job started (`first: dispatch`) |
 
 **Status and exit code.** A job that would have been `success` and has any issue is `success_with_issues`, and `run` exits
@@ -603,8 +603,11 @@ and a spawned architect's brief carry the same rule.
 **How it is read.** Only the backend's own record of each tool call counts: a tool call's error text, and the output of a
 shell command. A read's, search's or fetch's output is never read, because it is file or page content. A shell command
 whose every step only views (`cat`, `grep`, `git log`, `gh issue view`, `gh pr diff`, `claustrum …`, `cd`, `true` and the
-like aside) is skipped as well; only a gh viewer that failed is read, for gh's own error lines. A command that cannot be read
-with certainty (an unclosed quote, a `case`) is skipped: a missed issue costs less than a false stop. That is why the log is
+like aside) is skipped as well, with two exceptions. A gh viewer is read for gh's own error lines: every line when it failed,
+its first line otherwise (a `gh issue view … | head` exits 0 even when gh failed). And a viewer that reads back a file the
+run's own commands wrote (`./setup.sh > /tmp/setup.log`, then `tail /tmp/setup.log`, or a claude background command's output
+file) has that output read like the command's own. A command that cannot be read with certainty (an unclosed quote, a `case`)
+is skipped: a missed issue costs less than a false stop. That is why the log is
 not grepped: it also holds every file the agent read. The `claude`, `opencode` and `acp-opencode` backends are read this way. `cursor`,
 `copilot` and `api` are not classified yet: their receipts list only dispatch-time and report issues.
 

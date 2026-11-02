@@ -57,13 +57,14 @@ public static partial class EnvironmentClassifier
                 hits.Add(new Hit(EnvironmentIssueKind.PermissionDenied, $"Permission denied: {denial.Tool}", Short(denial.Command ?? denial.Path ?? denial.Url), denial.Line));
         }
 
+        OwnFiles own = new();
         foreach (TracedCall call in trace.Calls)
-            hits.AddRange(FromCall(call, permission, cwd, readDirs));
+            hits.AddRange(FromCall(call, permission, cwd, readDirs, own));
 
         return hits;
     }
 
-    private static IEnumerable<Hit> FromCall(TracedCall call, PermissionPolicy permission, string cwd, string[] readDirs)
+    private static List<Hit> FromCall(TracedCall call, PermissionPolicy permission, string cwd, string[] readDirs, OwnFiles own)
     {
         string? error = call.Failed && call.Error?.Trim() is { Length: > 0 } text ? text : null;
 
@@ -84,7 +85,7 @@ public static partial class EnvironmentClassifier
         }
 
         if (call.Family == ToolFamily.Shell)
-            return FromShell(call, error, cwd, readDirs);
+            return FromShell(call, error, cwd, readDirs, own);
 
         if (error is null)
             return [];
@@ -143,29 +144,78 @@ public static partial class EnvironmentClassifier
         return call.Path is { } workdir && !TracePath.IsUnder(TracePath.Normalize(workdir, cwd), root) ? TracePath.Normalize(workdir, cwd) : Short(call.Command);
     }
 
-    private static IEnumerable<Hit> FromShell(TracedCall call, string? error, string cwd, string[] readDirs)
+    private static List<Hit> FromShell(TracedCall call, string? error, string cwd, string[] readDirs, OwnFiles own)
     {
+        // A line that could not be read with certainty is skipped: a missed issue beats a false stop.
         ShellParse parsed = ShellCommand.Parse(call.Command);
-        string?[] said = [error, call.Output];
-        string text = string.Join('\n', said.OfType<string>());
-
-        // A viewer's output is never read, but a gh viewer that failed is read for gh's own error lines: that is how a private
-        // repository's 404 comes back. A line that could not be read with certainty is skipped: a missed issue beats a false stop.
-        bool failed = call.Failed || call.ExitCode is not (null or 0);
-        bool gh = parsed.Segments.Any(segment => segment.Program == "gh" && (!segment.Views || failed));
-        if (!parsed.Confident || text.Length == 0 || (parsed.OnlyViews && !gh))
+        if (!parsed.Confident)
             return [];
 
-        ShellLines lines = parsed.OnlyViews
-            ? new ShellLines(gh, Git: false, Curl: false, Content: false)
-            : new ShellLines(gh, parsed.Segments.Any(segment => segment is { Program: "git", Network: true }), parsed.Segments.Any(segment => segment.Program == "curl"), Content: true);
+        bool failed = call.Failed || call.ExitCode is not (null or 0);
+        bool ghRuns = parsed.Segments.Any(segment => segment is { Program: "gh", Views: false });
+        bool ghViews = parsed.Segments.Any(segment => segment is { Program: "gh", Views: true });
+        ShellLines produces = new(ghRuns, parsed.Segments.Any(segment => segment is { Program: "git", Network: true }), parsed.Segments.Any(segment => segment.Program == "curl"), Content: true);
+        RememberOwnFiles(call, parsed, produces, cwd, own);
+
+        // A viewer's output is never read, unless it reads back a file this run's own commands wrote: that holds their output, not
+        // someone else's. A gh viewer that failed is read for gh's own error lines; one piped on (`| head`, `|| true`) exits 0, so its
+        // first line is read for them too: gh prints its error before anything, and an issue's or a PR's first line never has that shape.
+        ShellLines lines = new(ghRuns || (ghViews && failed), produces.Git && !parsed.OnlyViews, produces.Curl && !parsed.OnlyViews, Content: !parsed.OnlyViews);
+        if (OwnFilesRead(call, parsed, cwd, own) is { } producer)
+            lines = lines.Or(producer);
+
+        bool ghFirst = ghViews && !lines.Gh;
+        string?[] said = [error, call.Output];
+        string text = string.Join('\n', said.OfType<string>());
+        if (text.Length == 0 || !(lines.Gh || lines.Git || lines.Curl || lines.Content || ghFirst))
+            return [];
+
         Uri? named = TracePath.Urls(call.Command ?? "").FirstOrDefault(url => !TracePath.IsLoopback(url));
+        IEnumerable<Hit> first = ghFirst
+            ? said.OfType<string>().Select(FirstLine).OfType<string>().SelectMany(line => FromShellLine(line, call, new ShellLines(Gh: true, false, false, false), named, cwd, readDirs))
+            : [];
 
         // One hit per call and per thing it says, however many lines repeat it: a count is of calls, not of log lines.
-        return text.Split('\n')
+        return [.. text.Split('\n')
             .SelectMany(line => FromShellLine(line, call, lines, named, cwd, readDirs))
-            .DistinctBy(hit => (hit.Kind, hit.What, hit.Where));
+            .Concat(first)
+            .DistinctBy(hit => (hit.Kind, hit.What, hit.Where))];
     }
+
+    // What a command that is not only a viewer wrote: its redirections' targets, a `tee`'s files, and the file claude says a background
+    // command's output goes to. Kept per run, so a later `tail` of that log reads the run's own output.
+    private static void RememberOwnFiles(TracedCall call, ShellParse parsed, ShellLines produces, string cwd, OwnFiles own)
+    {
+        if (parsed.Segments.All(segment => segment.Views))
+            return;
+
+        IEnumerable<string> written = parsed.Segments.Where(segment => !segment.Views).SelectMany(segment => segment.Writes).Concat(parsed.GroupWrites);
+        IEnumerable<string> background = BackgroundOutputPattern().Matches(call.Output ?? "").Select(match => match.Groups["path"].Value);
+        foreach (string path in written.Concat(background).Select(word => OwnPath(word, call, parsed, cwd)).OfType<string>())
+            own.Wrote(path, produces);
+    }
+
+    // The producers of the run's own files a viewer reads here: a file argument that is one, exactly, once normalised.
+    private static ShellLines? OwnFilesRead(TracedCall call, ShellParse parsed, string cwd, OwnFiles own) =>
+        parsed.Segments.Where(segment => segment.Views)
+            .SelectMany(segment => segment.Arguments)
+            .Select(word => OwnPath(word, call, parsed, cwd) is { } path ? own.Producer(path) : null)
+            .OfType<ShellLines>()
+            .Aggregate((ShellLines?)null, (merged, producer) => merged?.Or(producer) ?? producer);
+
+    // An absolute path as written; a relative one only against a cwd the backend reported, in a line that did not `cd`. Anything else is
+    // a doubt, and a doubt is not read.
+    private static string? OwnPath(string word, TracedCall call, ShellParse parsed, string cwd)
+    {
+        if (word.StartsWith("/dev/", StringComparison.Ordinal) || word.StartsWith('-') || word.IndexOfAny(['*', '?', '~', '[']) >= 0)
+            return null;
+        if (TracePath.IsAbsolute(word.Replace('\\', '/')))
+            return TracePath.Normalize(word, cwd);
+
+        return call.Path is { } workdir && !parsed.Moves ? TracePath.Normalize(word, workdir) : null;
+    }
+
+    private static string? FirstLine(string text) => text.Split('\n').Select(line => line.Trim()).FirstOrDefault(line => line.Length > 0);
 
     // Every pattern is the emitting program's own error line, at its start: an `HTTP 404:` quoted mid-line in an issue body is content.
     private static IEnumerable<Hit> FromShellLine(string line, TracedCall call, ShellLines lines, Uri? named, string cwd, string[] readDirs)
@@ -300,9 +350,10 @@ public static partial class EnvironmentClassifier
         }
     }
 
-    // `"blocked_by": ["None"]`: a role filling in the shape, not a blocker.
+    // `"blocked_by": ["None"]`: a role filling in the shape, not a blocker. Exact phrases only: "No access to /x" is a blocker.
     private static bool SaysNone(string said) =>
-        said.Trim().TrimEnd('.').ToLowerInvariant() is "" or "none" or "n/a" or "na" or "nothing" or "-" or "—";
+        said.Trim().TrimEnd('.').Trim().ToLowerInvariant()
+            is "" or "none" or "n/a" or "na" or "nothing" or "-" or "—" or "no blockers" or "no blocker" or "nothing blocked me" or "no blocking issues";
 
     private static string? TestName(JsonElement test) => test.ValueKind switch
     {
@@ -361,15 +412,35 @@ public static partial class EnvironmentClassifier
     private static partial Regex FetchStatusPattern();
 
     // A Python traceback's last line, at the start of its line: a grep hit (`config.py:777:    # PermissionError: …`) is content.
-    [GeneratedRegex(@"^\s*PermissionError: \[Errno 13\][^\n']*(?:'(?<path>[^']+)')?")]
+    // Also after Compose's service prefix (`odoo-1  | PermissionError…`) and pytest's `E   `; nothing else before it.
+    [GeneratedRegex(@"^\s*(?:\S+\s+\|\s+|E\s+)?PermissionError: \[Errno 13\][^\n']*(?:'(?<path>[^']+)')?")]
     private static partial Regex ErrnoPattern();
 
-    [GeneratedRegex(@"^\s*(?:docker: )?(?:Got )?permission denied while trying to connect to the Docker daemon", RegexOptions.IgnoreCase)]
+    // Docker 29.8 and Compose 5.6 say "the docker API"; older ones "the Docker daemon"; Compose puts `unable to get image '…': ` before it.
+    [GeneratedRegex(@"^\s*(?:docker: |unable to get image '[^']*': )?(?:Got )?permission denied while trying to connect to the docker (?:daemon|API)", RegexOptions.IgnoreCase)]
     private static partial Regex DockerPattern();
+
+    // claude's announcement of a background command: `… Output is being written to: /tmp/…/tasks/<id>.output. You will be notified …`.
+    [GeneratedRegex(@"Output is being written to: (?<path>\S+\.output)")]
+    private static partial Regex BackgroundOutputPattern();
 
     // Which programs' own error lines a shell call's text is read for; Content is the container and missing-path patterns, which only a
     // command that is not a viewer gets.
-    private sealed record ShellLines(bool Gh, bool Git, bool Curl, bool Content);
+    private sealed record ShellLines(bool Gh, bool Git, bool Curl, bool Content)
+    {
+        public ShellLines Or(ShellLines other) => new(Gh || other.Gh, Git || other.Git, Curl || other.Curl, Content || other.Content);
+    }
+
+    // The run's own files and what wrote each: compared exactly, as normalised paths.
+    private sealed class OwnFiles
+    {
+        private readonly Dictionary<string, ShellLines> producers = new(OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
+
+        public void Wrote(string path, ShellLines producer) =>
+            producers[path] = producers.TryGetValue(path, out ShellLines? earlier) ? earlier.Or(producer) : producer;
+
+        public ShellLines? Producer(string path) => producers.GetValueOrDefault(path);
+    }
 
     // Line 0 marks what the report said: its `first` is `report`.
     private sealed record Hit(EnvironmentIssueKind Kind, string What, string? Where, int Line, int Count = 1)

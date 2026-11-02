@@ -248,7 +248,7 @@ public static class DelegateEngine
     internal static async Task ClaimAsync(PreparedDelegation prepared, JobPaths job)
     {
         if (prepared.Request.ParentJobId is { } parent && JobAnswering.TryClaim(parent, job.Id, prepared.Request.Coordinate is not null) is { } refusal)
-            throw await RefusedWithAsync(job, prepared.Role, refusal);
+            throw await RefusedWithAsync(job, prepared.Role, refusal, prepared.Options.PreRunIssues);
     }
 
     private static void ReleaseUnspent(string? parent, JobPaths? job)
@@ -303,7 +303,7 @@ public static class DelegateEngine
             return await RunInPlaceAsync(run, job, cancellationToken);
 
         // #104: the slot file is created under `.claustrum/locks`, which may be a link that leaves the repo.
-        await RequireInsideAsync(request.Cwd, job, run.Role, LockPaths(request.Cwd, RoleConcurrencyGate.KeyFor(request.CastName, request.Role), 1));
+        await RequireInsideAsync(request.Cwd, job, run.Role, LockPaths(request.Cwd, RoleConcurrencyGate.KeyFor(request.CastName, request.Role), 1), run.Options.PreRunIssues);
 
         // #58: max_parallel 1 — the one cap that does not isolate — is a cap too, so two runs of one cast
         // role queue instead of editing one tree at once; H7's fallback queues the same way whatever the
@@ -313,7 +313,7 @@ public static class DelegateEngine
         RoleConcurrencyGate slot;
         try
         {
-            slot = await AcquireSlotAsync(request, job, run.Role, cap: 1, run.TimeoutSeconds, cancellationToken);
+            slot = await AcquireSlotAsync(request, job, run.Role, cap: 1, run.TimeoutSeconds, run.Options.PreRunIssues, cancellationToken);
         }
         catch (TimeoutException ex)
         {
@@ -370,7 +370,7 @@ public static class DelegateEngine
             machinery.AddRange(LockPaths(request.Cwd, RoleConcurrencyGate.KeyFor(request.CastName, request.Role), slots));
         if (request.Branch is { } branched)
             machinery.AddRange(LockPaths(request.Cwd, JobWorktree.LockKeyFor(branched), 1));
-        await RequireInsideAsync(request.Cwd, job, role, machinery);
+        await RequireInsideAsync(request.Cwd, job, role, machinery, bound.Options.PreRunIssues);
 
         // Before the gate: a branch that does not exist is answered now, not after a wait for a slot.
         // #94: a cancel in any wait before the add is a `cancelled` receipt, never an exception over a
@@ -396,7 +396,7 @@ public static class DelegateEngine
         {
             try
             {
-                slot = await AcquireSlotAsync(request, job, role, cap, bound.TimeoutSeconds, cancellationToken);
+                slot = await AcquireSlotAsync(request, job, role, cap, bound.TimeoutSeconds, bound.Options.PreRunIssues, cancellationToken);
             }
             catch (TimeoutException ex)
             {
@@ -422,7 +422,7 @@ public static class DelegateEngine
         {
             try
             {
-                branchLock = await AcquireBranchLockAsync(request.Cwd, job, role, locked, bound.TimeoutSeconds, cancellationToken);
+                branchLock = await AcquireBranchLockAsync(request.Cwd, job, role, locked, bound.TimeoutSeconds, bound.Options.PreRunIssues, cancellationToken);
             }
             catch (TimeoutException ex)
             {
@@ -439,7 +439,7 @@ public static class DelegateEngine
 
         // #104, again: the waits above can take minutes, and `.claustrum` may have become a link meanwhile. Before
         // admission, so a refusal here holds no reservation; the gates above are released by their `await using`.
-        await RequireInsideAsync(request.Cwd, job, role, [worktreePath]);
+        await RequireInsideAsync(request.Cwd, job, role, [worktreePath], bound.Options.PreRunIssues);
 
         // Binding, and before any isolation: this path cuts a branch and holds a slot before Runner
         // ever sees the request, so a job the ledger will refuse has to be refused here. The slot
@@ -551,25 +551,26 @@ public static class DelegateEngine
     // #104: a committed `.claustrum -> outside` would put the job worktree and the lock files outside the repo.
     // Refused with a failed receipt (a job is minted for it if the caller has none) and an exception for exit 2.
     // Rooted at the cwd the run uses, never the git root: over-refusing beats a stray write.
-    private static async Task RequireInsideAsync(string cwd, JobPaths? job, ResolvedRole role, IEnumerable<string> paths)
+    // #145: every refusal below carries the dispatch issues of the run it refuses (PreRunIssues), as Runner's own receipts do.
+    private static async Task RequireInsideAsync(string cwd, JobPaths? job, ResolvedRole role, IEnumerable<string> paths, EnvironmentIssue[]? preRunIssues)
     {
         SyncRoot root = SyncRoot.Repo(cwd);
         if (paths.FirstOrDefault(root.Escapes) is { } escaping)
-            throw await RefusedAsync(job, role, escaping);
+            throw await RefusedAsync(job, role, escaping, preRunIssues);
     }
 
-    private static async Task<MachineryRefusedException> RefusedAsync(JobPaths? job, ResolvedRole role, string escaping)
+    private static async Task<MachineryRefusedException> RefusedAsync(JobPaths? job, ResolvedRole role, string escaping, EnvironmentIssue[]? preRunIssues)
     {
         string error = $"refused: {escaping} resolves outside the working directory ({SyncRoot.Resolve(escaping)}); `.claustrum` is a link that leaves it, "
             + "and a run's worktree and lock files are never created through one";
-        return await RefusedWithAsync(job ?? JobDirectory.Create(AppServices.Platform), role, error);
+        return await RefusedWithAsync(job ?? JobDirectory.Create(AppServices.Platform), role, error, preRunIssues);
     }
 
-    private static async Task<MachineryRefusedException> RefusedWithAsync(JobPaths refused, ResolvedRole role, string error)
+    private static async Task<MachineryRefusedException> RefusedWithAsync(JobPaths refused, ResolvedRole role, string error, EnvironmentIssue[]? preRunIssues)
     {
         // Before the receipt: a tree's `run` waits on a detached host, and the waiter that finds the receipt must already find this (exit 2, as in-process).
         File.WriteAllText(refused.RefusedMarker, error);
-        return new MachineryRefusedException(await Runner.RefuseAsync(refused, role, RunStatus.Failed, error));
+        return new MachineryRefusedException(await Runner.RefuseAsync(refused, role, RunStatus.Failed, error, preRunIssues: preRunIssues));
     }
 
     // The gate asks before it creates each path (the directory, every slot file it tries), so a link that appeared
@@ -589,7 +590,8 @@ public static class DelegateEngine
         };
     }
 
-    private static async Task<RoleConcurrencyGate> AcquireSlotAsync(DelegateRequest request, JobPaths? job, ResolvedRole role, int cap, int timeoutSeconds, CancellationToken cancellationToken)
+    private static async Task<RoleConcurrencyGate> AcquireSlotAsync(
+        DelegateRequest request, JobPaths? job, ResolvedRole role, int cap, int timeoutSeconds, EnvironmentIssue[]? preRunIssues, CancellationToken cancellationToken)
     {
         try
         {
@@ -598,11 +600,12 @@ public static class DelegateEngine
         }
         catch (EscapedException ex)
         {
-            throw await RefusedAsync(job, role, ex.Path);
+            throw await RefusedAsync(job, role, ex.Path, preRunIssues);
         }
     }
 
-    private static async Task<RoleConcurrencyGate> AcquireBranchLockAsync(string cwd, JobPaths job, ResolvedRole role, string branch, int timeoutSeconds, CancellationToken cancellationToken)
+    private static async Task<RoleConcurrencyGate> AcquireBranchLockAsync(
+        string cwd, JobPaths job, ResolvedRole role, string branch, int timeoutSeconds, EnvironmentIssue[]? preRunIssues, CancellationToken cancellationToken)
     {
         try
         {
@@ -610,7 +613,7 @@ public static class DelegateEngine
         }
         catch (EscapedException ex)
         {
-            throw await RefusedAsync(job, role, ex.Path);
+            throw await RefusedAsync(job, role, ex.Path, preRunIssues);
         }
     }
 
