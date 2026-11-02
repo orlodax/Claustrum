@@ -204,7 +204,10 @@ public sealed class ClaudeBackend(IPlatform platform) : IBackend, IPostRunHook
         if (wanted.Length == 0)
             return ([], null);
 
-        string[]? defined = run.Role.UserMcp ? ClaudeMcpConfig.DeclaredNames(platform, run.Cwd) : mcp.Servers;
+        // A refused `.mcp.json` (no config, a warning) is one whose names are unknown, as an unreadable one is under user_mcp.
+        string[]? defined = run.Role.UserMcp ? ClaudeMcpConfig.DeclaredNames(platform, run.Cwd)
+            : mcp is { ConfigPath: null, Warning: not null } ? null
+            : mcp.Servers;
         if (defined is null)
             return ([], $".mcp.json in {run.Cwd} could not be read for its server names, so no MCP server is approved unasked ({string.Join(", ", wanted)} denied): a repo may not grant a role tools");
 
