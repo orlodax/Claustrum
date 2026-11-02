@@ -638,6 +638,64 @@ it as `defaults.budget_usd = none  [User]`. `0` is a $0 cap, not "no cap", and a
 
 `roles.<name>.user_mcp` (`true`/`false`) keeps a claude role's user-level MCP servers (§13). It is read from the user config only: in a repo's `claustrum.json` it is ignored, with a warning on the receipt that names the file.
 
+`roles.<name>.mcp_servers` (an array of server names, e.g. `["chrome"]`) names the MCP servers whose tools a claude role at
+`shell` may call without a prompt (§13). It adds to the servers the role library names for the role. It is read from the user
+config only: in a repo's `claustrum.json` it is ignored, with a warning on the receipt. It approves servers, it does not attach
+them: `user_mcp` still decides what the run is given. Narrowing what `user_mcp` attaches to a list is #129, not done yet.
+
+### Directories a job may read, and a hook on its worktree
+
+A job's tools work inside its working directory. Three user-config keys let it read more, and run a command on its worktree:
+
+```json
+{
+  "read_dirs": ["~/repos/devkit"],
+  "projects": {
+    "odoo-*": {
+      "read_dirs": ["~/repos/odoo/shared"],
+      "worktree_hook": ["chcon", "-R", "-t", "container_file_t", "{worktree}"]
+    }
+  }
+}
+```
+
+- **User config only.** `read_dirs` and `projects` in a repo's `claustrum.json` are ignored, with a warning on every receipt
+  that names the file: a cloned repo could otherwise let its jobs read `~/.ssh`, or run a command on every worktree.
+- **Paths.** Absolute, or from `~/`. A relative path is refused at dispatch (exit 2) with an error naming the key, such as
+  `projects.odoo-*.read_dirs[0]`, whatever directory you dispatch from.
+- **Projects.** Each `projects` key is a glob (`*`, `?`; case-sensitive except on Windows) matched against the name of the
+  **main checkout**: the directory that holds the repo's `.git`. A job worktree (`…/odoo-altus/.claustrum/worktrees/<job id>`)
+  and a linked worktree of your own (`~/repos/devkit-59-fix`, whose `.git` points into `~/repos/devkit/.git`) match as their
+  main checkout does (`odoo-altus`, `devkit`). Every matching project's `read_dirs` adds to the global ones.
+- **The git common dir comes for free.** A job in a linked worktree, which is every isolated job, also reads the main
+  checkout's `.git`, so `git log`, `git diff` and a reviewer reading git's metadata work there. No key is needed.
+- **What is said at dispatch** (on stderr before the job starts, and first in the receipt's `warnings`): a configured dir that
+  does not exist (dropped, plus a `missing_directory` issue); a dir that is the working directory or holds it (dropped: a
+  read-only directory around the job's own tree would forbid its edits; one inside it is dropped silently, since the job
+  reads it anyway); a backend that cannot reach the dirs at all (`read_dirs_unsupported`); a backend that can reach them only
+  read-write at the run's level.
+- **`worktree_hook`** is an argv, never a shell string. `{worktree}` becomes the job worktree's absolute path. It runs in
+  that worktree, with the backends' environment allow-list, right after the worktree is cut, checked out (`--branch`) or
+  reopened for a continuation, and before the role starts. Every matching project's hook runs, in config order. It has
+  120 s. A non-zero exit, a program that is not there or a timeout is a warning and a `worktree_hook_failed` issue (the
+  command, the exit code and the first line of its stderr), and the job runs all the same. A hook that succeeds leaves
+  nothing on the receipt. A run that is not isolated has no worktree and runs no hook.
+
+What each backend does with the read dirs (the configured ones and the git common dir):
+
+| Backend | Below `full` | At `edit` and `edit+shell` |
+|---|---|---|
+| `claude` | `--add-dir <dir>` each | also `--disallowedTools "Edit(//<dir>/**)"`: Write, Edit, NotebookEdit and a Bash redirect into the dir are refused |
+| `opencode`, `acp-opencode` | `external_directory` allows `<dir>` and `<dir>/*`, everything else stays denied | `edit` denies `<dir>` and `<dir>/*` |
+| `copilot` | `--add-dir <dir>` at `readonly` and `shell`; this also loads the dir's `.github/skills` and `.github/agents` | already `--allow-all-paths`: **read-write**, and dispatch says so |
+| `cursor` | `--add-dir <dir>` | **read-write**, and dispatch says so |
+| `api` | nothing: it has no file tools. Configured dirs are reported `read_dirs_unsupported` at dispatch | — |
+
+At `full` nothing is added: every backend reaches every path there. Read-only holds for each harness's file tools. A shell
+command is not a file tool: on opencode at `shell` and `edit+shell`, `echo x > <read dir>/f` still writes. On claude a Bash
+redirect is caught, but a script that opens the file itself is not. claude's `--add-dir` also loads that dir's
+`.claude/skills`, `.claude/commands` and `.claude/agents`. cursor reads files outside its workspace at every level anyway.
+
 `backends.<name>` takes `path` only. There was an `injection` key once; nothing ever read it and it was
 removed (#56), so a config that still carries it loads, the key ignored like any other unknown one — `claude`
 always injects with `--append-system-prompt-file`. There is no JSON schema file, and a key Claustrum does
@@ -1121,12 +1179,25 @@ in the user config to take that back (the role then has no browser). The servers
 in the job's `backend.json` (`mcp_servers`; `["user"]` when opted in). `opencode` has no way to leave its global
 config out of a run, so its roles still see those servers.
 
+**Which MCP tools a `shell` role may call.** At `shell` claude runs in `dontAsk` mode, which denies every tool call the
+allow-list does not name, an MCP tool's included: `mcp__*` approves nothing. So a server's tools are callable only when its
+server is named, as `mcp__<server>__*`:
+
+- the servers of the repo's `.mcp.json` that the run was given (without `user_mcp`);
+- the servers the role library's own `role.json` lists in `tools` (`mcp__Claude_Browser` names `Claude_Browser`); a repo's
+  `.claustrum/roles/<role>/role.json` override does not add any;
+- `roles.<role>.mcp_servers` from your user config (§7).
+
+With `user_mcp` your other user-level servers stay attached but are denied. Name the browser you use, for example
+`"roles": { "ui-reviewer": { "mcp_servers": ["chrome"] } }`. A name with characters other than letters, digits, `_` and
+`-` is spelled with `_` there, as Claude Code spells it in tool names.
+
 Permission levels and what each backend does with them:
 
 | Level | Roles | `claude` | `opencode` | `cursor` | `copilot` |
 |---|---|---|---|---|---|
-| `readonly` | code-reviewer | `--permission-mode plan` + read-only tool list, plus the same deny rules as `edit+shell` (its `gh pr *` would otherwise allow `gh pr merge`) | edit/bash deny | prompt rule (advisory) | `--mode plan --deny-tool write --deny-tool shell` |
-| `shell` | ui-reviewer | plan + `--disallowedTools Edit,Write,NotebookEdit`, MCP tools reachable | edit deny, bash allow with deny patterns | prompt rule | `--mode plan --deny-tool write` + deny patterns |
+| `readonly` | code-reviewer | `--permission-mode plan` + read-only tool list (`Read`, `Glob`, `Grep`, `git diff`/`log`/`show`/`status`/`rev-parse`, `gh pr`, `gh issue`), plus the same deny rules as `edit+shell` (its `gh pr *` would otherwise allow `gh pr merge`) | edit deny; bash denied except the same read-only git and `gh` commands, with a redirect (`>`), `--output` and `gh pr checkout` denied | prompt rule (advisory) | `--mode plan --deny-tool write --deny-tool shell` |
+| `shell` | ui-reviewer | `--permission-mode dontAsk` (not plan): `Read`, `Glob`, `Grep`, `Bash(*)` and the named MCP servers allowed, `--disallowedTools Edit,Write,NotebookEdit`, plus the deny rules | edit deny, bash allow with deny patterns | prompt rule | `--mode plan --deny-tool write` + deny patterns |
 | `edit` | — | `acceptEdits` + `--disallowedTools Bash` | edit allow, bash deny | prompt rule | `--allow-all-tools --allow-all-paths --deny-tool shell` |
 | `edit+shell` | architect, builder, tester, demo-author | `acceptEdits`, built-in tools + `Bash(*)`, `--disallowedTools "Bash(<deny>),Bash(<deny> *)"` per deny entry; MCP tools are outside the allow-list | edit allow, bash allow, `<deny>` and `<deny> *` deny | prompt rule | `--allow-all-tools --allow-all-paths --deny-tool "shell(<deny>)"` per entry |
 | `full` | — | `--dangerously-skip-permissions` | `--auto` | `-f --sandbox disabled` | `--allow-all` |

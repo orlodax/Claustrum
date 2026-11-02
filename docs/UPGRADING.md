@@ -27,6 +27,22 @@ environment got in its way. Read the first item below. The role library's text c
 - **The report shapes gain an optional `blocked_by` (#145).** It holds what in the environment stopped the role: strings,
   or `{what, where}`. Each entry becomes an issue.
 - `jobs list` gives the status column three more characters, so `success_with_issues` fits.
+- **A ui-reviewer on claude can use its browser now, if you name it (#140).** The `shell` level no longer runs claude in
+  plan mode, which told the model to change nothing, so a walk that writes app data was refused. It runs in `dontAsk`
+  mode: `Read`, `Glob`, `Grep` and `Bash` run, the edit tools stay off, and an MCP server's tools run only when its server
+  is named. Add the browser server you use to your user config:
+  `"roles": { "ui-reviewer": { "mcp_servers": ["chrome"] } }`. Without it the role's browser calls are denied. A repo's
+  `claustrum.json` cannot set `mcp_servers`.
+- **opencode's `readonly` gets the read-only git shell claude's has (#143).** A code-reviewer on `opencode` or
+  `acp-opencode` can now run `git diff`, `log`, `show`, `status` and `rev-parse`, `gh pr` and `gh issue`. Every other
+  command stays denied, and so do a redirect (`>`), `--output` and `gh pr checkout`. claude's `readonly` also allows
+  `git rev-parse` now.
+- **Jobs can read directories outside their tree (#144).** There are three new user-config keys: `read_dirs`,
+  `projects.<glob>.read_dirs` and `projects.<glob>.worktree_hook` (#146). See the MANUAL §7 "Directories a job may read".
+  - A job in a linked worktree, which is every isolated job, can also read the main checkout's `.git` now.
+  - A repo's `claustrum.json` cannot set these keys: they are ignored, with a warning.
+  - A relative path in `read_dirs` stops the dispatch with exit 2.
+  - On `copilot` and `cursor` at `edit` and `edit+shell` the dirs are read-write, and the dispatch says so.
 
 ## 0.3.x → 0.4.0
 

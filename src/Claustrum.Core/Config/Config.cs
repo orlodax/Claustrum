@@ -34,6 +34,12 @@ public sealed class Config
     // The roles whose `user_mcp` the repo's claustrum.json set and Load dropped (#127): Resolve says so on that role's receipt.
     public IReadOnlySet<string> RepoUserMcpIgnored { get; init; } = new HashSet<string>();
 
+    // #140, the same rule: the roles whose `mcp_servers` the repo's claustrum.json set and Load dropped.
+    public IReadOnlySet<string> RepoMcpServersIgnored { get; init; } = new HashSet<string>();
+
+    // #144/#146, the same rule: the user-only keys (`read_dirs`, `projects`) the repo's claustrum.json set and Load dropped.
+    public IReadOnlyList<string> RepoUserOnlyIgnored { get; init; } = [];
+
     /// <summary>The repo's <c>claustrum.json</c>, or null when there is no git root or no such file.</summary>
     public string? RepoConfigPath { get; init; }
 
@@ -81,13 +87,15 @@ public sealed class Config
         string? repoCandidate = null;
         HashSet<string> repoModelAliases = [];
         string[] repoUserMcpIgnored = [];
+        string[] repoMcpServersIgnored = [];
+        string[] repoUserOnlyIgnored = [];
         if (gitRoot is not null)
         {
             repoCandidate = Path.Combine(gitRoot, "claustrum.json");
             if (platform.FileExists(repoCandidate))
             {
                 repoPath = repoCandidate;
-                ConfigDocument repoDocument = WithoutUserMcp(ReadDocument(platform, repoPath), out repoUserMcpIgnored);
+                ConfigDocument repoDocument = WithoutUserOnlyKeys(WithoutUserMcp(ReadDocument(platform, repoPath), out repoUserMcpIgnored, out repoMcpServersIgnored), out repoUserOnlyIgnored);
                 if (repoDocument.Models is { } repoModels)
                     repoModelAliases.UnionWith(repoModels.Keys);
                 merged = MergeLayer(merged, repoDocument, ConfigLayer.Repo, origins);
@@ -97,7 +105,7 @@ public sealed class Config
         if (ReadEnvLayer(platform) is { } envLayer)
             merged = MergeLayer(merged, envLayer, ConfigLayer.Env, origins);
 
-        return new Config { Merged = merged, Origins = origins, UserConfigPath = userPath, UserModelAliases = userModelAliases, RepoModelAliases = repoModelAliases, RepoUserMcpIgnored = new HashSet<string>(repoUserMcpIgnored), RepoConfigPath = repoPath, RepoPath = repoCandidate };
+        return new Config { Merged = merged, Origins = origins, UserConfigPath = userPath, UserModelAliases = userModelAliases, RepoModelAliases = repoModelAliases, RepoUserMcpIgnored = new HashSet<string>(repoUserMcpIgnored), RepoMcpServersIgnored = new HashSet<string>(repoMcpServersIgnored), RepoUserOnlyIgnored = repoUserOnlyIgnored, RepoConfigPath = repoPath, RepoPath = repoCandidate };
     }
 
     // Model class -> alias -> "[backend:]model-id" (docs/PLAN.md A7); role.json's Permission
@@ -125,24 +133,46 @@ public sealed class Config
         string[]? warnings = RepoUserMcpIgnored.Contains(role.Name)
             ? [.. role.Warnings ?? [], $"{RepoConfigPath}: roles.{role.Name}.user_mcp ignored: your personal MCP servers are attached from the user config ({UserConfigPath}) only, never from a repo"]
             : role.Warnings;
+        if (RepoMcpServersIgnored.Contains(role.Name))
+            warnings = [.. warnings ?? [], $"{RepoConfigPath}: roles.{role.Name}.mcp_servers ignored: which MCP servers a run may call unasked is set in the user config ({UserConfigPath}) only, never from a repo"];
+        if (RepoUserOnlyIgnored.Count > 0)
+            warnings = [.. warnings ?? [], $"{RepoConfigPath}: {string.Join(" and ", RepoUserOnlyIgnored)} ignored: the directories a job may read outside its tree and the hook run on its worktree come from the user config ({UserConfigPath}) only, never from a repo"];
 
-        return new ResolvedRole(role.Name, role.SystemBody, backend, modelId, effort, new PermissionPolicy(level, deny), role.Blind, role.ReportSchema is { Length: > 0 }, warnings, roleSettings?.UserMcp ?? role.UserMcp);
+        return new ResolvedRole(role.Name, role.SystemBody, backend, modelId, effort, new PermissionPolicy(level, deny), role.Blind, role.ReportSchema is { Length: > 0 }, warnings, roleSettings?.UserMcp ?? role.UserMcp,
+            McpServers: [.. (role.McpServers ?? []).Union(roleSettings?.McpServers ?? [], StringComparer.Ordinal)]);
     }
 
     // #127: `user_mcp` attaches the operator's personal connectors to a headless run, which a repo's file must not decide: a cloned
-    // repo could otherwise ship `user_mcp: true`. Only the user layer (and the role library's own default) is honoured.
-    private static ConfigDocument WithoutUserMcp(ConfigDocument document, out string[] ignored)
+    // repo could otherwise ship `user_mcp: true`. Only the user layer (and the role library's own default) is honoured. #140's
+    // `mcp_servers` the same: a repo naming a personal server there would have a shell-level run call it unasked.
+    private static ConfigDocument WithoutUserMcp(ConfigDocument document, out string[] ignored, out string[] mcpServersIgnored)
     {
         if (document.Roles is not { } roles)
         {
             ignored = [];
+            mcpServersIgnored = [];
             return document;
         }
 
         ignored = [.. roles.Where(entry => entry.Value.UserMcp is not null).Select(entry => entry.Key)];
-        return ignored.Length == 0
+        mcpServersIgnored = [.. roles.Where(entry => entry.Value.McpServers is not null).Select(entry => entry.Key)];
+        return ignored.Length == 0 && mcpServersIgnored.Length == 0
             ? document
-            : document with { Roles = roles.ToDictionary(entry => entry.Key, entry => entry.Value with { UserMcp = null }) };
+            : document with { Roles = roles.ToDictionary(entry => entry.Key, entry => entry.Value with { UserMcp = null, McpServers = null }) };
+    }
+
+    // #144/#146: a cloned repo could otherwise grant its jobs reads of `~/.ssh`, or run a command of its choosing on every
+    // job worktree. Dropped from the repo layer like `user_mcp`, and Resolve says so on every receipt.
+    private static ConfigDocument WithoutUserOnlyKeys(ConfigDocument document, out string[] ignored)
+    {
+        List<string> dropped = [];
+        if (document.ReadDirs is not null)
+            dropped.Add("read_dirs");
+        if (document.Projects is not null)
+            dropped.Add("projects");
+
+        ignored = [.. dropped];
+        return ignored.Length == 0 ? document : document with { ReadDirs = null, Projects = null };
     }
 
     // Exposes the alias chase for callers that only have a bare model spec, not a role — the cast
@@ -304,7 +334,15 @@ public sealed class Config
         foreach (KeyValuePair<string, BackendConfig> entry in overlay.Backends ?? [])
             backends[entry.Key] = MergeBackend(backends.GetValueOrDefault(entry.Key), entry.Value, entry.Key, layer, origins);
 
-        return new ConfigDocument(models, roles, backends, MergeDefaults(baseDoc.Defaults, overlay.Defaults, layer, origins), MergeJobs(baseDoc.Jobs, overlay.Jobs, layer, origins));
+        // Only the user layer reaches these (WithoutUserOnlyKeys), so a later layer replaces them whole rather than merging per key.
+        if (overlay.ReadDirs is not null)
+            origins["read_dirs"] = layer;
+        foreach (KeyValuePair<string, ProjectSettings> project in overlay.Projects ?? [])
+            origins[$"projects.{project.Key}"] = layer;
+
+        return new ConfigDocument(
+            models, roles, backends, MergeDefaults(baseDoc.Defaults, overlay.Defaults, layer, origins), MergeJobs(baseDoc.Jobs, overlay.Jobs, layer, origins),
+            overlay.ReadDirs ?? baseDoc.ReadDirs, overlay.Projects ?? baseDoc.Projects);
     }
 
     private static RoleSettings MergeRole(RoleSettings? existing, RoleSettings incoming, string name, ConfigLayer layer, Dictionary<string, ConfigLayer> origins)
@@ -317,6 +355,8 @@ public sealed class Config
             origins[$"roles.{name}.permission"] = layer;
         if (incoming.UserMcp is not null)
             origins[$"roles.{name}.user_mcp"] = layer;
+        if (incoming.McpServers is not null)
+            origins[$"roles.{name}.mcp_servers"] = layer;
 
         string[]? deny = existing?.Deny;
         if (incoming.Deny is { Length: > 0 })
@@ -325,7 +365,9 @@ public sealed class Config
             origins[$"roles.{name}.deny"] = layer;
         }
 
-        return new RoleSettings(incoming.Model ?? existing?.Model, incoming.Effort ?? existing?.Effort, incoming.Permission ?? existing?.Permission, deny, incoming.UserMcp ?? existing?.UserMcp);
+        return new RoleSettings(
+            incoming.Model ?? existing?.Model, incoming.Effort ?? existing?.Effort, incoming.Permission ?? existing?.Permission, deny, incoming.UserMcp ?? existing?.UserMcp,
+            incoming.McpServers ?? existing?.McpServers);
     }
 
     private static BackendConfig MergeBackend(BackendConfig? existing, BackendConfig incoming, string name, ConfigLayer layer, Dictionary<string, ConfigLayer> origins)

@@ -17,4 +17,6 @@ public sealed record ResolvedRole(
     bool HasReport,
     string[]? Warnings = null,
     // roles.<role>.user_mcp (#128): the claude backend keeps the operator's user-level MCP servers.
-    bool UserMcp = false);
+    bool UserMcp = false,
+    // #140: the MCP servers a `shell`-level claude run may call without a prompt: the role library's `tools` and roles.<role>.mcp_servers.
+    string[]? McpServers = null);

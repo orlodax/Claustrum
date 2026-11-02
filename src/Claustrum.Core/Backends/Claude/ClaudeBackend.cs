@@ -28,7 +28,7 @@ public sealed class ClaudeBackend(IPlatform platform) : IBackend, IPostRunHook
     // --permission-prompts none is passed for every level, including Full, so a headless run never
     // blocks on a prompt regardless of mode. ReadOnly's --allowedTools additionally lets a blind
     // code-reviewer read the diff it was asked to review (git/gh are read-only queries, not edits).
-    private const string ReadOnlyTools = "Read,Glob,Grep,Bash(git diff*),Bash(git log*),Bash(git show*),Bash(git status*),Bash(gh pr *),Bash(gh issue *)";
+    private static readonly string readOnlyTools = string.Join(',', ["Read", "Glob", "Grep", .. ReadOnlyShell.Commands.Select(command => $"Bash({command})")]);
 
     // Claude Code's native subagent tool: `Agent` on 2.1.278, `Task` on older builds — an unknown
     // name is silently ignored, so naming both costs nothing (NOTES.md "The native subagent tool is
@@ -38,6 +38,8 @@ public sealed class ClaudeBackend(IPlatform platform) : IBackend, IPostRunHook
     public string Name => "claude";
 
     public ILiveProtocol? LiveProtocol => ClaudeLiveProtocol.Instance;
+
+    public bool HonoursReadDirs => true;
 
     public RunTrace? Trace(string stdout) => ClaudeTrace.Read(stdout);
 
@@ -70,7 +72,8 @@ public sealed class ClaudeBackend(IPlatform platform) : IBackend, IPostRunHook
         if (mcp.ConfigPath is not null)
             args.AddRange(["--mcp-config", mcp.ConfigPath]);
 
-        args.AddRange(PermissionArgs(run.Role.Permission));
+        args.AddRange(PermissionArgs(run.Role.Permission, ApprovedMcpServers(run, mcp)));
+        args.AddRange(ReadDirArgs(run.ReadDirs, run.Role.Permission.Level));
 
         // Spawned by `coordinate` (§D3): a native subagent would run outside the cast and outside
         // the tree ledger, and no permission level withholds it — measured 2026-09-22, `Agent` is in
@@ -150,10 +153,10 @@ public sealed class ClaudeBackend(IPlatform platform) : IBackend, IPostRunHook
         return Task.FromResult<PostRunResult?>(result);
     }
 
-    private static List<string> PermissionArgs(PermissionPolicy permission) => permission.Level switch
+    private static List<string> PermissionArgs(PermissionPolicy permission, string[] mcpServers) => permission.Level switch
     {
         PermissionLevel.ReadOnly => ReadOnlyArgs(permission.Deny),
-        PermissionLevel.Shell => ShellArgs(permission.Deny),
+        PermissionLevel.Shell => ShellArgs(permission.Deny, mcpServers),
         // No deny patterns: they are all `Bash(...)`, and this level withholds Bash outright.
         PermissionLevel.Edit => ["--permission-mode", "acceptEdits", "--permission-prompts", "none", "--disallowedTools", "Bash"],
         PermissionLevel.EditShell => EditShellArgs(permission.Deny),
@@ -161,24 +164,67 @@ public sealed class ClaudeBackend(IPlatform platform) : IBackend, IPostRunHook
         _ => throw new ArgumentOutOfRangeException(nameof(permission)),
     };
 
-    // Deny applies here too: `Bash(gh pr *)` in ReadOnlyTools also matches `gh pr merge` (#54).
+    // Deny applies here too: `Bash(gh pr *)` in readOnlyTools also matches `gh pr merge` (#54).
     private static List<string> ReadOnlyArgs(string[] deny)
     {
-        List<string> args = ["--permission-mode", "plan", "--permission-prompts", "none", "--allowedTools", ReadOnlyTools];
+        List<string> args = ["--permission-mode", "plan", "--permission-prompts", "none", "--allowedTools", readOnlyTools];
         if (deny.Length > 0)
             args.AddRange(["--disallowedTools", BashDenyRules(deny)]);
         return args;
     }
 
-    // Shell keeps ReadOnly's plan mode (nothing may be written) but opens Bash and leaves MCP tools
-    // alone: --allowedTools names only the built-ins, so a Browser MCP server stays reachable, which
-    // is the whole point of the level (ui-reviewer's environment part requires one).
-    private static List<string> ShellArgs(string[] deny)
+    // #140: not plan mode, which also tells the model to change nothing, so a ui-reviewer refused every walk that writes app data
+    // (job 20261026-121557-5a29c69e). dontAsk runs what the allow-list names and denies the rest without a prompt: the edit tools are
+    // gone, Bash runs, and an MCP server's tools only when it is named, since `mcp__*` approves nothing (measured 2026-11-02, 2.1.316).
+    private static List<string> ShellArgs(string[] deny, string[] mcpServers)
     {
-        List<string> args = ["--permission-mode", "plan", "--permission-prompts", "none", "--disallowedTools", "Edit,Write,NotebookEdit"];
+        string allowed = string.Join(',', ["Read", "Glob", "Grep", "Bash(*)", .. mcpServers.Select(server => $"mcp__{server}__*")]);
+        List<string> args = ["--permission-mode", "dontAsk", "--permission-prompts", "none", "--allowedTools", allowed, "--disallowedTools", "Edit,Write,NotebookEdit"];
         if (deny.Length > 0)
             args.AddRange(["--disallowedTools", BashDenyRules(deny)]);
         return args;
+    }
+
+    // What a shell-level run may call unasked: the `.mcp.json` servers Claustrum gave it (none with user_mcp, whose servers stay attached
+    // but denied) and the role's own (library `tools`, user config `mcp_servers`). Spelled as claude spells them in tool names.
+    private static string[] ApprovedMcpServers(ResolvedRun run, McpSelection mcp)
+    {
+        IEnumerable<string> given = run.Role.UserMcp ? [] : mcp.Servers;
+        return [.. given.Concat(run.Role.McpServers ?? [])
+            .Where(server => !string.IsNullOrWhiteSpace(server))
+            .Select(server => string.Concat(server.Trim().Select(c => char.IsAsciiLetterOrDigit(c) || c is '_' or '-' ? c : '_')))
+            .Distinct(StringComparer.Ordinal)];
+    }
+
+    // #144: below full (whose bypass reaches every path already) each read dir becomes a working directory. At the edit levels an
+    // `Edit(//<dir>/**)` deny keeps it read-only: one rule stopped Write, Edit, NotebookEdit and a Bash redirect there (measured 2026-11-02).
+    private static List<string> ReadDirArgs(string[]? readDirs, PermissionLevel level)
+    {
+        List<string> args = [];
+        if (readDirs is not { Length: > 0 } || level == PermissionLevel.Full)
+            return args;
+
+        foreach (string dir in readDirs)
+            args.AddRange(["--add-dir", dir]);
+        if (level is PermissionLevel.Edit or PermissionLevel.EditShell)
+        {
+            foreach (string dir in readDirs)
+                args.AddRange(["--disallowedTools", EditDenyRule(dir)]);
+        }
+
+        return args;
+    }
+
+    // `//` anchors at the filesystem root, and a Windows path is matched in POSIX form, `C:\x` as `/c/x`. Gitignore's pattern
+    // characters are escaped, so the rule names the directory as spelled (code.claude.com/docs/en/permissions, read 2026-11-02).
+    private static string EditDenyRule(string dir)
+    {
+        string path = OperatingSystem.IsWindows() ? dir.Replace('\\', '/') : dir;
+        if (OperatingSystem.IsWindows() && path is [char drive, ':', ..] && char.IsAsciiLetter(drive))
+            path = $"/{char.ToLowerInvariant(drive)}{path[2..]}";
+
+        string escaped = string.Concat(path.Select(c => c is '*' or '?' or '[' or ']' or '\\' ? $"\\{c}" : c.ToString()));
+        return $"Edit(/{escaped}/**)";
     }
 
     private static List<string> EditShellArgs(string[] deny)

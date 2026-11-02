@@ -27,6 +27,9 @@ public sealed class OpencodeBackend(IPlatform platform) : IBackend, IPostRunHook
 
     public IStreamFormatter? CreateStreamFormatter(string cwd) => new OpencodeStreamFormatter(cwd);
 
+    // #144: `external_directory` and `edit` patterns below `full` (WriteHeadlessGuards, WriteEdit).
+    public bool HonoursReadDirs => true;
+
     public RunTrace? Trace(string stdout) => OpencodeTrace.Read(stdout);
 
     public Task<Doctor> DetectAsync(BackendConfig? config, CancellationToken cancellationToken) =>
@@ -35,7 +38,7 @@ public sealed class OpencodeBackend(IPlatform platform) : IBackend, IPostRunHook
     public ProcessSpec Build(ResolvedRun run)
     {
         string agentName = $"claustrum-{run.Role.Name}";
-        string configContent = BuildConfigContent(agentName, run.SystemPromptFilePath, run.Role.Permission);
+        string configContent = BuildConfigContent(agentName, run.SystemPromptFilePath, run.Role.Permission, run.ReadDirs);
 
         // Two departures from docs/PLAN.md §A3's opencode argv, both measured 2026-09-22 — NOTES.md
         // "The opencode and api backends, validated against real endpoints" has the evidence.
@@ -371,7 +374,7 @@ public sealed class OpencodeBackend(IPlatform platform) : IBackend, IPostRunHook
     // level, because the agent copy binds only the primary agent: a `readonly` run handed the job
     // to opencode's own `subagent` tool, which wrote the file through `general` (measured
     // 2026-09-22). v2 removed the OPENCODE_PERMISSION env var v1.18.31 read all this from.
-    internal static string BuildConfigContent(string agentName, string systemPromptFilePath, PermissionPolicy permission)
+    internal static string BuildConfigContent(string agentName, string systemPromptFilePath, PermissionPolicy permission, string[]? readDirs = null)
     {
         using MemoryStream buffer = new();
         using (Utf8JsonWriter writer = new(buffer))
@@ -381,10 +384,10 @@ public sealed class OpencodeBackend(IPlatform platform) : IBackend, IPostRunHook
             writer.WriteStartObject(agentName);
             writer.WriteString("mode", "primary");
             writer.WriteString("prompt", $"{{file:{systemPromptFilePath}}}");
-            WritePermission(writer, permission);
+            WritePermission(writer, permission, readDirs ?? []);
             writer.WriteEndObject();
             writer.WriteEndObject();
-            WritePermission(writer, permission);
+            WritePermission(writer, permission, readDirs ?? []);
             writer.WriteEndObject();
         }
 
@@ -395,14 +398,14 @@ public sealed class OpencodeBackend(IPlatform platform) : IBackend, IPostRunHook
     // command-running tool under that name (a restricted JS sandbox), and a `readonly` run reached
     // for it thirty times when `bash` was denied (measured 2026-09-22). It got nowhere — the sandbox
     // has no fs, no `process`, no network — but "bash denied" must not mean "the other one is open".
-    private static void WritePermission(Utf8JsonWriter writer, PermissionPolicy permission)
+    private static void WritePermission(Utf8JsonWriter writer, PermissionPolicy permission, string[] readDirs)
     {
         writer.WriteStartObject("permission");
         switch (permission.Level)
         {
             case PermissionLevel.ReadOnly:
                 writer.WriteString("edit", "deny");
-                writer.WriteString("bash", "deny");
+                WriteReadOnlyBashRules(writer, permission.Deny);
                 writer.WriteString("execute", "deny");
                 break;
             case PermissionLevel.Shell:
@@ -410,12 +413,12 @@ public sealed class OpencodeBackend(IPlatform platform) : IBackend, IPostRunHook
                 WriteBashRules(writer, permission.Deny);
                 break;
             case PermissionLevel.Edit:
-                writer.WriteString("edit", "allow");
+                WriteEdit(writer, readDirs);
                 writer.WriteString("bash", "deny");
                 writer.WriteString("execute", "deny");
                 break;
             case PermissionLevel.EditShell:
-                writer.WriteString("edit", "allow");
+                WriteEdit(writer, readDirs);
                 WriteBashRules(writer, permission.Deny);
                 break;
             case PermissionLevel.Full:
@@ -427,7 +430,7 @@ public sealed class OpencodeBackend(IPlatform platform) : IBackend, IPostRunHook
         }
 
         if (permission.Level != PermissionLevel.Full)
-            WriteHeadlessGuards(writer);
+            WriteHeadlessGuards(writer, readDirs);
 
         writer.WriteEndObject();
     }
@@ -438,14 +441,58 @@ public sealed class OpencodeBackend(IPlatform platform) : IBackend, IPostRunHook
     // since under ProcessRunner's closed stdin it stalls the run to its timeout. Denies survive
     // `--auto`. Order is load-bearing: opencode takes the **last** matching rule, so the
     // `.env.example` allow comes after the two denies — the order opencode writes its own in.
-    private static void WriteHeadlessGuards(Utf8JsonWriter writer)
+    private static void WriteHeadlessGuards(Utf8JsonWriter writer, string[] readDirs)
     {
-        writer.WriteString("external_directory", "deny");
+        WriteReadDirRules(writer, "external_directory", "deny", "allow", readDirs);
         writer.WriteString("question", "deny");
         writer.WriteStartObject("read");
         writer.WriteString("*.env", "deny");
         writer.WriteString("*.env.*", "deny");
         writer.WriteString("*.env.example", "allow");
+        writer.WriteEndObject();
+    }
+
+    // #144 at the edit levels: the read dirs are reachable (WriteHeadlessGuards) but not editable. An outside file's `edit` resource
+    // is its absolute path, which `<dir>/*` matches at any depth (opencode's `*` crosses `/`): measured 2026-11-02, 2.0.30.
+    private static void WriteEdit(Utf8JsonWriter writer, string[] readDirs) => WriteReadDirRules(writer, "edit", "allow", "deny", readDirs);
+
+    // `<dir>/*` is what opencode checks for a path outside the project (its parent dir joined with `*`), so it carries the rule; the
+    // exact `<dir>` matches no read but is the resource `worktree_remove` asks `edit` for. With no dirs, the plain string as before.
+    private static void WriteReadDirRules(Utf8JsonWriter writer, string permission, string everywhere, string inReadDirs, string[] readDirs)
+    {
+        if (readDirs.Length == 0)
+        {
+            writer.WriteString(permission, everywhere);
+            return;
+        }
+
+        writer.WriteStartObject(permission);
+        writer.WriteString("*", everywhere);
+        foreach (string dir in readDirs)
+        {
+            writer.WriteString(dir, inReadDirs);
+            writer.WriteString($"{dir}/*", inReadDirs);
+        }
+
+        writer.WriteEndObject();
+    }
+
+    // #143: claude's read-only git shell (ReadOnlyShell), denied everywhere else. The write guards and the role's deny list come after
+    // the allows because the last matching rule wins, as in WriteBashRules.
+    private static void WriteReadOnlyBashRules(Utf8JsonWriter writer, IReadOnlyList<string> deny)
+    {
+        writer.WriteStartObject("bash");
+        writer.WriteString("*", "deny");
+        foreach (string command in ReadOnlyShell.Commands)
+            writer.WriteString(command, "allow");
+        foreach (string guard in ReadOnlyShell.OpencodeWriteGuards)
+            writer.WriteString(guard, "deny");
+        foreach (string pattern in deny)
+        {
+            writer.WriteString(pattern, "deny");
+            writer.WriteString($"{pattern} *", "deny");
+        }
+
         writer.WriteEndObject();
     }
 

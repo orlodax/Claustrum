@@ -19,6 +19,9 @@ public interface IAcpHarness
     /// <summary>Whether the agent can <c>session/load</c> a session an earlier run left (<c>agentCapabilities.loadSession</c>): <see cref="IBackend.CanResume"/>.</summary>
     bool LoadsSessions { get; }
 
+    /// <summary>Whether <see cref="Prepare"/> applies <c>ResolvedRun.ReadDirs</c>, read-only below <c>full</c>: <see cref="IBackend.HonoursReadDirs"/> (#144).</summary>
+    bool HonoursReadDirs => false;
+
     /// <summary>The role's environment and config options for a run. Pure and repeatable: Build and CreateDriver both call it.</summary>
     AcpHarnessSetup Prepare(ResolvedRun run);
 
