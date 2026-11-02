@@ -131,6 +131,10 @@ internal static partial class ShellCommand
                 case '(' or ')' or ';' or '\r':
                     Flush(parts, current);
                     break;
+                // `>|` is a clobbering redirect, not a pipe: it stays in the word for ShellWords to strip.
+                case '|' when current.Length > 0 && current[^1] == '>':
+                    current.Append(c);
+                    break;
                 case '|':
                     Flush(parts, current);
                     if (next == '|')
