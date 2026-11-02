@@ -7002,8 +7002,10 @@ becomes `success_with_issues` (exit 8).
   recorded stdout.log is a test fixture.
 - `Runner` puts its result on the receipt. A trace or a classifier that throws costs a warning, never the run's result.
 - `FinishAsync` puts `RunOptions.PreRunIssues` (dispatch, #144) first and upgrades the status. `Runner.RefuseAsync` takes them
-  too, so DelegateEngine's refusals carry them as well: the `max_parallel` and branch-lock timeouts, a missing branch, a failed
-  worktree add, a cancel in any of those waits.
+  too, so every refusal of a prepared run carries them: DelegateEngine's `max_parallel` and branch-lock timeouts, a missing
+  branch, a failed worktree add, a cancel in any of those waits, the `.claustrum` link refusal and the continuation claim, and the
+  detached host's fallback receipt. The one receipt without them is the host's when `Prepare` itself failed (an edited
+  `claustrum.json`, an unreadable `host-request.json`): no dispatch ran, so there is nothing to carry.
 - Grouping is by (kind, what). `where` is up to five distinct locations, then `+N more`. `count` counts calls, not log lines.
   `first` is `stdout.log:<line>`, `report` or `dispatch`.
 
@@ -7022,9 +7024,12 @@ quote `HTTP 403`. So the classifier never reads the output of a read, search, ed
 - `ShellCommand.Parse` splits on unquoted `&&`, `||`, `;`, `|`, newlines and subshell parentheses. A lone `&` is kept, so
   `2>&1` stays in its command. Quotes are honoured, so `grep -E 'a|b'` stays one command. Comments and heredoc bodies are
   dropped: they are data. `$(…)` and backticks are commands of their own, judged as such; `$((…))` runs nothing.
-- In each command it skips the shell keywords (`if`, `then`, `else`, `elif`, `fi`, `do`, `done`, `while`, `until`, `in`, `esac`,
-  `{`, `}`, `!`), assignments, and the wrappers `sudo`, `env`, `time`, `nohup`, `exec`, `command`, `nice`, `timeout <d>` and
-  `xargs [opts]`. `xargs grep` is `grep`. A `for`/`select`/`function` header runs nothing.
+- `ShellWords` reads each command. Words split on unquoted whitespace. Redirections come out first, operator and target
+  (`< notes.txt`, `2>/dev/null`, `} > out`), and the files they write are kept (below). Then it skips the shell keywords (`if`,
+  `then`, `else`, `elif`, `fi`, `do`, `done`, `while`, `until`, `in`, `esac`, `{`, `}`, `!`), assignments, and the wrappers
+  with their options: `sudo [-u x]`, `env [-i] [-u NAME] [NAME=value]`, `nice [-n 10]`, `timeout [-s SIG] <d>`, `time`,
+  `nohup`, `exec`, `command`, `xargs [opts]`. `xargs grep` is `grep`; `command -v x` runs nothing. A `for`/`select`/`function`
+  header runs nothing.
 - **Neutral** commands print nothing of their own and are left out: `true`, `false`, `:`, `[`, `[[`, `test`, `cd`, `pushd`,
   `popd`, `export`, `set`, `unset`, `local`, `declare`, `readonly`, `shift`, `read`, `wait`, `trap`, `shopt`, `umask`,
   `return`, `exit`, `break`, `continue`, and an assignment alone. A line of neutral commands only (`cd <dir>`) is scanned:
@@ -7033,19 +7038,38 @@ quote `HTTP 403`. So the classifier never reads the output of a read, search, ed
   - `cat`, `head`, `tail`, `less`, `more`, `grep`, `egrep`, `fgrep`, `rg`, `awk`, `find`, `ls`, `jq`, and the filters such
     output is piped through: `sort`, `uniq`, `wc`, `cut`, `tr`, `nl`, `column`;
   - `echo` and `printf`, which print the agent's own words; `sed` unless it edits in place (`-i`); `python3 -m json.tool`;
+    `tee`, which passes its input on (the line's other commands decide);
   - `git` `show`, `diff`, `log`, `blame`, `grep`, and the read-only `status`, `rev-parse`, `ls-files`, `ls-tree`, `cat-file`,
     `show-ref`, `rev-list`, `merge-base`, `describe`, `shortlog`, `reflog`, `for-each-ref`, `name-rev`;
-  - gh's content commands: `issue view|list`, `pr view|diff|list|checks`, `api`, `search`, `run view`, `repo view`;
+  - gh's content commands: `issue`/`pr` `view|list|status`, `pr diff|checks`, `run`/`release`/`workflow` `view|list`,
+    `repo`/`gist view`, `label`/`cache list`, `api`, `search`;
   - `claustrum`, every subcommand.
-- **One exception:** a gh viewer that **failed** (claude's `is_error`, an ACP `metadata.exit` other than 0) is read for gh's own
-  error lines, and nothing else. That is how a private repository's
-  `GraphQL: Could not resolve to a Repository` still comes back. A `gh issue view … | head` that failed exits 0, and is missed.
+- **gh viewers are read for gh's own error lines, and nothing else**, in two ways. A gh viewer that **failed** (claude's
+  `is_error`, an ACP `metadata.exit` other than 0) is read line by line. One that did not fail has the **first non-empty line** of
+  its output, and of its error text, read: 88% of the store's gh content commands are piped or `|| true`
+  (`gh issue view 230 --comments 2>&1 | head -200`), so they exit 0 even when gh failed. gh prints its error before anything
+  else, and an issue's or a PR's first line is never that shape (`title:`, `{`, `#`). This is how a private repository's
+  `GraphQL: Could not resolve to a Repository` comes back (the confirm pass of 3a5c5b7 found the first round missed it).
+- **The run's own files are not someone else's content.** Per run, the classifier keeps the files the run's own commands wrote,
+  each with what wrote it:
+  - the targets of a non-viewer command's redirections (`>`, `>>`, `2>`, `&>`, `>&f`);
+  - a `tee`'s files, and a command-less part's (`} > out`), when the line runs something that is not a viewer;
+  - the file claude names for a background command ("Output is being written to: <path>").
+  A later viewer whose file argument is exactly one of those paths has its output read with the same anchored patterns, plus
+  the error lines of the CLI that wrote it (`git push > push.log`). This recovers `20261030-105800-243bff86` and
+  `20261030-110325-248a677d`, which ran their install in one call and `tail`ed its log in another.
+  **Limits, each a doubt that is not read:**
+  - a path is matched exactly once normalised; an absolute one as written, a relative one only against a cwd the backend reported
+    (opencode, ACP), in a line with no `cd`. A claude call reports no cwd, and its shell keeps a `cd` across calls.
+  - a variable is put in only when the same line set it to a plain word (`L=/tmp/x.log; … > $L`); `SCR=$(cat …)` is unknown.
+    `20261030-141404-49435a42` (`SCR=$(cat /tmp/b5r231.path)`, then a `grep -n` whose `67:` prefix is not a line start) stays silent.
+  - a viewer's own writes (`cat README > copy`) are content, and are not kept.
+  - only what is read after the write counts; claude's Read tool on such a file is not read (its output is not traced).
+- **Accepted residual: content in a line that mixes viewers and non-viewers** is read for the anchored lines, since the output
+  cannot be split by command. `gh issue view 230 && git push` over an issue that quotes `fatal: Authentication failed` at a line's
+  start, or `python3 -c "print(open(doc).read())"`, still flags. Anchoring keeps this to text that has the CLI's own shape.
 - **A line that cannot be read with certainty is skipped:** an unclosed quote or `$(`, and any `case` (its `a)` patterns look
   like commands). A missed issue costs less than a false stop that teaches the caller to ignore the warning.
-- **Lost by design:** `20261030-141404-49435a42` grepped its own `install.log` (`SCR=$(cat …); grep -n "Error" $SCR/install.log
-  | head`) and found `67:PermissionError: [Errno 13]`. It is a viewer reading a file, which is exactly what a grep over a source
-  tree is. The other eight container hits in the store survive: each line also ran a command that is not a viewer (`docker`
-  in seven, a `sleep` wait loop in one).
 - **Departure, kept:** the harness's refusals are matched even inside a viewer command. These are opencode's whole-error
   `Permission denied: <permission>` and the two missing-tool texts. A refusal means the tool never ran, so no file content is in
   its error. Skipping them would drop the `cat <outside path>` denial this issue is about.
@@ -7088,9 +7112,12 @@ anchored, which was false, and its credential, status, `Errno` and Docker patter
   Username`, `<host>: Permission denied (publickey)`, `fatal: unable to access '<url>': The requested URL returned error: 401|403`.
 - **curl**: `curl: (22) The requested URL returned error: 40[134]`, the `-f` error line. That line names no URL, so the host is
   the command's first URL that is not loopback; with none in sight it is not counted. curl's `-i` header lines are no longer read.
-- **The container patterns** are anchored the same way: `PermissionError: [Errno 13]` at a line's start, the last line of a
-  Python traceback, and docker's own `[docker: ][Got ]permission denied while trying to connect to the Docker daemon`. A grep hit
-  (`config.py:777:    # PermissionError: …`) is content.
+- **The container patterns** are anchored the same way:
+  - `PermissionError: [Errno 13]` at a line's start, the last line of a Python traceback. It is also accepted after Compose's
+    service prefix (`odoo-1  | PermissionError…`) and pytest's `E   `, and after nothing else. A grep hit
+    (`config.py:777:    # PermissionError: …`) is content.
+  - docker's own `[docker: ][Got ]permission denied while trying to connect to the docker daemon|API`, case-insensitive. Docker
+    29.8.2 and Compose 5.6.0 say "the docker API". Compose's `unable to get image '<image>': ` may come before it.
 - A 401 or 403 counts from any host but loopback. A 404 counts only from gh, from a curl or fetch to `github.com`,
   `api.github.com` or `raw.githubusercontent.com`. A private repository answers 404, not 401, to a request without
   credentials: that is what `094020` and `095003` hit. A 404 on any other site is usually a URL the agent guessed.
@@ -7106,8 +7133,9 @@ anchored, which was false, and its credential, status, `Errno` and Docker patter
   is green. The first version counted those too, and 6 of the 12 non-empty `failed` lists in the store (2026-11-02) held nothing
   else. Each would have been a false stop.
 - `blocked_by` (strings or `{what, where}`) is `reported_blocker`, and so is a bare `"status": "blocked"` without one. An entry
-  that is empty or says none (`none`, `n/a`, `na`, `nothing`, `-`, `—`, any case, a trailing `.` ignored) is a role filling in
-  the shape, and is skipped.
+  that is empty or says none (`none`, `n/a`, `na`, `nothing`, `-`, `—`, `no blocker(s)`, `nothing blocked me`, `no blocking
+  issues`, any case, a trailing `.` ignored) is a role filling in the shape, and is skipped. Exact phrases only: "No access to
+  /x" is a real blocker.
 
 **Statuses.**
 - `success_with_issues` replaces `success` only. `needs_input`, `failed`, `cancelled` and the rest keep their value and their

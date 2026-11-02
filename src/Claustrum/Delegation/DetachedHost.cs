@@ -38,16 +38,17 @@ internal static class DetachedHost
         Task watcher = WatchForCancelAsync(job, running, cancel, finished.Token);
         DelegateRequest? request = null;
         ResolvedRole? role = null;
+        EnvironmentIssue[]? preRunIssues = null;
         try
         {
             request = JsonSerializer.Deserialize(File.ReadAllText(job.HostRequestJson), DelegationJsonContext.Default.DelegateRequest)
                 ?? throw new IOException($"{job.HostRequestJson} is empty");
 
             PreparedDelegation prepared = DelegateEngine.Prepare(request);
-            role = prepared.Role;
+            (role, preRunIssues) = (prepared.Role, prepared.Options.PreRunIssues);
             return (await DelegateEngine.RunAsync(prepared, job, (retry, retryJob) =>
             {
-                role = retry.Role;
+                (role, preRunIssues) = (retry.Role, retry.Options.PreRunIssues);
                 running.Job = retryJob;
             }, cancel.Token), false);
         }
@@ -59,7 +60,7 @@ internal static class DetachedHost
         {
             // The job that was running when it threw, so a retry that fails outside Runner gets its receipt too, not the first's.
             RunStatus status = cancel.IsCancellationRequested && ex is OperationCanceledException ? RunStatus.Cancelled : RunStatus.Failed;
-            return (await ReceiptForAsync(running.Job, role ?? PlaceholderRole(request), status, ex.Message), false);
+            return (await ReceiptForAsync(running.Job, role ?? PlaceholderRole(request), status, ex.Message, preRunIssues), false);
         }
         finally
         {
@@ -134,11 +135,11 @@ internal static class DetachedHost
         await cancel.CancelAsync();
     }
 
-    // A receipt Runner already wrote stands: this only fills the gap when it never got that far.
-    private static async Task<RunResult> ReceiptForAsync(JobPaths job, ResolvedRole role, RunStatus status, string error) =>
+    // A receipt Runner already wrote stands: this only fills the gap when it never got that far. Prepare failing leaves no dispatch issues.
+    private static async Task<RunResult> ReceiptForAsync(JobPaths job, ResolvedRole role, RunStatus status, string error, EnvironmentIssue[]? preRunIssues) =>
         File.Exists(job.ResultJson) && JsonSerializer.Deserialize(await File.ReadAllTextAsync(job.ResultJson), ClaustrumJsonContext.Default.RunResult) is { } written
             ? written
-            : await Runner.RefuseAsync(job, role, status, error);
+            : await Runner.RefuseAsync(job, role, status, error, preRunIssues: preRunIssues);
 
     // Prepare resolves the real role; when it is the thing that failed (a claustrum.json edited since the parent prepared, an
     // unreadable host-request.json) the receipt still needs a name, a backend and a model to be a RunResult.
