@@ -5,6 +5,7 @@ using Claustrum.Core.Live;
 using Claustrum.Core.Model;
 using Claustrum.Core.Platform;
 using Claustrum.Core.Process;
+using Claustrum.Core.Tracing;
 
 namespace Claustrum.Core.Backends.Opencode;
 
@@ -25,6 +26,8 @@ public sealed class OpencodeBackend(IPlatform platform) : IBackend, IPostRunHook
     public ILiveProtocol? LiveProtocol => liveProtocol ??= new OpencodeLiveProtocol(this);
 
     public IStreamFormatter? CreateStreamFormatter(string cwd) => new OpencodeStreamFormatter(cwd);
+
+    public RunTrace? Trace(string stdout) => OpencodeTrace.Read(stdout);
 
     public Task<Doctor> DetectAsync(BackendConfig? config, CancellationToken cancellationToken) =>
         VersionProbe.RunAsync(Name, ["--version"], config, platform, cancellationToken, detectTimeout);

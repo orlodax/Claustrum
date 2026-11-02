@@ -18,5 +18,12 @@ public static class ExitCodes
     /// and a finished run whose report said `needs_input` (stage 3b: answer it with `jobs answer` or `coordinate --resume`).
     /// </summary>
     public const int NeedsInput = 7;
+
+    /// <summary>
+    /// A run that finished while its environment refused it something (#145: status <c>success_with_issues</c>, the receipt's
+    /// <c>environment_issues</c>): a path, a tool, a login, a red gate. Not a clean result: tell the user before using it.
+    /// </summary>
+    public const int EnvironmentIssues = 8;
+
     public const int Cancelled = 130;
 }

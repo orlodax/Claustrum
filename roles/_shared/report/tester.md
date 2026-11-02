@@ -9,7 +9,8 @@ Copy this shape, filling in real values:
   "commands_run": ["..."],
   "passed": 0,
   "failed": [{"test": "...", "root_cause": "...", "fault_in": "test | code"}],
-  "skipped": ["..."]
+  "skipped": ["..."],
+  "blocked_by": [{"what": "...", "where": "..."}]
 }
 ```
 ````
@@ -18,6 +19,7 @@ Attribute every failure honestly: `fault_in: "code"` when the code under test is
 `fault_in: "test"` only when the test itself was wrong — one you wrote, or a pre-existing one the
 change legitimately outdated — and you fixed it yourself. `commands_run` must show the repo's full
 gate, pre-existing suites included, not only the tests you wrote. Never leave a failure unattributed.
+`blocked_by`: anything in the environment that stopped you (a refused path, a missing tool, a failed login, a red gate you could not fix): what and where.
 
 A decision that is the human's is not yours to guess: on a live run, ask by ending a turn without
 this block; when you cannot ask (the run says "No human is available to answer now", or it is not

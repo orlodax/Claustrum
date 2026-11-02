@@ -17,7 +17,8 @@ this shape, filling in real values:
       "evidence": "..."
     }
   ],
-  "would_change_if_broader": ["..."]
+  "would_change_if_broader": ["..."],
+  "blocked_by": [{"what": "...", "where": "..."}]
 }
 ```
 ````
@@ -25,3 +26,4 @@ this shape, filling in real values:
 Rank findings most-severe first; an empty `findings` list is a legitimate outcome for a clean
 change. Mark each finding CONFIRMED only when you traced the path and it definitely breaks;
 otherwise PLAUSIBLE.
+`blocked_by`: anything in the environment that stopped you (a refused path, a missing tool, a failed login, a red gate you could not fix): what and where.

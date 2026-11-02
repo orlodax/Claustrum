@@ -401,6 +401,7 @@ public static class JobsFollowCommand
             return false;
 
         SafeConsole.Error(FormatSummary(doc.RootElement));
+        EnvironmentWarning.PrintReceipt(doc.RootElement);
         return true;
     }
 

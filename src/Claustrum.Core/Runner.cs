@@ -11,6 +11,7 @@ using Claustrum.Core.Model;
 using Claustrum.Core.Platform;
 using Claustrum.Core.Process;
 using Claustrum.Core.Report;
+using Claustrum.Core.Tracing;
 
 namespace Claustrum.Core;
 
@@ -276,6 +277,7 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
             }
 
             ExtractedReport extracted = ReportExtractor.Extract(parsed.FinalMessage);
+            DetectedIssues detected = DetectIssues(backend, outcome.Stdout, role.Permission, extracted.Report, request.Cwd, options.ReadDirs);
             RunStatus status = DetermineStatus(outcome, parsed);
             AskedForInput asked = ReadAsked(status, extracted.Report, role.Blind);
             status = asked.Status;
@@ -312,13 +314,14 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
                 Raw: parsed.Raw,
                 Report: extracted.Report,
                 ReportStatus: extracted.Status,
-                Warnings: [.. postWarnings ?? [], .. extracted.Warnings, .. asked.Warnings, .. branch.Warnings],
+                Warnings: [.. postWarnings ?? [], .. extracted.Warnings, .. asked.Warnings, .. branch.Warnings, .. detected.Warnings],
                 Commit: branch.Commit,
                 Conversation: ConversationOf(job, live, notes),
                 Questions: asked.Questions,
                 ErrorKind: errorKind,
                 ErrorDetail: errorKind is null ? null : parsed.ErrorDetail,
-                BeforeAnyWork: beforeAnyWork);
+                BeforeAnyWork: beforeAnyWork,
+                EnvironmentIssues: detected.Issues.Length > 0 ? detected.Issues : null);
 
             return await FinishAsync(job, reservation, result, ran: true, runOptions);
         }
@@ -334,6 +337,34 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
             DeleteTurnTempFiles(turnTempFiles);
         }
     }
+
+    // #145: what the environment refused the run, from the backend's own trace and the role's report (NOTES.md "Environment issues").
+    // A check that throws costs a warning, never the run's result; a trace that cannot be read still leaves the report's issues.
+    private static DetectedIssues DetectIssues(IBackend backend, string stdout, PermissionPolicy permission, ClaustrumReport? report, string cwd, string[]? readDirs)
+    {
+        List<string> warnings = [];
+        RunTrace? trace = null;
+        try
+        {
+            trace = backend.Trace(stdout);
+        }
+        catch (Exception ex)
+        {
+            warnings.Add($"environment check: the {backend.Name} trace could not be read ({ex.GetType().Name}: {ex.Message}); environment_issues may be incomplete");
+        }
+
+        try
+        {
+            return new DetectedIssues(EnvironmentClassifier.Classify(trace, permission, report, cwd, readDirs), [.. warnings]);
+        }
+        catch (Exception ex)
+        {
+            warnings.Add($"environment check failed ({ex.GetType().Name}: {ex.Message}); environment_issues may be incomplete");
+            return new DetectedIssues([], [.. warnings]);
+        }
+    }
+
+    private sealed record DetectedIssues(EnvironmentIssue[] Issues, string[] Warnings);
 
     private static async Task<PreRunBaseline?> PreRunBaselineAsync(IPostRunHook hook, PostRunContext context, CancellationToken cancellationToken)
     {
@@ -584,6 +615,12 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
             result = result with { Warnings = [.. decided, .. result.Warnings] };
         if (options?.FallbackOf is { } retryOf)
             result = result with { FallbackOf = retryOf };
+
+        // #145: what the caller found before the job started comes first; any issue at all means the result is not a clean success.
+        if (options?.PreRunIssues is { Length: > 0 } dispatched)
+            result = result with { EnvironmentIssues = [.. dispatched, .. result.EnvironmentIssues ?? []] };
+        if (result is { Status: RunStatus.Success, EnvironmentIssues.Length: > 0 })
+            result = result with { Status = RunStatus.SuccessWithIssues };
 
         if (reservation is { } claim)
             result = await ChargeAsync(claim, result, ran);

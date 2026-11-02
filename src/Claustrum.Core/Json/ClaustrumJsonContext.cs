@@ -20,6 +20,7 @@ namespace Claustrum.Core.Json;
 [JsonSerializable(typeof(ChangedFile))]
 [JsonSerializable(typeof(Usage))]
 [JsonSerializable(typeof(ClaustrumReport))]
+[JsonSerializable(typeof(EnvironmentIssue[]))]
 [JsonSerializable(typeof(JsonElement))]
 [JsonSerializable(typeof(ConfigDocument))]
 [JsonSerializable(typeof(BudgetLedgerEntry))]

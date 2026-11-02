@@ -286,7 +286,7 @@ internal sealed class LiveJob
     {
         using JsonDocument? result = ReadResultDocument(out bool resultExists);
         if (result is not null)
-            return new JobWaitResult("done", null, StatusOf(result.RootElement));
+            return new JobWaitResult("done", null, StatusOf(result.RootElement), IssuesOf(result.RootElement));
 
         LiveState? state = ReadState();
         if (resultExists || state?.State == LiveStatus.Done)
@@ -303,6 +303,10 @@ internal sealed class LiveJob
 
     public static string StatusOf(JsonElement receipt) =>
         receipt.TryGetProperty("status", out JsonElement status) && status.ValueKind == JsonValueKind.String ? status.GetString() ?? "?" : "?";
+
+    /// <summary>The receipt's <c>environment_issues</c> (#145) when it lists any, cloned out of its document; null otherwise.</summary>
+    public static JsonElement? IssuesOf(JsonElement receipt) =>
+        receipt.TryGetProperty("environment_issues", out JsonElement issues) && issues.ValueKind == JsonValueKind.Array && issues.GetArrayLength() > 0 ? issues.Clone() : null;
 
     /// <summary>Whether a message written by <see cref="Say"/> is still waiting for the session to consume it.</summary>
     public bool HasQueuedMessage()

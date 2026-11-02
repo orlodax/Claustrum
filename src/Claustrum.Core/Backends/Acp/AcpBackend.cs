@@ -5,6 +5,7 @@ using Claustrum.Core.Model;
 using Claustrum.Core.Platform;
 using Claustrum.Core.Process;
 using Claustrum.Core.Report;
+using Claustrum.Core.Tracing;
 
 namespace Claustrum.Core.Backends.Acp;
 
@@ -25,6 +26,8 @@ public sealed class AcpBackend(IPlatform platform, IAcpHarness harness) : IBacke
     public ILiveProtocol? LiveProtocol => AcpLiveProtocol.Instance;
 
     public IStreamFormatter? CreateStreamFormatter(string cwd) => new AcpStreamFormatter(cwd);
+
+    public RunTrace? Trace(string stdout) => AcpTrace.Read(stdout);
 
     public Task<Doctor> DetectAsync(BackendConfig? config, CancellationToken cancellationToken) =>
         VersionProbe.RunAsync(harness.Exe, harness.VersionArgs, config, platform, cancellationToken);

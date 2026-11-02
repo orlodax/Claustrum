@@ -1,5 +1,33 @@
 # Upgrading Claustrum
 
+## 0.4.x → Unreleased
+
+A script that checks `status == "success"`, or exit code 0, now also sees `success_with_issues` and exit 8 for a job whose
+environment got in its way. Read the first item below. The role library's text changed: synced repos show drift under
+`claustrum sync --check` until you run `claustrum sync` again.
+
+### What changes
+
+- **A new status and exit code: `success_with_issues`, exit 8 (#145).** A job that finished while its environment refused it
+  something used to say `success`. Examples: a directory it was not allowed to read, a missing tool, a failed `gh` login,
+  plan mode, a red test gate in its own report. It now says `success_with_issues` and `run` exits 8. Every other status
+  and exit code is unchanged.
+  - Treat such a result as not clean: tell the user what the job could not reach before you use it. The `/claustrum`
+    skill tells the main session so.
+  - A cast's fallback never retries it, because it did work.
+- **A new receipt field: `environment_issues` (#145).** `[{kind, what, where, count, first}]`, or `null` when nothing got in
+  the way. It appears on any status, a `failed` one included.
+  - `run --json`, `jobs show`, MCP `delegate`, `job_status` and `job_result` carry it, and so does the document
+    `jobs wait --json` prints.
+  - `run`, `jobs show`, `jobs wait`, `jobs follow` and `coordinate` print one `warning: environment issues (N): …` line on
+    stderr.
+  - The MANUAL's §6 *Environment issues* lists every kind and what triggers it.
+  - Only `claude`, `opencode` and `acp-opencode` runs are read for them; `cursor`, `copilot` and `api` receipts list only
+    what was found at dispatch and what the report says.
+- **The report shapes gain an optional `blocked_by` (#145).** It holds what in the environment stopped the role: strings,
+  or `{what, where}`. Each entry becomes an issue.
+- `jobs list` gives the status column three more characters, so `success_with_issues` fits.
+
 ## 0.3.x → 0.4.0
 
 Nothing to do, unless a config file of yours says `"budget_usd": null` or you set `CLAUSTRUM_BUDGET_USD=none`: read the

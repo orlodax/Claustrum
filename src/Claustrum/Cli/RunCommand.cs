@@ -267,6 +267,8 @@ public static class RunCommand
         else
             PrintHuman(output, exitCode, printedWarnings);
 
+        // #145: on stderr in both modes, so a --json reader's stdout stays the one document.
+        EnvironmentWarning.Print(output.EnvironmentIssues);
         return exitCode;
     }
 
@@ -311,6 +313,7 @@ public static class RunCommand
         RunStatus.BackendMissing => ExitCodes.BackendMissing,
         RunStatus.BudgetExceeded => ExitCodes.Budget,
         RunStatus.NeedsInput => ExitCodes.NeedsInput,
+        RunStatus.SuccessWithIssues => ExitCodes.EnvironmentIssues,
         _ => throw new ArgumentOutOfRangeException(nameof(status), status, null),
     };
 
