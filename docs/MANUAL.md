@@ -1201,8 +1201,10 @@ server is named, as `mcp__<server>__*`, and only two places can name one:
   `.claustrum/roles/<role>/role.json` override does not add any;
 - `roles.<role>.mcp_servers` from your user config (§7).
 
-A repo's `.mcp.json` servers stay attached but are denied: a cloned repo must not grant a role tools. With `user_mcp` your
-other user-level servers are the same: attached, denied. Name the browser you use, for example
+A repo's `.mcp.json` servers stay attached but are denied: a cloned repo must not grant a role tools. Approval goes by name,
+so a name the repo's `.mcp.json` defines is never approved, even when the role library or your `mcp_servers` names it: the
+repo could define its own server as `chrome`. The receipt says so in a warning, and a `.mcp.json` that cannot be read for its
+names approves nothing. With `user_mcp` your other user-level servers are the same: attached, denied. Name the browser you use, for example
 `"roles": { "ui-reviewer": { "mcp_servers": ["chrome"] } }`. A name with characters other than letters, digits, `_` and
 `-` is spelled with `_` there, as Claude Code spells it in tool names.
 
@@ -1211,13 +1213,14 @@ Permission levels and what each backend does with them:
 | Level | Roles | `claude` | `opencode` | `cursor` | `copilot` |
 |---|---|---|---|---|---|
 | `readonly` | code-reviewer | `--permission-mode plan` + read-only tool list (`Read`, `Glob`, `Grep`, and as words: `git diff`, `log`, `show`, `status`, `rev-parse`, `gh pr view`/`diff`/`list`/`checks`, `gh issue view`/`list`), plus the role's deny rules | edit deny; bash denied except the same commands, and those refused too when the command holds a quote, `$`, a backtick, `\` or `/`, `{`, `<`, `>`, `--output`, `--no-index` or `--ext-diff` | prompt rule (advisory) | `--mode plan --deny-tool write --deny-tool shell` |
-| `shell` | ui-reviewer | `--permission-mode dontAsk` (not plan): `Read`, `Glob`, `Grep`, `Bash(*)` and the role's named MCP servers allowed, `--disallowedTools Edit,Write,NotebookEdit`, plus the deny rules. Not a sandbox: a command can still write and delete, and the deny list is the guard | edit deny, bash allow with deny patterns | prompt rule | `--mode plan --deny-tool write` + deny patterns |
+| `shell` | ui-reviewer | `--permission-mode dontAsk` (not plan): `Read`, `Glob`, `Grep`, `Bash(*)` and the role's named MCP servers allowed, `--disallowedTools Edit,Write,NotebookEdit`, plus the deny rules. Not a sandbox: a command can still write and delete. A deny entry guards how a command is written; it is not a security boundary | edit deny, bash allow with deny patterns | prompt rule | `--mode plan --deny-tool write` + deny patterns |
 | `edit` | — | `acceptEdits` + `--disallowedTools Bash` | edit allow, bash deny | prompt rule | `--allow-all-tools --allow-all-paths --deny-tool shell` |
 | `edit+shell` | architect, builder, tester, demo-author | `acceptEdits`, built-in tools + `Bash(*)`, `--disallowedTools "Bash(<deny>),Bash(<deny> *)"` per deny entry; MCP tools are outside the allow-list | edit allow, bash allow, `<deny>` and `<deny> *` deny | prompt rule | `--allow-all-tools --allow-all-paths --deny-tool "shell(<deny>)"` per entry |
 | `full` | — | `--dangerously-skip-permissions` | `--auto` | `-f --sandbox disabled` | `--allow-all` |
 
 **`readonly` on opencode** matches each shell command on its raw text, so whatever could make that text differ from what bash
-runs is refused, and the accepted cost is real: a pipe only when every command in it is on the list (`git log | head` is
+runs is refused, except `*` and `?`: they are opencode's own wildcards and cannot be refused, so a glob in an allowed command
+still expands (a file the repo ships named `--output=x` could be reached through `--outpu?=x`). The accepted cost is real: a pipe only when every command in it is on the list (`git log | head` is
 refused for `head`), no `2>&1`, no `--format='…'`, and no `/` at all, because opencode reads `\` as `/` before matching. So `git
 diff -- src/x.cs`, `git log origin/main..HEAD` and `gh issue view 1 -R owner/repo` are refused; `git diff HEAD~3`,
 `git log --oneline -20` and `git show <sha>` work, and the file tools read the tree. On claude a quote, a path or `--no-index`

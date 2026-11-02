@@ -75,7 +75,8 @@ public sealed class ClaudeBackend(IPlatform platform) : IBackend, IPostRunHook
         if (mcp.ConfigPath is not null)
             args.AddRange(["--mcp-config", mcp.ConfigPath]);
 
-        args.AddRange(PermissionArgs(run.Role.Permission, ApprovedMcpServers(run.Role)));
+        (string[] approved, string? approvalWarning) = run.Role.Permission.Level == PermissionLevel.Shell ? ApprovedMcpServers(run, mcp) : ([], null);
+        args.AddRange(PermissionArgs(run.Role.Permission, approved));
         args.AddRange(ReadDirArgs(run.ReadDirs, run.Role.Permission.Level));
 
         // Spawned by `coordinate` (§D3): a native subagent would run outside the cast and outside
@@ -101,7 +102,13 @@ public sealed class ClaudeBackend(IPlatform platform) : IBackend, IPostRunHook
         // On argv the brief showed in every process listing: a `pgrep -f` pattern a brief quoted matched
         // the job running it (#68, measured 2026-10-08). Stdin also lifts the argv length cap.
         string stdinText = run.Live ? ClaudeLiveProtocol.Instance.EncodeUserMessage(run.Brief, Guid.NewGuid().ToString()) + "\n" : run.Brief;
-        return new ProcessSpec(Name, [.. args], run.Cwd, run.Env, [], StdinText: stdinText, McpServers: mcp.Servers, Warnings: mcp.Warning is { } warning ? [warning] : null);
+        List<string> warnings = [];
+        if (mcp.Warning is { } mcpWarning)
+            warnings.Add(mcpWarning);
+        if (approvalWarning is not null)
+            warnings.Add(approvalWarning);
+
+        return new ProcessSpec(Name, [.. args], run.Cwd, run.Env, [], StdinText: stdinText, McpServers: mcp.Servers, Warnings: warnings.Count > 0 ? [.. warnings] : null);
     }
 
     public ParsedOutput Parse(string stdout, string stderr, int exitCode)
@@ -189,9 +196,27 @@ public sealed class ClaudeBackend(IPlatform platform) : IBackend, IPostRunHook
     }
 
     // What a shell-level run may call unasked: the role's own servers (library `tools`, user config `mcp_servers`), never a repo's
-    // `.mcp.json` ones, which a cloned repo controls (#127's rule): those stay attached and are denied. Spelled as claude's tool names.
-    private static string[] ApprovedMcpServers(ResolvedRole role) =>
-        [.. (role.McpServers ?? [])
+    // `.mcp.json` ones, which a cloned repo controls (#127's rule). Approval is by name, so a name the repo's file defines is dropped
+    // even when the role names it: the repo could define its own server as `chrome`. Spelled as claude's tool names.
+    private (string[] Approved, string? Warning) ApprovedMcpServers(ResolvedRun run, McpSelection mcp)
+    {
+        string[] wanted = ToolServerNames(run.Role.McpServers ?? []);
+        if (wanted.Length == 0)
+            return ([], null);
+
+        string[]? defined = run.Role.UserMcp ? ClaudeMcpConfig.DeclaredNames(platform, run.Cwd) : mcp.Servers;
+        if (defined is null)
+            return ([], $".mcp.json in {run.Cwd} could not be read for its server names, so no MCP server is approved unasked ({string.Join(", ", wanted)} denied): a repo may not grant a role tools");
+
+        HashSet<string> repo = [.. ToolServerNames(defined)];
+        string[] dropped = [.. wanted.Where(repo.Contains)];
+        return dropped.Length == 0
+            ? (wanted, null)
+            : ([.. wanted.Except(dropped)], $".mcp.json in {run.Cwd} defines {string.Join(", ", dropped)}: not approved unasked, though the role names it, because a repo may not grant a role tools; its tools are denied");
+    }
+
+    private static string[] ToolServerNames(IEnumerable<string> servers) =>
+        [.. servers
             .Where(server => !string.IsNullOrWhiteSpace(server))
             .Select(server => string.Concat(server.Trim().Select(c => char.IsAsciiLetterOrDigit(c) || c is '_' or '-' ? c : '_')))
             .Distinct(StringComparer.Ordinal)];
