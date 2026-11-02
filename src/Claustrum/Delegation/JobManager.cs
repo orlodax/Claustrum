@@ -11,7 +11,16 @@ namespace Claustrum.Delegation;
 // whose claustrum process is gone, no result.json) | done | failed | unknown. A done job also says how it ended (Status, the RunResult's
 // own word: "needs_input" among them) and, when it stopped to ask, what (Questions; stage 3b). RetriedAs is set when the job's cast
 // fallback took over (#126): everything above is then the retry's, and RetriedAs is the id to say to, wait on or cancel.
-public sealed record JobStatusInfo(string State, double ElapsedSeconds, string? LastLine, QuestionInfo? Question = null, string? Status = null, ReportQuestion[]? Questions = null, string? RetriedAs = null);
+// EnvironmentIssues is a done job's receipt's own (#145): what its environment refused it, so `success_with_issues` says why.
+public sealed record JobStatusInfo(
+    string State,
+    double ElapsedSeconds,
+    string? LastLine,
+    QuestionInfo? Question = null,
+    string? Status = null,
+    ReportQuestion[]? Questions = null,
+    string? RetriedAs = null,
+    EnvironmentIssue[]? EnvironmentIssues = null);
 
 // Backs MCP delegate_async/job_status/job_result (docs/PLAN.md §A6). In-memory only, so it covers
 // jobs started via delegate_async in this MCP server's own lifetime; job_status/job_result still
@@ -69,7 +78,7 @@ public sealed class JobManager
 
             double elapsed = (DateTimeOffset.UtcNow - entry.StartedAt).TotalSeconds;
             RunResult? finished = entry.Task.IsCompletedSuccessfully ? entry.Task.Result : null;
-            return new JobStatusInfo(state, elapsed, JobLog.LastLine(watched.LogPath), question, StatusName(finished), finished?.Questions, retriedAs);
+            return new JobStatusInfo(state, elapsed, JobLog.LastLine(watched.LogPath), question, StatusName(finished), finished?.Questions, retriedAs, finished?.EnvironmentIssues);
         }
 
         // A job this process never started, retried on its cast's fallback, answers as its retry does (one hop: a retry is never retried).
@@ -89,7 +98,7 @@ public sealed class JobManager
         if (File.Exists(resultPath))
         {
             RunResult? receipt = LiveJob.Find(jobId)?.ReadResult();
-            return new JobStatusInfo("done", 0, null, Status: StatusName(receipt), Questions: receipt?.Questions);
+            return new JobStatusInfo("done", 0, null, Status: StatusName(receipt), Questions: receipt?.Questions, EnvironmentIssues: receipt?.EnvironmentIssues);
         }
 
         if (LiveJob.Find(jobId) is not { } live || live.ReadState() is null)

@@ -15,4 +15,7 @@ public enum RunStatus
 
     // The role stopped to ask its human something and said so in its report (#124 stage 3b): finished, not failed.
     NeedsInput,
+
+    // #145: it finished, but its environment refused it something (environment_issues): not a clean result. Every other status keeps its value.
+    SuccessWithIssues,
 }

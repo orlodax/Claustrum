@@ -129,6 +129,8 @@ internal static class DoctorProbe
     public static string Describe(RunResult result) => result.Status switch
     {
         RunStatus.Success => $"OK ({result.DurationSeconds.ToString("0.0", CultureInfo.InvariantCulture)}s, cost {DescribeCost(result.CostUsd)}, reply \"{Clamp(result.FinalMessage.Trim(), 40)}\")",
+        // #145: the round trip worked, but the run met something in its environment: said, with where to read it.
+        RunStatus.SuccessWithIssues => $"OK, with {result.EnvironmentIssues?.Length ?? 0} environment issue(s) ({result.DurationSeconds.ToString("0.0", CultureInfo.InvariantCulture)}s, cost {DescribeCost(result.CostUsd)}) — claustrum jobs show {result.JobId}",
         RunStatus.BackendMissing => $"skipped ({FirstLine(result.Error)})",
         RunStatus.Timeout => $"failed (no reply within {ProbeTimeoutSeconds}s) — log: {result.LogPath}",
         _ when LooksLikeMissingCredential(result) => $"no credential ({FirstLine(result.Error)}) — log: {result.LogPath}",

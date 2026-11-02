@@ -41,7 +41,10 @@ public sealed class ClaustrumTools
         "once that no human is available (this call is blocked): it decides what it can and records the choice, and stops with status " +
         "'needs_input' and its questions in the result for what is the user's (answer those with job_answer); use delegate_async when the user should be asked. " +
         "When the cast names a fallback for the role and the model's provider refuses the request before the role did anything (out of credits, a rejected key, " +
-        "an unknown model, no connection), the run is retried once on the fallback: the result is the retry's, fallback_of names the failed job and warnings say why.")]
+        "an unknown model, no connection), the run is retried once on the fallback: the result is the retry's, fallback_of names the failed job and warnings say why. " +
+        "Status 'success_with_issues' means the run finished but its environment refused it something — a path outside its directory, a missing tool, " +
+        "a failed login, plan mode, a red test gate or a blocker its report names: environment_issues ([{kind, what, where, count, first}], also on any other " +
+        "status) says what and where. Such a result is not clean: stop and tell the user what the job could not reach before using its verdict.")]
     public static Task<string> DelegateAsync(
         [Description("Role name, e.g. builder, code-reviewer, tester (see list_roles).")] string role,
         [Description("The brief: markdown with H2 sections ## Task/## Scope/## Must still work/## Diff (docs/PLAN.md §B3).")] string brief,
@@ -156,7 +159,8 @@ public sealed class ClaustrumTools
         "means no such job id. A 'done' job also reports status (its RunResult's) and, when status is 'needs_input' — the role stopped " +
         "because it could not ask live — its questions ([{key, prompt, options, allow_free_form}]): ask the user and continue it with job_answer. " +
         "retried_as is set when the cast's fallback took the job over (the model's provider refused it before it did anything): everything else here is then " +
-        "the retry's, job_say to this id reaches it, and retried_as is its own id.")]
+        "the retry's, job_say to this id reaches it, and retried_as is its own id. A 'done' job's environment_issues lists what its environment refused it; " +
+        "with status 'success_with_issues' (or any issue at all) the result is not clean: stop and tell the user before using it.")]
     public static string JobStatus(string jobId)
     {
         JobStatusInfo status = AppServices.JobManager.GetStatus(jobId) ?? new JobStatusInfo("unknown", 0, null);

@@ -56,7 +56,7 @@ malformed job id (every `jobs` verb takes only `yyyyMMdd-HHmmss-xxxxxxxx`), a re
 uninitialized repo) · `3` backend not found · `4` timeout · `5` budget · `6` abandoned (`jobs wait`, `jobs reply`, `jobs cancel`,
 and a tree's `run`: the process running a job is gone, with no receipt; under `--json` the one document is then a RunResult
 with `status: failed` and an `error` saying so) · `7` needs input (a tree's `run` or `jobs reply`: a child
-asked its architect a question and still waits, *Questions inside a tree*; and any finished run whose report said `needs_input`, *When nobody can answer live*) · `130` cancelled. Once the job directory exists (queued for a `max_parallel` slot, waiting for a `--branch`
+asked its architect a question and still waits, *Questions inside a tree*; and any finished run whose report said `needs_input`, *When nobody can answer live*) · `8` environment issues (the run finished `success_with_issues`: its environment refused it something, §6 *Environment issues*) · `130` cancelled. Once the job directory exists (queued for a `max_parallel` slot, waiting for a `--branch`
 lock, adding its worktree, or running), the first Ctrl-C (SIGINT), SIGQUIT, SIGTERM or SIGHUP (the terminal closing) ends the run
 with a `cancelled` receipt: exit 130, the document on stdout under `--json`, `result.json` on disk
 (#94). A cancel while queued or adding leaves no worktree, directory or branch (#108: the job directory is made
@@ -154,6 +154,10 @@ claustrum run <role> [--brief <text> | --brief-file <path|->]
 - Without `--json`, stdout gets `status:`, then `branch:`/`worktree:`/`commit:` when the run was
   isolated, the changed files and the final message; every warning goes to stderr as
   `warning: …`, and the error as `error: …`.
+- A receipt with `environment_issues` adds one more stderr line, with or without `--json`:
+  `warning: environment issues (N): <kind> ×<count> at <where>; …. Stop and tell the user before using this result.`
+  (at most three issues, then `+K more`; the full list is in the receipt). `jobs show`, `jobs wait`, `jobs follow` and
+  `coordinate` print the same line.
 
 ### `claustrum coordinate`
 
@@ -275,7 +279,8 @@ front doors, one channel:
   line `jobs follow` ends on (exit 0 for either, 4 on `--timeout`, 130 on Ctrl-C). A job whose claustrum process is gone with no `result.json`
   is *abandoned*: `jobs wait` prints `abandoned: the claustrum process running this job is gone` and exits 6, and
   `jobs follow` says so once and stops prompting. `--json` prints
-  `{"state", "question": {"seq", "text"} | null, "result_status"}` instead, for a script or an architect to branch on.
+  `{"state", "question": {"seq", "text"} | null, "result_status", "environment_issues"}` instead, for a script or an architect to
+  branch on; `environment_issues` is the receipt's own array (§6), `null` while the job runs or when it lists none.
 - **MCP.** `job_status` reports `state: waiting_for_input` and the `question`; the host asks its user with its own
   question tool and answers with `job_say`. `delegate_async` and `coordinate` run live with a 1800 s reply timeout; `delegate`,
   which blocks its host, runs with 0. A `coordinate` architect answers its children's questions itself, so what reaches
@@ -518,8 +523,9 @@ One JSON document, `schema_version: "1"`, snake_case, additive changes only:
 | Field | Source | Notes |
 |---|---|---|
 | `job_id` | runner | `yyyyMMdd-HHmmss-8hex`; also the directory name under the jobs home |
-| `status` | runner | `success`, `failed`, `timeout`, `cancelled`, `backend_missing`, `budget_exceeded`, `needs_input` (the report asked the human something; exit 7) |
-| `error` | runner | **read it whenever `status` is not `success`** — it says which refusal or failure |
+| `status` | runner | `success`, `success_with_issues` (finished, but `environment_issues` is not empty; exit 8), `failed`, `timeout`, `cancelled`, `backend_missing`, `budget_exceeded`, `needs_input` (the report asked the human something; exit 7) |
+| `error` | runner | **read it whenever `status` is neither `success` nor `success_with_issues`** — it says which refusal or failure |
+| `environment_issues[{kind, what, where, count, first}]` | runner, from the backend's trace and the report | what in the environment got in the job's way, *Environment issues* below; `null` when nothing did. On any status: a `failed` or `needs_input` run lists its issues too |
 | `error_kind`, `error_detail` | backend | `failed` runs only: why, when the backend's output says — `provider_quota` (out of credits, a rate limit: 402/429, `provider.quota`), `provider_auth` (401/403), `model_not_found` (404, `provider.no-route`), `provider_transport` (408/5xx, no answer at all), or `other`. `error_detail` is the provider's own words, without the text the role wrote before it failed. Read for **opencode** and **claude**; the other backends report `other` on a failure and `null` while it succeeds. `null` on every run that did not fail |
 | `before_any_work` | runner | `failed` runs only: `true` when the run changed no file, was a single turn, completed no tool call (a call that errored did nothing) and made at most two steps (model requests: the first, and the one that hands an errored call back); `false` when it did work; `null` when the backend cannot count its tool calls. With a provider-side `error_kind` it is what lets a cast's fallback take over |
 | `fallback_of`, `retried_as` | runner | a cast's fallback (§8): the retry's receipt names the job it replaced in `fallback_of`; the replaced job's receipt stays as it was (`failed`, its own `error_kind`) plus `retried_as: <the retry's job id>`. `jobs show <id>` of a retried job tells you where to look; `jobs say|reply|wait|follow|cancel` and MCP `job_say`/`job_status` given its id go on to the retry and say so (stderr; `retried_as` in the MCP result) |
@@ -548,11 +554,57 @@ Every role must end its final message with exactly one fenced block tagged `clau
 architect, demo-author) may also give `status: needs_input` with `questions[{key, prompt, options[], allow_free_form}]`, the
 questions-as-data fallback of *When nobody can answer live*; the two reviewers, which are blind, never do (their doubts are findings):
 
-- **builder**: `{status: done|partial|blocked|needs_input, summary, files_changed[{path, why}], behaviour_to_cover[], open_decisions[], shaky[], departed_from_brief[]}` — `shaky` is what the coordinator reads first.
-- **code-reviewer / ui-reviewer**: `{status, findings[{severity, verdict: CONFIRMED|PLAUSIBLE, file, line, scenario, steps, evidence}], would_change_if_broader[]}`, most severe first; an empty list is a legitimate clean result.
-- **tester**: `{status, commands_run[], passed, failed[{test, root_cause, fault_in: test|code}], skipped[]}`.
-- **architect**: `{status, summary, delegations[{role, tier, job_id, status}], branch, closes[], findings_open[], open_decisions[], shaky[]}` — for a spawned architect this block is the entire result the caller sees.
-- **demo-author**: `{status, deck, commit, steps, dataset{rung, kind, mechanism}, shareable, video, gitignore, left_behind[], defects_seen[], gaps[]}` — `deck` is the path actually used in the main checkout (a `-<short commit>` sibling, explained in `gaps`, when the planned directory is or was tracked), `video` is recorded by default (a `null` needs its reason in `gaps`), `gitignore` names the line and where it went — `docs/demos/` in a root `.gitignore`, left uncommitted for the orchestrator, plus `info/exclude`; any other directory in `info/exclude` only, nothing to commit; `already ignored`; or `outside every checkout` — and a deck directory the main checkout still does not ignore is `blocked` with no deck file written (`gitignore` still lists any ignore line that was); `shareable: false` makes the deck and the video internal.
+- **builder**: `{status: done|partial|blocked|needs_input, summary, files_changed[{path, why}], behaviour_to_cover[], open_decisions[], shaky[], departed_from_brief[], blocked_by[]}` — `shaky` is what the coordinator reads first.
+- **code-reviewer / ui-reviewer**: `{status, findings[{severity, verdict: CONFIRMED|PLAUSIBLE, file, line, scenario, steps, evidence}], would_change_if_broader[], blocked_by[]}`, most severe first; an empty list is a legitimate clean result.
+- **tester**: `{status, commands_run[], passed, failed[{test, root_cause, fault_in: test|code}], skipped[], blocked_by[]}`.
+- **architect**: `{status, summary, delegations[{role, tier, job_id, status}], branch, closes[], findings_open[], open_decisions[], shaky[], blocked_by[]}` — for a spawned architect this block is the entire result the caller sees.
+- **demo-author**: `{status, deck, commit, steps, dataset{rung, kind, mechanism}, shareable, video, gitignore, left_behind[], defects_seen[], gaps[], blocked_by[]}` — `deck` is the path actually used in the main checkout (a `-<short commit>` sibling, explained in `gaps`, when the planned directory is or was tracked), `video` is recorded by default (a `null` needs its reason in `gaps`), `gitignore` names the line and where it went — `docs/demos/` in a root `.gitignore`, left uncommitted for the orchestrator, plus `info/exclude`; any other directory in `info/exclude` only, nothing to commit; `already ignored`; or `outside every checkout` — and a deck directory the main checkout still does not ignore is `blocked` with no deck file written (`gitignore` still lists any ignore line that was); `shareable: false` makes the deck and the video internal.
+
+Every report may also carry `blocked_by[]`: anything in the environment that stopped the role (a refused path, a missing tool, a
+failed login, a red gate it could not fix), each a string or `{what, where}`. Each entry becomes an `environment_issues` entry.
+
+### Environment issues
+
+A job can finish while its environment kept it from part of its work: a directory it was not allowed to read, a tool it did
+not have, a login that failed. Before #145 such a job said `success`, and nobody found out until someone grepped its log.
+Now the runner reads what the job did and lists what got in its way in the receipt's `environment_issues`:
+
+```json
+{"kind": "external_directory", "what": "Permission denied: external_directory",
+ "where": "/home/me/repos/odoo/shared/odoo-19.0, /home/me/repos/odoo/shared/enterprise-19.0 +3 more", "count": 18, "first": "stdout.log:68"}
+```
+
+Issues are grouped by `kind` and `what`. `where` lists up to five distinct paths, commands or URLs, then `+N more`. `count`
+says how many tool calls hit the issue, and `first` says where the first one is: `stdout.log:<line>`, `report`, or `dispatch`
+for what the caller found before the job started.
+
+| `kind` | Triggered by |
+|---|---|
+| `permission_denied` | the backend refused a tool call: claude's `permission_denials`, opencode's `Permission denied: <permission>`. Not counted: what the role's level withholds on purpose (an edit below `edit`, the shell at `edit`), a command the role's deny list names, opencode's `question` and `*.env` reads, claude's `Monitor` |
+| `external_directory` | opencode (`opencode`, `acp-opencode`) refused a path outside the job's directory; `where` is that path |
+| `missing_tool` | a tool the role needs was not there: opencode's `No tool named "<x>"`, claude's `No such tool available`. Not counted: a miscased name, a name no role is given (the model invented it), a tool the level withholds |
+| `plan_mode` | a claude session started in `plan` mode for a role at `shell` or above (a `readonly` role runs in plan mode by design) |
+| `auth` | a 401 or 403 from `gh`, `git`, `curl` or a fetch tool, from any host except the app under test (`localhost`, `127.*`, `::1`); a 404 only from `gh` or from a fetch to `github.com`, `api.github.com` or `raw.githubusercontent.com` (a private repository answers 404 to a request without credentials); `gh auth login`, `Bad credentials`, `Requires authentication`, git's `could not read Username`, `Authentication failed` and `Permission denied (publickey)` |
+| `missing_directory` | a tool says a path does not exist, and that path is the job's cwd or inside one of its read dirs (§7, `read_dirs`); a missing read dir found at dispatch arrives with `first: dispatch` |
+| `container_permission` | a command's output says `PermissionError: [Errno 13]` (SELinux on Fedora) or `permission denied while trying to connect to the Docker daemon` |
+| `test_gate_red` | the role's report has a non-empty `failed` (an array, or a number above 0); test-runner output in the log is never parsed |
+| `reported_blocker` | the report's `blocked_by` entries, or `"status": "blocked"` with no `blocked_by` |
+| `read_dirs_unsupported`, `worktree_hook_failed` | found at dispatch, before the job started (`first: dispatch`) |
+
+**Status and exit code.** A job that would have been `success` and has any issue is `success_with_issues`, and `run` exits
+8. Every other status keeps its value and its exit code, and still lists its issues: a `failed` job, a `needs_input` one. A
+cast's fallback (§8) still retries only a `failed` job that did no work, so a `success_with_issues` job is never retried.
+
+**What to do.** A `success_with_issues` result, or any result with `environment_issues`, is not a clean result. Stop. Tell
+the user what the job could not reach (each issue's `kind`, `what` and `where`), and do not use its verdict as if it were
+clean: a review that could not read the code it reviewed, or a tester that ran with a red gate. The `/claustrum` skill
+and a spawned architect's brief carry the same rule.
+
+**How it is read.** Only the backend's own record of each tool call counts: a tool call's error text, and the output of a
+shell command. A read's, search's or fetch's output is never read, because it is file or page content. A shell command
+whose every step only views files (`cat`, `grep`, `git log`, …) is skipped as well. That is why the log is not grepped: it
+also holds every file the agent read. The `claude`, `opencode` and `acp-opencode` backends are read this way. `cursor`,
+`copilot` and `api` are not classified yet: their receipts list only dispatch-time and report issues.
 
 ## 7. Configuration
 

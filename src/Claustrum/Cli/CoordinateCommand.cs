@@ -186,6 +186,7 @@ public static class CoordinateCommand
             else
                 await PrintHumanAsync(output, exitCode, job, treeId, capped, printedWarnings);
 
+            EnvironmentWarning.Print(output.EnvironmentIssues);
             return exitCode;
         }
         catch (OperationCanceledException ex)

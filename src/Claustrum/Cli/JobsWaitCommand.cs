@@ -17,7 +17,7 @@ public static class JobsWaitCommand
     {
         Argument<string> id = new("id") { Description = "Job id." };
         Option<int?> timeout = new("--timeout") { Description = "Give up after this many seconds (exit 4)." };
-        Option<bool> json = new("--json") { Description = "Print one document: {state: running|waiting_for_input|done|abandoned, question: {seq, text} | null, result_status | null}." };
+        Option<bool> json = new("--json") { Description = "Print one document: {state: running|waiting_for_input|done|abandoned, question: {seq, text} | null, result_status | null, environment_issues | null}." };
         Command wait = new("wait", "Block until a job asks a question or finishes (poll-based, ~500 ms).") { id, timeout, json };
         wait.SetAction(async parseResult => await ExecuteAsync(
             parseResult.GetRequiredValue(id),
@@ -85,6 +85,7 @@ public static class JobsWaitCommand
         if (jsonMode)
         {
             PrintJson(seen);
+            EnvironmentWarning.PrintArray(seen.EnvironmentIssues);
             return;
         }
 
@@ -99,6 +100,8 @@ public static class JobsWaitCommand
 
         using JsonDocument? receipt = job.ReadResultDocument(out _);
         SafeConsole.Out(receipt is null ? "━━━ incomplete (no readable result.json)" : JobsFollowCommand.FormatSummary(receipt.RootElement));
+        if (receipt is not null)
+            EnvironmentWarning.PrintReceipt(receipt.RootElement);
     }
 
     private static void PrintJson(JobWaitResult seen) =>

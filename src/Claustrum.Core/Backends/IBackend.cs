@@ -1,5 +1,6 @@
 using Claustrum.Core.Config;
 using Claustrum.Core.Live;
+using Claustrum.Core.Tracing;
 
 namespace Claustrum.Core.Backends;
 
@@ -43,4 +44,10 @@ public interface IBackend
     /// does, a run with configured read dirs is told at dispatch that this backend cannot reach them.
     /// </summary>
     bool HonoursReadDirs => false;
+
+    /// <summary>
+    /// What a finished run's stdout says about its tool calls, for <see cref="EnvironmentClassifier"/> (#145). Null when this backend's
+    /// stream is not read for them: cursor, copilot and api are unclassified, and their receipts carry dispatch and report issues only.
+    /// </summary>
+    RunTrace? Trace(string stdout) => null;
 }

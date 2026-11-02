@@ -38,6 +38,13 @@ permission?, cast?, ...}`, still with the brief written to a file first if you a
 have one. With no `--cast`/`cast` given, a repo's `.claustrum/casts/default.json` applies
 itself automatically if present.
 
+A result whose `status` is `success_with_issues`, or whose `environment_issues` is not empty,
+is not a clean result: the job's environment refused it something (a path outside its
+directory, a missing tool, a failed login, plan mode, a red test gate, a blocker its report
+names), and stderr says so in one `warning: environment issues` line. Stop, tell the user what
+the job could not reach (each issue's `kind`, `what` and `where`), and do not use its verdict
+as if it were clean.
+
 A role can stop to ask the user something. When `job_status` (after `delegate_async`) shows
 `state: waiting_for_input`, its `question` is what the role asked: put it to the user with the
 host's question mechanism and send the answer with `job_say {job_id, text}`. The blocking

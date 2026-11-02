@@ -11,7 +11,8 @@ this shape, filling in real values:
   "behaviour_to_cover": ["..."],
   "open_decisions": ["..."],
   "shaky": ["..."],
-  "departed_from_brief": ["..."]
+  "departed_from_brief": ["..."],
+  "blocked_by": [{"what": "...", "where": "..."}]
 }
 ```
 ````
@@ -19,6 +20,7 @@ this shape, filling in real values:
 Report honestly: say plainly what you did not do, what you guessed at, and where you departed from
 the brief and why. "Implemented as specified" when you improvised is the single most expensive
 thing you can write.
+`blocked_by`: anything in the environment that stopped you (a refused path, a missing tool, a failed login, a red gate you could not fix): what and where.
 
 A decision that is the human's is not yours to guess: on a live run, ask by ending a turn without
 this block; when you cannot ask (the run says "No human is available to answer now", or it is not

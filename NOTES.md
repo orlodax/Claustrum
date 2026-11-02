@@ -6972,3 +6972,101 @@ cap: `--budget N` and an active cast's `budget_usd` still win over it, so a cap 
 cast. Inside a job tree with no cast, a null default yields no tree budget and so no ledger, the outcome a cast's
 `null` already had (`DelegateEngine`, the §D4 comment). PLAN §D1's `--budget none` was never built and is not part
 of this: `--budget` still takes a number only.
+
+## Environment issues (2026-11-02, issue #145)
+
+On 2026-10-29 and 10-30, delegated jobs were blinded by their environment and still ended `"status": "success"`. The owner found
+out a day later, by grepping logs. Four jobs, all `acp-opencode`:
+- `20261029-094020-089b47aa`, a readonly code-reviewer: `Permission denied: external_directory` on the Odoo source it was told to
+  read, and `webfetch` 404s on a private GitHub repo.
+- `20261029-095003-002baa0d`: `No tool named "execute"` on the `gh issue view` it needed. Its cwd vanished mid-run.
+- `20261029-092218-3172ff82`, a builder: 18 `external_directory` denials, five of them on shell commands.
+- `20261027-114218-0596d5af`, a tester: report `"status": "done"` with a non-empty `failed`.
+
+A failure must never look like a success. So the receipt now carries `environment_issues`, and a `success` with any issue
+becomes `success_with_issues` (exit 8).
+
+**Design.**
+- `IBackend.Trace(stdout)` turns a finished run's stream into a `RunTrace`: every tool call with its name, family (`ToolFamily`),
+  command, path or URL, its error when it failed, its output only for a shell command, and the stdout.log line of its result.
+  Claude's also carries its init `permissionMode` and its `permission_denials`.
+- Three readers exist: `ClaudeTrace`, `OpencodeTrace` and `AcpTrace`. The ACP one reuses `AcpTranscript` to decide which
+  updates are the run's own (session open, own session id, no `session/load` replay). Cursor, copilot and api return null and
+  stay unclassified: their logs were never recorded with a refusal in them, and guessing at a shape is how false hits start.
+- `EnvironmentClassifier.Classify(trace, permission, report, cwd, readDirs)` is one backend-neutral pure function, so a
+  recorded stdout.log is a test fixture.
+- `Runner` puts its result on the receipt. A trace or a classifier that throws costs a warning, never the run's result.
+- `FinishAsync` puts `RunOptions.PreRunIssues` (dispatch, #144) first and upgrades the status, so a refusal's receipt carries
+  them too.
+- Grouping is by (kind, what). `where` is up to five distinct locations, then `+N more`. `count` counts calls, not log lines.
+  `first` is `stdout.log:<line>`, `report` or `dispatch`.
+
+**Why not grep the log.** stdout.log holds every file the agent read, every page it fetched and every issue body `gh` printed.
+The audit that started this grepped the logs and drowned in false hits: Odoo sources mention `PermissionError`, issue bodies
+quote `HTTP 403`. So the classifier never reads the output of a read, search, edit or fetch tool. It reads two things only:
+- a tool call's **error text**;
+- the **output of a shell command**.
+
+**The viewer filter.**
+- A shell command whose every segment only views files is skipped, error and output alike, because both are file content.
+  Segments are split on unquoted `&&`, `||`, `;`, `|` and newlines; a lone `&` is kept so `2>&1` stays in its segment.
+  Quotes are honoured, or `grep -E 'a|b'` would split into a "program" `b'` and be scanned.
+- Viewers are `cat`, `head`, `tail`, `less`, `grep`, `rg`, `awk`, `find`, `ls`, `jq` and `git show`/`diff`/`log`/`blame`/`grep`.
+  Also counted as viewers:
+  - the filters such output is piped through: `sort`, `uniq`, `wc`, `cut`, `tr`, `nl`, `column`, `more`;
+  - `echo` and `printf`, which print the agent's own words;
+  - `sed` unless it edits in place (`-i`), which is broader than the brief's `sed -n`, since plain `sed` prints file content too.
+- `cd` (and `pushd`/`popd`) is set aside: `cd <dir> && git log` only views, since agents prefix nearly every viewer with a `cd`
+  and its output is still file content. A `cd` alone is scanned: `cd: <dir>: No such file or directory` is the
+  missing-directory signal.
+- **Departure:** the harness's refusals are matched even inside a viewer command. These are opencode's whole-error
+  `Permission denied: <permission>` and the two missing-tool texts. A refusal means the tool never ran, so no file content
+  is in its error. Skipping them would drop the `cat <outside path>` denial this issue is about.
+
+**What counts as noise.** Each rule below rests on a measured case from the job store on 2026-11-02:
+- **Claude `Monitor` denials are skipped.** Thirteen of the fourteen claude denials in the job store on 2026-11-02 (jobs from
+  10-27 on), one per job, were a builder or tester at `edit+shell` reaching for `Monitor` (e.g. `20261029-102009-37746b04`, result line 186). The level's `--allowedTools` does not
+  name it, and the role polls with Bash instead. Counting them would make nearly every claude builder `success_with_issues`, and
+  a warning that always fires is read by nobody. The underlying gap is the allow list's, not the environment's.
+- **opencode `question` and `*.env` reads are skipped.** These are the headless guards `WriteHeadlessGuards` writes on purpose.
+- **What the level withholds is skipped.** That means edits below `edit`, and the shell at `edit`. Example: claude's
+  `No such tool available: Write. Write is disabled` in a `shell` ui-reviewer, `20261029-095112-2bae7a86` line 27.
+- **A command the role's deny list names is skipped,** the policy working: the recorded `git push` refused as
+  `Permission denied: shell`, `tests/fixtures/acp/opencode-report.jsonl:34`. It uses the same matcher as the ACP client,
+  `AcpPermission.IsDenied`.
+- **Missing tools are skipped** when the name is miscased (claude says `Tool names are case-sensitive`,
+  `20261029-100036-78070fc6`), or when it belongs to no family a role is given, such as the invented `bash_placeholder`
+  (`20261029-122415-299a96b4`). A missing `mcp__*` tool counts: a ui-reviewer without its browser is blind.
+- **A shell counts as needed even at `readonly`:** claude's readonly level keeps `git diff`/`gh issue`, which is what
+  `095003`'s `execute` was for.
+- **Plan mode counts only above `readonly`.** `readonly` runs in plan mode by design. The claude `shell` level ran in plan mode
+  too until #140 (`20261029-095220-0da9d76d`, init line 3).
+- **A missing path counts only when it is the cwd or inside a read dir.** Anything else is the agent guessing a path: in
+  `095003`, `File not found` on files inside the vanished cwd is not an issue, while `Search path does not exist: <cwd>` is.
+  A read or search is judged by the path it was given, never by one its error mentions: claude's `File does not exist. Note:
+  your current working directory is <cwd>` would otherwise match the cwd.
+
+**The 404 rule, and loopback.**
+- A 401 or 403 counts from `gh`, `git`, `curl` or a fetch tool. A 404 counts only from `gh`, or from a fetch to
+  `github.com`, `api.github.com` or `raw.githubusercontent.com`. A private repository answers 404, not 401, to a request
+  without credentials: that is what `094020` and `095003` hit. A 404 on any other site is usually a URL the agent guessed.
+- **Departure:** loopback hosts (`localhost`, `127.*`, `::1`, `*.localhost`) are excluded. A ui-reviewer's `curl` against its
+  own dev server answers 403 on purpose when it tests access control (`095220` curls `localhost:8131` throughout). That is
+  the app under test, not the environment.
+- With no host in sight, only `gh` is sure to have asked GitHub, so a bare `curl` status without a URL is not counted.
+- gh's forms are line-anchored (`HTTP 404: …`, `(HTTP 404)`, `GraphQL: Could not resolve to a …`), so an issue body that
+  merely quotes one mid-sentence does not match.
+- **Departure:** git's `Authentication failed` and `Permission denied (publickey)` join `could not read Username`. git's
+  `Repository not found` is left out: it is also git's answer to a typo.
+
+**The report.**
+- A non-empty `failed` (an array, or a number above 0) is `test_gate_red`. This includes a tester's `fault_in: "test"` entries
+  it says it fixed: the brief counts the report's own words, and a fixed test should not be listed as failed.
+- `blocked_by` (strings or `{what, where}`) is `reported_blocker`, and so is a bare `"status": "blocked"` without one.
+
+**Statuses.**
+- `success_with_issues` replaces `success` only. `needs_input`, `failed`, `cancelled` and the rest keep their value and their
+  exit code, issues listed all the same.
+- `FallbackRetry.Qualifies` requires `failed`, so a `success_with_issues` job is never retried. A failed job keeps #126's
+  before-any-work rule unchanged.
+- `DoctorProbe` says `OK, with N environment issue(s)`.

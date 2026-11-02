@@ -7,6 +7,7 @@ using Claustrum.Core.Model;
 using Claustrum.Core.Platform;
 using Claustrum.Core.Process;
 using Claustrum.Core.Report;
+using Claustrum.Core.Tracing;
 
 namespace Claustrum.Core.Backends.Claude;
 
@@ -37,6 +38,8 @@ public sealed class ClaudeBackend(IPlatform platform) : IBackend, IPostRunHook
     public string Name => "claude";
 
     public ILiveProtocol? LiveProtocol => ClaudeLiveProtocol.Instance;
+
+    public RunTrace? Trace(string stdout) => ClaudeTrace.Read(stdout);
 
     public Task<Doctor> DetectAsync(BackendConfig? config, CancellationToken cancellationToken) =>
         VersionProbe.RunAsync(Name, ["--version"], config, platform, cancellationToken, detectTimeout);

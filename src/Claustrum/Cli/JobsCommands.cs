@@ -92,7 +92,7 @@ public static class JobsCommands
             string status = rootElement.TryGetProperty("status", out JsonElement s) ? s.GetString() ?? "?" : "?";
             string role = rootElement.TryGetProperty("role", out JsonElement r) ? r.GetString() ?? "?" : "?";
             string backend = rootElement.TryGetProperty("backend", out JsonElement b) ? b.GetString() ?? "?" : "?";
-            return $"{status,-16} {role}/{backend}";
+            return $"{status,-19} {role}/{backend}";
         }
         catch (JsonException)
         {
@@ -108,14 +108,17 @@ public static class JobsCommands
 
         if (File.Exists(resultPath))
         {
-            PrintIndentedJson(File.ReadAllText(resultPath));
+            using JsonDocument receipt = JsonDocument.Parse(File.ReadAllText(resultPath));
+            PrintIndentedJson(receipt.RootElement);
+            EnvironmentWarning.PrintReceipt(receipt.RootElement);
             return ExitCodes.Ok;
         }
 
         if (File.Exists(requestPath))
         {
             Console.WriteLine("(no result yet)");
-            PrintIndentedJson(File.ReadAllText(requestPath));
+            using JsonDocument request = JsonDocument.Parse(File.ReadAllText(requestPath));
+            PrintIndentedJson(request.RootElement);
             return ExitCodes.Ok;
         }
 
@@ -303,12 +306,11 @@ public static class JobsCommands
 
     // Plain JsonDocument.WriteTo, not JsonSerializer: this only re-formats bytes already on disk,
     // so it needs no JsonTypeInfo and stays AOT-safe without touching ClaustrumJsonContext.
-    private static void PrintIndentedJson(string json)
+    private static void PrintIndentedJson(JsonElement document)
     {
-        using JsonDocument document = JsonDocument.Parse(json);
         using MemoryStream buffer = new();
         using (Utf8JsonWriter writer = new(buffer, new JsonWriterOptions { Indented = true }))
-            document.RootElement.WriteTo(writer);
+            document.WriteTo(writer);
 
         Console.WriteLine(Encoding.UTF8.GetString(buffer.ToArray()));
     }
