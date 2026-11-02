@@ -1,6 +1,7 @@
 using Claustrum.Core.Config;
 using Claustrum.Core.Git;
 using Claustrum.Core.Jobs;
+using Claustrum.Core.Model;
 
 namespace Claustrum.Core;
 
@@ -32,4 +33,9 @@ public sealed record RunOptions(
     bool Live = false,
     int ReplyTimeoutSeconds = 0,
     // #126: the job this run retries on its cast's fallback; stamped on every receipt it leaves, a refusal's included.
-    string? FallbackOf = null);
+    string? FallbackOf = null,
+    // #144: the extra read-only directories the run may read (configured read_dirs plus the git common dir), already absolute and existing.
+    string[]? ReadDirs = null,
+    // #145: what the caller found before the job started (a read dir that is missing or a backend that cannot honour read_dirs,
+    // a worktree hook that failed): Runner puts them first in the receipt's environment_issues.
+    EnvironmentIssue[]? PreRunIssues = null);

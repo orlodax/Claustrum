@@ -46,4 +46,6 @@ public sealed record RunResult(
     bool? BeforeAnyWork = null,
     // A cast's fallback (#126): the job this one is the retry of, and the retry that stands in for this one (its receipt is the one to read).
     string? FallbackOf = null,
-    string? RetriedAs = null);
+    string? RetriedAs = null,
+    // #145: what in the environment got in the job's way. Non-empty turns `success` into `success_with_issues`.
+    EnvironmentIssue[]? EnvironmentIssues = null);
