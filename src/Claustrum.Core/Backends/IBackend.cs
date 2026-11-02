@@ -37,4 +37,10 @@ public interface IBackend
     /// the backend that asked (#124 stage 3b). False for one that keeps no session between runs.
     /// </summary>
     bool CanResume => true;
+
+    /// <summary>
+    /// Whether <see cref="Build"/> applies <c>ResolvedRun.ReadDirs</c> (#144). False by default, so a new backend must opt in: until it
+    /// does, a run with configured read dirs is told at dispatch that this backend cannot reach them.
+    /// </summary>
+    bool HonoursReadDirs => false;
 }

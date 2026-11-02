@@ -152,7 +152,7 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
         try
         {
             before = await WorktreeSnapshot.CaptureAsync(request.Cwd, cancellationToken);
-            run = new(role, brief, request.Cwd, request.BudgetUsd, request.ResumeSession, request.AttachFiles, request.Stream, job.SystemMd, job.Directory, request.Env, Live: liveProtocol is not null);
+            run = new(role, brief, request.Cwd, request.BudgetUsd, request.ResumeSession, request.AttachFiles, request.Stream, job.SystemMd, job.Directory, request.Env, Live: liveProtocol is not null, ReadDirs: options.ReadDirs);
             spec = backend.Build(run);
 
             // The servers the run was given, beside the backend and model (#128).
