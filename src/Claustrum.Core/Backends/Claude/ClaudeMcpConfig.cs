@@ -33,11 +33,7 @@ internal static class ClaudeMcpConfig
                 return Refused(readRefusal ?? "it could not be read");
 
             using JsonDocument document = JsonDocument.Parse(text, lenient);
-            string[] servers = document.RootElement.ValueKind == JsonValueKind.Object
-                && document.RootElement.TryGetProperty("mcpServers", out JsonElement section)
-                && section.ValueKind == JsonValueKind.Object
-                    ? [.. section.EnumerateObject().Select(server => server.Name)]
-                    : [];
+            string[] servers = ServerNames(document);
 
             string copy = Path.Combine(jobDirectory, CopyName);
             File.WriteAllText(copy, text);
@@ -48,6 +44,39 @@ internal static class ClaudeMcpConfig
             return Refused(e is JsonException ? $"it could not be parsed ({e.Message})" : e.Message);
         }
     }
+
+    /// <summary>
+    /// The server names the working directory's own <c>.mcp.json</c> defines, whether or not the run was given it (with user_mcp claude
+    /// reads the file itself): empty with no file, null when one is there but cannot be read or parsed. A repo-defined name is never
+    /// approved unasked (#140 confirm pass): a repo could otherwise define a server under a name the role or the user approves.
+    /// </summary>
+    public static string[]? DeclaredNames(IPlatform platform, string cwd)
+    {
+        string source = Path.Combine(cwd, FileName);
+        FileInfo file = new(source);
+        if (!file.Exists && file.LinkTarget is null)
+            return [];
+
+        try
+        {
+            if (platform.ReadRegularFileText(source, out _) is not { } text)
+                return null;
+
+            using JsonDocument document = JsonDocument.Parse(text, lenient);
+            return ServerNames(document);
+        }
+        catch (Exception e) when (e is JsonException or IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
+    }
+
+    private static string[] ServerNames(JsonDocument document) =>
+        document.RootElement.ValueKind == JsonValueKind.Object
+        && document.RootElement.TryGetProperty("mcpServers", out JsonElement section)
+        && section.ValueKind == JsonValueKind.Object
+            ? [.. section.EnumerateObject().Select(server => server.Name)]
+            : [];
 
     private static McpSelection Refused(string reason) =>
         new(null, [], $"{FileName} not given to claude: {reason}; the run has no MCP servers");

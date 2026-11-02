@@ -30,13 +30,14 @@ environment got in its way. Read the first item below. The role library's text c
 - **A claude `shell` job can now write and delete through Bash (#140).** The `shell` level (the ui-reviewer's) no longer runs
   claude in plan mode. Plan mode told the model to change nothing, so a walk that writes app data was refused, and it also
   stopped a command that writes. It runs in `dontAsk` mode now: `Read`, `Glob`, `Grep` and every `Bash` command run, and the
-  edit tools stay off. A command can write and delete files, as on opencode's `shell`. The deny list is the guard: the
-  ui-reviewer's now also refuses `git checkout`, `switch`, `reset`, `restore`, `stash`, `commit`, `clean`, `rebase` and
-  `merge`. `shell` is not a sandbox.
+  edit tools stay off. A command can write and delete files, as on opencode's `shell`. `shell` is not a sandbox: a deny
+  entry guards how a command is written, it is not a security boundary. The ui-reviewer's deny list now also has
+  `git checkout`, `switch`, `reset`, `restore`, `stash`, `commit`, `clean`, `rebase` and `merge`.
 - **A ui-reviewer on claude can use its browser, if you name it (#140).** An MCP server's tools run only when its server is
   named: in the role library's `tools`, or in your user config, e.g.
   `"roles": { "ui-reviewer": { "mcp_servers": ["chrome"] } }`. Without it the role's browser calls are denied. A repo's
-  `.mcp.json` servers stay attached and are denied too, and a repo's `claustrum.json` cannot set `mcp_servers`.
+  `.mcp.json` servers stay attached and are denied too, a name the repo's `.mcp.json` defines is never approved even when
+  you name it (the receipt says so), and a repo's `claustrum.json` cannot set `mcp_servers`.
 - **opencode's `readonly` gets a narrow read-only git shell (#143).** A code-reviewer on `opencode` or `acp-opencode` can run
   `git diff`, `git log`, `git show`, `git status`, `git rev-parse`, `gh pr view`/`diff`/`list`/`checks` and
   `gh issue view`/`list`, as words. Everything else is denied. Those commands are refused too when they hold a quote, `$`,

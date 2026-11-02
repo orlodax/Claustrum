@@ -7272,7 +7272,7 @@ servers):
 - **`mcp__*` approved nothing**, as the docs say;
 - Bash ran, `echo hi > out.txt` and a `python3 -c open(...)` included: the level's line is the edit tools, as on opencode's
   `shell`. **By design** (the owner's own #140 proposal): `shell` runs commands and the approved MCP tools, with no edit tools.
-  It is not a sandbox, and the deny list is the guard. The ui-reviewer's grew from `git push` to the verbs that move or
+  It is not a sandbox: a deny entry guards how a command is written, it is not a security boundary. The ui-reviewer's grew from `git push` to the verbs that move or
   rewrite a checkout too (`checkout`, `switch`, `reset`, `restore`, `stash`, `commit`, `clean`, `rebase`, `merge`);
 - Write was "No such tool available", and `git push` was denied.
 
@@ -7284,7 +7284,10 @@ servers):
 
 A repo's `.mcp.json` servers are **not** approved (architect's ruling after the review, 2026-11-02). The repo controls that
 file, so approving its servers would let a cloned repo grant a role tools, against #127's rule. They stay attached and are
-denied under dontAsk.
+denied under dontAsk. **Confirm pass:** approval goes by name, so a repo defining its own server as `chrome` would have had it
+approved through the user's `mcp_servers`. A name the repo's `.mcp.json` defines is now dropped from the approved set, with a
+receipt warning. The names come from the copy the run was given, or with `user_mcp` (claude reads the file itself) from
+`ClaudeMcpConfig.DeclaredNames`. A `.mcp.json` that is there but cannot be read for its names approves nothing.
 
 Each name is spelled `[A-Za-z0-9_-]` with everything else turned into `_`, in the `__*` form. With `user_mcp` every other
 user-level server stays attached and denied. Measured on this machine, a headless user_mcp run sees plugin servers, the
