@@ -169,13 +169,22 @@ public sealed class RoleDenyArgvTests : IDisposable
         Assert.Contains("Bash(git push),Bash(git push *),Bash(git push*),Bash(git push* *)", spec.Args);
     }
 
+    // #140: the ui-reviewer runs (a dev server, a browser, writes to the app's own data) but never edits the repo: dontAsk, not plan, which
+    // refused every walk that wrote data. Its browser servers come from the role library's `tools` (`mcp__Claude_Browser`,
+    // `mcp__claude-in-chrome`), approved by name; its git deny list grew from `git push` to every verb that moves the checkout under review.
     [Fact]
-    public void TheUiReviewerKeepsPlanModeAndGetsTheWordFormAtTheShellRung()
+    public void TheUiReviewerRunsInDontAskModeWithItsBrowserServersApprovedAndTheGitMovesDeniedAsWords()
     {
         ProcessSpec spec = new ClaudeBackend(new FakePlatform()).Build(RunOn(Resolve("ui-reviewer"), "claude"));
 
-        Assert.Equal("plan", spec.Args[Array.IndexOf(spec.Args, "--permission-mode") + 1]);
+        Assert.Equal("dontAsk", spec.Args[Array.IndexOf(spec.Args, "--permission-mode") + 1]);
+        Assert.DoesNotContain("plan", spec.Args);
+        Assert.Equal("Read,Glob,Grep,Bash(*),mcp__Claude_Browser__*,mcp__claude-in-chrome__*", spec.Args[Array.IndexOf(spec.Args, "--allowedTools") + 1]);
         Assert.Contains("Edit,Write,NotebookEdit", spec.Args);
-        Assert.Contains("Bash(git push),Bash(git push *)", spec.Args);
+        Assert.Contains(
+            "Bash(git push),Bash(git push *),Bash(git checkout),Bash(git checkout *),Bash(git switch),Bash(git switch *),Bash(git reset),Bash(git reset *),"
+            + "Bash(git restore),Bash(git restore *),Bash(git stash),Bash(git stash *),Bash(git commit),Bash(git commit *),Bash(git clean),Bash(git clean *),"
+            + "Bash(git rebase),Bash(git rebase *),Bash(git merge),Bash(git merge *)",
+            spec.Args);
     }
 }

@@ -6,7 +6,7 @@ effort: xhigh
 color: purple
 tools: Read, Grep, Glob, Bash, PowerShell, Edit, Write, NotebookEdit, WebFetch, WebSearch, Agent
 ---
-<!-- claustrum:generated role=architect harness=claude library=1.1.0 sha256=d176673803e04fd0aee83fc2eb03eee710bdb82058b591b93121cd7152248114 -->
+<!-- claustrum:generated role=architect harness=claude library=1.1.0 sha256=006805d803abb19fc0234ac44c53ddc750ba8b852f34429b0791462ac4abf467 -->
 
 architect at xhigh reasoning effort — identical role and rules as the base `architect` agent, run
 at effort `xhigh`. Use it for a subtle, cross-cutting, or high-risk case where the default depth isn't enough. The base role's full instructions follow: they are your
@@ -38,7 +38,8 @@ needed no code at all. Your final message must END with exactly one fenced block
   "closes": [0],
   "findings_open": ["review findings you triaged as real but did not get fixed"],
   "open_decisions": ["..."],
-  "shaky": ["..."]
+  "shaky": ["..."],
+  "blocked_by": [{"what": "...", "where": "..."}]
 }
 ```
 ````
@@ -48,6 +49,7 @@ the only thing they see. Name **every** delegation you made, with the job id eac
 with; say in `summary` which review findings you dismissed and why, because a finding you decided
 was wrong and a finding you never read are indistinguishable once the run is over; and never claim
 the change is green without the tester's own report saying so.
+`blocked_by`: anything in the environment that stopped you (a refused path, a missing tool, a failed login, a red gate you could not fix): what and where.
 
 A decision that is the human's is not yours to guess (a child's question is yours to answer first):
 on a live run, ask by ending a turn without this block; when you cannot ask (the run says "No human is

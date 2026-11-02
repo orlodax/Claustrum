@@ -70,11 +70,7 @@ public sealed class OpencodeBackendBuildTests
 
     public static IEnumerable<object[]> PermissionCases()
     {
-        yield return new object[]
-        {
-            PermissionLevel.ReadOnly, Array.Empty<string>(),
-            /*lang=json,strict*/ """{"edit":"deny","bash":"deny","execute":"deny","external_directory":"deny","question":"deny","read":{"*.env":"deny","*.env.*":"deny","*.env.example":"allow"}}""",
-        };
+        // ReadOnly is not here: its `bash` is an ordered object whose guards carry JSON-escaped quotes, pinned decoded by the readonly tests below.
         yield return new object[]
         {
             PermissionLevel.Shell, new[] { "git push" },
@@ -113,6 +109,65 @@ public sealed class OpencodeBackendBuildTests
 
         Assert.Equal(expectedJson, agentPermission.GetRawText());
         Assert.Equal(expectedJson, topPermission.GetRawText());
+    }
+
+    // #143: a readonly role runs git's and gh's read verbs, as claude does, and nothing else. opencode takes the LAST matching rule and matches
+    // each command on its raw text, so the order is the whole design: deny everything, the 17 allows, then the guards that refuse a text
+    // that could differ from what bash runs (quotes, `$`, backticks, `\`, braces, redirects, the three git options that run or read elsewhere),
+    // then the role's own denies, each as the exact command and its word form. The text is spelled out here, not read from the code.
+    private static readonly string[] readOnlyAllows =
+    [
+        "git diff", "git diff *", "git log", "git log *", "git show", "git show *", "git status", "git status *", "git rev-parse *",
+        "gh pr view *", "gh pr diff *", "gh pr list", "gh pr list *", "gh pr checks *", "gh issue view *", "gh issue list", "gh issue list *",
+    ];
+
+    private static readonly string[] readOnlyGuards = ["*\"*", "*'*", "*`*", "*$*", "*\\*", "*{*", "*>*", "*<*", "*--output*", "*--no-index*", "*--ext-diff*"];
+
+    private static (string Pattern, string Action)[] ReadOnlyBash(params string[] denies) =>
+    [
+        ("*", "deny"),
+        .. readOnlyAllows.Select(command => (command, "allow")),
+        .. readOnlyGuards.Select(guard => (guard, "deny")),
+        .. denies.SelectMany(deny => new[] { (deny, "deny"), ($"{deny} *", "deny") }),
+    ];
+
+    // The role's deny list, `;`-separated for the theory.
+    [Theory]
+    [InlineData("")]
+    [InlineData("gh pr merge")]
+    [InlineData("gh pr merge;git push")]
+    public void ReadOnlyBashDeniesAllThenAllowsTheReadVerbsThenTheGuardsThenTheRolesDeniesInThatOrder(string denies)
+    {
+        string[] deny = denies.Length == 0 ? [] : denies.Split(';');
+        ProcessSpec spec = backend.Build(MakeRun(new PermissionPolicy(PermissionLevel.ReadOnly, deny)));
+
+        using JsonDocument config = JsonDocument.Parse(spec.Env["OPENCODE_CONFIG_CONTENT"]);
+        JsonElement agent = config.RootElement.GetProperty("agent").GetProperty("claustrum-builder").GetProperty("permission");
+        JsonElement top = config.RootElement.GetProperty("permission");
+
+        Assert.Equal(top.GetRawText(), agent.GetRawText());
+        (string, string)[] bash = [.. top.GetProperty("bash").EnumerateObject().Select(rule => (rule.Name, rule.Value.GetString()!))];
+        Assert.Equal(ReadOnlyBash(deny), bash);
+        Assert.Equal("deny", top.GetProperty("edit").GetString());
+        Assert.Equal("deny", top.GetProperty("execute").GetString());
+        Assert.Equal("deny", top.GetProperty("external_directory").GetString());
+        Assert.Equal("deny", top.GetProperty("question").GetString());
+        Assert.Equal("allow", top.GetProperty("read").GetProperty("*.env.example").GetString());
+        Assert.Equal(["edit", "bash", "execute", "external_directory", "question", "read"], [.. top.EnumerateObject().Select(property => property.Name)]);
+    }
+
+    // Read the other way: the guards come after every allow, so that no allowed pattern can win over a guard for the same text.
+    [Fact]
+    public void EveryReadOnlyGuardComesAfterEveryAllowSoTheLastMatchRefusesTheText()
+    {
+        ProcessSpec spec = backend.Build(MakeRun(new PermissionPolicy(PermissionLevel.ReadOnly, [])));
+
+        using JsonDocument config = JsonDocument.Parse(spec.Env["OPENCODE_CONFIG_CONTENT"]);
+        string[] names = [.. config.RootElement.GetProperty("permission").GetProperty("bash").EnumerateObject().Select(rule => rule.Name)];
+
+        Assert.Equal(17, readOnlyAllows.Length);
+        Assert.Equal(1 + 17 + 11, names.Length);
+        Assert.All(readOnlyGuards, guard => Assert.True(Array.IndexOf(names, guard) > Array.FindLastIndex(names, name => readOnlyAllows.Contains(name))));
     }
 
     // Every deny entry is written twice — the exact key and the " *" word form — and both come after

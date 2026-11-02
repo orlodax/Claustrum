@@ -112,7 +112,9 @@ public sealed class ClaudeBackendMcpTests : IDisposable
         Assert.Equal(
         [
             "--permission-mode", "plan", "--permission-prompts", "none",
-            "--allowedTools", "Read,Glob,Grep,Bash(git diff*),Bash(git log*),Bash(git show*),Bash(git status*),Bash(gh pr *),Bash(gh issue *)",
+            "--allowedTools",
+            "Read,Glob,Grep,Bash(git diff),Bash(git diff *),Bash(git log),Bash(git log *),Bash(git show),Bash(git show *),Bash(git status),Bash(git status *),Bash(git rev-parse *),"
+            + "Bash(gh pr view *),Bash(gh pr diff *),Bash(gh pr list),Bash(gh pr list *),Bash(gh pr checks *),Bash(gh issue view *),Bash(gh issue list),Bash(gh issue list *)",
             "--effort", "high",
         ], spec.Args[mode..]);
     }
