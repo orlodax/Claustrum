@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Claustrum.Cli;
+using Claustrum.Core.Backends;
 using Claustrum.Tests.Testing;
 
 namespace Claustrum.Tests.Cli;
@@ -54,7 +55,8 @@ public sealed class EnvironmentIssuesEndToEndTests : IDisposable
 
         // Both on stderr: the dispatch warning as the run begins and the one environment line at the end; stdout stays the one document.
         Assert.Contains($"read_dirs: {gone} does not exist; the job runs without it", process.Stderr, StringComparison.Ordinal);
-        Assert.Contains($"warning: environment issues (1): missing_directory ×1 at {gone}. Stop and tell the user before using this result.", process.Stderr, StringComparison.Ordinal);
+        // The line cuts a where to 80 characters, and macOS/Windows temp paths are longer than that (CI, 2026-11-02).
+        Assert.Contains($"warning: environment issues (1): missing_directory ×1 at {StreamText.Sanitize(gone, 80)}. Stop and tell the user before using this result.", process.Stderr, StringComparison.Ordinal);
         Assert.Equal(Str(result, "job_id"), Str(repo.ReadResult(Str(result, "job_id")), "job_id"));
         Assert.Equal("success_with_issues", Str(repo.ReadResult(Str(result, "job_id")), "status"));
     }

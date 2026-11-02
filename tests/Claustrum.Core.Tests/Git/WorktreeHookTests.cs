@@ -36,7 +36,7 @@ public sealed class WorktreeHookTests : IDisposable
     [Fact]
     public async Task EveryArgumentGetsTheWorktreePathAndTheHookRunsInsideTheWorktreeAsync()
     {
-        (string[] warnings, EnvironmentIssue[] issues) = await Run(Sh("printf '%s|%s' \"$1\" \"$2\" > hook.out", "echo {worktree}|x-{worktree}-y> hook.out", "{worktree}", "x-{worktree}-y"));
+        (string[] warnings, EnvironmentIssue[] issues) = await Run(Sh("printf '%s|%s' \"$1\" \"$2\" > hook.out", "echo {worktree}+x-{worktree}-y> hook.out", "{worktree}", "x-{worktree}-y"));
 
         Assert.Empty(warnings);
         Assert.Empty(issues);
