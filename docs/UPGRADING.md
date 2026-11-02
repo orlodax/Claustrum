@@ -1,6 +1,6 @@
 # Upgrading Claustrum
 
-## 0.4.x → Unreleased
+## 0.4.x → 0.5.0
 
 A script that checks `status == "success"`, or exit code 0, now also sees `success_with_issues` and exit 8 for a job whose
 environment got in its way. Read the first item below. The role library's text changed: synced repos show drift under
