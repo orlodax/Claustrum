@@ -145,26 +145,37 @@ public static partial class EnvironmentClassifier
 
     private static IEnumerable<Hit> FromShell(TracedCall call, string? error, string cwd, string[] readDirs)
     {
-        ShellSegment[] segments = ShellCommand.Segments(call.Command);
+        ShellParse parsed = ShellCommand.Parse(call.Command);
         string?[] said = [error, call.Output];
         string text = string.Join('\n', said.OfType<string>());
-        if (ShellCommand.OnlyViews(segments) || text.Length == 0)
+
+        // A viewer's output is never read, but a gh viewer that failed is read for gh's own error lines: that is how a private
+        // repository's 404 comes back. A line that could not be read with certainty is skipped: a missed issue beats a false stop.
+        bool failed = call.Failed || call.ExitCode is not (null or 0);
+        bool gh = parsed.Segments.Any(segment => segment.Program == "gh" && (!segment.Views || failed));
+        if (!parsed.Confident || text.Length == 0 || (parsed.OnlyViews && !gh))
             return [];
 
-        bool gh = segments.Any(segment => segment is { Program: "gh", Views: false });
-        bool network = gh || segments.Any(segment => segment is { Program: "git" or "curl", Views: false });
+        ShellLines lines = parsed.OnlyViews
+            ? new ShellLines(gh, Git: false, Curl: false, Content: false)
+            : new ShellLines(gh, parsed.Segments.Any(segment => segment is { Program: "git", Network: true }), parsed.Segments.Any(segment => segment.Program == "curl"), Content: true);
         Uri? named = TracePath.Urls(call.Command ?? "").FirstOrDefault(url => !TracePath.IsLoopback(url));
 
         // One hit per call and per thing it says, however many lines repeat it: a count is of calls, not of log lines.
         return text.Split('\n')
-            .SelectMany(line => FromShellLine(line, call, gh, network, named, cwd, readDirs))
+            .SelectMany(line => FromShellLine(line, call, lines, named, cwd, readDirs))
             .DistinctBy(hit => (hit.Kind, hit.What, hit.Where));
     }
 
-    private static IEnumerable<Hit> FromShellLine(string line, TracedCall call, bool gh, bool network, Uri? named, string cwd, string[] readDirs)
+    // Every pattern is the emitting program's own error line, at its start: an `HTTP 404:` quoted mid-line in an issue body is content.
+    private static IEnumerable<Hit> FromShellLine(string line, TracedCall call, ShellLines lines, Uri? named, string cwd, string[] readDirs)
     {
-        if (network && AuthWhat(line, gh, named) is { } what)
-            yield return new Hit(EnvironmentIssueKind.Auth, what, TracePath.Urls(line).FirstOrDefault()?.OriginalString ?? Short(call.Command), call.Line);
+        string? what = (lines.Gh ? GhAuthWhat(line) : null) ?? (lines.Git ? GitAuthWhat(line) : null) ?? (lines.Curl ? CurlAuthWhat(line, named) : null);
+        if (what is not null)
+            yield return new Hit(EnvironmentIssueKind.Auth, what, TracePath.Urls(line).FirstOrDefault()?.OriginalString ?? (lines.Curl ? named?.OriginalString : null) ?? Short(call.Command), call.Line);
+
+        if (!lines.Content)
+            yield break;
 
         if (ErrnoPattern().Match(line) is { Success: true } errno)
             yield return new Hit(EnvironmentIssueKind.ContainerPermission, "PermissionError: [Errno 13]", errno.Groups["path"] is { Success: true } path ? path.Value : Short(call.Command), call.Line);
@@ -181,26 +192,43 @@ public static partial class EnvironmentClassifier
         }
     }
 
-    // A credential marker, else a 401 or 403 from any host but the app under test (loopback), else a 404 from gh only: gh talks to GitHub,
-    // where a private repository answers 404 to a request without credentials. With no host in sight, only gh surely asked GitHub.
-    private static string? AuthWhat(string line, bool gh, Uri? named)
+    // gh talks to GitHub only, where a private repository answers 404 to a request without credentials.
+    private static string? GhAuthWhat(string line)
     {
-        if (CredentialPattern().Match(line) is { Success: true } credential)
-            return CredentialWhat(credential.Value);
-        if (gh && GhNotFoundPattern().IsMatch(line))
+        if (GhStatusPattern().Match(line) is { Success: true } status)
+            return status.Groups["code"].Value == "404" ? GitHubNotFound : $"HTTP {status.Groups["code"].Value}";
+        if (GhNotFoundPattern().IsMatch(line))
             return GitHubNotFound;
-        if (ShellStatusPattern().Match(line) is not { Success: true } status)
+        if (GhLoggedOutPattern().IsMatch(line))
+            return "gh is not logged in (gh auth login)";
+
+        return GhUnreachablePattern().IsMatch(line) ? "gh could not connect to GitHub" : null;
+    }
+
+    private static string? GitAuthWhat(string line)
+    {
+        if (GitCredentialPattern().Match(line) is { Success: true } credential)
+            return credential.Groups["failed"].Success ? "Authentication failed"
+                : credential.Groups["username"].Success ? "git could not read a username (no credentials)"
+                : "Permission denied (publickey)";
+
+        // A 401 or 403 from any host but the app under test (loopback).
+        return GitStatusPattern().Match(line) is { Success: true } status && Uri.TryCreate(status.Groups["url"].Value, UriKind.Absolute, out Uri? url) && !TracePath.IsLoopback(url)
+            ? $"HTTP {status.Groups["code"].Value}"
+            : null;
+    }
+
+    // curl's error line names no URL: the command's first one that is not loopback is the host. With none in sight it is not counted.
+    private static string? CurlAuthWhat(string line, Uri? named)
+    {
+        if (named is null || CurlStatusPattern().Match(line) is not { Success: true } status)
             return null;
 
         string code = status.Groups["code"].Value;
-        if (code == "404")
-            return gh ? GitHubNotFound : null;
+        if (code != "404")
+            return $"HTTP {code}";
 
-        Uri? host = TracePath.Urls(line).FirstOrDefault() ?? named;
-        if (host is null)
-            return gh ? $"HTTP {code}" : null;
-
-        return TracePath.IsLoopback(host) ? null : $"HTTP {code}";
+        return TracePath.IsGitHub(named) ? GitHubNotFound : null;
     }
 
     private static Hit? FromFetch(TracedCall call, string error)
@@ -221,16 +249,6 @@ public static partial class EnvironmentClassifier
         return url is not null && TracePath.IsGitHub(url) ? new Hit(EnvironmentIssueKind.Auth, GitHubNotFound, where, call.Line) : null;
     }
 
-    private static string CredentialWhat(string marker) => marker.ToLowerInvariant() switch
-    {
-        "gh auth login" => "gh is not logged in (gh auth login)",
-        "could not read username" => "git could not read a username (no credentials)",
-        "bad credentials" => "Bad credentials",
-        "requires authentication" => "Requires authentication",
-        "authentication failed" => "Authentication failed",
-        _ => "Permission denied (publickey)",
-    };
-
     // A path that does not exist counts only when it is the job's cwd or inside a read dir: anything else is the agent guessing a path.
     private static string? Unreachable(string path, string cwd, string[] readDirs)
     {
@@ -245,11 +263,16 @@ public static partial class EnvironmentClassifier
         if (report?.Data is not { ValueKind: JsonValueKind.Object } data)
             return hits;
 
-        // A red gate the role reports itself; test-runner output in the log is never parsed (it is a log of other programs).
+        // A red gate the role reports itself; test-runner output in the log is never parsed (it is a log of other programs). An entry whose
+        // `fault_in` is `test` is a test the tester found wrong and fixed: 6 of the 12 non-empty `failed` in the store (2026-11-02) had only those.
         if (data.TryGetProperty("failed", out JsonElement failed))
         {
             if (failed.ValueKind == JsonValueKind.Array)
-                hits.AddRange(failed.EnumerateArray().Select(test => new Hit(EnvironmentIssueKind.TestGateRed, "the report lists failed tests", Short(TestName(test)), 0)));
+            {
+                hits.AddRange(failed.EnumerateArray()
+                    .Where(test => test.ValueKind != JsonValueKind.Object || !string.Equals(TextOf(test, "fault_in"), "test", StringComparison.OrdinalIgnoreCase))
+                    .Select(test => new Hit(EnvironmentIssueKind.TestGateRed, "the report lists failed tests", Short(TestName(test)), 0)));
+            }
             else if (failed.ValueKind == JsonValueKind.Number && failed.TryGetDecimal(out decimal count) && count > 0)
                 hits.Add(new Hit(EnvironmentIssueKind.TestGateRed, "the report lists failed tests", null, 0, (int)Math.Min(count, int.MaxValue)));
         }
@@ -272,10 +295,14 @@ public static partial class EnvironmentClassifier
         {
             string? what = entry.ValueKind == JsonValueKind.Object ? TextOf(entry, "what") : entry.ValueKind == JsonValueKind.String ? entry.GetString() : null;
             string? where = entry.ValueKind == JsonValueKind.Object ? TextOf(entry, "where") : null;
-            if (Short(what) is { } said)
+            if (Short(what) is { } said && !SaysNone(said))
                 yield return new Hit(EnvironmentIssueKind.ReportedBlocker, said, Short(where), 0);
         }
     }
+
+    // `"blocked_by": ["None"]`: a role filling in the shape, not a blocker.
+    private static bool SaysNone(string said) =>
+        said.Trim().TrimEnd('.').ToLowerInvariant() is "" or "none" or "n/a" or "na" or "nothing" or "-" or "—";
 
     private static string? TestName(JsonElement test) => test.ValueKind switch
     {
@@ -307,25 +334,42 @@ public static partial class EnvironmentClassifier
     [GeneratedRegex("No such file or directory|does not exist|File not found|cannot find the path", RegexOptions.IgnoreCase)]
     private static partial Regex NotFoundPattern();
 
-    // gh `HTTP 404: Not Found (…)` and `gh: Not Found (HTTP 404)`, curl -i `HTTP/2 403`, git and curl -f `returned error: 403`.
-    [GeneratedRegex(@"^\s*HTTP(?:/[\d.]+)?\s+(?<code>40[134])\b|\(HTTP (?<code>40[134])\)|returned error:\s*(?<code>40[134])\b")]
-    private static partial Regex ShellStatusPattern();
+    // gh's own error lines: `HTTP 404: Not Found (https://api.github.com/…)`, `gh: Not Found (HTTP 404)`.
+    [GeneratedRegex(@"^\s*(?:HTTP (?<code>40[134]):|gh: .*\(HTTP (?<code>40[134])\)\s*$)")]
+    private static partial Regex GhStatusPattern();
 
     [GeneratedRegex(@"^\s*GraphQL: Could not resolve to an? ")]
     private static partial Regex GhNotFoundPattern();
+
+    [GeneratedRegex(@"^\s*(?:To get started with GitHub CLI, please run:\s+gh auth login|You are not logged into any GitHub hosts)")]
+    private static partial Regex GhLoggedOutPattern();
+
+    [GeneratedRegex(@"^\s*error connecting to \S")]
+    private static partial Regex GhUnreachablePattern();
+
+    [GeneratedRegex(@"^\s*(?:fatal: (?:(?<failed>Authentication failed)|(?<username>could not read Username))|\S+: Permission denied \(publickey\))")]
+    private static partial Regex GitCredentialPattern();
+
+    [GeneratedRegex(@"^\s*fatal: unable to access '(?<url>[^']*)': The requested URL returned error: (?<code>40[13])\b")]
+    private static partial Regex GitStatusPattern();
+
+    [GeneratedRegex(@"^\s*curl: \(22\) The requested URL returned error: (?<code>40[134])\b")]
+    private static partial Regex CurlStatusPattern();
 
     // opencode's webfetch: `StatusCode: non 2xx status code (404 GET https://…)`.
     [GeneratedRegex(@"status code\s*\(?\s*(?<code>40[134])\b|\bHTTP(?:/[\d.]+)?\s+(?<code>40[134])\b|\b(?<code>40[134])\s+(?:Unauthorized|Forbidden|Not Found)\b", RegexOptions.IgnoreCase)]
     private static partial Regex FetchStatusPattern();
 
-    [GeneratedRegex(@"gh auth login|Bad credentials|Requires authentication|could not read Username|Authentication failed|Permission denied \(publickey\)", RegexOptions.IgnoreCase)]
-    private static partial Regex CredentialPattern();
-
-    [GeneratedRegex(@"PermissionError: \[Errno 13\][^\n']*(?:'(?<path>[^']+)')?")]
+    // A Python traceback's last line, at the start of its line: a grep hit (`config.py:777:    # PermissionError: …`) is content.
+    [GeneratedRegex(@"^\s*PermissionError: \[Errno 13\][^\n']*(?:'(?<path>[^']+)')?")]
     private static partial Regex ErrnoPattern();
 
-    [GeneratedRegex("permission denied while trying to connect to the Docker daemon", RegexOptions.IgnoreCase)]
+    [GeneratedRegex(@"^\s*(?:docker: )?(?:Got )?permission denied while trying to connect to the Docker daemon", RegexOptions.IgnoreCase)]
     private static partial Regex DockerPattern();
+
+    // Which programs' own error lines a shell call's text is read for; Content is the container and missing-path patterns, which only a
+    // command that is not a viewer gets.
+    private sealed record ShellLines(bool Gh, bool Git, bool Curl, bool Content);
 
     // Line 0 marks what the report said: its `first` is `report`.
     private sealed record Hit(EnvironmentIssueKind Kind, string What, string? Where, int Line, int Count = 1)

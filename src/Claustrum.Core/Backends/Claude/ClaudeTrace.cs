@@ -5,7 +5,8 @@ namespace Claustrum.Core.Backends.Claude;
 
 // #145: a claude stream-json run's tool use, for EnvironmentClassifier. The first `system/init` says the permission mode the session started
 // in; `tool_use` items come in assistant messages and their `tool_result`s in user ones (replayed lines are another run's, skipped as in
-// Parse); each `result` lists the turn's `permission_denials`, once per call. Shapes: job 20261029-095220-0da9d76d (init line 3, plan mode).
+// Parse). A refusal is said twice: a `system/permission_denied` line when it happens, and the turn's `result` `permission_denials`; both are
+// read, once per call, so a run killed before its last `result` keeps them. Shapes: job 20261029-095220-0da9d76d (lines 3, 28, 112).
 internal static class ClaudeTrace
 {
     public static RunTrace Read(string stdout)
@@ -13,7 +14,7 @@ internal static class ClaudeTrace
         Dictionary<string, (string Name, JsonElement Input, int Line)> uses = [];
         Dictionary<string, (bool Failed, string Text, int Line)> results = [];
         List<string> order = [];
-        List<TracedDenial> denials = [];
+        List<(string Tool, string? Id, JsonElement Input, int Line)> denials = [];
         HashSet<string> denied = [];
         string? mode = null;
         int modeLine = 0;
@@ -31,6 +32,9 @@ internal static class ClaudeTrace
                 case "system" when !sawInit && ClaudeBackend.TryGetString(root, "subtype") == "init":
                     sawInit = true;
                     (mode, modeLine) = (ClaudeBackend.TryGetString(root, "permissionMode"), number);
+                    break;
+                case "system" when ClaudeBackend.TryGetString(root, "subtype") == "permission_denied":
+                    Deny(root, number, denials, denied);
                     break;
                 case "assistant":
                     foreach (JsonElement item in Items(root, "tool_use"))
@@ -53,7 +57,10 @@ internal static class ClaudeTrace
                     break;
                 case "result":
                     if (root.TryGetProperty("permission_denials", out JsonElement list) && list.ValueKind == JsonValueKind.Array)
-                        denials.AddRange(DenialsOf(list, uses, results, denied, number));
+                    {
+                        foreach (JsonElement denial in list.EnumerateArray().Where(denial => denial.ValueKind == JsonValueKind.Object))
+                            Deny(denial, number, denials, denied);
+                    }
 
                     break;
                 default:
@@ -62,32 +69,31 @@ internal static class ClaudeTrace
         }
 
         TracedCall[] calls = [.. order.Select(id => Call(uses[id], results.TryGetValue(id, out (bool, string, int) result) ? result : null))];
-        return new RunTrace(calls, [.. denials], mode, modeLine);
+        return new RunTrace(calls, [.. denials.Select(denial => Resolved(denial, uses, results))], mode, modeLine);
     }
 
-    private static IEnumerable<TracedDenial> DenialsOf(
-        JsonElement list,
-        Dictionary<string, (string Name, JsonElement Input, int Line)> uses,
-        Dictionary<string, (bool Failed, string Text, int Line)> results,
-        HashSet<string> denied,
-        int resultLine)
+    // A call is listed once, whichever line said it first: the system line, or a live session's result for each turn.
+    private static void Deny(JsonElement source, int line, List<(string Tool, string? Id, JsonElement Input, int Line)> denials, HashSet<string> denied)
     {
-        foreach (JsonElement denial in list.EnumerateArray())
-        {
-            if (denial.ValueKind != JsonValueKind.Object || ClaudeBackend.TryGetString(denial, "tool_name") is not { } tool)
-                continue;
+        if (ClaudeBackend.TryGetString(source, "tool_name") is not { } tool)
+            return;
 
-            // A live session lists each turn's denials on its own result; a call is listed once, on the line its refusal came back.
-            string? id = ClaudeBackend.TryGetString(denial, "tool_use_id");
-            if (id is not null && !denied.Add(id))
-                continue;
+        string? id = ClaudeBackend.TryGetString(source, "tool_use_id");
+        if (id is null || denied.Add(id))
+            denials.Add((tool, id, Input(source, "tool_input"), line));
+    }
 
-            int line = id is not null && results.TryGetValue(id, out (bool, string, int Line) result) ? result.Line
-                : id is not null && uses.TryGetValue(id, out (string, JsonElement, int Line) use) ? use.Line
-                : resultLine;
-            JsonElement input = Input(denial, "tool_input");
-            yield return new TracedDenial(tool, StringOf(input, "command"), PathOf(input), StringOf(input, "url"), line);
-        }
+    // The line the refusal came back on (the refused call's tool_result) and what the call was given: the system line carries no input.
+    private static TracedDenial Resolved(
+        (string Tool, string? Id, JsonElement Input, int Line) denial,
+        Dictionary<string, (string Name, JsonElement Input, int Line)> uses,
+        Dictionary<string, (bool Failed, string Text, int Line)> results)
+    {
+        int line = denial.Id is not null && results.TryGetValue(denial.Id, out (bool, string, int Line) result) ? result.Line : denial.Line;
+        JsonElement input = denial.Input.ValueKind == JsonValueKind.Object ? denial.Input
+            : denial.Id is not null && uses.TryGetValue(denial.Id, out (string, JsonElement Input, int) use) ? use.Input
+            : default;
+        return new TracedDenial(denial.Tool, StringOf(input, "command"), PathOf(input), StringOf(input, "url"), line);
     }
 
     private static TracedCall Call((string Name, JsonElement Input, int Line) use, (bool Failed, string Text, int Line)? result)

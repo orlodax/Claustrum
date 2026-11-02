@@ -580,15 +580,15 @@ for what the caller found before the job started.
 
 | `kind` | Triggered by |
 |---|---|
-| `permission_denied` | the backend refused a tool call: claude's `permission_denials`, opencode's `Permission denied: <permission>`. Not counted: what the role's level withholds on purpose (an edit below `edit`, the shell at `edit`), a command the role's deny list names, opencode's `question` and `*.env` reads, claude's `Monitor` |
+| `permission_denied` | the backend refused a tool call (`what` names the tool): claude's `permission_denied` events and `permission_denials`, opencode's `Permission denied: <permission>`. Not counted: what the role's level withholds on purpose (an edit below `edit`, the shell at `edit`), a command the role's deny list names, opencode's `question` and `*.env` reads, claude's `Monitor` |
 | `external_directory` | opencode (`opencode`, `acp-opencode`) refused a path outside the job's directory; `where` is that path |
 | `missing_tool` | a tool the role needs was not there: opencode's `No tool named "<x>"`, claude's `No such tool available`. Not counted: a miscased name, a name no role is given (the model invented it), a tool the level withholds |
 | `plan_mode` | a claude session started in `plan` mode for a role at `shell` or above (a `readonly` role runs in plan mode by design) |
-| `auth` | a 401 or 403 from `gh`, `git`, `curl` or a fetch tool, from any host except the app under test (`localhost`, `127.*`, `::1`); a 404 only from `gh` or from a fetch to `github.com`, `api.github.com` or `raw.githubusercontent.com` (a private repository answers 404 to a request without credentials); `gh auth login`, `Bad credentials`, `Requires authentication`, git's `could not read Username`, `Authentication failed` and `Permission denied (publickey)` |
+| `auth` | the program's own error line, at its start: gh's `HTTP 401:`/`403:`/`404:`, `GraphQL: Could not resolve to a …`, its not-logged-in lines (`gh auth login`) and `error connecting to …`; git's `fatal: Authentication failed`, `fatal: could not read Username`, `… Permission denied (publickey)` and `unable to access …: returned error: 401/403`, read only after a `fetch`, `pull`, `push`, `clone` or `ls-remote`; curl's `curl: (22) … returned error: …`; a fetch tool's status. A 401 or 403 counts from any host except the app under test (`localhost`, `127.*`, `::1`); a 404 only from gh, or from a curl or fetch to `github.com`, `api.github.com` or `raw.githubusercontent.com` (a private repository answers 404 to a request without credentials) |
 | `missing_directory` | a tool says a path does not exist, and that path is the job's cwd or inside one of its read dirs (§7, `read_dirs`); a missing read dir found at dispatch arrives with `first: dispatch` |
-| `container_permission` | a command's output says `PermissionError: [Errno 13]` (SELinux on Fedora) or `permission denied while trying to connect to the Docker daemon` |
-| `test_gate_red` | the role's report has a non-empty `failed` (an array, or a number above 0); test-runner output in the log is never parsed |
-| `reported_blocker` | the report's `blocked_by` entries, or `"status": "blocked"` with no `blocked_by` |
+| `container_permission` | a line of a command's output starts with `PermissionError: [Errno 13]` (SELinux on Fedora) or docker's `permission denied while trying to connect to the Docker daemon` |
+| `test_gate_red` | the role's report lists a `failed` test whose `fault_in` is not `"test"` (a test the tester found wrong and fixed is not red), or gives `failed` as a number above 0; test-runner output in the log is never parsed |
+| `reported_blocker` | the report's `blocked_by` entries (an empty one, or one that says `none`, `n/a`, `nothing`, `-`, is skipped), or `"status": "blocked"` with no `blocked_by` |
 | `read_dirs_unsupported`, `worktree_hook_failed` | found at dispatch, before the job started (`first: dispatch`) |
 
 **Status and exit code.** A job that would have been `success` and has any issue is `success_with_issues`, and `run` exits
@@ -602,8 +602,10 @@ and a spawned architect's brief carry the same rule.
 
 **How it is read.** Only the backend's own record of each tool call counts: a tool call's error text, and the output of a
 shell command. A read's, search's or fetch's output is never read, because it is file or page content. A shell command
-whose every step only views files (`cat`, `grep`, `git log`, …) is skipped as well. That is why the log is not grepped: it
-also holds every file the agent read. The `claude`, `opencode` and `acp-opencode` backends are read this way. `cursor`,
+whose every step only views (`cat`, `grep`, `git log`, `gh issue view`, `gh pr diff`, `claustrum …`, `cd`, `true` and the
+like aside) is skipped as well; only a gh viewer that failed is read, for gh's own error lines. A command that cannot be read
+with certainty (an unclosed quote, a `case`) is skipped: a missed issue costs less than a false stop. That is why the log is
+not grepped: it also holds every file the agent read. The `claude`, `opencode` and `acp-opencode` backends are read this way. `cursor`,
 `copilot` and `api` are not classified yet: their receipts list only dispatch-time and report issues.
 
 ## 7. Configuration

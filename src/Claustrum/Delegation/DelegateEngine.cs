@@ -317,13 +317,13 @@ public static class DelegateEngine
         }
         catch (TimeoutException ex)
         {
-            return await Runner.RefuseAsync(job ?? JobDirectory.Create(AppServices.Platform), run.Role, RunStatus.Failed, ex.Message);
+            return await Runner.RefuseAsync(job ?? JobDirectory.Create(AppServices.Platform), run.Role, RunStatus.Failed, ex.Message, preRunIssues: run.Options.PreRunIssues);
         }
         catch (OperationCanceledException ex) when (cancellationToken.IsCancellationRequested)
         {
             // 2026-10-13, #94: a cancel in the queue is a receipt too — it used to reach RunCommand as a bare
             // exit 130 with no document under --json and no result.json. Minted for it exactly as above.
-            return await Runner.RefuseAsync(job ?? JobDirectory.Create(AppServices.Platform), run.Role, RunStatus.Cancelled, ex.Message);
+            return await Runner.RefuseAsync(job ?? JobDirectory.Create(AppServices.Platform), run.Role, RunStatus.Cancelled, ex.Message, preRunIssues: run.Options.PreRunIssues);
         }
 
         await using RoleConcurrencyGate gate = slot;
@@ -384,11 +384,11 @@ public static class DelegateEngine
             }
             catch (OperationCanceledException ex) when (cancellationToken.IsCancellationRequested || ex is WorktreeInterruptedException)
             {
-                return await Runner.RefuseAsync(job, role, RunStatus.Cancelled, ex.Message);
+                return await Runner.RefuseAsync(job, role, RunStatus.Cancelled, ex.Message, preRunIssues: bound.Options.PreRunIssues);
             }
 
             if (!exists)
-                return await Runner.RefuseAsync(job, role, RunStatus.Failed, JobWorktree.NoSuchBranch(request.Cwd, branch));
+                return await Runner.RefuseAsync(job, role, RunStatus.Failed, JobWorktree.NoSuchBranch(request.Cwd, branch), preRunIssues: bound.Options.PreRunIssues);
         }
 
         RoleConcurrencyGate? slot = null;
@@ -403,11 +403,11 @@ public static class DelegateEngine
                 // issue #20: every other pre-spawn refusal on this path is a RunResult document, and an
                 // architect parsing --json cannot read an exception on stderr. Nothing to undo — no
                 // worktree, no branch, and admission comes after the gate, so no reservation exists yet.
-                return await Runner.RefuseAsync(job, role, RunStatus.Failed, ex.Message);
+                return await Runner.RefuseAsync(job, role, RunStatus.Failed, ex.Message, preRunIssues: bound.Options.PreRunIssues);
             }
             catch (OperationCanceledException ex) when (cancellationToken.IsCancellationRequested)
             {
-                return await Runner.RefuseAsync(job, role, RunStatus.Cancelled, ex.Message);
+                return await Runner.RefuseAsync(job, role, RunStatus.Cancelled, ex.Message, preRunIssues: bound.Options.PreRunIssues);
             }
         }
 
@@ -426,12 +426,12 @@ public static class DelegateEngine
             }
             catch (TimeoutException ex)
             {
-                return await Runner.RefuseAsync(job, role, RunStatus.Failed, $"--branch {locked}: another run on this branch outlasted the wait — {ex.Message}");
+                return await Runner.RefuseAsync(job, role, RunStatus.Failed, $"--branch {locked}: another run on this branch outlasted the wait — {ex.Message}", preRunIssues: bound.Options.PreRunIssues);
             }
             catch (OperationCanceledException ex) when (cancellationToken.IsCancellationRequested)
             {
                 // The slot above is released on this return by its `await using`.
-                return await Runner.RefuseAsync(job, role, RunStatus.Cancelled, ex.Message);
+                return await Runner.RefuseAsync(job, role, RunStatus.Cancelled, ex.Message, preRunIssues: bound.Options.PreRunIssues);
             }
         }
 
@@ -502,7 +502,7 @@ public static class DelegateEngine
         {
             // A receipt, not a throw (F11), and after admission, so the reservation closes at $0
             // through Runner's funnel instead of waiting to be read as abandoned. No worktree is left.
-            return await Runner.RefuseAsync(job, role, RunStatus.Failed, ex.Message, admission?.Reservation);
+            return await Runner.RefuseAsync(job, role, RunStatus.Failed, ex.Message, admission?.Reservation, preRunIssues: bound.Options.PreRunIssues);
         }
         catch (OperationCanceledException ex) when (cancellationToken.IsCancellationRequested || ex is WorktreeInterruptedException)
         {
@@ -514,7 +514,7 @@ public static class DelegateEngine
             if (worktree is not null && await JobWorktree.TryRemoveAbandonedAsync(request.Cwd, worktree, CancellationToken.None) is { } cleanupFailure)
                 message = $"{message} (and cleaning up {worktree.Path} failed: {cleanupFailure.Message})";
 
-            return await Runner.RefuseAsync(job, role, RunStatus.Cancelled, message, admission?.Reservation);
+            return await Runner.RefuseAsync(job, role, RunStatus.Cancelled, message, admission?.Reservation, preRunIssues: bound.Options.PreRunIssues);
         }
         catch (Exception ex)
         {

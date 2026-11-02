@@ -3,7 +3,8 @@ namespace Claustrum.Core.Tracing;
 /// <summary>
 /// One tool call as the backend's own stream recorded it (#145). <see cref="Path"/> is what a read, search or edit targeted, and a shell
 /// command's working directory. <see cref="Error"/> is set only when the call failed; <see cref="Output"/> only for a shell command, since
-/// any other tool's output is file or page content. <see cref="Line"/> is the 1-based stdout.log line that carried the call's result.
+/// any other tool's output is file or page content. <see cref="Line"/> is the 1-based stdout.log line that carried the call's result, and
+/// <see cref="ExitCode"/> a shell command's exit status when the backend reports one (opencode's `metadata.exit`).
 /// </summary>
 public sealed record TracedCall(
     string Name,
@@ -14,4 +15,5 @@ public sealed record TracedCall(
     bool Failed,
     string? Error,
     string? Output,
-    int Line);
+    int Line,
+    int? ExitCode = null);
