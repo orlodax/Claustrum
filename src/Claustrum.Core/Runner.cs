@@ -45,14 +45,17 @@ public sealed partial class Runner(IPlatform platform, BackendRegistry backends,
     /// and the same finish funnel as the BackendMissing and BudgetExceeded refusals this class builds
     /// internally; it is public because that caller decides *before* Runner is ever entered. A caller
     /// already holding an admission hands its <paramref name="reservation"/> in: it closes at $0, and
-    /// is released here whatever the ledger write does.
+    /// is released here whatever the ledger write does. <paramref name="preRunIssues"/> are what the caller
+    /// found at dispatch (#145): the receipt lists them as a run's would.
     /// </summary>
-    public static async Task<RunResult> RefuseAsync(JobPaths job, ResolvedRole role, RunStatus status, string error, BudgetReservation? reservation = null)
+    public static async Task<RunResult> RefuseAsync(
+        JobPaths job, ResolvedRole role, RunStatus status, string error, BudgetReservation? reservation = null, EnvironmentIssue[]? preRunIssues = null)
     {
         // F10: CompleteAsync releases the `.live` handle only after a ledger write that succeeded, and
         // ChargeAsync swallows a failed one — in the long-lived MCP server the handle stayed open.
         await using BudgetReservation? held = reservation;
-        return await FinishAsync(job, held, NoProcessResult(job, role, status, error), ran: false, options: null);
+        RunResult refused = NoProcessResult(job, role, status, error) with { EnvironmentIssues = preRunIssues is { Length: > 0 } ? preRunIssues : null };
+        return await FinishAsync(job, held, refused, ran: false, options: null);
     }
 
     /// <summary>

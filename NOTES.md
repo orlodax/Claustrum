@@ -6993,15 +6993,17 @@ becomes `success_with_issues` (exit 8).
 **Design.**
 - `IBackend.Trace(stdout)` turns a finished run's stream into a `RunTrace`: every tool call with its name, family (`ToolFamily`),
   command, path or URL, its error when it failed, its output only for a shell command, and the stdout.log line of its result.
-  Claude's also carries its init `permissionMode` and its `permission_denials`.
+  Claude's also carries its init `permissionMode` and its denials: the `system/permission_denied` line it writes when it refuses
+  and each `result`'s `permission_denials`, once per `tool_use_id`, so a run killed before its last `result` keeps them.
 - Three readers exist: `ClaudeTrace`, `OpencodeTrace` and `AcpTrace`. The ACP one reuses `AcpTranscript` to decide which
   updates are the run's own (session open, own session id, no `session/load` replay). Cursor, copilot and api return null and
   stay unclassified: their logs were never recorded with a refusal in them, and guessing at a shape is how false hits start.
 - `EnvironmentClassifier.Classify(trace, permission, report, cwd, readDirs)` is one backend-neutral pure function, so a
   recorded stdout.log is a test fixture.
 - `Runner` puts its result on the receipt. A trace or a classifier that throws costs a warning, never the run's result.
-- `FinishAsync` puts `RunOptions.PreRunIssues` (dispatch, #144) first and upgrades the status, so a refusal's receipt carries
-  them too.
+- `FinishAsync` puts `RunOptions.PreRunIssues` (dispatch, #144) first and upgrades the status. `Runner.RefuseAsync` takes them
+  too, so DelegateEngine's refusals carry them as well: the `max_parallel` and branch-lock timeouts, a missing branch, a failed
+  worktree add, a cancel in any of those waits.
 - Grouping is by (kind, what). `where` is up to five distinct locations, then `+N more`. `count` counts calls, not log lines.
   `first` is `stdout.log:<line>`, `report` or `dispatch`.
 
@@ -7011,21 +7013,42 @@ quote `HTTP 403`. So the classifier never reads the output of a read, search, ed
 - a tool call's **error text**;
 - the **output of a shell command**.
 
-**The viewer filter.**
-- A shell command whose every segment only views files is skipped, error and output alike, because both are file content.
-  Segments are split on unquoted `&&`, `||`, `;`, `|` and newlines; a lone `&` is kept so `2>&1` stays in its segment.
-  Quotes are honoured, or `grep -E 'a|b'` would split into a "program" `b'` and be scanned.
-- Viewers are `cat`, `head`, `tail`, `less`, `grep`, `rg`, `awk`, `find`, `ls`, `jq` and `git show`/`diff`/`log`/`blame`/`grep`.
-  Also counted as viewers:
-  - the filters such output is piped through: `sort`, `uniq`, `wc`, `cut`, `tr`, `nl`, `column`, `more`;
-  - `echo` and `printf`, which print the agent's own words;
-  - `sed` unless it edits in place (`-i`), which is broader than the brief's `sed -n`, since plain `sed` prints file content too.
-- `cd` (and `pushd`/`popd`) is set aside: `cd <dir> && git log` only views, since agents prefix nearly every viewer with a `cd`
-  and its output is still file content. A `cd` alone is scanned: `cd: <dir>: No such file or directory` is the
-  missing-directory signal.
-- **Departure:** the harness's refusals are matched even inside a viewer command. These are opencode's whole-error
-  `Permission denied: <permission>` and the two missing-tool texts. A refusal means the tool never ran, so no file content
-  is in its error. Skipping them would drop the `cat <outside path>` denial this issue is about.
+**The viewer filter** (rewritten 2026-11-02 after the blind review of 68226f9).
+- A shell command that only views is skipped, error and output alike, because both are file content. The review measured what
+  the first filter let through: `gh issue view 145` (its body quotes `PermissionError: [Errno 13]`) gave `container_permission`,
+  `gh pr diff` over this branch's docs gave four issues, and so did `grep … || true`, `for … do cat …`, `xargs grep`,
+  `ROOT=$(git rev-parse …); grep …`, `(cd X && git log)`, `git status && cat README.md`, `cat f | python3 -m json.tool`, and an
+  architect's `claustrum run … --json`, which prints the child's whole receipt, diff included.
+- `ShellCommand.Parse` splits on unquoted `&&`, `||`, `;`, `|`, newlines and subshell parentheses. A lone `&` is kept, so
+  `2>&1` stays in its command. Quotes are honoured, so `grep -E 'a|b'` stays one command. Comments and heredoc bodies are
+  dropped: they are data. `$(…)` and backticks are commands of their own, judged as such; `$((…))` runs nothing.
+- In each command it skips the shell keywords (`if`, `then`, `else`, `elif`, `fi`, `do`, `done`, `while`, `until`, `in`, `esac`,
+  `{`, `}`, `!`), assignments, and the wrappers `sudo`, `env`, `time`, `nohup`, `exec`, `command`, `nice`, `timeout <d>` and
+  `xargs [opts]`. `xargs grep` is `grep`. A `for`/`select`/`function` header runs nothing.
+- **Neutral** commands print nothing of their own and are left out: `true`, `false`, `:`, `[`, `[[`, `test`, `cd`, `pushd`,
+  `popd`, `export`, `set`, `unset`, `local`, `declare`, `readonly`, `shift`, `read`, `wait`, `trap`, `shopt`, `umask`,
+  `return`, `exit`, `break`, `continue`, and an assignment alone. A line of neutral commands only (`cd <dir>`) is scanned:
+  `cd: <dir>: No such file or directory` is the missing-directory signal.
+- **Viewers:**
+  - `cat`, `head`, `tail`, `less`, `more`, `grep`, `egrep`, `fgrep`, `rg`, `awk`, `find`, `ls`, `jq`, and the filters such
+    output is piped through: `sort`, `uniq`, `wc`, `cut`, `tr`, `nl`, `column`;
+  - `echo` and `printf`, which print the agent's own words; `sed` unless it edits in place (`-i`); `python3 -m json.tool`;
+  - `git` `show`, `diff`, `log`, `blame`, `grep`, and the read-only `status`, `rev-parse`, `ls-files`, `ls-tree`, `cat-file`,
+    `show-ref`, `rev-list`, `merge-base`, `describe`, `shortlog`, `reflog`, `for-each-ref`, `name-rev`;
+  - gh's content commands: `issue view|list`, `pr view|diff|list|checks`, `api`, `search`, `run view`, `repo view`;
+  - `claustrum`, every subcommand.
+- **One exception:** a gh viewer that **failed** (claude's `is_error`, an ACP `metadata.exit` other than 0) is read for gh's own
+  error lines, and nothing else. That is how a private repository's
+  `GraphQL: Could not resolve to a Repository` still comes back. A `gh issue view … | head` that failed exits 0, and is missed.
+- **A line that cannot be read with certainty is skipped:** an unclosed quote or `$(`, and any `case` (its `a)` patterns look
+  like commands). A missed issue costs less than a false stop that teaches the caller to ignore the warning.
+- **Lost by design:** `20261030-141404-49435a42` grepped its own `install.log` (`SCR=$(cat …); grep -n "Error" $SCR/install.log
+  | head`) and found `67:PermissionError: [Errno 13]`. It is a viewer reading a file, which is exactly what a grep over a source
+  tree is. The other eight container hits in the store survive: each line also ran a command that is not a viewer (`docker`
+  in seven, a `sleep` wait loop in one).
+- **Departure, kept:** the harness's refusals are matched even inside a viewer command. These are opencode's whole-error
+  `Permission denied: <permission>` and the two missing-tool texts. A refusal means the tool never ran, so no file content is in
+  its error. Skipping them would drop the `cat <outside path>` denial this issue is about.
 
 **What counts as noise.** Each rule below rests on a measured case from the job store on 2026-11-02:
 - **Claude `Monitor` denials are skipped.** Thirteen of the fourteen claude denials in the job store on 2026-11-02 (jobs from
@@ -7043,6 +7066,11 @@ quote `HTTP 403`. So the classifier never reads the output of a read, search, ed
   (`20261029-122415-299a96b4`). A missing `mcp__*` tool counts: a ui-reviewer without its browser is blind.
 - **A shell counts as needed even at `readonly`:** claude's readonly level keeps `git diff`/`gh issue`, which is what
   `095003`'s `execute` was for.
+- **Known gap: a shell missing under a guessed name is dropped.** `No tool named "exec"` (or `sh`) is not counted, because
+  those names belong to no family. opencode's readonly level now has a shell (#143), so this matters less. Counting `sh`/`exec`
+  would add a real false hit (`20261029-093818-619ea986`).
+- **Under #140 claude's `shell` level runs `dontAsk`.** A tool it is not approved for (WebFetch, an unapproved MCP server) shows
+  in its denials and counts as `permission_denied`, with the tool's name in `what`: the role really was refused that tool.
 - **Plan mode counts only above `readonly`.** `readonly` runs in plan mode by design. The claude `shell` level ran in plan mode
   too until #140 (`20261029-095220-0da9d76d`, init line 3).
 - **A missing path counts only when it is the cwd or inside a read dir.** Anything else is the agent guessing a path: in
@@ -7050,23 +7078,36 @@ quote `HTTP 403`. So the classifier never reads the output of a read, search, ed
   A read or search is judged by the path it was given, never by one its error mentions: claude's `File does not exist. Note:
   your current working directory is <cwd>` would otherwise match the cwd.
 
-**The 404 rule, and loopback.**
-- A 401 or 403 counts from `gh`, `git`, `curl` or a fetch tool. A 404 counts only from `gh`, or from a fetch to
-  `github.com`, `api.github.com` or `raw.githubusercontent.com`. A private repository answers 404, not 401, to a request
-  without credentials: that is what `094020` and `095003` hit. A 404 on any other site is usually a URL the agent guessed.
+**Auth: every pattern is the emitting program's own error line, at its start.** The first version said gh's forms were
+anchored, which was false, and its credential, status, `Errno` and Docker patterns matched anywhere in a line. Now:
+- **gh**, read when a gh command that is not a viewer ran, or a gh viewer failed: `HTTP 40[134]:` (`HTTP 404: Not Found (…)`),
+  `gh: … (HTTP 40[134])`, `GraphQL: Could not resolve to a …`, `To get started with GitHub CLI, please run:  gh auth login`,
+  `You are not logged into any GitHub hosts`, `error connecting to …`.
+- **git**, read only when git ran a network subcommand (`fetch`, `pull`, `push`, `clone`, `ls-remote`, `remote update`,
+  `submodule update`), never for `status`, `rev-parse` or `log`: `fatal: Authentication failed`, `fatal: could not read
+  Username`, `<host>: Permission denied (publickey)`, `fatal: unable to access '<url>': The requested URL returned error: 401|403`.
+- **curl**: `curl: (22) The requested URL returned error: 40[134]`, the `-f` error line. That line names no URL, so the host is
+  the command's first URL that is not loopback; with none in sight it is not counted. curl's `-i` header lines are no longer read.
+- **The container patterns** are anchored the same way: `PermissionError: [Errno 13]` at a line's start, the last line of a
+  Python traceback, and docker's own `[docker: ][Got ]permission denied while trying to connect to the Docker daemon`. A grep hit
+  (`config.py:777:    # PermissionError: …`) is content.
+- A 401 or 403 counts from any host but loopback. A 404 counts only from gh, from a curl or fetch to `github.com`,
+  `api.github.com` or `raw.githubusercontent.com`. A private repository answers 404, not 401, to a request without
+  credentials: that is what `094020` and `095003` hit. A 404 on any other site is usually a URL the agent guessed.
 - **Departure:** loopback hosts (`localhost`, `127.*`, `::1`, `*.localhost`) are excluded. A ui-reviewer's `curl` against its
   own dev server answers 403 on purpose when it tests access control (`095220` curls `localhost:8131` throughout). That is
   the app under test, not the environment.
-- With no host in sight, only `gh` is sure to have asked GitHub, so a bare `curl` status without a URL is not counted.
-- gh's forms are line-anchored (`HTTP 404: …`, `(HTTP 404)`, `GraphQL: Could not resolve to a …`), so an issue body that
-  merely quotes one mid-sentence does not match.
 - **Departure:** git's `Authentication failed` and `Permission denied (publickey)` join `could not read Username`. git's
-  `Repository not found` is left out: it is also git's answer to a typo.
+  `Repository not found` is left out: it is also git's answer to a typo. `wget` sets nothing: no error line of its own is read.
 
 **The report.**
-- A non-empty `failed` (an array, or a number above 0) is `test_gate_red`. This includes a tester's `fault_in: "test"` entries
-  it says it fixed: the brief counts the report's own words, and a fixed test should not be listed as failed.
-- `blocked_by` (strings or `{what, where}`) is `reported_blocker`, and so is a bare `"status": "blocked"` without one.
+- `failed` is `test_gate_red` when it lists an entry whose `fault_in` is not `"test"` (a missing `fault_in`, `"code"`, a bare
+  string), or when it is a number above 0. An entry with `fault_in: "test"` is a test the tester found wrong and fixed: the gate
+  is green. The first version counted those too, and 6 of the 12 non-empty `failed` lists in the store (2026-11-02) held nothing
+  else. Each would have been a false stop.
+- `blocked_by` (strings or `{what, where}`) is `reported_blocker`, and so is a bare `"status": "blocked"` without one. An entry
+  that is empty or says none (`none`, `n/a`, `na`, `nothing`, `-`, `—`, any case, a trailing `.` ignored) is a role filling in
+  the shape, and is skipped.
 
 **Statuses.**
 - `success_with_issues` replaces `success` only. `needs_input`, `failed`, `cancelled` and the rest keep their value and their

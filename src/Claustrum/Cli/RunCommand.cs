@@ -246,7 +246,7 @@ public static class RunCommand
         }
         catch (Exception ex) when (ex is IOException or Win32Exception or InvalidOperationException or UnauthorizedAccessException)
         {
-            await Runner.RefuseAsync(job, prepared.Role, RunStatus.Failed, $"the detached host could not be started: {ex.Message}");
+            await Runner.RefuseAsync(job, prepared.Role, RunStatus.Failed, $"the detached host could not be started: {ex.Message}", preRunIssues: prepared.Options.PreRunIssues);
             throw;
         }
     }

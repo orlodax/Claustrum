@@ -15,6 +15,7 @@ internal sealed class AcpTracedCall
     private string? status;
     private string? error;
     private string? output;
+    private int? exitCode;
     private int line;
     private bool ended;
 
@@ -33,6 +34,10 @@ internal sealed class AcpTracedCall
             error = AcpJson.StringOf(AcpJson.ObjectOf(update, "rawOutput") ?? default, "error") ?? TextOf(update) ?? error;
         else if (status is "completed")
             output = TextOf(update) ?? output;
+
+        // An `execute` that ran reports its exit status in `rawOutput.metadata.exit` (measured 2026-10-27, job 0596d5af).
+        if (AcpJson.ObjectOf(AcpJson.ObjectOf(update, "rawOutput") ?? default, "metadata") is { } metadata && AcpJson.IntOf(metadata, "exit") is { } exit)
+            exitCode = exit;
 
         if (!ended)
             line = number;
@@ -66,7 +71,8 @@ internal sealed class AcpTracedCall
             failed,
             failed ? error : null,
             family == ToolFamily.Shell ? output : null,
-            line);
+            line,
+            exitCode);
     }
 
     private static string? LocationOf(JsonElement update) =>

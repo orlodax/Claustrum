@@ -57,13 +57,18 @@ internal static class OpencodeTrace
                 failed,
                 failed ? StringOf(state, "error") : null,
                 family == ToolFamily.Shell ? StringOf(state, "output") : null,
-                number));
+                number,
+                ExitOf(ObjectOf(state, "metadata") ?? default)));
         }
         catch (JsonException)
         {
             return null;
         }
     }
+
+    // The bash tool's `metadata.exit`, as the ACP transport carries it (not seen in a native capture: none holds a shell call).
+    private static int? ExitOf(JsonElement metadata) =>
+        metadata.ValueKind == JsonValueKind.Object && metadata.TryGetProperty("exit", out JsonElement exit) && exit.ValueKind == JsonValueKind.Number && exit.TryGetInt32(out int code) ? code : null;
 
     private static JsonElement? ObjectOf(JsonElement parent, string name) =>
         parent.ValueKind == JsonValueKind.Object && parent.TryGetProperty(name, out JsonElement value) && value.ValueKind == JsonValueKind.Object ? value : null;
