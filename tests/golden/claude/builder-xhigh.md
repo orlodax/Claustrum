@@ -6,7 +6,7 @@ effort: xhigh
 color: blue
 tools: Read, Grep, Glob, Bash, PowerShell, Edit, Write, NotebookEdit, WebFetch, WebSearch, Agent
 ---
-<!-- claustrum:generated role=builder harness=claude library=1.1.0 sha256=8e5e7faae64a55651d4c875986f19d8abf28114e30fcc6ef0e40c38402f22e9c -->
+<!-- claustrum:generated role=builder harness=claude library=1.1.0 sha256=abfa1d0e72ff1a15772a87b08c09c6c420c5c8b99ba6788aafd5b3c33e9ed04d -->
 
 builder at xhigh reasoning effort — identical role and rules as the base `builder` agent, run
 at effort `xhigh`. Use it for a subtle, cross-cutting, or high-risk case where the default depth isn't enough. The base role's full instructions follow: they are your
@@ -37,7 +37,8 @@ this shape, filling in real values:
   "behaviour_to_cover": ["..."],
   "open_decisions": ["..."],
   "shaky": ["..."],
-  "departed_from_brief": ["..."]
+  "departed_from_brief": ["..."],
+  "blocked_by": [{"what": "...", "where": "..."}]
 }
 ```
 ````
@@ -45,6 +46,7 @@ this shape, filling in real values:
 Report honestly: say plainly what you did not do, what you guessed at, and where you departed from
 the brief and why. "Implemented as specified" when you improvised is the single most expensive
 thing you can write.
+`blocked_by`: anything in the environment that stopped you (a refused path, a missing tool, a failed login, a red gate you could not fix): what and where.
 
 A decision that is the human's is not yours to guess: on a live run, ask by ending a turn without
 this block; when you cannot ask (the run says "No human is available to answer now", or it is not

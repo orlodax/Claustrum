@@ -13,6 +13,12 @@ public sealed class ClaudeBackendBuildTests
 {
     private readonly ClaudeBackend backend = new(new FakePlatform());
 
+    // #143: a readonly role runs the read verbs of git and gh as words (`git diff`, then `git diff *`), never the prefix `git diff*` that
+    // also let `git difftool -x <cmd>` through, and never `gh pr *`, which merged and closed. Spelled out here, not read from the code.
+    private const string ReadOnlyAllowed =
+        "Read,Glob,Grep,Bash(git diff),Bash(git diff *),Bash(git log),Bash(git log *),Bash(git show),Bash(git show *),Bash(git status),Bash(git status *),Bash(git rev-parse *),"
+        + "Bash(gh pr view *),Bash(gh pr diff *),Bash(gh pr list),Bash(gh pr list *),Bash(gh pr checks *),Bash(gh issue view *),Bash(gh issue list),Bash(gh issue list *)";
+
     private static ResolvedRun MakeRun(
         PermissionPolicy permission,
         decimal? budget = null,
@@ -47,7 +53,7 @@ public sealed class ClaudeBackendBuildTests
             "--append-system-prompt-file", "/job/system.md",
             "--strict-mcp-config",
             "--permission-mode", "plan", "--permission-prompts", "none",
-            "--allowedTools", "Read,Glob,Grep,Bash(git diff*),Bash(git log*),Bash(git show*),Bash(git status*),Bash(gh pr *),Bash(gh issue *)",
+            "--allowedTools", ReadOnlyAllowed,
             "--effort", "high",
         ], spec.Args);
     }
@@ -129,10 +135,11 @@ public sealed class ClaudeBackendBuildTests
         int start = Array.IndexOf(spec.Args, "--permission-mode");
         Assert.Equal(
         [
-            "--permission-mode", "plan", "--permission-prompts", "none",
+            "--permission-mode", "dontAsk", "--permission-prompts", "none",
+            "--allowedTools", "Read,Glob,Grep,Bash(*)",
             "--disallowedTools", "Edit,Write,NotebookEdit",
             "--disallowedTools", "Bash(git push),Bash(git push *),Bash(rm -rf),Bash(rm -rf *)",
-        ], spec.Args[start..(start + 8)]);
+        ], spec.Args[start..(start + 10)]);
     }
 
     // An entry that carries its own `*` ("git push*", the old prefix style a user's claustrum.json may
@@ -327,18 +334,19 @@ public sealed class ClaudeBackendBuildTests
         Assert.True(spec.Args.Sum(arg => arg.Length) < 1000, "argv must not grow with the brief");
     }
 
-    // The rung ui-reviewer needs: run the app, never change it. ReadOnly withholds the shell it uses
-    // to start a dev server; EditShell hands it write access its own role rules forbid (review
-    // finding). --disallowedTools names only the write built-ins, so a Browser MCP tool stays
-    // reachable — without one the role cannot do its job at all.
+    // The rung ui-reviewer needs: run the app, never edit it. ReadOnly withholds the shell it uses to start a dev server; EditShell hands
+    // it write access its own role rules forbid. #140: not plan mode, which refused every walk that wrote app data; dontAsk runs what
+    // the allow-list names (Bash and the read tools, plus the role's MCP servers) and denies the rest without a prompt, and the edit
+    // built-ins are disallowed. With no MCP server named, `--allowedTools` holds the built-ins alone.
     [Fact]
-    public void ShellKeepsPlanModeAndBlocksOnlyTheWriteTools()
+    public void ShellRunsInDontAskModeAllowsTheShellAndDisallowsTheEditTools()
     {
         ProcessSpec spec = backend.Build(MakeRun(new PermissionPolicy(PermissionLevel.Shell, [])));
 
-        Assert.Equal("plan", spec.Args[Array.IndexOf(spec.Args, "--permission-mode") + 1]);
+        Assert.Equal("dontAsk", spec.Args[Array.IndexOf(spec.Args, "--permission-mode") + 1]);
+        Assert.DoesNotContain("plan", spec.Args);
+        Assert.Equal("Read,Glob,Grep,Bash(*)", spec.Args[Array.IndexOf(spec.Args, "--allowedTools") + 1]);
         Assert.Equal("Edit,Write,NotebookEdit", spec.Args[Array.IndexOf(spec.Args, "--disallowedTools") + 1]);
-        Assert.DoesNotContain("--allowedTools", spec.Args);
     }
 
     [Fact]
@@ -367,7 +375,7 @@ public sealed class ClaudeBackendBuildTests
             "--append-system-prompt-file", "/job/system.md",
             "--strict-mcp-config",
             "--permission-mode", "plan", "--permission-prompts", "none",
-            "--allowedTools", "Read,Glob,Grep,Bash(git diff*),Bash(git log*),Bash(git show*),Bash(git status*),Bash(gh pr *),Bash(gh issue *)",
+            "--allowedTools", ReadOnlyAllowed,
             "--disallowedTools", "Agent,Task",
             "--effort", "high",
         ], spec.Args);
@@ -383,7 +391,8 @@ public sealed class ClaudeBackendBuildTests
             "-p", "--output-format", "stream-json", "--verbose", "--model", "sonnet",
             "--append-system-prompt-file", "/job/system.md",
             "--strict-mcp-config",
-            "--permission-mode", "plan", "--permission-prompts", "none",
+            "--permission-mode", "dontAsk", "--permission-prompts", "none",
+            "--allowedTools", "Read,Glob,Grep,Bash(*)",
             "--disallowedTools", "Edit,Write,NotebookEdit",
             "--disallowedTools", "Agent,Task",
             "--effort", "high",
