@@ -53,7 +53,7 @@ On the owner's box (2026-09-22) it finds all five backends plus `gh`:
 | `copilot` | `~/.local/bin/copilot` 1.0.87 | logged in (`~/.copilot/config.json`) | `auto` — the only id verified |
 | `cursor` | `~/.local/bin/cursor-agent` | logged in, **Free plan** | `auto` — the only id the plan accepts |
 | `opencode` | `~/.opencode/bin/opencode` 2.0.12 | **none**: no `OPENROUTER_API_KEY`, no `opencode auth` | needs a key first |
-| `api` | `curl` | **none**: neither `OPENROUTER_API_KEY` nor `ANTHROPIC_API_KEY` | `openrouter:<id>` / `anthropic:<id>` |
+| `api` | `curl` | **none**: no `OPENROUTER_API_KEY`, `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` | `openrouter:<id>` / `openai:<id>` / `anthropic:<id>` |
 
 Two consequences for the drive:
 

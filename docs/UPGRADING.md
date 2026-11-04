@@ -2,6 +2,8 @@
 
 ## 0.5.x → Unreleased
 
+### What's new
+
 - **ui-reviewer and demo-author now run on opencode (#135).** The browser roles list `opencode` in their `harnesses`
   and ship harness-neutral `browser.md` and `environment.md` parts (a harness-specific `browser.<harness>.md` still
   wins, then the neutral file, then a legacy `browser.default.md`). Synced for opencode the ui-reviewer carries a
@@ -16,6 +18,14 @@
   server unless you register a `playwright` one yourself; `claustrum run` always brings its own. The Claude render is unchanged in substance —
   the demo-author's browser text was merged into one part and the ui-reviewer's table now labels its first column
   `Browser pane (Claude)`.
+- **The `api` backend reaches OpenAI directly.** A model `openai:<id>` (so `--model api:openai:gpt-5.1`, or an alias
+  `api:openai:<id>`) posts to OpenAI's chat completions with `OPENAI_API_KEY`, billed to that key's account. Like the
+  other `api` providers it has no tools, so it suits the text-report roles (code-reviewer), not builder or tester. The
+  receipt shows tokens and a null cost: OpenAI's answer carries no price.
+  - An OpenAI refusal is now classified: `invalid_api_key` is `provider_auth`, `insufficient_quota` is
+    `provider_quota`, `model_not_found` is `model_not_found`, so a cast's `fallback` takes over as for OpenRouter.
+  - `backends doctor` accepts any of the three keys, and its problem line now reads "none of OPENROUTER_API_KEY,
+    OPENAI_API_KEY or ANTHROPIC_API_KEY is set".
 
 ## 0.4.x → 0.5.0
 

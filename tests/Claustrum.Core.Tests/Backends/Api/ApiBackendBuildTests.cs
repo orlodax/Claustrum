@@ -56,6 +56,36 @@ public sealed class ApiBackendBuildTests : IDisposable
         Assert.Equal("review this diff", document.RootElement.GetProperty("messages")[1].GetProperty("content").GetString());
     }
 
+    // OpenRouter's `usage: {include: true}` opt-in stays out: OpenAI refuses a request argument it does not know.
+    [Fact]
+    public void OpenAiModelPostsToOpenAiWithBearerAuthAndNoUsageOptIn()
+    {
+        platform.EnvironmentVariables["OPENAI_API_KEY"] = "sk-proj-test-789";
+
+        ProcessSpec spec = Backend().Build(MakeRun("openai:gpt-5.1"));
+
+        Assert.Equal("https://api.openai.com/v1/chat/completions", spec.Args[^1]);
+        string config = File.ReadAllText(spec.TempFiles.Single(f => f.EndsWith("api-curl-config", StringComparison.Ordinal)));
+        Assert.Contains("Authorization: Bearer sk-proj-test-789", config, StringComparison.Ordinal);
+        Assert.DoesNotContain("anthropic-version", config, StringComparison.Ordinal);
+
+        string body = File.ReadAllText(spec.TempFiles.Single(f => f.EndsWith("api-request-body.json", StringComparison.Ordinal)));
+        using JsonDocument document = JsonDocument.Parse(body);
+        Assert.Equal("gpt-5.1", document.RootElement.GetProperty("model").GetString());
+        Assert.Equal("system", document.RootElement.GetProperty("messages")[0].GetProperty("role").GetString());
+        Assert.False(document.RootElement.TryGetProperty("usage", out _));
+    }
+
+    [Fact]
+    public void OpenAiModelWithoutItsKeyNamesOpenAiKey()
+    {
+        platform.EnvironmentVariables["OPENROUTER_API_KEY"] = "sk-or-test-123";
+
+        InvalidOperationException ex = Assert.Throws<InvalidOperationException>(() => Backend().Build(MakeRun("openai:gpt-5.1")));
+
+        Assert.Contains("OPENAI_API_KEY", ex.Message, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void AnthropicModelPostsToAnthropicWithXApiKeyAndMaxTokens()
     {
