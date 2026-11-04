@@ -108,7 +108,7 @@ public sealed class CastHarnessCheckTests : IDisposable
         string? problem = Problem(Cast.ArchitectRole, "api:some-model");
 
         Assert.NotNull(problem);
-        Assert.Contains("architect runs on claude, opencode, cursor, copilot only", problem, StringComparison.Ordinal);
+        Assert.Contains("architect runs on claude, opencode, cursor, copilot, codex only", problem, StringComparison.Ordinal);
         Assert.EndsWith("or 'host'", problem, StringComparison.Ordinal);
         Assert.DoesNotContain("not needed", problem, StringComparison.Ordinal);
     }

@@ -7483,3 +7483,17 @@ here before the fix (6 more paid runs, 2 free ones):
   ERROR, since `turn.failed` repeats it.
 - Left as is: a read dir under `/tmp` or `$TMPDIR` is writable at the `workspace-write` levels and dispatch does not say so.
   `ReadDirsWritableAt` takes a level, not a dir. MANUAL's read-dirs table states it.
+
+### The architect runs on codex at `full` (2026-11-04, the owner's call)
+
+The owner chose to keep the architect on codex rather than drop it. role.json gained `permissionByBackend`, a map from backend to
+level that replaces `permission` on that backend. `Config.Resolve` reads it below `roles.<role>.permission` and `--permission`.
+The architect sets `{"codex": "full"}`, so its receipt says `full`; a backend-side role-name check would have run it unsandboxed
+under a receipt that said `edit+shell`. This adds no escalation path: a repo's role override could already set `permission`.
+
+Measured with one paid run (Debug build first on `PATH`, since the installed 0.5.0 has no codex): `claustrum run architect --backend
+codex --model gpt-6.1-sol --no-live` with a brief to delegate exactly one code-reviewer on codex. The architect's shell ran
+`claustrum run code-reviewer --backend codex …`. The child job (`~/.claustrum/jobs/…-2a6353dc`) finished `success` with
+`backend.json` `permission: "readonly"`; the architect's own (`…-6a66f8a2`) says `permission: "full"`. Both finished `success`, and
+no file changed. So the nested Claustrum and the nested codex both work from inside `danger-full-access`. Integration (rebase,
+fast-forward in a builder's worktree) was not exercised by that run.

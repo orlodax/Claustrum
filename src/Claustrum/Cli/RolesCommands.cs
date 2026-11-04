@@ -44,6 +44,8 @@ public static class RolesCommands
             if (definition.Primary)
                 Console.WriteLine("primary:     True");
             Console.WriteLine($"permission:  {definition.Permission}");
+            foreach ((string backend, string level) in definition.PermissionByBackend ?? [])
+                Console.WriteLine($"  on {backend}: {level}");
             Console.WriteLine($"deny:        {string.Join(", ", definition.Deny)}");
             Console.WriteLine($"mayDelegate: {string.Join(", ", definition.MayDelegate)}");
             Console.WriteLine($"report:      {definition.Report}");
