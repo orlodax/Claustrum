@@ -1,0 +1,7 @@
+{"type":"thread.started","thread_id":"01a1a6c0-a8be-79f0-ae9b-dbc0d06dbf6d"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"I’ll create `c.txt` using `apply_patch`.\n"}}
+{"type":"item.started","item":{"id":"item_1","type":"file_change","changes":[{"path":"/work/repo/c.txt","kind":"add"}],"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_1","type":"file_change","changes":[{"path":"/work/repo/c.txt","kind":"add"}],"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"DONE"}}
+{"type":"turn.completed","usage":{"input_tokens":26885,"cached_input_tokens":13394,"cache_write_input_tokens":13485,"output_tokens":72,"reasoning_output_tokens":0}}

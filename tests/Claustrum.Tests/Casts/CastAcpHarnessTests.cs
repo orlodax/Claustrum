@@ -177,7 +177,7 @@ public sealed class CastAcpHarnessTests : IDisposable
         CastQuestionnaireResult result = await CastQuestionnaire.BuildAsync(library, EveryBackendFound(), AliasPerBackend(), cwd, TestContext.Current.CancellationToken);
 
         Assert.All(result.Questions, question => Assert.DoesNotContain("acp-opencode", question.Prompt, StringComparison.Ordinal));
-        Assert.Contains("It runs on claude, opencode, cursor, copilot only.", result.Questions.Single(q => q.Key == "builder").Prompt, StringComparison.Ordinal);
+        Assert.Contains("It runs on claude, opencode, cursor, copilot, codex only.", result.Questions.Single(q => q.Key == "builder").Prompt, StringComparison.Ordinal);
     }
 
     // A backend the registry does not know stands for itself, as before: an alias on a stand-in name is offered only to a role that lists that name.

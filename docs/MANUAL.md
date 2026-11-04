@@ -11,8 +11,8 @@ onto a machine is [INSTALL.md](INSTALL.md); running it on a real task for the fi
 
 | Word | Meaning |
 |---|---|
-| **harness** | a coding-agent product with a CLI: Claude Code, opencode, Cursor's `cursor-agent`, GitHub Copilot CLI |
-| **backend** | Claustrum's adapter for one harness (`claude`, `opencode`, `cursor`, `copilot`) or for a bare HTTP call (`api`) |
+| **harness** | a coding-agent product with a CLI: Claude Code, opencode, Cursor's `cursor-agent`, GitHub Copilot CLI, OpenAI's Codex CLI |
+| **backend** | Claustrum's adapter for one harness (`claude`, `opencode`, `cursor`, `copilot`, `codex`) or for a bare HTTP call (`api`) |
 | **role** | a job description shipped in the binary: `architect`, `builder`, `code-reviewer`, `ui-reviewer`, `tester`, `demo-author` |
 | **tier** | how hard a role thinks: `high` (base), `xhigh`, `max`; each tier names a model class and an effort |
 | **model class** | an alias a role names (`frontier-coding`, `cheap-coding`, …) that `claustrum.json` maps to a real `backend:model` |
@@ -432,10 +432,10 @@ The stdio server. Logging goes to stderr; stdout is the protocol.
 | Role | Blind | Permission | Deny | May delegate to | Harnesses | Tier `high` → `xhigh`/`max` |
 |---|---|---|---|---|---|---|
 | `architect` | no | edit+shell | `git push` | builder, code-reviewer, ui-reviewer, tester, demo-author | claude, opencode, cursor, copilot | frontier-reasoning at every tier |
-| `builder` | no | edit+shell | `git push` | architect (to ask, not to delegate work) | claude, opencode, cursor, copilot | frontier-coding at every tier |
-| `code-reviewer` | **yes** | readonly | — | — | claude, opencode, cursor, copilot, **api** | standard-coding → frontier-coding |
+| `builder` | no | edit+shell | `git push` | architect (to ask, not to delegate work) | claude, opencode, cursor, copilot, codex | frontier-coding at every tier |
+| `code-reviewer` | **yes** | readonly | — | — | claude, opencode, cursor, copilot, codex, **api** | standard-coding → frontier-coding |
 | `ui-reviewer` | **yes** | shell (run commands, no edit tools) | `git push`, `checkout`, `switch`, `reset`, `restore`, `stash`, `commit`, `clean`, `rebase`, `merge` | — | claude, opencode | frontier-coding at every tier |
-| `tester` | no | edit+shell | `git push` | — | claude, opencode, cursor, copilot | standard-coding at every tier |
+| `tester` | no | edit+shell | `git push` | — | claude, opencode, cursor, copilot, codex | standard-coding at every tier |
 | `demo-author` | no — briefed sighted | edit+shell (it writes its deck) | 24 git verbs: `push`, the common ones that stage or commit (`add`, `commit`, `apply`, `update-index`, `read-tree`, …) and that move `HEAD`, refs or the tree (`checkout`, `reset`, `stash`, `merge`, `pull`, `update-ref`, …) — not every one (`branch -f`/`-D`, `worktree remove`, `tag`, `notes` stay open); read-only git stays open, `merge-base` included | — | claude, opencode | standard-coding, one tier |
 
 A role runs only on the harnesses it lists: `run`, `delegate` and `coordinate` refuse a registered
@@ -538,7 +538,7 @@ One JSON document, `schema_version: "1"`, snake_case, additive changes only:
 | `diff`, `diff_truncated` | git | `git diff HEAD` on those paths plus `--no-index` for new files (an isolated run whose branch moved: `git diff <starting commit>`); 200 KB cap (64 KB via MCP) |
 | `worktree`, `branch` | runner | for any isolated run (`max_parallel > 1` or `--branch`): where it ran, and the branch — `claustrum/<job_id>`, or the `--branch` name |
 | `commit` | runner, git | isolated runs: the branch tip after the run when the run moved it — the runner's commit of what was left uncommitted, or the role's own; `null` when nothing changed, or when the commit failed (then `warnings[]` says the work was left uncommitted, and on which branch), or was skipped because the worktree's path was no longer the job's worktree on its branch |
-| `cost_usd`, `usage` | backend | `null` for copilot and cursor, which report neither |
+| `cost_usd`, `usage` | backend | `null` for copilot and cursor, which report neither; codex reports `usage` with a `null` `cost_usd` |
 | `session_id` | backend | for `--resume` |
 | `exit_code`, `duration_seconds`, `log_path` | runner | `log_path` is the job's `stdout.log` |
 | `warnings[]` | runner | e.g. several report fences, last one won; work left uncommitted on an isolated run's branch |
@@ -608,7 +608,7 @@ run's own commands wrote (`./setup.sh > /tmp/setup.log`, then `tail /tmp/setup.l
 file) has that output read like the command's own. A command that cannot be read with certainty (an unclosed quote, a `case`)
 is skipped: a missed issue costs less than a false stop. That is why the log is
 not grepped: it also holds every file the agent read. The `claude`, `opencode` and `acp-opencode` backends are read this way. `cursor`,
-`copilot` and `api` are not classified yet: their receipts list only dispatch-time and report issues.
+`copilot`, `codex` and `api` are not classified yet: their receipts list only dispatch-time and report issues.
 
 ## 7. Configuration
 
@@ -705,6 +705,7 @@ What each backend does with the read dirs (the configured ones and the git commo
 | `opencode`, `acp-opencode` | `external_directory` allows `<dir>` and `<dir>/*`, everything else stays denied. A dir whose path has `*`, `?` or (outside Windows) `\` is not given: opencode cannot name it exactly | `edit` denies `<dir>` and `<dir>/*` |
 | `copilot` | `--add-dir <dir>` at `readonly` and `shell`; this also loads the dir's `.github/skills` and `.github/agents` | already `--allow-all-paths`: **read-write**, and dispatch says so |
 | `cursor` | `--add-dir <dir>` | **read-write**, and dispatch says so |
+| `codex` | nothing: both of its sandboxes read the whole disk | still read-only: `workspace-write` writes the workspace and `/tmp` only, so a read dir under `/tmp` is writable |
 | `api` | nothing: it has no file tools. Configured dirs are reported `read_dirs_unsupported` at dispatch | — |
 
 At `full` nothing is added: every backend reaches every path there. Read-only holds for each harness's file tools. A shell
@@ -729,11 +730,12 @@ one says so in `warnings[]`. What each backend accepts as an id:
 | `opencode` | `provider/model`, e.g. `openrouter/deepseek/deepseek-v4-flash` | fixture-only on this machine (no key) |
 | `copilot` | Copilot's names | `auto` — the built-in default `opus` is refused before any API call |
 | `cursor` | Cursor's names | `auto` — the only id a Free plan accepts |
+| `codex` | OpenAI's names, passed as `-m` | `gpt-6.1-sol` (codex's default for an API-key login, 2026-11-04) |
 | `api` | `openrouter:<model>`, `openai:<model>` or `anthropic:<model>` (so `api:openai:gpt-5.1`) | keyed by `OPENROUTER_API_KEY` / `OPENAI_API_KEY` / `ANTHROPIC_API_KEY`; `openai:` is fixture-only so far (no key on the measuring machine) |
 
 **Environment passed to backends** is an allow-list: `PATH HOME USERPROFILE APPDATA LOCALAPPDATA
 TEMP TMP SystemRoot ComSpec LANG SHELL TERM XDG_* *_API_KEY ANTHROPIC_* OPENROUTER_* OPENCODE_*
-CURSOR_* COPILOT_* GH_TOKEN GITHUB_TOKEN NODE_*`, plus `--env K=V`; `env_passthrough: all` disables
+CURSOR_* COPILOT_* OPENAI_* CODEX_HOME GH_TOKEN GITHUB_TOKEN NODE_*`, plus `--env K=V`; `env_passthrough: all` disables
 the filter. `CLAUSTRUM_*` is deliberately **not** forwarded except `CLAUSTRUM_PARENT_JOB` and
 `CLAUSTRUM_HOME`, which the runner sets itself for a tree.
 
@@ -860,7 +862,7 @@ repo is fine. The MCP tools return the `failed` document.
 **An isolated run stays in its worktree.** Its prompt ends with a trailer naming the worktree, its
 branch and the main checkout it must never touch, and its deny list gains `git checkout` and
 `git switch` — enforced natively on claude, opencode and copilot at every level that applies a deny
-list (not `full`), a prompt rule on cursor. The deny is a guard on how a command is written (§13):
+list (not `full`), a prompt rule on cursor and codex. The deny is a guard on how a command is written (§13):
 `git -C <main checkout> checkout …` is not matched, which is why the trailer is there too.
 
 **The runner commits the work.** When an isolated run ends — whatever its status, as long as the
@@ -952,7 +954,7 @@ The admission rule: a child is granted `min(requested cap ?? remaining / share, 
 the child's whole lifetime, so a child started without `--budget` reserves the entire remainder and
 a sibling started alongside it is refused in milliseconds having spent nothing. Hence the rule the
 architect is given: when starting two children at once, pass each an explicit `--budget` that
-together fit the remainder. A backend that reports no cost (copilot, cursor) is charged its whole
+together fit the remainder. A backend that reports no cost (copilot, cursor, codex) is charged its whole
 cap.
 
 `budget_exceeded` carries one of four messages in `error`, and only one means stop:
@@ -1161,6 +1163,7 @@ end, call `coordinate` and relay `job_status`.
 | `claude` | `npm i -g @anthropic-ai/claude-code` | Claude Code login or `ANTHROPIC_API_KEY`; `CLAUDE_CONFIG_DIR` is passed through, and `doctor` prints it as `config dir:` | `--append-system-prompt-file <job>/system.md`; the brief fed on **stdin**, never argv | yes (`total_cost_usd`) |
 | `opencode` | `npm i -g opencode-ai` | `OPENROUTER_API_KEY` / `DEEPSEEK_API_KEY` / `opencode auth` | inline agent in `OPENCODE_CONFIG_CONTENT`, process-scoped | from the JSONL usage events |
 | `cursor` | Cursor's `cursor-agent` installer (not the npm package of that name) | `cursor-agent login` or `CURSOR_API_KEY` | role prefixed to the prompt, fed on **stdin**; `-f` always (an untrusted workspace is a fast exit 1) | **none**; usage tokens only |
+| `codex` | `npm i -g @openai/codex` | `codex login` (a ChatGPT plan) or `codex login --with-api-key` (an OpenAI key), stored in `$CODEX_HOME/auth.json`, default `~/.codex`; or `CODEX_API_KEY` in the environment — **not** `OPENAI_API_KEY`, which `codex exec` does not read | role prefixed to the prompt, fed on **stdin** as `codex exec --json … -`; codex reads the repo's `AGENTS.md` itself; always `--skip-git-repo-check --ignore-rules --ignore-user-config`, so no `.rules` allow rule, no `config.toml` (yours or a repo's `.codex/`) and none of your codex MCP servers reach a run; no `sync` target | **none**; usage tokens only |
 | `copilot` | `npm i -g @github/copilot` | logged in (`~/.copilot/config.json`) or `COPILOT_GITHUB_TOKEN`/`GH_TOKEN`/`GITHUB_TOKEN` | per-job `.agent.md` via `--add-dir`, agent `claustrum-<role>` | **none** (`assistant.usage` is suppressed in JSON mode); `--reasoning-effort` is omitted for `auto` |
 | `api` | `curl` | `OPENROUTER_API_KEY` / `ANTHROPIC_API_KEY` by model prefix | system message (with `AGENTS.md`/`CLAUDE.md` inlined, §4); **no tools**, `changed_files` always empty | yes |
 | `acp-opencode` | opencode (as above) | opencode's | the same `OPENCODE_CONFIG_CONTENT` agent, chosen with `session/set_config_option`: `model`, then `effort` (only for a `#variant` model id), then `mode`; the brief as the first `session/prompt` | yes: `opencode session export` after every run (a continued session: after minus before); if the export fails, only a fresh run whose last turn finished and was priced keeps the stream's last `usage_update`, every other run charges the cap with a warning |
@@ -1212,13 +1215,13 @@ names approves nothing. With `user_mcp` your other user-level servers are the sa
 
 Permission levels and what each backend does with them:
 
-| Level | Roles | `claude` | `opencode` | `cursor` | `copilot` |
-|---|---|---|---|---|---|
-| `readonly` | code-reviewer | `--permission-mode plan` + read-only tool list (`Read`, `Glob`, `Grep`, and as words: `git diff`, `log`, `show`, `status`, `rev-parse`, `gh pr view`/`diff`/`list`/`checks`, `gh issue view`/`list`), plus the role's deny rules | edit deny; bash denied except the same commands, and those refused too when the command holds a quote, `$`, a backtick, `\` or `/`, `{`, `<`, `>`, `--output`, `--no-index` or `--ext-diff` | prompt rule (advisory) | `--mode plan --deny-tool write --deny-tool shell` |
-| `shell` | ui-reviewer | `--permission-mode dontAsk` (not plan): `Read`, `Glob`, `Grep`, `Bash(*)` and the role's named MCP servers allowed, `--disallowedTools Edit,Write,NotebookEdit`, plus the deny rules. Not a sandbox: a command can still write and delete. A deny entry guards how a command is written; it is not a security boundary | edit deny, bash allow with deny patterns | prompt rule | `--mode plan --deny-tool write` + deny patterns |
-| `edit` | — | `acceptEdits` + `--disallowedTools Bash` | edit allow, bash deny | prompt rule | `--allow-all-tools --allow-all-paths --deny-tool shell` |
-| `edit+shell` | architect, builder, tester, demo-author | `acceptEdits`, built-in tools + `Bash(*)`, `--disallowedTools "Bash(<deny>),Bash(<deny> *)"` per deny entry; MCP tools are outside the allow-list | edit allow, bash allow, `<deny>` and `<deny> *` deny | prompt rule | `--allow-all-tools --allow-all-paths --deny-tool "shell(<deny>)"` per entry |
-| `full` | — | `--dangerously-skip-permissions` | `--auto` | `-f --sandbox disabled` | `--allow-all` |
+| Level | Roles | `claude` | `opencode` | `cursor` | `copilot` | `codex` |
+|---|---|---|---|---|---|---|
+| `readonly` | code-reviewer | `--permission-mode plan` + read-only tool list (`Read`, `Glob`, `Grep`, and as words: `git diff`, `log`, `show`, `status`, `rev-parse`, `gh pr view`/`diff`/`list`/`checks`, `gh issue view`/`list`), plus the role's deny rules | edit deny; bash denied except the same commands, and those refused too when the command holds a quote, `$`, a backtick, `\` or `/`, `{`, `<`, `>`, `--output`, `--no-index` or `--ext-diff` | prompt rule (advisory) | `--mode plan --deny-tool write --deny-tool shell` | `sandbox_mode="read-only"`: commands run, a write fails, no network |
+| `shell` | ui-reviewer | `--permission-mode dontAsk` (not plan): `Read`, `Glob`, `Grep`, `Bash(*)` and the role's named MCP servers allowed, `--disallowedTools Edit,Write,NotebookEdit`, plus the deny rules. Not a sandbox: a command can still write and delete. A deny entry guards how a command is written; it is not a security boundary | edit deny, bash allow with deny patterns | prompt rule | `--mode plan --deny-tool write` + deny patterns | `workspace-write` with network; no editing by prompt rule |
+| `edit` | — | `acceptEdits` + `--disallowedTools Bash` | edit allow, bash deny | prompt rule | `--allow-all-tools --allow-all-paths --deny-tool shell` | `workspace-write`, no network; no shell by prompt rule |
+| `edit+shell` | architect, builder, tester, demo-author | `acceptEdits`, built-in tools + `Bash(*)`, `--disallowedTools "Bash(<deny>),Bash(<deny> *)"` per deny entry; MCP tools are outside the allow-list | edit allow, bash allow, `<deny>` and `<deny> *` deny | prompt rule | `--allow-all-tools --allow-all-paths --deny-tool "shell(<deny>)"` per entry | `workspace-write` with network: the cwd, `/tmp` and `$TMPDIR` are writable, `$HOME`'s package caches and a linked worktree's git dir are not |
+| `full` | — | `--dangerously-skip-permissions` | `--auto` | `-f --sandbox disabled` | `--allow-all` | `danger-full-access` |
 
 **`readonly` on opencode** matches each shell command on its raw text, so whatever could make that text differ from what bash
 runs is refused, except `*` and `?`: they are opencode's own wildcards and cannot be refused, so a glob in an allowed command
@@ -1228,7 +1231,7 @@ diff -- src/x.cs`, `git log origin/main..HEAD` and `gh issue view 1 -R owner/rep
 `git log --oneline -20` and `git show <sha>` work, and the file tools read the tree. On claude a quote, a path or `--no-index`
 in an allowed command is not refused by Claustrum (#148).
 
-Where a harness has no native deny mechanism (cursor) the deny list is a rule in the prompt, and
+Where a harness has no native deny mechanism (cursor, codex) the deny list is a rule in the prompt, and
 `doctor` calls it advisory. Everywhere else a deny entry is a guard on how a command is written,
 not a sandbox — Claude Code's own docs say a Bash rule "isn't a security boundary around the
 program" ([permissions](https://code.claude.com/docs/en/permissions#bash-rule-limits)). It does not

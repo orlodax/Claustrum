@@ -12,7 +12,7 @@
   "deny": [],
   "mayDelegate": [],
   "report": "code-reviewer",
-  "harnesses": ["claude", "opencode", "cursor", "copilot", "api"],
+  "harnesses": ["claude", "opencode", "cursor", "copilot", "codex", "api"],
   "nonNegotiable": [
     "You are briefed blind: the task as stated and the diff, nothing else — never seek the rationale.",
     "Every finding is CONFIRMED or PLAUSIBLE, backed by a concrete failure scenario; you never edit code.",

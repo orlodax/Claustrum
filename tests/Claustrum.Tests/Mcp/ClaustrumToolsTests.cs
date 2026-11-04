@@ -62,7 +62,7 @@ public sealed class ClaustrumToolsTests(AppServicesHomeFixture fixture) : IDispo
         string json = ClaustrumTools.ListBackends();
 
         using JsonDocument document = JsonDocument.Parse(json);
-        Assert.Equal(["claude", "api", "opencode", "copilot", "cursor", "acp-opencode"], document.RootElement.EnumerateArray().Select(entry => entry.GetString()));
+        Assert.Equal(["claude", "api", "opencode", "copilot", "cursor", "codex", "acp-opencode"], document.RootElement.EnumerateArray().Select(entry => entry.GetString()));
     }
 
     [Fact]
@@ -72,19 +72,20 @@ public sealed class ClaustrumToolsTests(AppServicesHomeFixture fixture) : IDispo
 
         using JsonDocument document = JsonDocument.Parse(json);
         JsonElement backends = document.RootElement.GetProperty("backends");
-        Assert.Equal(6, backends.GetArrayLength());
+        Assert.Equal(7, backends.GetArrayLength());
         Assert.Equal("claude", backends[0].GetProperty("name").GetString());
         Assert.Equal("api", backends[1].GetProperty("name").GetString());
         Assert.Equal("opencode", backends[2].GetProperty("name").GetString());
         Assert.Equal("copilot", backends[3].GetProperty("name").GetString());
         Assert.Equal("cursor", backends[4].GetProperty("name").GetString());
-        Assert.Equal("acp-opencode", backends[5].GetProperty("name").GetString());
+        Assert.Equal("codex", backends[5].GetProperty("name").GetString());
+        Assert.Equal("acp-opencode", backends[6].GetProperty("name").GetString());
     }
 
     // Issue #17: BackendDoctorEntry.Advisories mirrors Doctor.Advisories — every entry carries the
-    // field, and cursor is the only backend with anything in it.
+    // field, and cursor and codex (both deny lists by prompt only) are the backends with anything in it.
     [Fact]
-    public async Task DoctorEveryEntryHasAdvisoriesNonemptyOnlyForCursorAsync()
+    public async Task DoctorEveryEntryHasAdvisoriesNonemptyOnlyForCursorAndCodexAsync()
     {
         string json = await ClaustrumTools.DoctorAsync(CancellationToken.None);
 
@@ -95,7 +96,7 @@ public sealed class ClaustrumToolsTests(AppServicesHomeFixture fixture) : IDispo
             JsonElement advisories = entry.GetProperty("advisories");
             Assert.Equal(JsonValueKind.Array, advisories.ValueKind);
 
-            if (name == "cursor")
+            if (name is "cursor" or "codex")
                 Assert.NotEmpty(advisories.EnumerateArray());
             else
                 Assert.Empty(advisories.EnumerateArray());

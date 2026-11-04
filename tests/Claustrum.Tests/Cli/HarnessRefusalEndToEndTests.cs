@@ -44,7 +44,7 @@ public sealed class HarnessRefusalEndToEndTests : IDisposable
         CliResult result = await RunAsync("run", "builder", "--backend", "api", "--brief", "hi");
 
         Assert.Equal(ExitCodes.Usage, result.ExitCode);
-        Assert.Contains("role 'builder' runs on claude, opencode, cursor, copilot only", result.Stderr, StringComparison.Ordinal);
+        Assert.Contains("role 'builder' runs on claude, opencode, cursor, copilot, codex only", result.Stderr, StringComparison.Ordinal);
         Assert.False(Directory.Exists(cli.JobsDirectory));
     }
 

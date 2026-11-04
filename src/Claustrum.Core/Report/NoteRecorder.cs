@@ -68,7 +68,8 @@ public sealed class NoteRecorder(JobPaths job, TimeProvider? timeProvider = null
     }
 
     // The text a role said in one stdout line. JSON events are read for the assistant's text only (claude `assistant` and `result`,
-    // copilot `assistant.message`, opencode `text`, cursor's one `result`): a tool's output that happens to contain the prefix is no note.
+    // copilot `assistant.message`, opencode `text`, cursor's one `result`, codex's `agent_message` items): a tool's output that happens
+    // to contain the prefix is no note.
     private static List<string> TextsIn(string line)
     {
         if (!line.TrimStart().StartsWith('{'))
@@ -108,6 +109,9 @@ public sealed class NoteRecorder(JobPaths job, TimeProvider? timeProvider = null
                 break;
             case "text" when Child(root, "part") is { } part:
                 Add(StringOf(part, "text"));
+                break;
+            case "item.completed" when Child(root, "item") is { } item && StringOf(item, "type") == "agent_message":
+                Add(StringOf(item, "text"));
                 break;
             default:
                 break;

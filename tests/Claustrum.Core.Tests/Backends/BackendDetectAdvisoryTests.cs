@@ -4,15 +4,15 @@ using Claustrum.Core.Tests.Testing;
 namespace Claustrum.Core.Tests.Backends;
 
 // Issue #17's other half: `Doctor.Advisories` defaults to `[]` for every backend that never sets it,
-// so claude/api/opencode/copilot must all detect with an empty advisory list — cursor is the one and
-// only backend with something to say (CursorBackendDetectTests covers it). Driven off
+// so claude/api/opencode/copilot must all detect with an empty advisory list — cursor and codex, both prompt-only deny lists,
+// are the backends with something to say (CursorBackendDetectTests, CodexBackendBuildTests cover them). Driven off
 // BackendRegistry.CreateDefault so a sixth backend added later is covered automatically, the same
 // reasoning RoleLibraryInvariantTests uses for RoleLibrary.ListRoles().
 public sealed class BackendDetectAdvisoryTests
 {
     public static IEnumerable<object[]> NonCursorBackendNames() =>
         BackendRegistry.CreateDefault(new FakePlatform()).All
-            .Where(backend => backend.Name != "cursor")
+            .Where(backend => backend.Name is not ("cursor" or "codex"))
             .Select(backend => new object[] { backend.Name });
 
     [Theory]

@@ -12,7 +12,7 @@
   "deny": ["git push"],
   "mayDelegate": [],
   "report": "tester",
-  "harnesses": ["claude", "opencode", "cursor", "copilot"],
+  "harnesses": ["claude", "opencode", "cursor", "copilot", "codex"],
   "nonNegotiable": [
     "This repo's CLAUDE.md/AGENTS.md are law; take the gate commands from its docs or CI config, never from memory.",
     "Every failure gets a root cause and a fault_in verdict — test or code: you fix the test, you never patch production code.",
