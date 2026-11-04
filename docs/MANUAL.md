@@ -431,7 +431,7 @@ The stdio server. Logging goes to stderr; stdout is the protocol.
 
 | Role | Blind | Permission | Deny | May delegate to | Harnesses | Tier `high` → `xhigh`/`max` |
 |---|---|---|---|---|---|---|
-| `architect` | no | edit+shell | `git push` | builder, code-reviewer, ui-reviewer, tester, demo-author | claude, opencode, cursor, copilot | frontier-reasoning at every tier |
+| `architect` | no | edit+shell (**full on codex**) | `git push` | builder, code-reviewer, ui-reviewer, tester, demo-author | claude, opencode, cursor, copilot, codex | frontier-reasoning at every tier |
 | `builder` | no | edit+shell | `git push` | architect (to ask, not to delegate work) | claude, opencode, cursor, copilot, codex | frontier-coding at every tier |
 | `code-reviewer` | **yes** | readonly | — | — | claude, opencode, cursor, copilot, codex, **api** | standard-coding → frontier-coding |
 | `ui-reviewer` | **yes** | shell (run commands, no edit tools) | `git push`, `checkout`, `switch`, `reset`, `restore`, `stash`, `commit`, `clean`, `rebase`, `merge` | — | claude, opencode | frontier-coding at every tier |
@@ -445,6 +445,13 @@ and `cast questions` offers each role only the aliases that land on one of its h
 name is not checked: it reaches Runner's registry and comes back `backend_missing` (exit 3) with the
 system prompt already written. A repo that ships a role's parts for another harness may list it in
 `.claustrum/roles/<role>/role.json` `harnesses`.
+
+role.json `permissionByBackend` replaces `permission` on the backends it names, below `roles.<role>.permission` and
+`--permission`, which still win. The library uses it once: the architect is `full` on codex. Codex's `workspace-write`
+sandbox writes only the working directory, `/tmp` and `$TMPDIR`. The architect writes more: its delegations keep their jobs
+under `~/.claustrum`, and its integration writes a linked worktree's git dir. So it runs unsandboxed there, as its commands
+already do on claude and opencode. The roles it starts get their own levels: a codex code-reviewer under it is still
+`read-only`. `roles show <role>` prints the entries under `permission:`.
 
 The pipeline order is fixed and the architect owns every step of it: **builder(s) → code-reviewer
 (‖ ui-reviewer when something renders in a browser) → tester → demo-author** (every browser-facing
@@ -1221,7 +1228,7 @@ Permission levels and what each backend does with them:
 | `shell` | ui-reviewer | `--permission-mode dontAsk` (not plan): `Read`, `Glob`, `Grep`, `Bash(*)` and the role's named MCP servers allowed, `--disallowedTools Edit,Write,NotebookEdit`, plus the deny rules. Not a sandbox: a command can still write and delete. A deny entry guards how a command is written; it is not a security boundary | edit deny, bash allow with deny patterns | prompt rule | `--mode plan --deny-tool write` + deny patterns | `workspace-write` with network; no editing by prompt rule |
 | `edit` | — | `acceptEdits` + `--disallowedTools Bash` | edit allow, bash deny | prompt rule | `--allow-all-tools --allow-all-paths --deny-tool shell` | `workspace-write`, no network; no shell by prompt rule |
 | `edit+shell` | architect, builder, tester, demo-author | `acceptEdits`, built-in tools + `Bash(*)`, `--disallowedTools "Bash(<deny>),Bash(<deny> *)"` per deny entry; MCP tools are outside the allow-list | edit allow, bash allow, `<deny>` and `<deny> *` deny | prompt rule | `--allow-all-tools --allow-all-paths --deny-tool "shell(<deny>)"` per entry | `workspace-write` with network: the cwd, `/tmp` and `$TMPDIR` are writable, `$HOME`'s package caches and a linked worktree's git dir are not |
-| `full` | — | `--dangerously-skip-permissions` | `--auto` | `-f --sandbox disabled` | `--allow-all` | `danger-full-access` |
+| `full` | — | `--dangerously-skip-permissions` | `--auto` | `-f --sandbox disabled` | `--allow-all` | `danger-full-access`; the architect's level on codex |
 
 **`readonly` on opencode** matches each shell command on its raw text, so whatever could make that text differ from what bash
 runs is refused, except `*` and `?`: they are opencode's own wildcards and cannot be refused, so a glob in an allowed command

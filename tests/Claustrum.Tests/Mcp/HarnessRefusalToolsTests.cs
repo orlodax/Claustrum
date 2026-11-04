@@ -71,7 +71,7 @@ public sealed class HarnessRefusalToolsTests(AppServicesHomeFixture fixture) : I
         McpException exception = await Assert.ThrowsAsync<McpException>(
             () => ClaustrumTools.CoordinateAsync(brief: "hi", cwd: cwd, cancellationToken: TestContext.Current.CancellationToken));
 
-        Assert.Contains("role 'architect' runs on claude, opencode, cursor, copilot only", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("role 'architect' runs on claude, opencode, cursor, copilot, codex only", exception.Message, StringComparison.Ordinal);
         Assert.Contains(Sources, exception.Message, StringComparison.Ordinal);
         Assert.Contains(".claustrum/roles/architect/role.json", exception.Message, StringComparison.Ordinal);
         Assert.Equal(before, JobDirectories());

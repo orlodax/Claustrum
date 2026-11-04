@@ -27,15 +27,18 @@
   - `backends doctor` accepts any of the three keys, and its problem line now reads "none of OPENROUTER_API_KEY,
     OPENAI_API_KEY or ANTHROPIC_API_KEY is set".
 - **A `codex` backend runs OpenAI's Codex CLI.** `--backend codex`, or an alias `codex:<model>` (`codex:gpt-6.1-sol`), runs
-  `codex exec` headless. Builder, tester and code-reviewer list it in their `harnesses`, so a cast can put
+  `codex exec` headless. Builder, tester, code-reviewer and architect list it in their `harnesses`, so a cast can put
   tool-using roles on OpenAI models. Install it with `npm i -g @openai/codex`, then sign in once with `codex login` (a ChatGPT
   plan) or `codex login --with-api-key` (an OpenAI API key), or set `CODEX_API_KEY`. An `OPENAI_API_KEY` alone is not read by
   `codex exec`: pipe it into `codex login --with-api-key` once.
   - Each permission level is a codex sandbox. `readonly` is `read-only`: writes fail and there is no network. `edit` is
     `workspace-write`, `shell` and `edit+shell` are `workspace-write` with network, and `full` is `danger-full-access`.
     `workspace-write` writes the working directory, `/tmp` and `$TMPDIR` only: a build that has to add a package to `~/.nuget`
-    or `~/.npm`, or a `git` command that writes a linked worktree's git dir, fails there. That is why the architect, which
-    delegates through `~/.claustrum` and integrates with git, does not run on codex, and a codex builder cannot consult it.
+    or `~/.npm`, or a `git` command that writes a linked worktree's git dir, fails there. A codex builder cannot consult the
+    architect for the same reason.
+  - **The architect runs on codex at `full`** (`danger-full-access`). It delegates through `~/.claustrum` and integrates
+    with git, so it cannot work inside `workspace-write`. The new role.json key `permissionByBackend` (`{"codex": "full"}`)
+    sets this; `roles.architect.permission` or `--permission` still win. The roles it starts keep their own levels.
   - Every run passes `--ignore-rules --ignore-user-config`: no codex `.rules` allow rule can lift a command out of the
     sandbox, and neither your `~/.codex/config.toml` nor a repo's `.codex/` folder applies. Codex still writes a
     `[projects."<repo>"] trust_level = "trusted"` entry into `~/.codex/config.toml` after a run that can write; Claustrum's runs

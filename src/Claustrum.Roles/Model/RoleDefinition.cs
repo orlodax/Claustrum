@@ -6,6 +6,8 @@ namespace Claustrum.Roles.Model;
 /// (the architect); only opencode's `mode` reads it today (#85, NOTES.md "A primary role").
 /// <paramref name="UserMcp"/> is the role's default for keeping the operator's user-level MCP servers on claude
 /// (the browser roles need theirs); `roles.&lt;role&gt;.user_mcp` in the user config overrides it (#127, NOTES.md "A claude role gets the repo's MCP servers, not the operator's").
+/// <paramref name="PermissionByBackend"/> replaces `permission` on the named backends: the architect is `full` on codex, whose
+/// workspace-write sandbox cannot reach `~/.claustrum` or a worktree's git dir (NOTES.md "The codex backend, validated against a real install").
 /// </summary>
 public sealed record RoleDefinition(
     string Name,
@@ -24,7 +26,8 @@ public sealed record RoleDefinition(
     bool Primary = false,
     bool UserMcp = false,
     Dictionary<string, string[]>? ToolsByHarness = null,
-    Dictionary<string, string[]>? McpServersByHarness = null)
+    Dictionary<string, string[]>? McpServersByHarness = null,
+    Dictionary<string, string>? PermissionByBackend = null)
 {
     /// <summary>
     /// Tool names this role needs on top of what `permission` grants — the browser MCP servers, or

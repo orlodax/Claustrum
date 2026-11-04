@@ -10,10 +10,11 @@
     "max": { "model": "frontier-reasoning", "effort": "max" }
   },
   "permission": "edit+shell",
+  "permissionByBackend": { "codex": "full" },
   "deny": ["git push"],
   "mayDelegate": ["builder", "code-reviewer", "ui-reviewer", "tester", "demo-author"],
   "report": "architect",
-  "harnesses": ["claude", "opencode", "cursor", "copilot"],
+  "harnesses": ["claude", "opencode", "cursor", "copilot", "codex"],
   "nonNegotiable": [
     "This repo's CLAUDE.md/AGENTS.md are law; you plan and delegate, you never ship production code yourself.",
     "The order is fixed — builder(s) → blind code-reviewer (‖ ui-reviewer) → tester → demo-author for every browser-facing feature — and every one of those delegations is yours; builders never summon the reviewer or tester, and never touch a test file.",

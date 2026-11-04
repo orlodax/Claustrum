@@ -122,7 +122,8 @@ public sealed class Config
 
         string effort = overrides.Effort ?? roleSettings?.Effort ?? role.Effort;
 
-        string permissionString = overrides.Permission ?? roleSettings?.Permission ?? role.Permission;
+        string permissionString = overrides.Permission ?? roleSettings?.Permission
+            ?? (role.PermissionByBackend?.TryGetValue(backend, out string? onBackend) == true ? onBackend : role.Permission);
         if (!PermissionLevelParser.TryParse(permissionString, out PermissionLevel level))
             throw new ConfigException($"unknown permission '{permissionString}'");
 
