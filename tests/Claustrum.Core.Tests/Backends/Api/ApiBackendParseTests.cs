@@ -6,7 +6,8 @@ namespace Claustrum.Core.Tests.Backends.Api;
 // Fixtures live in tests/fixtures/api/. openrouter-success.json, error.json, error-invalid-model.json
 // and anthropic-error.json are genuine captures against live endpoints (2026-09-22, NOTES.md "The
 // opencode and api backends, validated against real endpoints", item 6) — anthropic-success.json is
-// the one fixture here still fabricated, for lack of an ANTHROPIC_API_KEY on the capturing machine.
+// still fabricated, for lack of an ANTHROPIC_API_KEY on the capturing machine; openai-success.json likewise
+// (2026-11-04, no OPENAI_API_KEY here), written to OpenAI's documented chat-completions shape.
 public sealed class ApiBackendParseTests
 {
     private readonly ApiBackend backend = new(platform: null!); // Parse never touches IPlatform.
@@ -32,6 +33,23 @@ public sealed class ApiBackendParseTests
         Assert.Equal(0, parsed.Usage.CacheCreationInputTokens);
         Assert.Empty(parsed.ReportedEdits);
         Assert.NotNull(parsed.Raw);
+    }
+
+    [Fact]
+    public void OpenAiSuccessExtractsMessageAndUsageWithNoCost()
+    {
+        string stdout = File.ReadAllText(FixturePath("openai-success.json"));
+
+        ParsedOutput parsed = backend.Parse(stdout, stderr: "", exitCode: 0);
+
+        Assert.Contains("claustrum-report", parsed.FinalMessage, StringComparison.Ordinal);
+        Assert.False(parsed.IsError);
+        Assert.Null(parsed.CostUsd);
+        Assert.NotNull(parsed.Usage);
+        Assert.Equal(1883, parsed.Usage!.InputTokens);
+        Assert.Equal(25, parsed.Usage.OutputTokens);
+        Assert.Equal(1792, parsed.Usage.CacheReadInputTokens);
+        Assert.Null(parsed.Usage.CacheCreationInputTokens);
     }
 
     [Fact]

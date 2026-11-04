@@ -729,7 +729,7 @@ one says so in `warnings[]`. What each backend accepts as an id:
 | `opencode` | `provider/model`, e.g. `openrouter/deepseek/deepseek-v4-flash` | fixture-only on this machine (no key) |
 | `copilot` | Copilot's names | `auto` — the built-in default `opus` is refused before any API call |
 | `cursor` | Cursor's names | `auto` — the only id a Free plan accepts |
-| `api` | `openrouter:<model>` or `anthropic:<model>` (so `api:anthropic:claude-sonnet-5`) | keyed by `OPENROUTER_API_KEY` / `ANTHROPIC_API_KEY` |
+| `api` | `openrouter:<model>`, `openai:<model>` or `anthropic:<model>` (so `api:openai:gpt-5.1`) | keyed by `OPENROUTER_API_KEY` / `OPENAI_API_KEY` / `ANTHROPIC_API_KEY`; `openai:` is fixture-only so far (no key on the measuring machine) |
 
 **Environment passed to backends** is an allow-list: `PATH HOME USERPROFILE APPDATA LOCALAPPDATA
 TEMP TMP SystemRoot ComSpec LANG SHELL TERM XDG_* *_API_KEY ANTHROPIC_* OPENROUTER_* OPENCODE_*
@@ -1273,7 +1273,7 @@ created. Budget ledgers live beside them under `budget/<tree>/`.
 | exit 2, ``role '<r>' runs on … only (its role.json `harnesses`)`` | the cast, `claustrum.json` or `--backend` sent the role to a harness it is not written for (the demo-author and ui-reviewer run on claude and opencode) | point the role at an alias on one of its harnesses, mark it `not needed` in the cast, or — if the repo ships its parts for that harness — list it under `harnesses` in `.claustrum/roles/<role>/role.json` |
 | exit 3 | the backend's binary is not on `PATH` | install it, or `backends.<name>.path` in config |
 | `Error: Model "opus" … is not available` (copilot, cursor) | the built-in `claude:*` alias reached a non-claude backend | alias the class to `copilot:auto` / `cursor:auto` |
-| `api backend model must be 'openrouter:<model>' or 'anthropic:<model>'` | `--backend api` without a provider-prefixed model | `--model api:anthropic:<id>` |
+| `api backend model must be 'openrouter:<model>', 'openai:<model>' or 'anthropic:<model>'` | `--backend api` without a provider-prefixed model | `--model api:anthropic:<id>` |
 | `report_status: missing` | the role never wrote its report fence | read `final_message`; the run still counts, the report does not |
 | `status: failed`, `error_kind: provider_quota` (or `provider_auth`, `model_not_found`, `provider_transport`) | the model's provider refused the request — no credits (OpenRouter's `402 provider.quota`), a key it rejects, a model it cannot route, no answer — and `error_detail` is its message | fix it at the provider, or give the role a `fallback` in the cast (§8): a refusal before any work is then retried once on it. `retried_as` on the receipt means that already happened: read the retry's |
 | `status: failed`, "… slots … stayed unavailable" | waited past `--timeout` for a `max_parallel` slot | start fewer at once, or raise `--timeout` |

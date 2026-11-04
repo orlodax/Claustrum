@@ -27,7 +27,7 @@ public static class ProviderErrors
         string name = type?.ToLowerInvariant() ?? "";
         if (HasAny(name, "quota", "credit", "billing", "rate-limit", "rate_limit", "ratelimit"))
             return ErrorKind.ProviderQuota;
-        if (HasAny(name, "auth", "forbidden", "permission"))
+        if (HasAny(name, "auth", "forbidden", "permission", "api_key"))
             return ErrorKind.ProviderAuth;
         if (HasAny(name, "no-route", "model", "not_found"))
             return ErrorKind.ModelNotFound;

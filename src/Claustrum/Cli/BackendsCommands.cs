@@ -146,8 +146,8 @@ public static class BackendsCommands
     }
 
     // docs/PLAN.md §B6's `probe` bullet. Order matters: the owner's own skip flag first, then the
-    // binary, then a blocker this backend's own doctor already named (the api backend's "neither
-    // OPENROUTER_API_KEY nor ANTHROPIC_API_KEY is set") — only a backend past all three is worth
+    // binary, then a blocker this backend's own doctor already named (the api backend's "none of
+    // OPENROUTER_API_KEY, OPENAI_API_KEY or ANTHROPIC_API_KEY is set") — only a backend past all three is worth
     // paying for. Exit code stays 0 either way: doctor reports, it does not fail.
     private static async Task<string> ProbeLineAsync(IBackend backend, Doctor doctor, Config config, bool probeSkipped)
     {
@@ -194,7 +194,7 @@ public static class BackendsCommands
             "opencode" => ["ANTHROPIC_API_KEY", "OPENROUTER_API_KEY", "OPENCODE_API_KEY"],
             "copilot" => ["COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"],
             "cursor" => ["CURSOR_API_KEY"],
-            "api" => ["OPENROUTER_API_KEY", "ANTHROPIC_API_KEY"],
+            "api" => ["OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"],
             _ => [],
         };
 

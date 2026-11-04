@@ -45,6 +45,10 @@ public sealed class ApiBackendErrorKindTests
     [InlineData(/*lang=json,strict*/ """{"type":"error","error":{"type":"overloaded_error","message":"busy"}}""", ErrorKind.ProviderTransport)]
     [InlineData(/*lang=json,strict*/ """{"type":"error","error":{"type":"not_found_error","message":"model: x"}}""", ErrorKind.ModelNotFound)]
     [InlineData(/*lang=json,strict*/ """{"error":{"message":"Something odd","code":418}}""", ErrorKind.Other)]
+    [InlineData(/*lang=json,strict*/ """{"error":{"message":"Incorrect API key provided","type":"invalid_request_error","param":null,"code":"invalid_api_key"}}""", ErrorKind.ProviderAuth)]
+    [InlineData(/*lang=json,strict*/ """{"error":{"message":"You exceeded your current quota","type":"insufficient_quota","param":null,"code":"insufficient_quota"}}""", ErrorKind.ProviderQuota)]
+    [InlineData(/*lang=json,strict*/ """{"error":{"message":"The model does not exist","type":"invalid_request_error","param":null,"code":"model_not_found"}}""", ErrorKind.ModelNotFound)]
+    [InlineData(/*lang=json,strict*/ """{"error":{"message":"Unrecognized request argument","type":"invalid_request_error","param":null,"code":null}}""", ErrorKind.Other)]
     public void TheBodysCodeOrTypeDecidesTheKind(string body, ErrorKind expected)
     {
         ParsedOutput parsed = backend.Parse(body, stderr: "", exitCode: 22);
