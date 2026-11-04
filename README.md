@@ -13,7 +13,7 @@
 **Harness-neutral coding-agent delegation.** An "architect" in any host — Claude desktop app,
 Claude Code, VS Code, Cursor, opencode, GitHub Copilot CLI — delegates builds, reviews and test
 runs to agents running on **any other** harness and model (Claude, DeepSeek via opencode +
-OpenRouter, Cursor, Copilot, or a bare API call), and gets back one normalized receipt.
+OpenRouter, Cursor, Copilot, OpenAI via the Codex CLI, or a bare API call), and gets back one normalized receipt.
 
 The story behind it, with the numbers, is newsletter issue 008:
 **[Claustrum — un direttore, qualunque sia il podio](https://orlodax.github.io/tks-newsletter/008-claustrum.html)**

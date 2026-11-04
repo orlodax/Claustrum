@@ -45,13 +45,14 @@ Expect `0.5.0+<commit>`. `dotnet build` leaves no executable at all (the project
 claustrum backends doctor
 ```
 
-On the owner's box (2026-09-22) it finds all five backends plus `gh`:
+On the owner's box (2026-09-22; `codex` added 2026-11-04) it finds all six backends plus `gh`:
 
 | Backend | Found as | Credential today | Usable model ids |
 |---|---|---|---|
 | `claude` | `~/.npm-global/bin/claude` 2.1.278 | Claude Code login (subscription) | `opus`, `sonnet`, `haiku` |
 | `copilot` | `~/.local/bin/copilot` 1.0.87 | logged in (`~/.copilot/config.json`) | `auto` — the only id verified |
 | `cursor` | `~/.local/bin/cursor-agent` | logged in, **Free plan** | `auto` — the only id the plan accepts |
+| `codex` | `~/.npm-global/bin/codex` 0.166.0 | `codex login --with-api-key` (an OpenAI API key) | `gpt-6.1-sol`, codex's default |
 | `opencode` | `~/.opencode/bin/opencode` 2.0.12 | **none**: no `OPENROUTER_API_KEY`, no `opencode auth` | needs a key first |
 | `api` | `curl` | **none**: no `OPENROUTER_API_KEY`, `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` | `openrouter:<id>` / `openai:<id>` / `anthropic:<id>` |
 

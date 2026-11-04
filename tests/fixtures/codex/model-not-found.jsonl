@@ -1,0 +1,5 @@
+{"type":"thread.started","thread_id":"01a1a6bd-0e5a-73e1-b5c6-ea8cdaf36016"}
+{"type":"item.completed","item":{"id":"item_0","type":"error","message":"Model metadata for `gpt-nonexistent-9` not found. Defaulting to fallback metadata; this can degrade performance and cause issues."}}
+{"type":"turn.started"}
+{"type":"error","message":"The model `gpt-nonexistent-9` does not exist or you do not have access to it."}
+{"type":"turn.failed","error":{"message":"The model `gpt-nonexistent-9` does not exist or you do not have access to it."}}

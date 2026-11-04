@@ -66,8 +66,8 @@ public sealed class CastHarnessCheckTests : IDisposable
     [InlineData("demo-author", "copilot:some-model", "copilot", "claude, opencode")]
     [InlineData("ui-reviewer", "api:some-model", "api", "claude, opencode")]
     [InlineData("ui-reviewer", "copilot:some-model", "copilot", "claude, opencode")]
-    [InlineData("tester", "api:some-model", "api", "claude, opencode, cursor, copilot")]
-    [InlineData("builder", "api:some-model", "api", "claude, opencode, cursor, copilot")]
+    [InlineData("tester", "api:some-model", "api", "claude, opencode, cursor, copilot, codex")]
+    [InlineData("builder", "api:some-model", "api", "claude, opencode, cursor, copilot, codex")]
     public void AnUnsupportedHarnessNamesTheRoleTheBackendAndTheHarnessesItRunsOn(string role, string spec, string backend, string harnesses)
     {
         string? problem = Problem(role, spec);
@@ -97,7 +97,7 @@ public sealed class CastHarnessCheckTests : IDisposable
         string? problem = Problem("builder", "api:some-model");
 
         Assert.NotNull(problem);
-        Assert.Contains("builder runs on claude, opencode, cursor, copilot only", problem, StringComparison.Ordinal);
+        Assert.Contains("builder runs on claude, opencode, cursor, copilot, codex only", problem, StringComparison.Ordinal);
         Assert.DoesNotContain("not needed", problem, StringComparison.Ordinal);
         Assert.EndsWith("answer an alias that lands on one of those", problem, StringComparison.Ordinal);
     }

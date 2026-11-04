@@ -18,6 +18,8 @@ public static class EnvAllowList
         // #57: Claude Code's home (login, CLAUDE.md, agents), so a delegated claude reads the caller's.
         // By exact name: a CLAUDE_ prefix would also forward a parent session's CLAUDE_CODE_* markers.
         "CLAUDE_CONFIG_DIR",
+        // Codex's home (auth.json, config.toml, sessions), exact for the same reason: a parent codex sets CODEX_SANDBOX* markers.
+        "CODEX_HOME",
         // macOS's per-user temp directory; without it a child falls back to the shared /tmp (2026-10-14).
         "TMPDIR",
     ];
@@ -33,7 +35,7 @@ public static class EnvAllowList
     // runs from inside a backend cannot find a runtime outside the default location without it, and exits printing only an
     // error (PR #116, first macOS CI run, 2026-10-14: a nested `run builder` under a coordinate architect).
     private static readonly string[] prefixes =
-        ["XDG_", "ANTHROPIC_", "OPENROUTER_", "OPENCODE_", "CURSOR_", "COPILOT_", "NODE_", "DOTNET_ROOT"];
+        ["XDG_", "ANTHROPIC_", "OPENROUTER_", "OPENCODE_", "CURSOR_", "COPILOT_", "OPENAI_", "NODE_", "DOTNET_ROOT"];
 
     private const string ApiKeySuffix = "_API_KEY";
 

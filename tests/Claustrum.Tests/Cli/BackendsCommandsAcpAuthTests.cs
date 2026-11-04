@@ -88,7 +88,7 @@ public sealed class BackendsCommandsAcpAuthTests : IDisposable
         (int exitCode, string stdout, _) = await RunAsync(["backends", "list"], keys);
 
         Assert.Equal(ExitCodes.Ok, exitCode);
-        Assert.Equal(["claude", "api", "opencode", "copilot", "cursor", "acp-opencode"], stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+        Assert.Equal(["claude", "api", "opencode", "copilot", "cursor", "codex", "acp-opencode"], stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
     }
 
     [Fact]

@@ -67,11 +67,11 @@ public sealed class HarnessRefusalTests(AppServicesHomeFixture fixture) : IDispo
     }
 
     [Fact]
-    public void ABuilderOnApiIsRefusedAndTheMessageListsItsFourHarnesses()
+    public void ABuilderOnApiIsRefusedAndTheMessageListsItsFiveHarnesses()
     {
         RoleRenderException exception = Assert.Throws<RoleRenderException>(() => DelegateEngine.Prepare(Request("builder", new ConfigOverrides(Backend: "api"))));
 
-        Assert.Contains("role 'builder' runs on claude, opencode, cursor, copilot only", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("role 'builder' runs on claude, opencode, cursor, copilot, codex only", exception.Message, StringComparison.Ordinal);
         Assert.Contains(".claustrum/roles/builder/role.json", exception.Message, StringComparison.Ordinal);
     }
 

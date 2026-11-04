@@ -194,6 +194,8 @@ public static class BackendsCommands
             "opencode" => ["ANTHROPIC_API_KEY", "OPENROUTER_API_KEY", "OPENCODE_API_KEY"],
             "copilot" => ["COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"],
             "cursor" => ["CURSOR_API_KEY"],
+            // `codex exec` reads CODEX_API_KEY only: an OPENAI_API_KEY alone ran keyless ("Missing bearer", measured 2026-11-04).
+            "codex" => ["CODEX_API_KEY"],
             "api" => ["OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"],
             _ => [],
         };
@@ -208,7 +210,7 @@ public static class BackendsCommands
     }
 
     // Null means "this code does not know where that backend keeps a login", which is still true of
-    // claude and cursor; the three answers below were each read off a real install. Nothing here
+    // claude and cursor; the answers below were each read off a real install. Nothing here
     // throws — doctor must still print its remaining lines.
     private static string? LoginFileStatusFor(string backendName) => backendName switch
     {
@@ -216,6 +218,7 @@ public static class BackendsCommands
         "api" => "not set (env var absent; this backend has no login file — it is a direct HTTPS call)",
         "opencode" => OpencodeLoginFileStatus(),
         "copilot" => CopilotLoginFileStatus(),
+        "codex" => CodexLoginFileStatus(),
         _ => null,
     };
 
@@ -230,6 +233,19 @@ public static class BackendsCommands
         return File.Exists(legacyAuth)
             ? $"present (login file at {legacyAuth} — no env var set; contents not read)"
             : $"not set (env var absent; {legacyAuth} not present, and 2.x keeps credentials in opencode.db, which this does not read)";
+    }
+
+    // `codex login` (an API key or a ChatGPT plan) writes `auth.json` under CODEX_HOME, default `~/.codex`: read off a real 0.166.0
+    // install after `codex login --with-api-key` (2026-11-04). Its presence is all this checks; the key inside is never read.
+    private static string CodexLoginFileStatus()
+    {
+        string home = AppServices.Platform.GetEnvironmentVariable("CODEX_HOME") is { Length: > 0 } relocated
+            ? relocated
+            : Path.Combine(AppServices.Platform.HomeDirectory, ".codex");
+        string path = Path.Combine(home, "auth.json");
+        return File.Exists(path)
+            ? $"present (login file at {path} — no env var set; contents not read)"
+            : $"not set (env var absent; {path} not present — run `codex login`)";
     }
 
     // `~/.copilot/config.json` (relocated by COPILOT_HOME) keeps a non-empty `loggedInUsers` array on

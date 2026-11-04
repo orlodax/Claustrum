@@ -182,7 +182,7 @@ public sealed class CastQuestionnaireTests : IDisposable
     [Theory]
     [InlineData("builder")]
     [InlineData("tester")]
-    public async Task ARoleListedOnFourHarnessesGetsEveryAliasExceptApiAsync(string role)
+    public async Task ARoleListedOnFiveHarnessesGetsEveryAliasExceptApiAsync(string role)
     {
         CastQuestionnaireResult result = await CastQuestionnaire.BuildAsync(roleLibrary, EveryBackendFound(), AliasPerBackendConfig(), cwd, CancellationToken.None);
 
@@ -218,8 +218,8 @@ public sealed class CastQuestionnaireTests : IDisposable
 
         Assert.Contains("It runs on claude, opencode only.", result.Questions.Single(q => q.Key == "demo-author").Prompt, StringComparison.Ordinal);
         Assert.Contains("It runs on claude, opencode only.", result.Questions.Single(q => q.Key == "ui-reviewer").Prompt, StringComparison.Ordinal);
-        Assert.Contains("It runs on claude, opencode, cursor, copilot only.", result.Questions.Single(q => q.Key == "builder").Prompt, StringComparison.Ordinal);
-        Assert.Contains("It runs on claude, opencode, cursor, copilot, api only.", result.Questions.Single(q => q.Key == "code-reviewer").Prompt, StringComparison.Ordinal);
+        Assert.Contains("It runs on claude, opencode, cursor, copilot, codex only.", result.Questions.Single(q => q.Key == "builder").Prompt, StringComparison.Ordinal);
+        Assert.Contains("It runs on claude, opencode, cursor, copilot, codex, api only.", result.Questions.Single(q => q.Key == "code-reviewer").Prompt, StringComparison.Ordinal);
         foreach (CastQuestion question in result.Questions.Where(q => q.Key is not (Cast.ArchitectRole or CastQuestionnaire.MaxParallelKey or "budget")))
             Assert.Contains("It runs on ", question.Prompt, StringComparison.Ordinal);
     }

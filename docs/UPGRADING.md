@@ -26,6 +26,27 @@
     `provider_quota`, `model_not_found` is `model_not_found`, so a cast's `fallback` takes over as for OpenRouter.
   - `backends doctor` accepts any of the three keys, and its problem line now reads "none of OPENROUTER_API_KEY,
     OPENAI_API_KEY or ANTHROPIC_API_KEY is set".
+- **A `codex` backend runs OpenAI's Codex CLI.** `--backend codex`, or an alias `codex:<model>` (`codex:gpt-6.1-sol`), runs
+  `codex exec` headless. Builder, tester and code-reviewer list it in their `harnesses`, so a cast can put
+  tool-using roles on OpenAI models. Install it with `npm i -g @openai/codex`, then sign in once with `codex login` (a ChatGPT
+  plan) or `codex login --with-api-key` (an OpenAI API key), or set `CODEX_API_KEY`. An `OPENAI_API_KEY` alone is not read by
+  `codex exec`: pipe it into `codex login --with-api-key` once.
+  - Each permission level is a codex sandbox. `readonly` is `read-only`: writes fail and there is no network. `edit` is
+    `workspace-write`, `shell` and `edit+shell` are `workspace-write` with network, and `full` is `danger-full-access`.
+    `workspace-write` writes the working directory, `/tmp` and `$TMPDIR` only: a build that has to add a package to `~/.nuget`
+    or `~/.npm`, or a `git` command that writes a linked worktree's git dir, fails there. That is why the architect, which
+    delegates through `~/.claustrum` and integrates with git, does not run on codex, and a codex builder cannot consult it.
+  - Every run passes `--ignore-rules --ignore-user-config`: no codex `.rules` allow rule can lift a command out of the
+    sandbox, and neither your `~/.codex/config.toml` nor a repo's `.codex/` folder applies. Codex still writes a
+    `[projects."<repo>"] trust_level = "trusted"` entry into `~/.codex/config.toml` after a run that can write; Claustrum's runs
+    ignore it.
+  - The deny list, and the half of a level the sandbox cannot express (no shell at `edit`, no editing at `shell`), are
+    rules in the prompt. `backends doctor codex` says so as an advisory.
+  - The receipt carries tokens and a null `cost_usd`: codex prints no price, so a budget charges a codex run its whole cap.
+  - `--resume <session_id>` continues the thread, under the role's own sandbox.
+  - A refusal is classified for a cast's `fallback`: a 401 is `provider_auth`, an unknown model `model_not_found`.
+  - `CODEX_HOME` and `OPENAI_*` now reach every backend's environment.
+  - There is no `sync --only codex`: codex has no per-role agent files to write.
 
 ## 0.4.x → 0.5.0
 
