@@ -145,11 +145,11 @@ public sealed class CastFallbackEndToEndTests : IDisposable
     [Fact]
     public async Task CastCreateRefusesAFallbackOnAHarnessTheRoleDoesNotListExitingTwoAndSavingNothingAsync()
     {
-        CliResult result = await CastCreateAsync(/*lang=json,strict*/ """{"builder":"claude:opus","ui-reviewer":"claude:sonnet","ui-reviewer_fallback":"opencode:some-model"}""");
+        CliResult result = await CastCreateAsync(/*lang=json,strict*/ """{"builder":"claude:opus","ui-reviewer":"claude:sonnet","ui-reviewer_fallback":"cursor:some-model"}""");
 
         Assert.Equal(ExitCodes.Usage, result.ExitCode);
         Assert.Contains("cast 'default' not saved:", result.Stderr, StringComparison.Ordinal);
-        Assert.Contains("'opencode:some-model' puts ui-reviewer's fallback on 'opencode', but ui-reviewer runs on claude only", result.Stderr, StringComparison.Ordinal);
+        Assert.Contains("'cursor:some-model' puts ui-reviewer's fallback on 'cursor', but ui-reviewer runs on claude, opencode only", result.Stderr, StringComparison.Ordinal);
         Assert.Contains("or 'none'", result.Stderr, StringComparison.Ordinal);
         Assert.False(File.Exists(DefaultCastPath));
         Assert.False(Directory.Exists(cli.CastsDirectory));
@@ -169,12 +169,12 @@ public sealed class CastFallbackEndToEndTests : IDisposable
     [Fact]
     public async Task CastNewOnAPipeRefusesAFallbackOnTheWrongHarnessWithoutAskingAgainAsync()
     {
-        // architect_fallback, builder_fallback, code-reviewer_fallback, demo-author_fallback (a claude-only role, on opencode), then the rest unread.
-        CliResult result = await RunAsync(["cast", "new"], "host\nclaude:opus\nclaude:opus\nclaude:opus\nclaude:sonnet\nclaude:sonnet\n2\n10\nnone\nnone\nnone\nopencode:x\nnone\nnone\n");
+        // architect_fallback, builder_fallback, code-reviewer_fallback, demo-author_fallback (on cursor, which it does not list), then the rest unread.
+        CliResult result = await RunAsync(["cast", "new"], "host\nclaude:opus\nclaude:opus\nclaude:opus\nclaude:sonnet\nclaude:sonnet\n2\n10\nnone\nnone\nnone\ncursor:x\nnone\nnone\n");
 
         Assert.Equal(ExitCodes.Usage, result.ExitCode);
         Assert.Contains("cast not saved:", result.Stderr, StringComparison.Ordinal);
-        Assert.Contains("'opencode:x' puts demo-author's fallback on 'opencode'", result.Stderr, StringComparison.Ordinal);
+        Assert.Contains("'cursor:x' puts demo-author's fallback on 'cursor'", result.Stderr, StringComparison.Ordinal);
         Assert.Contains("demo-author_fallback>", result.Stdout, StringComparison.Ordinal);
         Assert.DoesNotContain("tester_fallback>", result.Stdout, StringComparison.Ordinal);
         Assert.False(File.Exists(DefaultCastPath));

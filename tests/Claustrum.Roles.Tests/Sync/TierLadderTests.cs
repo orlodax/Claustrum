@@ -183,15 +183,17 @@ public sealed class TierLadderTests : IDisposable
         Assert.Equal("max", FrontmatterLine("claude", $"{role}-max", "effort"));
     }
 
-    [Fact]
-    public void OpencodeTesterStubsRenderTheSameModelAsTheirHighTierAndUiReviewerIsNotRenderedThere()
+    // ui-reviewer lists opencode since #135, so both roles' stubs render there with their base model.
+    [Theory]
+    [InlineData("tester")]
+    [InlineData("ui-reviewer")]
+    public void OpencodeStubsRenderTheSameModelAsTheirHighTier(string role)
     {
         Sync("opencode");
 
-        string baseModel = FrontmatterLine("opencode", "tester", "model");
-        Assert.Equal(baseModel, FrontmatterLine("opencode", "tester-xhigh", "model"));
-        Assert.Equal(baseModel, FrontmatterLine("opencode", "tester-max", "model"));
-        Assert.False(File.Exists(AgentFile("opencode", "ui-reviewer")));
+        string baseModel = FrontmatterLine("opencode", role, "model");
+        Assert.Equal(baseModel, FrontmatterLine("opencode", $"{role}-xhigh", "model"));
+        Assert.Equal(baseModel, FrontmatterLine("opencode", $"{role}-max", "model"));
     }
 
     // The ladders themselves, as the owner decided them (2026-10-08), straight from role.json.

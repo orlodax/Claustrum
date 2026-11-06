@@ -34,17 +34,45 @@ public sealed class OpencodeSyncTests : IDisposable
         Assert.Empty(result.Foreign);
     }
 
-    // ui-reviewer's harnesses are ["claude"] only and it has no environment.default.md fallback
-    // (roles/ui-reviewer/parts/), so rendering it for opencode would throw — the default "sync
-    // everything" case must filter it out instead of crashing on it.
+    // The default "sync everything" case filters to roles that list opencode; the browser roles now do
+    // (#135), so they are written like any other role instead of being filtered out.
     [Fact]
-    public void DefaultRoleSetExcludesRolesThatDoNotListOpencode()
+    public void DefaultRoleSetIncludesTheBrowserRolesThatListOpencode()
     {
         SyncResult result = NewSync().Sync(cwd);
 
         Assert.Contains(result.Written, p => p.EndsWith(Path.Combine("agent", "builder.md"), StringComparison.Ordinal));
         Assert.Contains(result.Written, p => p.EndsWith(Path.Combine("agent", "tester.md"), StringComparison.Ordinal));
-        Assert.DoesNotContain(result.Written, p => p.Contains("ui-reviewer", StringComparison.Ordinal));
+        Assert.Contains(result.Written, p => p.EndsWith(Path.Combine("agent", "ui-reviewer.md"), StringComparison.Ordinal));
+        Assert.Contains(result.Written, p => p.EndsWith(Path.Combine("agent", "demo-author.md"), StringComparison.Ordinal));
+    }
+
+    // #135: a browser role's opencode agent grants its Playwright MCP verbs through a `tools:` map; a role
+    // with no harness-specific tools gets no `tools:` line at all.
+    [Fact]
+    public void BrowserAgentFrontmatterGrantsThePlaywrightToolsAndTheBuilderGetsNoToolsLine()
+    {
+        OpencodeSync sync = NewSync();
+        sync.Sync(cwd, roles: ["ui-reviewer"]);
+        sync.Sync(cwd, roles: ["builder"]);
+
+        string uiReviewer = File.ReadAllText(Path.Combine(cwd, ".opencode", "agent", "ui-reviewer.md"));
+        Assert.Contains("tools:\n  playwright_*: true\n", uiReviewer, StringComparison.Ordinal);
+
+        string builder = File.ReadAllText(Path.Combine(cwd, ".opencode", "agent", "builder.md"));
+        Assert.DoesNotMatch(@"(?m)^tools:", builder);
+    }
+
+    // #135: the demo-author drives the browser with a scripted driver on opencode, so its agent carries no
+    // `tools:` line — an absent opencode override would fall back to the flat `tools` and leak the two
+    // Claude-only servers (`mcp__Claude_Browser`, `mcp__claude-in-chrome`) into the mapping.
+    [Fact]
+    public void DemoAuthorAgentOnOpencodeGetsNoToolsLine()
+    {
+        NewSync().Sync(cwd, roles: ["demo-author"]);
+
+        string demoAuthor = File.ReadAllText(Path.Combine(cwd, ".opencode", "agent", "demo-author.md"));
+        Assert.DoesNotMatch(@"(?m)^tools:", demoAuthor);
     }
 
     [Fact]

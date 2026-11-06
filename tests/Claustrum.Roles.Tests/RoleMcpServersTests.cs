@@ -28,6 +28,29 @@ public sealed class RoleMcpServersTests : IDisposable
             Assert.Empty(renderer.Render(role, "high", "claude", cwd: null).McpServers!);
     }
 
+    // #135: on opencode the ui-reviewer's server is named by `mcpServersByHarness` (opencode's
+    // `playwright` has no `mcp__` prefix to parse out of `tools`), and it wins over `LibraryMcpServers`.
+    [Fact]
+    public void TheUiReviewerNamesPlaywrightOnOpencodeAndItsClaudeServersOnClaude()
+    {
+        RoleRenderer renderer = new(new RoleLibrary());
+
+        Assert.Equal(["playwright"], renderer.Render("ui-reviewer", "high", "opencode", cwd: null).McpServers!);
+        Assert.Equal(["Claude_Browser", "claude-in-chrome"], renderer.Render("ui-reviewer", "high", "claude", cwd: null).McpServers!);
+    }
+
+    // #135: the demo-author drives the browser with a scripted Playwright driver on opencode, not an MCP
+    // server, so its opencode override is explicitly empty — an absent override would fall back to the flat
+    // `tools` and leak the two Claude-only servers. Claude still names them.
+    [Fact]
+    public void TheDemoAuthorNamesNoServerOnOpencodeAndItsClaudeServersOnClaude()
+    {
+        RoleRenderer renderer = new(new RoleLibrary());
+
+        Assert.Empty(renderer.Render("demo-author", "high", "opencode", cwd: null).McpServers!);
+        Assert.Equal(["Claude_Browser", "claude-in-chrome"], renderer.Render("demo-author", "high", "claude", cwd: null).McpServers!);
+    }
+
     [Fact]
     public void ARepoOverrideThatNamesAnotherServerAddsNoneToTheApprovedOnes()
     {

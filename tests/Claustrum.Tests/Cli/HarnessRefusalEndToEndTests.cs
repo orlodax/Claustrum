@@ -9,7 +9,7 @@ namespace Claustrum.Tests.Cli;
 // The process-door half of #43's harness check, through the real built binary: a role resolved to a
 // harness its role.json does not list exits 2 with the message on stderr and mints no job — the in-process
 // tests (HarnessRefusalTests) cannot see the exit code or the stream. Every refusal throws before a backend
-// is looked up, and the one run that does reach the registry targets "nonexistent"; PATH is emptied for the
+// is looked up, and the two runs that do reach the registry target "nonexistent"; PATH is emptied for the
 // child anyway, so no installed backend could be started even if a refusal were ever lost.
 public sealed class HarnessRefusalEndToEndTests : IDisposable
 {
@@ -31,7 +31,7 @@ public sealed class HarnessRefusalEndToEndTests : IDisposable
         CliResult result = await RunAsync("run", role, "--backend", backend, "--brief", "hi");
 
         Assert.Equal(ExitCodes.Usage, result.ExitCode);
-        Assert.Contains($"role '{role}' runs on claude only", result.Stderr, StringComparison.Ordinal);
+        Assert.Contains($"role '{role}' runs on claude, opencode only", result.Stderr, StringComparison.Ordinal);
         Assert.Contains($"'{backend}'", result.Stderr, StringComparison.Ordinal);
         Assert.Contains(Sources, result.Stderr, StringComparison.Ordinal);
         Assert.Contains($".claustrum/roles/{role}/role.json", result.Stderr, StringComparison.Ordinal);
@@ -51,10 +51,10 @@ public sealed class HarnessRefusalEndToEndTests : IDisposable
     [Fact]
     public async Task RunRefusesADemoAuthorWhoseModelFlagLandsOnAnotherHarnessAsync()
     {
-        CliResult result = await RunAsync("run", "demo-author", "--model", "opencode:some-model", "--brief", "hi");
+        CliResult result = await RunAsync("run", "demo-author", "--model", "cursor:some-model", "--brief", "hi");
 
         Assert.Equal(ExitCodes.Usage, result.ExitCode);
-        Assert.Contains("role 'demo-author' runs on claude only", result.Stderr, StringComparison.Ordinal);
+        Assert.Contains("role 'demo-author' runs on claude, opencode only", result.Stderr, StringComparison.Ordinal);
         Assert.False(Directory.Exists(cli.JobsDirectory));
     }
 
@@ -103,14 +103,17 @@ public sealed class HarnessRefusalEndToEndTests : IDisposable
         Assert.True(File.Exists(Path.Combine(cli.JobsDirectory, jobId, "system.md")));
     }
 
+    // With a harness-neutral browser part (#135) the demo-author renders for an unregistered backend too,
+    // so it reaches Runner's registry check — backend_missing (exit 3) — with its system prompt written.
     [Fact]
-    public async Task RunOfADemoAuthorOnAnUnregisteredBackendFailsAtRenderNamingTheBrowserPartAndMintsNoJobAsync()
+    public async Task RunOfADemoAuthorOnAnUnregisteredBackendAlsoExitsThreeWithItsSystemPromptWrittenAsync()
     {
-        CliResult result = await RunAsync("run", "demo-author", "--backend", "nonexistent", "--brief", "hi");
+        CliResult result = await RunAsync("run", "demo-author", "--backend", "nonexistent", "--brief", "hi", "--json");
 
-        Assert.Equal(ExitCodes.Usage, result.ExitCode);
-        Assert.Contains("part 'browser'", result.Stderr, StringComparison.Ordinal);
-        Assert.DoesNotContain("runs on", result.Stderr, StringComparison.Ordinal);
-        Assert.False(Directory.Exists(cli.JobsDirectory));
+        Assert.Equal(ExitCodes.BackendMissing, result.ExitCode);
+        using JsonDocument document = JsonDocument.Parse(result.Stdout);
+        Assert.Equal("backend_missing", document.RootElement.GetProperty("status").GetString());
+        string jobId = document.RootElement.GetProperty("job_id").GetString()!;
+        Assert.True(File.Exists(Path.Combine(cli.JobsDirectory, jobId, "system.md")));
     }
 }

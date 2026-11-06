@@ -40,15 +40,17 @@ public sealed class CastHarnessCheckTests : IDisposable
     [InlineData("   ")]
     public void ABlankSpecHasNoProblem(string? spec) => Assert.Null(Problem("demo-author", spec));
 
-    // "nonexistent" is not a registered backend: the run keeps its own failure for it (backend_missing,
-    // or a render error for a claude-only part), the cast does not second-guess it.
+    // "nonexistent" is not a registered backend: the run keeps its own failure for it (backend_missing),
+    // the cast does not second-guess it.
     [Fact]
-    public void AnUnregisteredBackendHasNoProblemEvenForAClaudeOnlyRole() =>
+    public void AnUnregisteredBackendHasNoProblemEvenForABrowserRole() =>
         Assert.Null(Problem("demo-author", "nonexistent:some-model"));
 
     [Theory]
     [InlineData("demo-author", "claude:sonnet")]
+    [InlineData("demo-author", "opencode:some-model")]
     [InlineData("ui-reviewer", "claude:opus")]
+    [InlineData("ui-reviewer", "opencode:some-model")]
     [InlineData("builder", "opencode:some-model")]
     [InlineData("tester", "claude:sonnet")]
     [InlineData("code-reviewer", "api:some-model")]
@@ -60,10 +62,10 @@ public sealed class CastHarnessCheckTests : IDisposable
     public void ABareModelIdIsClaudeAndSupported() => Assert.Null(Problem("demo-author", "sonnet"));
 
     [Theory]
-    [InlineData("demo-author", "opencode:some-model", "opencode", "claude")]
-    [InlineData("demo-author", "cursor:some-model", "cursor", "claude")]
-    [InlineData("ui-reviewer", "api:some-model", "api", "claude")]
-    [InlineData("ui-reviewer", "copilot:some-model", "copilot", "claude")]
+    [InlineData("demo-author", "cursor:some-model", "cursor", "claude, opencode")]
+    [InlineData("demo-author", "copilot:some-model", "copilot", "claude, opencode")]
+    [InlineData("ui-reviewer", "api:some-model", "api", "claude, opencode")]
+    [InlineData("ui-reviewer", "copilot:some-model", "copilot", "claude, opencode")]
     [InlineData("tester", "api:some-model", "api", "claude, opencode, cursor, copilot")]
     [InlineData("builder", "api:some-model", "api", "claude, opencode, cursor, copilot")]
     public void AnUnsupportedHarnessNamesTheRoleTheBackendAndTheHarnessesItRunsOn(string role, string spec, string backend, string harnesses)
@@ -116,12 +118,12 @@ public sealed class CastHarnessCheckTests : IDisposable
     [Fact]
     public void AnAliasIsChasedToItsBackendAndQuotedAsTyped()
     {
-        Config config = ConfigWithAliases(("shiny", "opencode:some-model"), ("shinier", "shiny"));
+        Config config = ConfigWithAliases(("shiny", "cursor:some-model"), ("shinier", "shiny"));
 
         string? problem = Problem("demo-author", "shinier", config);
 
         Assert.NotNull(problem);
-        Assert.Contains("'shinier' puts demo-author on 'opencode'", problem, StringComparison.Ordinal);
+        Assert.Contains("'shinier' puts demo-author on 'cursor'", problem, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -177,7 +179,7 @@ public sealed class CastHarnessCheckTests : IDisposable
             new Dictionary<string, CastRoleEntry?>
             {
                 ["builder"] = Entry("api:b"),
-                ["demo-author"] = Entry("opencode:c"),
+                ["demo-author"] = Entry("cursor:c"),
                 ["ui-reviewer"] = Entry("api:d"),
                 ["tester"] = Entry("claude:sonnet"),
                 ["code-reviewer"] = null,
@@ -189,7 +191,7 @@ public sealed class CastHarnessCheckTests : IDisposable
         Assert.StartsWith("cast 'broken' not saved: ", exception.Message, StringComparison.Ordinal);
         Assert.Contains("'api:a' puts architect on 'api'", exception.Message, StringComparison.Ordinal);
         Assert.Contains("'api:b' puts builder on 'api'", exception.Message, StringComparison.Ordinal);
-        Assert.Contains("'opencode:c' puts demo-author on 'opencode'", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("'cursor:c' puts demo-author on 'cursor'", exception.Message, StringComparison.Ordinal);
         Assert.Contains("'api:d' puts ui-reviewer on 'api'", exception.Message, StringComparison.Ordinal);
         Assert.DoesNotContain("tester", exception.Message, StringComparison.Ordinal);
         Assert.DoesNotContain("code-reviewer", exception.Message, StringComparison.Ordinal);

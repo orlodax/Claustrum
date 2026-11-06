@@ -42,7 +42,7 @@ public sealed class CopilotSyncTests : IDisposable
         Assert.True(File.Exists(Path.Combine(cwd, ".github", "skills", "claustrum", "SKILL.md")));
     }
 
-    // Same reasoning as OpencodeSyncTests: ui-reviewer has no environment.default.md fallback.
+    // Same reasoning as OpencodeSyncTests: the browser roles list claude and opencode but not copilot (#135).
     [Fact]
     public void DefaultRoleSetExcludesRolesThatDoNotListCopilot()
     {

@@ -101,8 +101,8 @@ public sealed class CastQuestionnaireTests : IDisposable
         Assert.Equal(keys.Length, keys.Distinct(StringComparer.Ordinal).Count());
     }
 
-    // One alias per backend a role might land on: the demo-author and ui-reviewer run on claude alone
-    // (#43), so offering them an opencode or api alias would offer an answer `run` refuses.
+    // One alias per backend a role might land on: the demo-author and ui-reviewer run on claude and
+    // opencode (#135), so offering them an api alias would offer an answer `run` refuses.
     private static Config AliasPerBackendConfig() => new()
     {
         Merged = new ConfigDocument(
@@ -148,8 +148,8 @@ public sealed class CastQuestionnaireTests : IDisposable
         Assert.False(reviewer.AllowNotNeeded);
         Assert.Contains("It runs on", reviewer.Prompt, StringComparison.Ordinal);
 
-        // A browser role's fallback is offered the claude aliases alone, like its primary.
-        Assert.Equal(["none", "claude-alias"], result.Questions.Single(q => q.Key == "ui-reviewer_fallback").Options);
+        // A browser role's fallback is offered claude and opencode aliases, like its primary.
+        Assert.Equal(["none", "claude-alias", "opencode-alias"], result.Questions.Single(q => q.Key == "ui-reviewer_fallback").Options);
         Assert.Equal("architect_fallback", CastQuestionnaire.FallbackKey(Cast.ArchitectRole));
     }
 
@@ -169,12 +169,12 @@ public sealed class CastQuestionnaireTests : IDisposable
     [Theory]
     [InlineData("demo-author")]
     [InlineData("ui-reviewer")]
-    public async Task ABrowserRoleIsOfferedOnlyTheAliasesThatLandOnClaudeAsync(string role)
+    public async Task ABrowserRoleIsOfferedTheClaudeAndOpencodeAliasesButNeverApiAsync(string role)
     {
         CastQuestionnaireResult result = await CastQuestionnaire.BuildAsync(roleLibrary, EveryBackendFound(), AliasPerBackendConfig(), cwd, CancellationToken.None);
 
         CastQuestion question = result.Questions.Single(q => q.Key == role);
-        Assert.Equal(["claude-alias"], question.Options);
+        Assert.Equal(["claude-alias", "opencode-alias"], question.Options);
         Assert.True(question.AllowNotNeeded);
         Assert.True(question.AllowFreeForm);
     }
@@ -216,8 +216,8 @@ public sealed class CastQuestionnaireTests : IDisposable
     {
         CastQuestionnaireResult result = await CastQuestionnaire.BuildAsync(roleLibrary, EveryBackendFound(), AliasPerBackendConfig(), cwd, CancellationToken.None);
 
-        Assert.Contains("It runs on claude only.", result.Questions.Single(q => q.Key == "demo-author").Prompt, StringComparison.Ordinal);
-        Assert.Contains("It runs on claude only.", result.Questions.Single(q => q.Key == "ui-reviewer").Prompt, StringComparison.Ordinal);
+        Assert.Contains("It runs on claude, opencode only.", result.Questions.Single(q => q.Key == "demo-author").Prompt, StringComparison.Ordinal);
+        Assert.Contains("It runs on claude, opencode only.", result.Questions.Single(q => q.Key == "ui-reviewer").Prompt, StringComparison.Ordinal);
         Assert.Contains("It runs on claude, opencode, cursor, copilot only.", result.Questions.Single(q => q.Key == "builder").Prompt, StringComparison.Ordinal);
         Assert.Contains("It runs on claude, opencode, cursor, copilot, api only.", result.Questions.Single(q => q.Key == "code-reviewer").Prompt, StringComparison.Ordinal);
         foreach (CastQuestion question in result.Questions.Where(q => q.Key is not (Cast.ArchitectRole or CastQuestionnaire.MaxParallelKey or "budget")))

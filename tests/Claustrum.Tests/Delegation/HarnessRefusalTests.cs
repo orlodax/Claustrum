@@ -9,10 +9,11 @@ using Claustrum.Tests.Testing;
 namespace Claustrum.Tests.Delegation;
 
 // DelegateEngine.RequireSupportedHarness (#43, PR #42): a role resolved to a harness its role.json does
-// not list is refused in Prepare — before Render, before any job directory — because the demo-author's and
-// ui-reviewer's browser part is claude-only and a role on a harness nobody wrote it for runs without the
-// tools it needs. Only a backend Claustrum registers is judged; an unknown name keeps its old failure.
-// None of these starts a backend: every refusal throws, and the one run below targets "nonexistent".
+// not list is refused in Prepare — before Render, before any job directory — because a role on a harness
+// nobody wrote it for runs without the tools it needs. The browser roles list claude and opencode (#135);
+// cursor, copilot and api are still refused for them. Only a backend Claustrum registers is judged; an
+// unknown name keeps its old failure. None of these starts a backend: every refusal throws, and the two
+// runs below that reach the registry target "nonexistent".
 [Collection(AppServicesHomeCollectionDefinition.Name)]
 public sealed class HarnessRefusalTests(AppServicesHomeFixture fixture) : IDisposable
 {
@@ -27,7 +28,8 @@ public sealed class HarnessRefusalTests(AppServicesHomeFixture fixture) : IDispo
         TheoryData<string, string> data = [];
         foreach (string role in new[] { "demo-author", "ui-reviewer" })
         {
-            foreach (string backend in new[] { "opencode", "cursor", "copilot", "api" })
+            // opencode is listed by both browser roles now (#135): cursor, copilot and api are the ones still refused.
+            foreach (string backend in new[] { "cursor", "copilot", "api" })
                 data.Add(role, backend);
         }
 
@@ -42,7 +44,7 @@ public sealed class HarnessRefusalTests(AppServicesHomeFixture fixture) : IDispo
 
         RoleRenderException exception = Assert.Throws<RoleRenderException>(() => DelegateEngine.Prepare(Request(role, new ConfigOverrides(Backend: backend))));
 
-        Assert.Contains($"role '{role}' runs on claude only", exception.Message, StringComparison.Ordinal);
+        Assert.Contains($"role '{role}' runs on claude, opencode only", exception.Message, StringComparison.Ordinal);
         Assert.Contains($"'{backend}'", exception.Message, StringComparison.Ordinal);
         Assert.Contains(Sources, exception.Message, StringComparison.Ordinal);
         Assert.Contains($".claustrum/roles/{role}/role.json", exception.Message, StringComparison.Ordinal);
@@ -60,7 +62,7 @@ public sealed class HarnessRefusalTests(AppServicesHomeFixture fixture) : IDispo
         RoleRenderException exception = await Assert.ThrowsAsync<RoleRenderException>(
             () => DelegateEngine.RunAsync(Request(role, new ConfigOverrides(Backend: backend)), TestContext.Current.CancellationToken));
 
-        Assert.Contains("runs on claude only", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("runs on claude, opencode only", exception.Message, StringComparison.Ordinal);
         Assert.Equal(before, JobDirectories());
     }
 
@@ -108,9 +110,9 @@ public sealed class HarnessRefusalTests(AppServicesHomeFixture fixture) : IDispo
     [Fact]
     public void AModelFlagThatLandsOnAnotherHarnessIsRefused()
     {
-        RoleRenderException exception = Assert.Throws<RoleRenderException>(() => DelegateEngine.Prepare(Request("demo-author", new ConfigOverrides(Model: "opencode:some-model"))));
+        RoleRenderException exception = Assert.Throws<RoleRenderException>(() => DelegateEngine.Prepare(Request("demo-author", new ConfigOverrides(Model: "cursor:some-model"))));
 
-        Assert.Contains("runs on claude only", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("runs on claude, opencode only", exception.Message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -124,7 +126,7 @@ public sealed class HarnessRefusalTests(AppServicesHomeFixture fixture) : IDispo
 
         RoleRenderException exception = Assert.Throws<RoleRenderException>(() => DelegateEngine.Prepare(Request("demo-author", applied.Overrides) with { Tier = applied.Tier }));
 
-        Assert.Contains("runs on claude only", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("runs on claude, opencode only", exception.Message, StringComparison.Ordinal);
         Assert.Contains("'cursor'", exception.Message, StringComparison.Ordinal);
     }
 
@@ -137,7 +139,7 @@ public sealed class HarnessRefusalTests(AppServicesHomeFixture fixture) : IDispo
 
         RoleRenderException exception = Assert.Throws<RoleRenderException>(() => DelegateEngine.Prepare(Request("ui-reviewer", new ConfigOverrides())));
 
-        Assert.Contains("role 'ui-reviewer' runs on claude only", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("role 'ui-reviewer' runs on claude, opencode only", exception.Message, StringComparison.Ordinal);
         Assert.Contains("'copilot'", exception.Message, StringComparison.Ordinal);
     }
 
@@ -153,40 +155,39 @@ public sealed class HarnessRefusalTests(AppServicesHomeFixture fixture) : IDispo
         Assert.True(File.Exists(systemMd), $"{systemMd} was not written");
     }
 
-    // For the same name the demo-author fails earlier, at Render, because its browser part exists for
-    // claude alone — and the message names that part, not the harness list.
+    // With a harness-neutral browser part (#135) the demo-author renders for an unregistered backend
+    // exactly as the builder does, so it too reaches Runner's registry check — backend_missing — with its
+    // system prompt already on disk, instead of failing at Render on a missing part.
     [Fact]
-    public void ADemoAuthorOnAnUnregisteredBackendFailsAtRenderNamingTheBrowserPart()
+    public async Task ADemoAuthorOnAnUnregisteredBackendAlsoEndsBackendMissingWithItsSystemPromptWrittenAsync()
     {
-        string[] before = JobDirectories();
+        RunResult result = await DelegateEngine.RunAsync(Request("demo-author", new ConfigOverrides(Backend: "nonexistent")), TestContext.Current.CancellationToken);
 
-        RoleRenderException exception = Assert.Throws<RoleRenderException>(() => DelegateEngine.Prepare(Request("demo-author", new ConfigOverrides(Backend: "nonexistent"))));
-
-        Assert.Contains("part 'browser'", exception.Message, StringComparison.Ordinal);
-        Assert.DoesNotContain("runs on", exception.Message, StringComparison.Ordinal);
-        Assert.Equal(before, JobDirectories());
+        Assert.Equal(RunStatus.BackendMissing, result.Status);
+        string systemMd = Path.Combine(JobDirectory.ResolveRoot(fixture.Platform), result.JobId, "system.md");
+        Assert.True(File.Exists(systemMd), $"{systemMd} was not written");
     }
 
-    // The way out the message names: a repo that ships the parts for another harness adds it to
-    // `harnesses` in its own role.json. Both halves are needed — with the harness alone the refusal is
-    // gone and Render's own error about the missing part takes its place.
+    // A repo can still take the harness back: a local role.json that lists claude alone keeps opencode
+    // refused, even though the library now ships the browser parts for it (#135).
     [Fact]
-    public void ALocalRoleJsonThatAddsAHarnessLiftsTheRefusalAndLeavesTheMissingPartToRender()
+    public void ALocalRoleJsonThatPinsTheRoleToClaudeStillRefusesOpencode()
     {
-        WriteLocalRoleJson("demo-author", /*lang=json,strict*/ """{"harnesses":["claude","opencode"]}""");
+        WriteLocalRoleJson("demo-author", /*lang=json,strict*/ """{"harnesses":["claude"]}""");
 
         RoleRenderException exception = Assert.Throws<RoleRenderException>(() => DelegateEngine.Prepare(Request("demo-author", new ConfigOverrides(Backend: "opencode"))));
 
-        Assert.DoesNotContain("runs on", exception.Message, StringComparison.Ordinal);
-        Assert.Contains("no part 'browser' for harness 'opencode'", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("role 'demo-author' runs on claude only", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("'opencode'", exception.Message, StringComparison.Ordinal);
     }
 
+    // A repo that supplies its own parts still wins over the library's shipped neutral ones.
     [Fact]
     public void ALocalRoleJsonWithTheHarnessAndItsPartsPreparesOnThatHarness()
     {
         WriteLocalRoleJson("demo-author", /*lang=json,strict*/ """{"harnesses":["claude","opencode"]}""");
-        WriteLocalPart("demo-author", "browser.default.md", "Drive the browser with this harness's own tools.");
-        WriteLocalPart("demo-author", "environment.default.md", "Use the host's shell.");
+        WriteLocalPart("demo-author", "browser.md", "Drive the browser with this harness's own tools.");
+        WriteLocalPart("demo-author", "environment.md", "Use the host's shell.");
 
         PreparedDelegation prepared = DelegateEngine.Prepare(Request("demo-author", new ConfigOverrides(Backend: "opencode")));
 
@@ -194,13 +195,17 @@ public sealed class HarnessRefusalTests(AppServicesHomeFixture fixture) : IDispo
         Assert.Contains("Drive the browser with this harness's own tools.", prepared.Role.SystemPrompt, StringComparison.Ordinal);
     }
 
-    // The override is per role: lifting it for the demo-author leaves the ui-reviewer refused.
+    // The override is per role: pinning the demo-author to claude does not change the ui-reviewer, which
+    // still runs on opencode from the library (#135).
     [Fact]
-    public void ALocalOverrideForOneRoleDoesNotLiftTheRefusalForTheOther()
+    public void ALocalOverrideForOneRoleLeavesTheOtherAtItsLibraryHarnesses()
     {
-        WriteLocalRoleJson("demo-author", /*lang=json,strict*/ """{"harnesses":["claude","opencode"]}""");
+        WriteLocalRoleJson("demo-author", /*lang=json,strict*/ """{"harnesses":["claude"]}""");
 
-        Assert.Throws<RoleRenderException>(() => DelegateEngine.Prepare(Request("ui-reviewer", new ConfigOverrides(Backend: "opencode"))));
+        Assert.Throws<RoleRenderException>(() => DelegateEngine.Prepare(Request("demo-author", new ConfigOverrides(Backend: "opencode"))));
+        PreparedDelegation prepared = DelegateEngine.Prepare(Request("ui-reviewer", new ConfigOverrides(Backend: "opencode")));
+
+        Assert.Equal("opencode", prepared.Role.Backend);
     }
 
     private DelegateRequest Request(string role, ConfigOverrides overrides) => new(

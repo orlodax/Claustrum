@@ -208,16 +208,19 @@ public sealed class TierStubBodyTests : IDisposable
         }
     }
 
-    // ui-reviewer lists only claude and has no default environment part, so its base body does not render for opencode,
-    // and a stub that embeds that body inherits the failure instead of writing a half-empty file.
+    // Since #135 the shipped parts cover every harness, so an unrenderable base body is made with a local
+    // ROLE.md naming a part no file supplies: the stub surfaces that render error rather than a half-empty file.
     [Fact]
-    public void AStubForAHarnessTheRoleCannotRenderForIsARenderErrorNotAnEmptyBody()
+    public void AStubWhoseBaseBodyCannotRenderSurfacesTheRenderErrorNotAnEmptyBody()
     {
+        string roleDir = Path.Combine(cwd, ".claustrum", "roles", "ui-reviewer");
+        Directory.CreateDirectory(roleDir);
+        File.WriteAllText(Path.Combine(roleDir, "ROLE.md"), "Body with {{part:not_a_real_part}} in it.\n");
         RoleRenderer renderer = new(library);
 
         RoleRenderException ex = Assert.Throws<RoleRenderException>(() => renderer.RenderTierStub("ui-reviewer", "xhigh", "opencode", cwd));
 
-        Assert.Contains("ui-reviewer", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("not_a_real_part", ex.Message, StringComparison.Ordinal);
     }
 
     [Fact]

@@ -29,8 +29,8 @@ public sealed class TesterAndUiReviewerPortTests : IDisposable
     public void UiReviewerDescriptionMatchesTheOwnersFrontmatterFlattenedToOneLine() =>
         Assert.Equal(OwnerUiReviewerDescription, library.LoadRole("ui-reviewer", cwd).Definition.Description);
 
-    // roles/ui-reviewer/parts/browser.claude.md is deliberately claude-only (no browser.default.md),
-    // so only a claude render pulls in the verb table it holds.
+    // roles/ui-reviewer/parts/browser.md is harness-neutral (there is no browser.claude.md), so every
+    // harness renders the same table — the Claude panes and the "Other harness" Playwright column (#135).
     [Fact]
     public void UiReviewerRenderedForClaudeContainsTheBrowserVerbTable()
     {
@@ -39,18 +39,21 @@ public sealed class TesterAndUiReviewerPortTests : IDisposable
         RenderedRole rendered = renderer.Render("ui-reviewer", "high", "claude", cwd);
 
         Assert.Contains("preview_start", rendered.SystemBody, StringComparison.Ordinal);
-        Assert.Contains("| Verb | Browser pane (default) | Claude in Chrome | Other harness |", rendered.SystemBody, StringComparison.Ordinal);
+        Assert.Contains("| Verb | Browser pane (Claude) | Claude in Chrome | Other harness |", rendered.SystemBody, StringComparison.Ordinal);
     }
 
-    // No browser.opencode.md and no browser.default.md exist: RoleLibrary.ReadPart must fail loudly
-    // naming the part, not silently emit an empty table.
+    // #135: the same neutral part renders for opencode, whose prose sends it to the table's third column
+    // (the Playwright MCP tools) instead of the Claude panes.
     [Fact]
-    public void UiReviewerRenderedForOpencodeThrowsNamingTheBrowserPart()
+    public void UiReviewerRenderedForOpencodeBindsThePlaywrightColumn()
     {
         RoleRenderer renderer = new(library);
 
-        RoleRenderException ex = Assert.Throws<RoleRenderException>(() => renderer.Render("ui-reviewer", "high", "opencode", cwd));
-        Assert.Contains("browser", ex.Message, StringComparison.Ordinal);
+        RenderedRole rendered = renderer.Render("ui-reviewer", "high", "opencode", cwd);
+
+        Assert.Contains("bind the third column", rendered.SystemBody, StringComparison.Ordinal);
+        Assert.Contains("playwright_browser_navigate", rendered.SystemBody, StringComparison.Ordinal);
+        Assert.Contains("browser_snapshot", rendered.SystemBody, StringComparison.Ordinal);
     }
 
     [Theory]

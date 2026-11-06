@@ -252,5 +252,57 @@ public sealed class OpencodeMcpConfigSyncTests : IDisposable
         Assert.NotEmpty(opencodeRerun.Skipped);
     }
 
+    // ---- the playwright server is not the sync's business anymore (#135) ------------------------------
+
+    // #135 moved a browser role's Playwright server out of opencode.json and into the run's own
+    // OPENCODE_CONFIG_CONTENT (OpencodeBackend.BuildConfigContent), so a repo sync registers only the
+    // claustrum server: a browser role's sync adds no `playwright` key at all.
+    [Fact]
+    public void SyncingABrowserRoleAddsNoPlaywrightKeyToOpencodeJson()
+    {
+        SyncResult result = NewSync().Sync(cwd, roles: ["ui-reviewer"]);
+
+        string opencodeJsonPath = Path.Combine(cwd, "opencode.json");
+        Assert.Contains(opencodeJsonPath, result.Written);
+        JsonNode mcp = JsonNode.Parse(File.ReadAllText(opencodeJsonPath))!["mcp"]!;
+        Assert.Equal("local", mcp["claustrum"]!["type"]!.GetValue<string>());
+        Assert.Null(mcp["playwright"]);
+    }
+
+    // A human's own `playwright` entry is a sibling server claustrum never owns: the merge leaves it exactly
+    // as it is, with no foreign warning, while still registering claustrum beside it.
+    [Fact]
+    public void APreExistingPlaywrightServerIsLeftUntouchedWithNoForeignWarning()
+    {
+        string opencodeJsonPath = Path.Combine(cwd, "opencode.json");
+        File.WriteAllText(opencodeJsonPath, /*lang=json,strict*/ """{"mcp":{"playwright":{"type":"local","command":["my-own-playwright"]}}}""");
+
+        SyncResult result = NewSync().Sync(cwd, roles: ["ui-reviewer"]);
+
+        Assert.Empty(result.Foreign);
+        JsonNode mcp = JsonNode.Parse(File.ReadAllText(opencodeJsonPath))!["mcp"]!;
+        Assert.Equal("my-own-playwright", mcp["playwright"]!["command"]![0]!.GetValue<string>());
+        Assert.Equal("local", mcp["claustrum"]!["type"]!.GetValue<string>());
+    }
+
+    // #135: a browser role's playwright server is per-run now, so a --global sync of one writes no global
+    // opencode.json at all — exactly as a non-browser role does (the claustrum server is repo-only).
+    [Fact]
+    public void GlobalSyncOfABrowserRoleWritesNoGlobalOpencodeJson()
+    {
+        NewSync().Sync(cwd, roles: ["ui-reviewer"], global: true);
+
+        Assert.False(File.Exists(Path.Combine(fakeHome, ".config", "opencode", "opencode.json")));
+    }
+
+    // A non-browser role under --global writes no global opencode.json at all (the claustrum server is repo-only).
+    [Fact]
+    public void GlobalSyncOfANonBrowserRoleWritesNoGlobalOpencodeJson()
+    {
+        NewSync().Sync(cwd, roles: ["builder"], global: true);
+
+        Assert.False(File.Exists(Path.Combine(fakeHome, ".config", "opencode", "opencode.json")));
+    }
+
     private static string Sha256Hex(string content) => Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(content)));
 }
