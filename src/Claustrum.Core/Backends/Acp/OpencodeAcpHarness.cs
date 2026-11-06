@@ -31,7 +31,7 @@ public sealed class OpencodeAcpHarness(IPlatform platform) : IAcpHarness
         string agentName = $"claustrum-{run.Role.Name}";
         Dictionary<string, string> env = new(StringComparer.Ordinal)
         {
-            ["OPENCODE_CONFIG_CONTENT"] = OpencodeBackend.BuildConfigContent(agentName, run.SystemPromptFilePath, run.Role.Permission, run.ReadDirs),
+            ["OPENCODE_CONFIG_CONTENT"] = OpencodeBackend.BuildConfigContent(agentName, run.SystemPromptFilePath, run.Role.Permission, run.ReadDirs, run.Role.McpServers),
 
             // A one-shot headless run has no UI to live-update, and the watcher costs an inotify
             // instance: at the host's `fs.inotify.max_user_instances` the server stops dead after
