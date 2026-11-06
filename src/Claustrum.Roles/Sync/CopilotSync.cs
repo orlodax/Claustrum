@@ -36,9 +36,9 @@ public sealed class CopilotSync(RoleLibrary library, RoleRenderer renderer, stri
         // files must not leak into the user-global agents (issue #99).
         string? overrideCwd = global ? null : cwd;
 
-        // Same reasoning as OpencodeSync: ui-reviewer lists only "claude" and has no
-        // environment.default.md fallback, so the default "sync everything" case has to filter to
-        // roles that actually declare copilot support.
+        // Same reasoning as OpencodeSync: the browser roles list claude and opencode but not copilot
+        // (#135), so the default "sync everything" case filters to roles that actually declare copilot
+        // support rather than rendering one that cannot run here.
         IReadOnlyList<string> targetRoles = roles is { Count: > 0 }
             ? roles
             : [.. library.ListRoles().Where(role => library.LoadRole(role, overrideCwd).Definition.Harnesses.Contains(Harness))];

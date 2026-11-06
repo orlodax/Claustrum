@@ -47,11 +47,11 @@ public sealed class OpencodeSync(RoleLibrary library, RoleRenderer renderer, str
         // files must not leak into the user-global agents (issue #99).
         string? overrideCwd = global ? null : cwd;
 
-        // Unlike ClaudeSync (where every current role happens to list "claude" and ship an
-        // environment.claude.md), ui-reviewer lists only "claude" and has no environment.default.md
-        // fallback — rendering it for "opencode" throws by design. The default "sync everything" case
-        // has to filter to roles that actually declare opencode support; an explicit --only-roles list
-        // naming an unsupported role is left to fail loudly with RoleRenderer's own clear exception.
+        // The default "sync everything" case filters to roles that actually declare opencode support:
+        // a role published for claude alone has no opencode body, so rendering it here throws by
+        // design. The browser roles (ui-reviewer, demo-author) now list ["claude", "opencode"] and
+        // ship environment.default.md parts, so they sync like any other role; an explicit --only-roles
+        // list naming an unsupported role is left to fail loudly with RoleRenderer's own clear exception.
         IReadOnlyList<string> targetRoles = roles is { Count: > 0 }
             ? roles
             : [.. library.ListRoles().Where(role => library.LoadRole(role, overrideCwd).Definition.Harnesses.Contains(Harness))];
@@ -127,7 +127,7 @@ public sealed class OpencodeSync(RoleLibrary library, RoleRenderer renderer, str
         TierChoice choice = settings.Choose(Harness, role, "high", definition.Tiers["high"], OpencodeModelFor);
         SyncSettings.RecordModel(into, Harness, role, choice.Model, choice.Reason);
         settings.RecordUnrenderedPermission(into, Harness, role);
-        string frontmatter = BuildAgentFrontmatter(definition.Description, definition.Primary, choice, definition.Deny);
+        string frontmatter = BuildAgentFrontmatter(definition.Description, definition.Primary, choice, definition.Deny, definition.GetExtraTools(Harness));
         string body = renderer.Render(role, "high", Harness, overrideCwd).SystemBody;
         string path = Path.Combine(agentDir, $"{role}.md");
         writer.Write(path, role, frontmatter, body, force, mode, into, root, localOverride: loaded.IsLocalOverride);
@@ -140,7 +140,7 @@ public sealed class OpencodeSync(RoleLibrary library, RoleRenderer renderer, str
         bool sameModel = choice.Model == settings.Choose(Harness, role, "high", definition.Tiers["high"], OpencodeModelFor).Model;
         if (!sameModel)
             SyncSettings.RecordModel(into, Harness, $"{role}-{tier}", choice.Model, choice.Reason);
-        string frontmatter = BuildAgentFrontmatter(SyncWriter.TierDescription(role, tier, sameModel), definition.Primary, choice, definition.Deny);
+        string frontmatter = BuildAgentFrontmatter(SyncWriter.TierDescription(role, tier, sameModel), definition.Primary, choice, definition.Deny, definition.GetExtraTools(Harness));
         string body = renderer.RenderTierStub(role, tier, Harness, overrideCwd);
         string path = Path.Combine(agentDir, $"{role}-{tier}.md");
         writer.Write(path, role, frontmatter, body, force, mode, into, root, localOverride: loaded.IsLocalOverride);
@@ -165,7 +165,7 @@ public sealed class OpencodeSync(RoleLibrary library, RoleRenderer renderer, str
     // `variant:` is opt-in (#35, option c): written only when the model spec itself carries `#<variant>`,
     // never from the tier's effort, which a model may not publish. `mode: all` lets a primary role (the
     // architect) be picked as the main agent and still be spawned as a subagent (#85).
-    private static string BuildAgentFrontmatter(string description, bool primary, TierChoice choice, string[] roleDeny)
+    private static string BuildAgentFrontmatter(string description, bool primary, TierChoice choice, string[] roleDeny, string[] extraTools)
     {
         (string model, string? variant) = choice.Model.Split('#', 2) is [string name, string tag] ? (name, tag) : (choice.Model, null);
         StringBuilder builder = new();
@@ -188,6 +188,17 @@ public sealed class OpencodeSync(RoleLibrary library, RoleRenderer renderer, str
                 builder.Append($"    {SyncWriter.YamlQuoted(pattern)}: deny\n");
                 builder.Append($"    {SyncWriter.YamlQuoted($"{pattern} *")}: deny\n");
             }
+        }
+
+        // Harness-specific tools (#135): a browser role's Playwright MCP verbs on opencode. Every other
+        // role's tools come from the `permission` level alone, so this stays empty (no `tools:` line).
+        if (extraTools.Length > 0)
+        {
+            // opencode's agent `tools` field is a YAML mapping of tool name -> bool, not a sequence:
+            // a list makes opencode silently drop the whole agent file (measured on v2.2.5).
+            builder.Append("tools:\n");
+            foreach (string tool in extraTools)
+                builder.Append($"  {tool}: true\n");
         }
 
         builder.Append("---");

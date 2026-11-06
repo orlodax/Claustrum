@@ -47,7 +47,7 @@ public sealed class OpencodeBackend(IPlatform platform) : IBackend, IPostRunHook
     public ProcessSpec Build(ResolvedRun run)
     {
         string agentName = $"claustrum-{run.Role.Name}";
-        string configContent = BuildConfigContent(agentName, run.SystemPromptFilePath, run.Role.Permission, run.ReadDirs);
+        string configContent = BuildConfigContent(agentName, run.SystemPromptFilePath, run.Role.Permission, run.ReadDirs, run.Role.McpServers);
 
         // Two departures from docs/PLAN.md §A3's opencode argv, both measured 2026-09-22 — NOTES.md
         // "The opencode and api backends, validated against real endpoints" has the evidence.
@@ -383,7 +383,7 @@ public sealed class OpencodeBackend(IPlatform platform) : IBackend, IPostRunHook
     // level, because the agent copy binds only the primary agent: a `readonly` run handed the job
     // to opencode's own `subagent` tool, which wrote the file through `general` (measured
     // 2026-09-22). v2 removed the OPENCODE_PERMISSION env var v1.18.31 read all this from.
-    internal static string BuildConfigContent(string agentName, string systemPromptFilePath, PermissionPolicy permission, string[]? readDirs = null)
+    internal static string BuildConfigContent(string agentName, string systemPromptFilePath, PermissionPolicy permission, string[]? readDirs = null, string[]? mcpServers = null)
     {
         string[] given = [.. (readDirs ?? []).Where(dir => ReadDirRefusalFor(dir, permission.Level) is null)];
         using MemoryStream buffer = new();
@@ -398,10 +398,39 @@ public sealed class OpencodeBackend(IPlatform platform) : IBackend, IPostRunHook
             writer.WriteEndObject();
             writer.WriteEndObject();
             WritePermission(writer, permission, given);
+            WriteMcpServers(writer, mcpServers);
             writer.WriteEndObject();
         }
 
         return Encoding.UTF8.GetString(buffer.ToArray());
+    }
+
+    // #135: a browser role's Playwright server ships in the run's own OPENCODE_CONFIG_CONTENT, not the
+    // repo/global opencode.json: it is per-run and needs no manifest. Pinned version, `--isolated` so a
+    // parallel run's profile cannot collide; `--headless` since a claustrum run has no screen.
+    private static void WriteMcpServers(Utf8JsonWriter writer, string[]? mcpServers)
+    {
+        if (mcpServers is not { Length: > 0 })
+            return;
+
+        writer.WriteStartObject("mcp");
+        foreach (string server in mcpServers)
+        {
+            if (server == "playwright")
+            {
+                writer.WriteStartObject("playwright");
+                writer.WriteString("type", "local");
+                writer.WriteStartArray("command");
+                writer.WriteStringValue("npx");
+                writer.WriteStringValue("@playwright/mcp@0.0.84");
+                writer.WriteStringValue("--headless");
+                writer.WriteStringValue("--isolated");
+                writer.WriteEndArray();
+                writer.WriteEndObject();
+            }
+        }
+
+        writer.WriteEndObject();
     }
 
     // docs/PLAN.md §A3 permission table's opencode column, plus `execute`: v2 ships a second

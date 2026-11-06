@@ -49,9 +49,9 @@ public sealed class CursorSync(RoleLibrary library, RoleRenderer renderer, strin
         // files must not leak into the user-global agents (issue #99).
         string? overrideCwd = global ? null : cwd;
 
-        // Same reasoning as Opencode/CopilotSync: ui-reviewer lists only "claude" and has no
-        // environment.default.md fallback, so the default "sync everything" case has to filter to
-        // roles that actually declare cursor support.
+        // Same reasoning as Opencode/CopilotSync: no current role lists cursor alone, but the filter is
+        // what makes the default "sync everything" case safe — the browser roles list claude and opencode
+        // (#135) and must not be written here, so only roles that declare cursor support are targeted.
         IReadOnlyList<string> targetRoles = roles is { Count: > 0 }
             ? roles
             : [.. library.ListRoles().Where(role => library.LoadRole(role, overrideCwd).Definition.Harnesses.Contains(Harness))];
