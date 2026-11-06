@@ -434,17 +434,16 @@ The stdio server. Logging goes to stderr; stdout is the protocol.
 | `architect` | no | edit+shell | `git push` | builder, code-reviewer, ui-reviewer, tester, demo-author | claude, opencode, cursor, copilot | frontier-reasoning at every tier |
 | `builder` | no | edit+shell | `git push` | architect (to ask, not to delegate work) | claude, opencode, cursor, copilot | frontier-coding at every tier |
 | `code-reviewer` | **yes** | readonly | — | — | claude, opencode, cursor, copilot, **api** | standard-coding → frontier-coding |
-| `ui-reviewer` | **yes** | shell (run commands, no edit tools) | `git push`, `checkout`, `switch`, `reset`, `restore`, `stash`, `commit`, `clean`, `rebase`, `merge` | — | claude only (its browser part) | frontier-coding at every tier |
+| `ui-reviewer` | **yes** | shell (run commands, no edit tools) | `git push`, `checkout`, `switch`, `reset`, `restore`, `stash`, `commit`, `clean`, `rebase`, `merge` | — | claude, opencode | frontier-coding at every tier |
 | `tester` | no | edit+shell | `git push` | — | claude, opencode, cursor, copilot | standard-coding at every tier |
-| `demo-author` | no — briefed sighted | edit+shell (it writes its deck) | 24 git verbs: `push`, the common ones that stage or commit (`add`, `commit`, `apply`, `update-index`, `read-tree`, …) and that move `HEAD`, refs or the tree (`checkout`, `reset`, `stash`, `merge`, `pull`, `update-ref`, …) — not every one (`branch -f`/`-D`, `worktree remove`, `tag`, `notes` stay open); read-only git stays open, `merge-base` included | — | claude only (its browser part) | standard-coding, one tier |
+| `demo-author` | no — briefed sighted | edit+shell (it writes its deck) | 24 git verbs: `push`, the common ones that stage or commit (`add`, `commit`, `apply`, `update-index`, `read-tree`, …) and that move `HEAD`, refs or the tree (`checkout`, `reset`, `stash`, `merge`, `pull`, `update-ref`, …) — not every one (`branch -f`/`-D`, `worktree remove`, `tag`, `notes` stay open); read-only git stays open, `merge-base` included | — | claude, opencode | standard-coding, one tier |
 
 A role runs only on the harnesses it lists: `run`, `delegate` and `coordinate` refuse a registered
-backend outside that list with exit 2 before any job exists (a demo-author mapped to opencode, say),
+backend outside that list with exit 2 before any job exists (a demo-author mapped to cursor, say),
 and `cast questions` offers each role only the aliases that land on one of its harnesses;
 `cast create`/`cast new`/`cast_create` refuse an answer that lands elsewhere. An unregistered backend
-name is not checked: a role that renders on any harness (builder, tester, …) comes back
-`backend_missing`, while the demo-author and ui-reviewer fail to render first (`no part 'browser'
-for harness '<name>'`, exit 2). A repo that ships a role's parts for another harness may list it in
+name is not checked: it reaches Runner's registry and comes back `backend_missing` (exit 3) with the
+system prompt already written. A repo that ships a role's parts for another harness may list it in
 `.claustrum/roles/<role>/role.json` `harnesses`.
 
 The pipeline order is fixed and the architect owns every step of it: **builder(s) → code-reviewer
@@ -1271,7 +1270,7 @@ created. Budget ledgers live beside them under `budget/<tree>/`.
 | `warning: .mcp.json (<state>): the architect's worktree gets HEAD's copy — your local edit stays out of it` (stderr before the run; MCP `warnings`) | a committed harness config has a local edit — plain, or hidden by `skip-worktree`/`assume-unchanged` — and the architect and its children read the committed one | nothing, if the committed copy works; otherwise commit the edit, or stop the run and move the setting somewhere committed |
 | exit 2, `… git-ignore .claustrum/worktrees/, … in a committed .gitignore first` | no committed rule ignores Claustrum's working directories (as written: a whitelist `.gitignore` with `*` and `!*/` un-ignores a worktree directory), so `jobs clean` could not remove the architect's worktree and its own `git add` would take in its builders' worktrees, briefs and locks | `claustrum init` appends the rules; commit `.gitignore`, then rerun |
 | exit 2, `coordinate runs the architect in a worktree of the whole repository …: run it from <root>` | `coordinate` ran in a subdirectory of the repository | run it from the repository root, with the cast in `.claustrum/casts/` there |
-| exit 2, ``role '<r>' runs on … only (its role.json `harnesses`)`` | the cast, `claustrum.json` or `--backend` sent the role to a harness it is not written for (the demo-author and ui-reviewer are claude-only) | point the role at an alias on one of its harnesses, mark it `not needed` in the cast, or — if the repo ships its parts for that harness — list it under `harnesses` in `.claustrum/roles/<role>/role.json` |
+| exit 2, ``role '<r>' runs on … only (its role.json `harnesses`)`` | the cast, `claustrum.json` or `--backend` sent the role to a harness it is not written for (the demo-author and ui-reviewer run on claude and opencode) | point the role at an alias on one of its harnesses, mark it `not needed` in the cast, or — if the repo ships its parts for that harness — list it under `harnesses` in `.claustrum/roles/<role>/role.json` |
 | exit 3 | the backend's binary is not on `PATH` | install it, or `backends.<name>.path` in config |
 | `Error: Model "opus" … is not available` (copilot, cursor) | the built-in `claude:*` alias reached a non-claude backend | alias the class to `copilot:auto` / `cursor:auto` |
 | `api backend model must be 'openrouter:<model>' or 'anthropic:<model>'` | `--backend api` without a provider-prefixed model | `--model api:anthropic:<id>` |
