@@ -38,9 +38,11 @@ public sealed class ScriptedBackend(string exe, string[] args, ParsedOutput? par
         ? new ScriptedBackend("cmd", ["/c", "exit 0"])
         : new ScriptedBackend("sh", ["-c", "exit 0"]);
 
+    // The sleeper is the process ProcessRunner starts, never a shell's child: a cancel kills the tree but waits only for
+    // that process, and a `cmd /c ping` grandchild still held the temp cwd when Dispose deleted it (Windows CI, 2026-11-02 and -06).
     public static ScriptedBackend Sleep(int seconds) => OperatingSystem.IsWindows()
-        ? new ScriptedBackend("cmd", ["/c", "ping", "-n", (seconds + 1).ToString(), "127.0.0.1"])
-        : new ScriptedBackend("sh", ["-c", $"sleep {seconds}"]);
+        ? new ScriptedBackend("ping", ["-n", (seconds + 1).ToString(), "127.0.0.1"])
+        : new ScriptedBackend("sleep", [seconds.ToString()]);
 
     // A registered backend whose executable BinaryLocator will never resolve on PATH — distinct
     // from the unregistered-backend-name case (BackendRegistry.TryGet returning false), this instead
