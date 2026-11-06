@@ -1,5 +1,18 @@
 # Upgrading Claustrum
 
+## 0.5.x → Unreleased
+
+- **ui-reviewer and demo-author now run on opencode (#135).** The browser roles list `opencode` in their `harnesses`
+  and ship harness-neutral `browser.md` and `environment.md` parts (a harness-specific `browser.<harness>.md` still
+  wins, then the neutral file, then a legacy `browser.default.md`). Synced for opencode the ui-reviewer carries a
+  `playwright_*` tool grant; its Playwright MCP server is supplied per run in the run's own `OPENCODE_CONFIG_CONTENT`,
+  so `sync` writes nothing for it into `opencode.json` (where only the `claustrum` server is registered). The
+  demo-author drives the browser with a scripted Node + Playwright driver instead, so it carries no tool grant and no
+  MCP server on opencode. A repo's `claustrum.json` that pinned either role to a claude-only alias may need updating;
+  the harness-refusal message now reads `runs on claude, opencode only`. The Claude render is unchanged in substance —
+  the demo-author's browser text was merged into one part and the ui-reviewer's table now labels its first column
+  `Browser pane (Claude)`.
+
 ## 0.4.x → 0.5.0
 
 A script that checks `status == "success"`, or exit code 0, now also sees `success_with_issues` and exit 8 for a job whose

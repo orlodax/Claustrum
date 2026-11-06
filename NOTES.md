@@ -3254,11 +3254,10 @@ house rules, tier stubs, the `ROLE.md`/parts split — is untouched.
   rule would force every stale old test onto the builder as `code`. A builder's needed test change
   goes in `behaviour_to_cover`. The demo-author's `## Browser` heading fixes the dangling pointer in
   "Capture" (devkit's fix); an `## Environment` heading was added as ui-reviewer already has.
-- **Not ported.** devkit's `/demo` command (Claustrum syncs no such command); the opencode
-  demo-author's Playwright-MCP binding (`browser_take_screenshot` + `mv`, `external_directory`
-  allows) — the role is `harnesses: ["claude"]` with no non-claude browser part, and `OpencodeSync`
-  emits no MCP tool permissions to carry one; model names (`sonnet`, `opus`) and
-  `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH`, as in "The architect role, ported last".
+- **Not ported.** devkit's `/demo` command (Claustrum syncs no such command); model names
+  (`sonnet`, `opus`) and `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH`, as in "The architect role, ported
+  last". *(The opencode demo-author's Playwright-MCP binding, once listed here as not taken, landed
+  later — see "ui-reviewer and demo-author on opencode (#135)".)*
 - **`library.json` stays `1.0.0`.** Fourteen role-text commits since 92ca212 never bumped it, and
   `sync --check` already flags a stale file by comparing it with a fresh render (whose marker
   carries the body's `sha256`); a bump would only rewrite every marker line.
@@ -3312,11 +3311,11 @@ backend failed differently — `RoleLibrary.ReadPart` threw for the missing `bro
   `backend_missing` for a role that renders anywhere (the existing `--backend nonexistent` tests rely
   on it), while a claude-only role fails first at its missing `browser` part. The message names every
   source a cast entry can come from — they all arrive as overrides — and the local
-  `.claustrum/roles/<role>/role.json` `harnesses` escape. A `browser.default.md`
-  bound to Playwright MCP (devkit's opencode file is a worked one) was not taken: opencode below
-  `full` denies `external_directory`, so the deck could not reach the main checkout from a worktree
-  nor the script live outside the tree; cursor's deny list is advisory; and none of it can be tested
-  without a paid real install. The gate also covers ui-reviewer, which had the same latent failure.
+  `.claustrum/roles/<role>/role.json` `harnesses` escape. *(A `browser.default.md` bound to
+  Playwright MCP was not taken then: opencode below `full` denies `external_directory`, cursor's deny
+  list is advisory, and none of it could be tested without a paid real install. #135 took it later —
+  see "ui-reviewer and demo-author on opencode (#135)".)* The gate also covers ui-reviewer, which had
+  the same latent failure.
   `cast questions` offers each role only aliases landing on its harnesses, says where it runs, and
   — when that leaves no option — says why and still offers `not needed`; `cast create`, `cast new`
   and `cast_create` refuse an answer on another registered harness (`CastHarnessCheck`), so a
@@ -7322,3 +7321,39 @@ user-level server stays attached and denied. Measured on this machine, a headles
 user servers `chrome`, `odoo-tek` and `cloudways`, and claude.ai connectors, but no `claude-in-chrome` or `Claude_Browser`.
 So a ui-reviewer here needs `mcp_servers: ["chrome"]`. Auto-approving every user server would have handed a blind reviewer
 odoo-tek writes and cloudways deletions. Narrowing what `user_mcp` attaches is #129.
+
+## ui-reviewer and demo-author on opencode (2026-11-05, issue #135)
+
+The browser roles shipped for claude alone: their `browser` part existed only as `browser.claude.md`
+and `harnesses` listed claude, so the harness check refused them on every other backend. #135 makes
+them first-class on opencode.
+
+- **One harness-neutral part.** `roles/{ui-reviewer,demo-author}/parts/{browser,environment}.md` carry
+  both the Claude surfaces and the non-Claude ones (the ui-reviewer's browser table has an "Other
+  harness" column; the demo-author's frames the Claude halves against the scripted driver).
+  `RoleLibrary.ReadPart` resolves `{part}.{harness}.md` first, then the neutral `{part}.md`, then the
+  legacy `{part}.default.md`, so the merge left the older roles' `.claude.md`/`.default.md` pairs alone.
+  On Claude the render is the same substance, re-labelled `Browser pane (Claude)`.
+- **Tool grants are per harness.** `role.json` grew `toolsByHarness` and `mcpServersByHarness`:
+  `RoleDefinition.GetExtraTools(harness)` returns the override when it names one, else the flat
+  `tools`, and `RoleRenderer.LibraryMcpServers` prefers `mcpServersByHarness`. Only the ui-reviewer
+  names `playwright_*` / `["playwright"]` for opencode. The demo-author's opencode overrides are
+  explicitly **empty**, not absent: an absent override falls back to the flat `tools` and leaks the two
+  Claude-only servers onto opencode (a `tools:` line naming `mcp__Claude_Browser`).
+- **The Playwright MCP server is per run, not in the config.** `OpencodeSync` writes only the
+  ui-reviewer's `tools:` mapping (`playwright_*: true` — a YAML sequence makes opencode silently drop
+  the whole agent file, measured v2.2.5); the server behind those verbs ships in the run's own
+  `OPENCODE_CONFIG_CONTENT`. `OpencodeBackend.BuildConfigContent` gained an `mcpServers` argument and
+  writes `"mcp": {"playwright": {"type": "local", "command": ["npx", "@playwright/mcp@0.0.84",
+  "--headless", "--isolated"]}}` when the role names `playwright`. Pinned and `--isolated` so a
+  parallel run's profile cannot collide (`2026-09-22`'s "not taken" built on the server's clashing
+  profile), `--headless` since a claustrum run has no screen.
+- **The demo-author drives the browser by script.** It has no browser MCP server on opencode at all:
+  it records through a Node + Playwright script run over the shell, which writes the frames, the video
+  and the deck. So `sync` touches `opencode.json` only for the `claustrum` server.
+- **McpConfigSync is single-target again.** An earlier revision of #135 grew a multi-target merge and
+  an `EnsurePlaywright` that added the `playwright` key to `opencode.json` (repo root, or the global
+  root under `--global`); the per-run config made both unnecessary, so `McpConfigSync.Merge` and
+  `OpencodeSync` are back to one entry per file, and `opencode.json`'s `playwright` key is once more a
+  human's own — never written, never warned about. This note supersedes the two above that called the
+  opencode demo-author's Playwright-MCP binding "not taken".

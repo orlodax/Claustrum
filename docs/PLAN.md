@@ -358,4 +358,4 @@ Phase 2 (not built now): `claustrum pipeline pipeline.json` — stages architect
 - Cursor CLI cannot be smoke-tested on this machine (not installed, subscription unknown) — its backend ships behind fixtures + a teammate's validation. *(Resolved 2026-09-21: the owner installed `cursor-agent` on the Linux box; the backend is validated with real captures, Free plan ⇒ `--model auto` only.)*
 
 ## Not in v1 (explicit)
-Pipeline orchestrator; `opencode serve`/ACP/Copilot SDK transports (all shell-out for now); YAML config; ui-reviewer on non-Claude harnesses; automatic Windows↔WSL path translation; `mc-*` metaconcert roles.
+Pipeline orchestrator; `opencode serve`/ACP/Copilot SDK transports (all shell-out for now); YAML config; automatic Windows↔WSL path translation; `mc-*` metaconcert roles.
