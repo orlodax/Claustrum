@@ -817,7 +817,7 @@ shows `(built-in default — no claustrum.json or user config defines it)` as it
 |---|---|---|
 | `architect` | `host` or `spawned on <alias>` | free form |
 | `builder` | model for the builder | free form |
-| `code-reviewer`, `tester`, `ui-reviewer`, `demo-author` | model for the role — claude aliases only for `ui-reviewer` and `demo-author` | free form, `not needed` (for `demo-author`, that is the "no demo" switch) |
+| `code-reviewer`, `tester`, `ui-reviewer`, `demo-author` | model for the role — claude or opencode aliases only for `ui-reviewer` and `demo-author` | free form, `not needed` (for `demo-author`, that is the "no demo" switch) |
 | `builder_max_parallel` | `1`, `2`, `3`, … | free form |
 | `budget` | USD, or `no cap` | free form |
 | `architect_fallback`, `builder_fallback`, `code-reviewer_fallback`, … | asked last, one per role: the same aliases as the role's own question, or `none` (the default, and what `cast new` takes when its input ends first, so a script written before fallbacks still works). Dropped when the role is `not needed`, or the architect is `host` | free form |
@@ -825,7 +825,7 @@ shows `(built-in default — no claustrum.json or user config defines it)` as it
 Answer them with `claustrum cast new` on a terminal, `claustrum cast create --answers file.json`
 from a script, or `/claustrum` in a chat host (the synced skill asks with the host's own picker,
 then calls `cast_create`). An empty option list means no `claustrum.json` alias lands on an installed
-backend the role runs on — on a machine without `claude`, the demo-author and ui-reviewer have none;
+backend the role runs on — on a machine with neither `claude` nor `opencode`, the demo-author and ui-reviewer have none;
 `cast questions` and `cast new` say so and still offer `not needed`. All three refuse an answer that
 puts a role — or its fallback — on a harness it does not list, naming the role and its harnesses (`cast new` asks again
 on a terminal, and exits 2 when its input is piped, rather than shifting later answers). Because

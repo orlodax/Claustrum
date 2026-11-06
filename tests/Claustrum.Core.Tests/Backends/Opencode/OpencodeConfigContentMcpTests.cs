@@ -54,8 +54,20 @@ public sealed class OpencodeConfigContentMcpTests
         JsonElement playwright = config.RootElement.GetProperty("mcp").GetProperty("playwright");
         Assert.Equal("local", playwright.GetProperty("type").GetString());
         Assert.Equal(
-            ["npx", "@playwright/mcp@0.0.84", "--headless", "--isolated"],
+            ["npx", "--yes", "@playwright/mcp@0.0.84", "--headless", "--isolated", "--browser", "chromium", "--output-dir", Path.Combine("/job", "playwright")],
             playwright.GetProperty("command").EnumerateArray().Select(part => part.GetString()!));
+    }
+
+    // Without --output-dir the server writes `.playwright-mcp/` into its cwd, the tree under review.
+    [Fact]
+    public void ThePlaywrightServerWritesItsFilesUnderTheJobDirectory()
+    {
+        using JsonDocument config = Config(["playwright"]);
+
+        string[] command = [.. config.RootElement.GetProperty("mcp").GetProperty("playwright").GetProperty("command").EnumerateArray().Select(part => part.GetString()!)];
+        int flag = Array.IndexOf(command, "--output-dir");
+        Assert.True(flag >= 0);
+        Assert.Equal(Path.Combine("/job", "playwright"), command[flag + 1]);
     }
 
     // Only `playwright` is a server claustrum knows how to spell today: any other name is skipped.

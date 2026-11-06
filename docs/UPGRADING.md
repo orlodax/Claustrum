@@ -9,7 +9,11 @@
   so `sync` writes nothing for it into `opencode.json` (where only the `claustrum` server is registered). The
   demo-author drives the browser with a scripted Node + Playwright driver instead, so it carries no tool grant and no
   MCP server on opencode. A repo's `claustrum.json` that pinned either role to a claude-only alias may need updating;
-  the harness-refusal message now reads `runs on claude, opencode only`. The Claude render is unchanged in substance —
+  the harness-refusal message now reads `runs on claude, opencode only`. **First use on opencode:** the ui-reviewer's
+  server runs Playwright's own Chromium, a one-time ~120 MB install —
+  `npx @playwright/mcp@0.0.84 install-browser chrome-for-testing`; until then the role reports BLOCKED rather than
+  downloading it. Inside an interactive opencode session (an architect spawning the ui-reviewer) there is no
+  server unless you register a `playwright` one yourself; `claustrum run` always brings its own. The Claude render is unchanged in substance —
   the demo-author's browser text was merged into one part and the ui-reviewer's table now labels its first column
   `Browser pane (Claude)`.
 

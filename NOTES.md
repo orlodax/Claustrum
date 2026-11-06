@@ -7344,13 +7344,28 @@ them first-class on opencode.
   ui-reviewer's `tools:` mapping (`playwright_*: true` — a YAML sequence makes opencode silently drop
   the whole agent file, measured v2.2.5); the server behind those verbs ships in the run's own
   `OPENCODE_CONFIG_CONTENT`. `OpencodeBackend.BuildConfigContent` gained an `mcpServers` argument and
-  writes `"mcp": {"playwright": {"type": "local", "command": ["npx", "@playwright/mcp@0.0.84",
-  "--headless", "--isolated"]}}` when the role names `playwright`. Pinned and `--isolated` so a
-  parallel run's profile cannot collide (`2026-09-22`'s "not taken" built on the server's clashing
-  profile), `--headless` since a claustrum run has no screen.
+  writes `"mcp": {"playwright": {"type": "local", "command": ["npx", "--yes", "@playwright/mcp@0.0.84",
+  "--headless", "--isolated", "--browser", "chromium", "--output-dir", "<job>/playwright"]}}` when the
+  role names `playwright`. Pinned and `--isolated` so a parallel run's profile cannot collide
+  (`2026-09-22`'s "not taken" built on the server's clashing profile), `--headless` since a claustrum
+  run has no screen. Measured 2026-11-06 on this Fedora box, both later flags fix a real failure:
+  the default `chrome` channel wants Google Chrome at `/opt/google/chrome` (a Flatpak Chrome is not
+  there), so the run uses Playwright's own Chromium, which is a one-time install of the same pin —
+  `npx @playwright/mcp@0.0.84 install-browser chrome-for-testing` (~120 MB); without `--output-dir`
+  the server writes `.playwright-mcp/` snapshots into its cwd, the tree under review. The
+  ui-reviewer part tells the model to report a missing browser as BLOCKED, never to install it.
+- **A synced opencode ui-reviewer has the grant but no server.** opencode has no per-agent MCP
+  servers, and registering one in `opencode.json` puts it in front of every agent (the rejected
+  first revision below). So an architect running inside opencode that spawns the ui-reviewer as a
+  subagent gets no browser unless the human registered a `playwright` server themselves; a
+  delegated `claustrum run` always has one.
 - **The demo-author drives the browser by script.** It has no browser MCP server on opencode at all:
   it records through a Node + Playwright script run over the shell, which writes the frames, the video
-  and the deck. So `sync` touches `opencode.json` only for the `claustrum` server.
+  and the deck. So `sync` touches `opencode.json` only for the `claustrum` server. Measured
+  2026-11-06 (deepseek-v4-pro on `acp-opencode`, $0.17): with no Playwright in the repo the role ran
+  `npm init -y && npm install playwright` in the checkout and left `node_modules/`, `package.json` and
+  a lockfile there. The part now loads Playwright from npm's cache instead
+  (`npx --yes -p playwright -c 'NODE_PATH=… node -'`), which writes nothing into the tree.
 - **McpConfigSync is single-target again.** An earlier revision of #135 grew a multi-target merge and
   an `EnsurePlaywright` that added the `playwright` key to `opencode.json` (repo root, or the global
   root under `--global`); the per-run config made both unnecessary, so `McpConfigSync.Merge` and
