@@ -47,7 +47,7 @@ public sealed class OpencodeBackend(IPlatform platform) : IBackend, IPostRunHook
     public ProcessSpec Build(ResolvedRun run)
     {
         string agentName = $"claustrum-{run.Role.Name}";
-        string configContent = BuildConfigContent(agentName, run.SystemPromptFilePath, run.Role.Permission, run.ReadDirs, run.Role.McpServers);
+        string configContent = BuildConfigContent(agentName, run.SystemPromptFilePath, run.Role.Permission, run.ReadDirs, run.Role.McpServers, run.JobDirectory);
 
         // Two departures from docs/PLAN.md §A3's opencode argv, both measured 2026-09-22 — NOTES.md
         // "The opencode and api backends, validated against real endpoints" has the evidence.
@@ -383,7 +383,8 @@ public sealed class OpencodeBackend(IPlatform platform) : IBackend, IPostRunHook
     // level, because the agent copy binds only the primary agent: a `readonly` run handed the job
     // to opencode's own `subagent` tool, which wrote the file through `general` (measured
     // 2026-09-22). v2 removed the OPENCODE_PERMISSION env var v1.18.31 read all this from.
-    internal static string BuildConfigContent(string agentName, string systemPromptFilePath, PermissionPolicy permission, string[]? readDirs = null, string[]? mcpServers = null)
+    internal static string BuildConfigContent(
+        string agentName, string systemPromptFilePath, PermissionPolicy permission, string[]? readDirs = null, string[]? mcpServers = null, string? jobDirectory = null)
     {
         string[] given = [.. (readDirs ?? []).Where(dir => ReadDirRefusalFor(dir, permission.Level) is null)];
         using MemoryStream buffer = new();
@@ -398,17 +399,22 @@ public sealed class OpencodeBackend(IPlatform platform) : IBackend, IPostRunHook
             writer.WriteEndObject();
             writer.WriteEndObject();
             WritePermission(writer, permission, given);
-            WriteMcpServers(writer, mcpServers);
+            WriteMcpServers(writer, mcpServers, jobDirectory);
             writer.WriteEndObject();
         }
 
         return Encoding.UTF8.GetString(buffer.ToArray());
     }
 
+    // Its browser is a one-time install of the same pin: `npx @playwright/mcp@0.0.84 install-browser chrome-for-testing`.
+    internal const string PlaywrightMcpPackage = "@playwright/mcp@0.0.84";
+
     // #135: a browser role's Playwright server ships in the run's own OPENCODE_CONFIG_CONTENT, not the
     // repo/global opencode.json: it is per-run and needs no manifest. Pinned version, `--isolated` so a
     // parallel run's profile cannot collide; `--headless` since a claustrum run has no screen.
-    private static void WriteMcpServers(Utf8JsonWriter writer, string[]? mcpServers)
+    // `--browser chromium`: the default `chrome` channel needs Google Chrome at /opt/google/chrome and failed on a
+    // Flatpak-Chrome Fedora box (2026-11-06); `--output-dir`: by default it writes `.playwright-mcp/` into the reviewed tree.
+    private static void WriteMcpServers(Utf8JsonWriter writer, string[]? mcpServers, string? jobDirectory)
     {
         if (mcpServers is not { Length: > 0 })
             return;
@@ -418,13 +424,15 @@ public sealed class OpencodeBackend(IPlatform platform) : IBackend, IPostRunHook
         {
             if (server == "playwright")
             {
+                string[] command = ["npx", "--yes", PlaywrightMcpPackage, "--headless", "--isolated", "--browser", "chromium"];
+                if (jobDirectory is not null)
+                    command = [.. command, "--output-dir", Path.Combine(jobDirectory, "playwright")];
+
                 writer.WriteStartObject("playwright");
                 writer.WriteString("type", "local");
                 writer.WriteStartArray("command");
-                writer.WriteStringValue("npx");
-                writer.WriteStringValue("@playwright/mcp@0.0.84");
-                writer.WriteStringValue("--headless");
-                writer.WriteStringValue("--isolated");
+                foreach (string part in command)
+                    writer.WriteStringValue(part);
                 writer.WriteEndArray();
                 writer.WriteEndObject();
             }

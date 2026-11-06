@@ -1,7 +1,7 @@
 Think in these verbs and bind them to the surface the session offers. Use **one** surface per run,
 and never while a ui-reviewer is driving the same browser.
 
-| Verb | Browser pane (Claude) | Claude in Chrome | Scripted driver (non-Claude) |
+| Verb | Browser pane (Claude) | Claude in Chrome | Scripted driver (every harness) |
 |---|---|---|---|
 | open / start app | `preview_start`, `navigate` | `navigate` | `page.goto` |
 | snapshot (a11y tree) | `read_page`, `find` | same | `locator` |
@@ -12,19 +12,30 @@ and never while a ui-reviewer is driving the same browser.
 | **write a frame to disk** | not possible | not possible | `page.screenshot({ path })` |
 | **record video** | not possible | not possible | `recordVideo: { dir, size: viewport }` |
 
-On Claude, the Browser pane and Claude in Chrome are **interactive surfaces that cannot save a
-frame** — `computer`'s screenshot and Chrome's come back as an image in the tool result with no path
-argument, and an image you can only look at is not bytes you can `Write`. So the run has two halves:
-- **Rehearse** on the Browser pane — follow the storyboard, confirm each state, and read each
-  target's rectangle. Those screenshots are for your eyes only.
-- **Capture** with a Playwright Node script — logged in through the access recipe's mechanism
-  (storage state, dev-only route, setup script) and never by typing a password — that writes the
-  frames into the deck directory as `<nn>-before.png` / `<nn>-after.png`, records the video, and
-  writes `index.html` and `manifest.json`.
+🚨 **On Claude, the Browser pane and Claude in Chrome cannot save a frame.** `computer`'s
+screenshot, and Chrome's, come back to *you* as an image in the tool result: there is no path
+argument, and an image you can only look at is not bytes you can `Write`. A walk that tries to build
+the deck from them produces a manifest whose `before`/`after` names point at nothing. So the run has
+two halves:
 
-On every other harness the whole walk is scripted — there are no interactive surfaces to rehearse
-on. One Playwright script does it all: navigate, resolve rectangles, capture frames with
-`page.screenshot({ path })`, record video, and write the deck.
+- **Rehearse** on the Browser pane — follow the storyboard, confirm each state is the one your
+  caption will claim, and read each target's rectangle. Those screenshots are for your eyes only.
+- **Capture** with a driver that writes files: the repo's own Playwright or Cypress when it has one,
+  otherwise a Playwright script — in the session scratchpad when you have one, else fed to `node`
+  on stdin so no script file is written at all; never in the tree — logged in through the access
+  recipe's mechanism (storage state, dev-only route, setup script) and never by typing a password.
+  It writes the frames into the deck directory as `<nn>-before.png` / `<nn>-after.png`, to match
+  the manifest, and records the video.
+
+On every other harness there is no interactive surface to rehearse on, so the capture driver does
+the whole walk — navigate, resolve rectangles, frames, video, deck — under the same rules: the
+repo's own driver first, otherwise a script fed to `node` on stdin, never a file in the tree.
+
+**Never `npm init` or `npm install` in the checkout** to get Playwright: a `node_modules/`,
+`package.json` or lockfile left there is a change to the tree you record (an opencode run did exactly
+that, 2026-11-06). When the repo has no Playwright of its own, load it from npm's cache, outside the
+tree: `npx --yes -p playwright -c 'NODE_PATH="$(dirname "$(dirname "$(command -v playwright)")")" node -' < script`
+(or the script on stdin). Name that fetch in `gaps`.
 
 **Write every deck file — and the `info/exclude` line — from the capture script.** `Write`, `Edit`,
 shell redirections and `cp`/`mv`/`mkdir` targets are checked against the session's working

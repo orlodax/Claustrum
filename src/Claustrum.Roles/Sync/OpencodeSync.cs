@@ -50,7 +50,7 @@ public sealed class OpencodeSync(RoleLibrary library, RoleRenderer renderer, str
         // The default "sync everything" case filters to roles that actually declare opencode support:
         // a role published for claude alone has no opencode body, so rendering it here throws by
         // design. The browser roles (ui-reviewer, demo-author) now list ["claude", "opencode"] and
-        // ship environment.default.md parts, so they sync like any other role; an explicit --only-roles
+        // ship harness-neutral browser.md and environment.md parts, so they sync like any other role; an explicit --only-roles
         // list naming an unsupported role is left to fail loudly with RoleRenderer's own clear exception.
         IReadOnlyList<string> targetRoles = roles is { Count: > 0 }
             ? roles
