@@ -620,11 +620,11 @@ public static class DelegateEngine
     // An ACP backend renders the role for its harness (`opencode`), the name role.json `harnesses` lists (#130); an unknown name is its own.
     private static string HarnessOf(string backend) => AppServices.Backends.TryGet(backend, out IBackend? chosen) ? chosen.Harness : backend;
 
-    // role.json `harnesses` is where a role is written to run (#43): anywhere else it fails to render
-    // (demo-author's and ui-reviewer's browser part is claude-only) or runs without the tools it needs,
-    // so it is refused here, before Render and before any job exists. Only a backend Claustrum knows is
-    // checked, by its harness (`acp-opencode` plays opencode's roles, #130): an unknown name is left to Render
-    // (a claude-only part fails there) or to Runner's backend_missing, as before. Cast entries arrive as
+    // role.json `harnesses` is where a role is written to run (#43): anywhere else the role runs without
+    // the tools it needs (the browser roles list claude and opencode, #135), so it is refused here, before
+    // Render and before any job exists. Only a backend Claustrum knows is checked, by its harness
+    // (`acp-opencode` plays opencode's roles, #130): an unknown name is left to Render (a part a role
+    // cannot supply fails there) or to Runner's backend_missing, as before. Cast entries arrive as
     // overrides, so the message cannot tell a flag from the cast and names every source.
     private static void RequireSupportedHarness(string role, string backendName, string cwd)
     {
