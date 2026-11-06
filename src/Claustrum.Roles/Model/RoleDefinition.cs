@@ -22,7 +22,9 @@ public sealed record RoleDefinition(
     string[]? Tools = null,
     string[]? WithoutTools = null,
     bool Primary = false,
-    bool UserMcp = false)
+    bool UserMcp = false,
+    Dictionary<string, string[]>? ToolsByHarness = null,
+    Dictionary<string, string[]>? McpServersByHarness = null)
 {
     /// <summary>
     /// Tool names this role needs on top of what `permission` grants — the browser MCP servers, or
@@ -36,4 +38,13 @@ public sealed record RoleDefinition(
     /// `NotebookEdit` on `edit+shell` (PR #42 review). Optional, like <see cref="Tools"/>.
     /// </summary>
     public string[] DroppedTools => WithoutTools ?? [];
+
+    /// <summary>
+    /// Tool names this role needs on top of what `permission` grants, for a specific harness: the
+    /// per-harness override when role.json names one, else the flat <see cref="ExtraTools"/> (#135).
+    /// </summary>
+    public string[] GetExtraTools(string harness) =>
+        ToolsByHarness is not null && ToolsByHarness.TryGetValue(harness, out string[]? tools)
+            ? tools
+            : ExtraTools;
 }

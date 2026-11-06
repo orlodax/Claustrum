@@ -59,17 +59,24 @@ public sealed class RoleRenderer(RoleLibrary library)
             Blind: definition.Blind,
             Warnings: warnings.Count > 0 ? [.. warnings] : null,
             UserMcp: definition.UserMcp,
-            McpServers: LibraryMcpServers(cwd is null ? definition : library.LoadRole(role, cwd: null).Definition));
+            McpServers: LibraryMcpServers(cwd is null ? definition : library.LoadRole(role, cwd: null).Definition, harness));
     }
 
     // #140: `mcp__<server>` (or `mcp__<server>__<tool>`) in the library's own role.json `tools`, never a repo override's: a repo naming
     // `mcp__<personal server>` there would have a shell-level run call that server unasked (roles.<role>.mcp_servers is the user's way in).
-    private static string[] LibraryMcpServers(RoleDefinition libraryDefinition) =>
-        [.. libraryDefinition.ExtraTools
+    // #135: a harness whose servers are not named `mcp__…` (opencode's `playwright`) declares them in `mcpServersByHarness`, which wins.
+    private static string[] LibraryMcpServers(RoleDefinition libraryDefinition, string harness)
+    {
+        if (libraryDefinition.McpServersByHarness is { } serversByHarness
+            && serversByHarness.TryGetValue(harness, out string[]? servers))
+            return servers;
+
+        return [.. libraryDefinition.ExtraTools
             .Where(tool => tool.StartsWith(McpToolPrefix, StringComparison.Ordinal))
             .Select(tool => tool[McpToolPrefix.Length..].Split("__", 2)[0])
             .Where(server => server.Length > 0)
             .Distinct(StringComparer.Ordinal)];
+    }
 
     /// <summary>
     /// <paramref name="role"/> with an api run's inlined rule files re-read from <paramref name="rulesCwd"/>

@@ -42,8 +42,8 @@ public static class CastQuestionnaire
             .OrderBy(m => m.Alias, StringComparer.Ordinal)];
 
         // A role is offered only the aliases that land on a harness its role.json lists (#43): the
-        // demo-author and ui-reviewer are claude-only, and `run` refuses them anywhere else. Free-form
-        // answers stay open, so the prompt says where the role runs. An ACP backend plays its harness's
+        // demo-author and ui-reviewer run on claude and opencode (#135), and `run` refuses them elsewhere.
+        // Free-form answers stay open, so the prompt says where the role runs. An ACP backend plays its harness's
         // roles (#130), as CastHarnessCheck judges it; an unregistered name stands for itself.
         string HarnessOfModel(string model) => backends.TryGet(backendOf[model], out IBackend? backend) ? backend.Harness : backendOf[model];
         string[] HarnessesOf(string role) => roleLibrary.LoadRole(role, cwd).Definition.Harnesses;

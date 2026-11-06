@@ -154,19 +154,21 @@ public sealed class RoleLibrary
     public string ReadShared(string relativePath) => ReadEmbedded(relativePath);
 
     /// <summary>
-    /// Resolves `{{part:name}}`: local override wins over embedded, harness-specific file wins over
-    /// `.default.md` (docs/PLAN.md §B2). A null <paramref name="cwd"/> reads the library alone, and a local
+    /// Resolves `{{part:name}}`: local override wins over embedded; harness-specific `{part}.{harness}.md`
+    /// wins over the harness-neutral `{part}.md`, which wins over the legacy `{part}.default.md`
+    /// (docs/PLAN.md §B2). A null <paramref name="cwd"/> reads the library alone, and a local
     /// part whose real path leaves <paramref name="cwd"/> throws <see cref="RoleRenderException"/>, as in
     /// <see cref="LoadRole"/> (#99, #97).
     /// </summary>
     public string ReadPart(string role, string partName, string harness, string? cwd)
     {
         string harnessRel = $"{role}/parts/{partName}.{harness}.md";
+        string neutralRel = $"{role}/parts/{partName}.md";
         string defaultRel = $"{role}/parts/{partName}.default.md";
 
         if (cwd is not null)
         {
-            foreach (string rel in new[] { harnessRel, defaultRel })
+            foreach (string rel in new[] { harnessRel, neutralRel, defaultRel })
             {
                 string localPath = Path.Combine(cwd, ".claustrum", "roles", rel.Replace('/', Path.DirectorySeparatorChar));
                 if (ReadLocal(cwd, role, localPath) is string localPart)
@@ -174,13 +176,13 @@ public sealed class RoleLibrary
             }
         }
 
-        foreach (string rel in new[] { harnessRel, defaultRel })
+        foreach (string rel in new[] { harnessRel, neutralRel, defaultRel })
         {
             if (EmbeddedExists(rel))
                 return ReadEmbedded(rel);
         }
 
-        throw new RoleRenderException($"role '{role}': no part '{partName}' for harness '{harness}' (looked for {harnessRel} and {defaultRel})");
+        throw new RoleRenderException($"role '{role}': no part '{partName}' for harness '{harness}' (looked for {harnessRel}, {neutralRel} and {defaultRel})");
     }
 
     private static string LocalPath(string cwd, string role, string relative) => Path.Combine(cwd, ".claustrum", "roles", role, relative);

@@ -426,7 +426,7 @@ public static partial class ArchitectWorktree
         return $"{CastStore.PathFor(cwd, castName)} ({d.State} — commit it first)";
     }
 
-    // RoleLibrary.LoadRole's `<role>/role.json` and `<role>/ROLE.md`, ReadPart's `<role>/parts/<part>.<harness|default>.md`.
+    // RoleLibrary.LoadRole's `<role>/role.json` and `<role>/ROLE.md`, ReadPart's `<role>/parts/<part>[.<harness>].md`.
     [GeneratedRegex(@"^\.claustrum/roles/[^/]+/(role\.json|ROLE\.md|parts/[^/]+\.md)$", RegexOptions.IgnoreCase)]
     private static partial Regex RoleFile();
 
