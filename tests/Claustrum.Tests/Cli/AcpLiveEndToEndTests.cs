@@ -60,6 +60,13 @@ public sealed class AcpLiveEndToEndTests : IDisposable
 
     private string TheJob() => Assert.Single(repo.JobDirectories());
 
+    private void WriteLocalRoleJson(string role, string json)
+    {
+        string directory = Path.Combine(repo.Repo, ".claustrum", "roles", role);
+        Directory.CreateDirectory(directory);
+        File.WriteAllText(Path.Combine(directory, "role.json"), json);
+    }
+
     private string ConversationOf(string id) => ReadShared(Path.Combine(repo.JobsRoot, id, "conversation.jsonl"));
 
     private static string ReadShared(string path)
@@ -286,10 +293,13 @@ public sealed class AcpLiveEndToEndTests : IDisposable
 
     // ---- the harness refusal and the doctor -------------------------------------------------------------------------------------------
 
+    // The browser roles list claude and opencode (#135), so this pins the ui-reviewer back to claude in a
+    // local override: exit 2 still names both the backend and its harness, and mints no job.
     [Fact]
-    public async Task AClaudeOnlyRoleOnAcpOpencodeExitsTwoNamingBothNamesAndMintsNoJobAsync()
+    public async Task ARolePinnedToClaudeOnAcpOpencodeExitsTwoNamingBothNamesAndMintsNoJobAsync()
     {
         Fake(0m, FakeAcpTurn.Report("never reached"));
+        WriteLocalRoleJson("ui-reviewer", /*lang=json,strict*/ """{"harnesses":["claude"]}""");
 
         CliResult result = await repo.RunAsync("run", "ui-reviewer", "--backend", "acp-opencode", "--brief", "x");
 

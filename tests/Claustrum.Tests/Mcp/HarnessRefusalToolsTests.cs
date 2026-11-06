@@ -53,13 +53,13 @@ public sealed class HarnessRefusalToolsTests(AppServicesHomeFixture fixture) : I
     {
         CastStore.Save(cwd, new Cast(
             "default", "1.0.0", new CastArchitect(CastArchitect.Host),
-            new Dictionary<string, CastRoleEntry?> { ["demo-author"] = new CastRoleEntry(Model: "opencode:some-model", Backend: null, Tier: null) },
+            new Dictionary<string, CastRoleEntry?> { ["demo-author"] = new CastRoleEntry(Model: "cursor:some-model", Backend: null, Tier: null) },
             BudgetUsd: null));
 
         McpException exception = await Assert.ThrowsAsync<McpException>(
             () => ClaustrumTools.DelegateAsync(role: "demo-author", brief: "hi", cwd: cwd, cancellationToken: TestContext.Current.CancellationToken));
 
-        AssertRefusal(exception, "demo-author", "opencode");
+        AssertRefusal(exception, "demo-author", "cursor");
     }
 
     [Fact]
@@ -83,9 +83,9 @@ public sealed class HarnessRefusalToolsTests(AppServicesHomeFixture fixture) : I
         InCwd(() =>
         {
             McpException exception = Assert.Throws<McpException>(
-                () => ClaustrumTools.CastCreate(new Dictionary<string, string> { ["builder"] = "claude:opus", ["demo-author"] = "opencode:some-model" }));
+                () => ClaustrumTools.CastCreate(new Dictionary<string, string> { ["builder"] = "claude:opus", ["demo-author"] = "cursor:some-model" }));
 
-            Assert.Contains("'opencode:some-model' puts demo-author on 'opencode', but demo-author runs on claude only", exception.Message, StringComparison.Ordinal);
+            Assert.Contains("'cursor:some-model' puts demo-author on 'cursor', but demo-author runs on claude, opencode only", exception.Message, StringComparison.Ordinal);
             Assert.Contains("or 'not needed'", exception.Message, StringComparison.Ordinal);
             Assert.False(Directory.Exists(CastStore.DirectoryFor(cwd)));
         });
@@ -179,7 +179,7 @@ public sealed class HarnessRefusalToolsTests(AppServicesHomeFixture fixture) : I
 
     private static void AssertRefusal(McpException exception, string role, string backend)
     {
-        Assert.Contains($"role '{role}' runs on claude only", exception.Message, StringComparison.Ordinal);
+        Assert.Contains($"role '{role}' runs on claude, opencode only", exception.Message, StringComparison.Ordinal);
         Assert.Contains($"'{backend}'", exception.Message, StringComparison.Ordinal);
         Assert.Contains(Sources, exception.Message, StringComparison.Ordinal);
         Assert.Contains($".claustrum/roles/{role}/role.json", exception.Message, StringComparison.Ordinal);

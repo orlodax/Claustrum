@@ -127,11 +127,14 @@ public sealed class AcpHarnessMappingTests(AppServicesHomeFixture fixture) : IDi
 
     // ---- the refusal ------------------------------------------------------------------------------------------------------------
 
+    // The browser roles list claude and opencode (#135), so the refusal is exercised by pinning the role
+    // back to claude in a local override; the message still names both the backend and its harness.
     [Theory]
     [InlineData("demo-author")]
     [InlineData("ui-reviewer")]
-    public void AClaudeOnlyRoleOnAcpOpencodeIsRefusedNamingBothTheBackendAndItsHarnessAndMintsNoJob(string role)
+    public void ARolePinnedToClaudeOnAcpOpencodeIsRefusedNamingBothTheBackendAndItsHarnessAndMintsNoJob(string role)
     {
+        WriteLocalRoleJson(role, /*lang=json,strict*/ """{"harnesses":["claude"]}""");
         string[] before = JobDirectories();
 
         RoleRenderException exception = Assert.Throws<RoleRenderException>(() => DelegateEngine.Prepare(Request(role, new ConfigOverrides(Backend: "acp-opencode"))));
@@ -146,6 +149,7 @@ public sealed class AcpHarnessMappingTests(AppServicesHomeFixture fixture) : IDi
     [Fact]
     public async Task TheBlockingPathRefusesTheSameWayAndMintsNoJobAsync()
     {
+        WriteLocalRoleJson("ui-reviewer", /*lang=json,strict*/ """{"harnesses":["claude"]}""");
         string[] before = JobDirectories();
 
         RoleRenderException exception = await Assert.ThrowsAsync<RoleRenderException>(
@@ -155,13 +159,14 @@ public sealed class AcpHarnessMappingTests(AppServicesHomeFixture fixture) : IDi
         Assert.Equal(before, JobDirectories());
     }
 
-    // A native backend's refusal is worded as it always was: one name, no harness in parentheses.
+    // A native backend's refusal is worded as it always was: one name, no harness in parentheses. cursor is
+    // native and not one of the demo-author's harnesses (#135).
     [Fact]
     public void ANativeBackendsRefusalStillNamesOnlyTheBackend()
     {
-        RoleRenderException exception = Assert.Throws<RoleRenderException>(() => DelegateEngine.Prepare(Request("ui-reviewer", new ConfigOverrides(Backend: "opencode"))));
+        RoleRenderException exception = Assert.Throws<RoleRenderException>(() => DelegateEngine.Prepare(Request("demo-author", new ConfigOverrides(Backend: "cursor"))));
 
-        Assert.Contains("this run resolved it to 'opencode' through --backend/--model", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("this run resolved it to 'cursor' through --backend/--model", exception.Message, StringComparison.Ordinal);
         Assert.DoesNotContain("(harness", exception.Message, StringComparison.Ordinal);
     }
 
@@ -172,8 +177,8 @@ public sealed class AcpHarnessMappingTests(AppServicesHomeFixture fixture) : IDi
         string directory = Path.Combine(cwd, ".claustrum", "roles", "demo-author");
         Directory.CreateDirectory(Path.Combine(directory, "parts"));
         File.WriteAllText(Path.Combine(directory, "role.json"), /*lang=json,strict*/ """{"harnesses":["claude","opencode"]}""");
-        File.WriteAllText(Path.Combine(directory, "parts", "browser.default.md"), "Drive the browser with this harness's own tools.");
-        File.WriteAllText(Path.Combine(directory, "parts", "environment.default.md"), "Use the host's shell.");
+        File.WriteAllText(Path.Combine(directory, "parts", "browser.md"), "Drive the browser with this harness's own tools.");
+        File.WriteAllText(Path.Combine(directory, "parts", "environment.md"), "Use the host's shell.");
 
         PreparedDelegation prepared = DelegateEngine.Prepare(Request("demo-author", new ConfigOverrides(Backend: "acp-opencode")));
 
@@ -207,5 +212,12 @@ public sealed class AcpHarnessMappingTests(AppServicesHomeFixture fixture) : IDi
 
         Assert.Equal("acp-opencode", prepared.Role.Backend);
         Assert.DoesNotContain(prepared.Request.PreRunWarnings ?? [], text => text.Contains("ran as", StringComparison.Ordinal));
+    }
+
+    private void WriteLocalRoleJson(string role, string json)
+    {
+        string directory = Path.Combine(cwd, ".claustrum", "roles", role);
+        Directory.CreateDirectory(directory);
+        File.WriteAllText(Path.Combine(directory, "role.json"), json);
     }
 }

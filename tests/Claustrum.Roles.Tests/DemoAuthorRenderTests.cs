@@ -43,9 +43,9 @@ public sealed class DemoAuthorRenderTests : IDisposable
         Assert.DoesNotContain(phrase, RenderedBody(), StringComparison.Ordinal);
 
     // `--path-format=absolute` needs git 2.31, so the capture script resolves the common dir against the
-    // checkout root instead; the flag is named once, as the thing not to use, and only in the Claude part.
+    // checkout root instead; the flag is named once, as the thing not to use, in the harness-neutral part.
     [Fact]
-    public void PathFormatAbsoluteAppearsOnlyAsTheNotWarningInTheClaudePart()
+    public void PathFormatAbsoluteAppearsOnlyAsTheNotWarning()
     {
         const string flag = "--path-format=absolute";
         Assert.DoesNotContain(flag, library.LoadRole("demo-author", cwd).RoleMdTemplate, StringComparison.Ordinal);
@@ -62,7 +62,7 @@ public sealed class DemoAuthorRenderTests : IDisposable
     [InlineData("Write every deck file — and the `info/exclude` line — from the capture script")]
     [InlineData("protected folder")]
     [InlineData("creates its `info/` directory if it is missing")]
-    public void TheClaudePartTellsTheCaptureScriptToWriteEverythingItself(string phrase) =>
+    public void TheBrowserPartTellsTheCaptureScriptToWriteEverythingItself(string phrase) =>
         Assert.Contains(phrase, Prose.Flatten(library.ReadPart("demo-author", "browser", "claude", cwd)), StringComparison.Ordinal);
 
     [Theory]
@@ -82,17 +82,20 @@ public sealed class DemoAuthorRenderTests : IDisposable
     public void TheReportSchemaCarriesTheGitignoreKey() =>
         Assert.Contains("\"gitignore\":", library.ReadShared("_shared/report/demo-author.md"), StringComparison.Ordinal);
 
+    // #135: both listed harnesses render through the same harness-neutral browser.md (there is no
+    // browser.<harness>.md and no browser.default.md). Which harnesses a role may run on is the
+    // requirement check's business, not the renderer's: the neutral part renders for every one.
     [Fact]
-    public void TheDemoAuthorRendersForEveryHarnessItListsAndOnlyForThose()
+    public void TheDemoAuthorRendersForEveryHarnessItLists()
     {
         RoleRenderer renderer = new(library);
 
+        Assert.Equal(["claude", "opencode"], library.LoadRole("demo-author", cwd).Definition.Harnesses);
         foreach (string harness in library.LoadRole("demo-author", cwd).Definition.Harnesses)
             Assert.False(string.IsNullOrWhiteSpace(renderer.Render("demo-author", "high", harness, cwd).SystemBody));
 
-        // The browser part is claude-only, so any other harness fails loudly and names it.
-        RoleRenderException exception = Assert.Throws<RoleRenderException>(() => renderer.Render("demo-author", "high", "opencode", cwd));
-        Assert.Contains("browser", exception.Message, StringComparison.Ordinal);
+        string opencode = renderer.Render("demo-author", "high", "opencode", cwd).SystemBody;
+        Assert.Contains("page.screenshot({ path })", opencode, StringComparison.Ordinal);
     }
 
     private static int CountOf(string text, string phrase)

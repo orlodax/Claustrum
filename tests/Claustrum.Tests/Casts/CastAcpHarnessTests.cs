@@ -42,11 +42,15 @@ public sealed class CastAcpHarnessTests : IDisposable
         Assert.Null(Problem(role, "acp-opencode:opencode/fake"));
     }
 
+    // The browser roles list claude and opencode (#135), so the refusal is exercised by pinning the role
+    // back to claude in a local override.
     [Theory]
     [InlineData("demo-author")]
     [InlineData("ui-reviewer")]
-    public void AClaudeOnlyRoleIsRefusedOnAcpOpencodeNamingTheBackendTheSpecAndTheHarnessesItRunsOn(string role)
+    public void ARolePinnedToClaudeIsRefusedOnAcpOpencodeNamingTheBackendTheSpecAndTheHarnessesItRunsOn(string role)
     {
+        WriteLocalRoleJson(role, /*lang=json,strict*/ """{"harnesses":["claude"]}""");
+
         string? problem = Problem(role, "acp-opencode:opencode/fake");
 
         Assert.NotNull(problem);
@@ -58,6 +62,7 @@ public sealed class CastAcpHarnessTests : IDisposable
     [Fact]
     public void AnAliasThatChasesToAnAcpSpecIsJudgedByItsHarnessToo()
     {
+        WriteLocalRoleJson("demo-author", /*lang=json,strict*/ """{"harnesses":["claude"]}""");
         Config config = ConfigWith(("cheap", "acp-opencode:opencode/fake"), ("cheaper", "cheap"));
 
         Assert.Null(Problem("builder", "cheaper", config));
@@ -70,6 +75,7 @@ public sealed class CastAcpHarnessTests : IDisposable
     public void AFallbackOnAcpOpencodeFollowsTheSameRule()
     {
         Assert.Null(Problem("builder", "acp-opencode:opencode/fake", fallback: true));
+        WriteLocalRoleJson("ui-reviewer", /*lang=json,strict*/ """{"harnesses":["claude"]}""");
 
         string? problem = Problem("ui-reviewer", "acp-opencode:opencode/fake", fallback: true);
 
@@ -79,7 +85,7 @@ public sealed class CastAcpHarnessTests : IDisposable
     }
 
     [Fact]
-    public void ACastWithAnAcpBuilderAndAnAcpSpawnedArchitectIsAcceptedAndOneWithAnAcpDemoAuthorIsNot()
+    public void ACastWithAnAcpBuilderAndAnAcpSpawnedArchitectIsAcceptedAndOneWithAnAcpDemoAuthorPinnedToClaudeIsNot()
     {
         Cast accepted = new(
             "ok", "1.0.0", new CastArchitect(CastArchitect.Spawned, Model: "acp-opencode:opencode/fake"),
@@ -89,6 +95,7 @@ public sealed class CastAcpHarnessTests : IDisposable
             "bad", "1.0.0", new CastArchitect(CastArchitect.Host),
             new Dictionary<string, CastRoleEntry?> { ["demo-author"] = new CastRoleEntry(Model: "acp-opencode:opencode/fake", Backend: null, Tier: null) },
             BudgetUsd: null);
+        WriteLocalRoleJson("demo-author", /*lang=json,strict*/ """{"harnesses":["claude"]}""");
 
         CastHarnessCheck.Require(accepted, library, registry, ConfigWith(), cwd);
         CastException exception = Assert.Throws<CastException>(() => CastHarnessCheck.Require(refused, library, registry, ConfigWith(), cwd));
@@ -129,11 +136,15 @@ public sealed class CastAcpHarnessTests : IDisposable
         Assert.Equal(["acp-alias", "claude-alias", "opencode-alias"], result.Questions.Single(q => q.Key == role).Options);
     }
 
+    // The browser roles list opencode natively now (#135), so this pins one back to claude to keep the
+    // "a role that does not list opencode is never offered the acp alias" half covered.
     [Theory]
     [InlineData("demo-author")]
     [InlineData("ui-reviewer")]
-    public async Task AClaudeOnlyRoleIsNeverOfferedTheAcpAliasAsync(string role)
+    public async Task ARolePinnedToClaudeIsNeverOfferedTheAcpAliasAsync(string role)
     {
+        WriteLocalRoleJson(role, /*lang=json,strict*/ """{"harnesses":["claude"]}""");
+
         CastQuestionnaireResult result = await CastQuestionnaire.BuildAsync(library, EveryBackendFound(), AliasPerBackend(), cwd, TestContext.Current.CancellationToken);
 
         Assert.Equal(["claude-alias"], result.Questions.Single(q => q.Key == role).Options);
@@ -179,5 +190,12 @@ public sealed class CastAcpHarnessTests : IDisposable
         CastQuestionnaireResult result = await CastQuestionnaire.BuildAsync(library, backends, config, cwd, TestContext.Current.CancellationToken);
 
         Assert.Equal(["claude-alias"], result.Questions.Single(q => q.Key == "builder").Options);
+    }
+
+    private void WriteLocalRoleJson(string role, string json)
+    {
+        string directory = Path.Combine(cwd, ".claustrum", "roles", role);
+        Directory.CreateDirectory(directory);
+        File.WriteAllText(Path.Combine(directory, "role.json"), json);
     }
 }

@@ -171,10 +171,10 @@ public sealed class CastFallbackTests : IDisposable
         BackendRegistry backends = new(allBackends.Select(name => new FakeBackend(name, found: true)));
         Config config = new() { Merged = new ConfigDocument(Models: [], Roles: [], Backends: [], Defaults: null, Jobs: null), Origins = [] };
 
-        string? problem = CastHarnessCheck.Problem("ui-reviewer", "opencode:x", library, backends, config, cwd, fallback: true);
+        string? problem = CastHarnessCheck.Problem("ui-reviewer", "cursor:x", library, backends, config, cwd, fallback: true);
 
         Assert.NotNull(problem);
-        Assert.Contains("puts ui-reviewer's fallback on 'opencode'", problem, StringComparison.Ordinal);
+        Assert.Contains("puts ui-reviewer's fallback on 'cursor'", problem, StringComparison.Ordinal);
         Assert.Contains("or 'none'", problem, StringComparison.Ordinal);
         Assert.DoesNotContain("not needed", problem, StringComparison.Ordinal);
         Assert.Null(CastHarnessCheck.Problem("ui-reviewer", "claude:sonnet", library, backends, config, cwd, fallback: true));
@@ -192,7 +192,7 @@ public sealed class CastFallbackTests : IDisposable
             new Dictionary<string, CastRoleEntry?>
             {
                 ["builder"] = new CastRoleEntry("claude:opus", null, null, Fallback: "api:y"),
-                ["ui-reviewer"] = new CastRoleEntry("claude:opus", null, null, Fallback: "opencode:x"),
+                ["ui-reviewer"] = new CastRoleEntry("claude:opus", null, null, Fallback: "api:x"),
             },
             null);
 
@@ -200,7 +200,7 @@ public sealed class CastFallbackTests : IDisposable
 
         Assert.Contains("puts architect's fallback on 'api'", ex.Message, StringComparison.Ordinal);
         Assert.Contains("puts builder's fallback on 'api'", ex.Message, StringComparison.Ordinal);
-        Assert.Contains("puts ui-reviewer's fallback on 'opencode'", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("puts ui-reviewer's fallback on 'api'", ex.Message, StringComparison.Ordinal);
     }
 
     // ---- CastApplication hands the fallback to a request ------------------------------------------------------------

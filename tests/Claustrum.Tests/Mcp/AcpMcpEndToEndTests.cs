@@ -96,10 +96,13 @@ public sealed class AcpMcpEndToEndTests : IDisposable
         Assert.Equal(1, fake.Prompts);
     }
 
+    // The browser roles list claude and opencode (#135), so the refusal is exercised by pinning the role
+    // back to claude in a local override; the tool error still names both the backend and its harness.
     [Fact]
-    public async Task DelegateRefusesAClaudeOnlyRoleOnAcpOpencodeAsAToolErrorNamingBothNamesAsync()
+    public async Task DelegateRefusesARolePinnedToClaudeOnAcpOpencodeAsAToolErrorNamingBothNamesAsync()
     {
         Fake(FakeAcpTurn.Report("never reached"));
+        WriteLocalRoleJson("ui-reviewer", /*lang=json,strict*/ """{"harnesses":["claude"]}""");
         await using McpStdioClient client = await ConnectAsync();
         JsonObject arguments = Arguments("x");
         arguments["role"] = "ui-reviewer";
@@ -109,5 +112,12 @@ public sealed class AcpMcpEndToEndTests : IDisposable
         Assert.True(isError);
         Assert.Contains("'acp-opencode' (harness 'opencode')", text, StringComparison.Ordinal);
         Assert.Empty(repo.JobDirectories());
+    }
+
+    private void WriteLocalRoleJson(string role, string json)
+    {
+        string directory = Path.Combine(repo.Repo, ".claustrum", "roles", role);
+        Directory.CreateDirectory(directory);
+        File.WriteAllText(Path.Combine(directory, "role.json"), json);
     }
 }

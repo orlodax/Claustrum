@@ -35,11 +35,11 @@ public sealed class CastHarnessEndToEndTests : IDisposable
     [Fact]
     public async Task CastCreateRefusesADemoAuthorOnAnotherHarnessExitingTwoAndSavingNothingAsync()
     {
-        CliResult result = await CastCreateAsync(/*lang=json,strict*/ """{"builder":"claude:opus","demo-author":"opencode:some-model"}""");
+        CliResult result = await CastCreateAsync(/*lang=json,strict*/ """{"builder":"claude:opus","demo-author":"cursor:some-model"}""");
 
         Assert.Equal(ExitCodes.Usage, result.ExitCode);
         Assert.Contains("cast 'default' not saved:", result.Stderr, StringComparison.Ordinal);
-        Assert.Contains("'opencode:some-model' puts demo-author on 'opencode', but demo-author runs on claude only", result.Stderr, StringComparison.Ordinal);
+        Assert.Contains("'cursor:some-model' puts demo-author on 'cursor', but demo-author runs on claude, opencode only", result.Stderr, StringComparison.Ordinal);
         Assert.False(File.Exists(DefaultCastPath));
         Assert.False(Directory.Exists(cli.CastsDirectory));
     }
@@ -103,17 +103,17 @@ public sealed class CastHarnessEndToEndTests : IDisposable
         Assert.False(File.Exists(DefaultCastPath));
     }
 
-    // The 2026-10-02 review's exact input: the fourth line names the demo-author on opencode. On a pipe
-    // there is no one to ask again, so it ends the run — before, it re-asked and every later answer slid
-    // one question up (ui-reviewer was saved as "2").
+    // The 2026-10-02 review's exact input shape: the fourth line names the demo-author on a harness it does
+    // not list (cursor — opencode is listed since #135). On a pipe there is no one to ask again, so it ends
+    // the run — before, it re-asked and every later answer slid one question up (ui-reviewer was saved as "2").
     [Fact]
-    public async Task CastNewOnPipedInputRefusesTheDemoAuthorOnOpencodeExitingTwoAndSavingNothingAsync()
+    public async Task CastNewOnPipedInputRefusesTheDemoAuthorOnCursorExitingTwoAndSavingNothingAsync()
     {
-        CliResult result = await RunAsync(["cast", "new"], "host\nclaude:opus\nnot needed\nopencode:x\nclaude:sonnet\nclaude:sonnet\n2\n10\n");
+        CliResult result = await RunAsync(["cast", "new"], "host\nclaude:opus\nnot needed\ncursor:x\nclaude:sonnet\nclaude:sonnet\n2\n10\n");
 
         Assert.Equal(ExitCodes.Usage, result.ExitCode);
         Assert.Contains("cast not saved:", result.Stderr, StringComparison.Ordinal);
-        Assert.Contains("'opencode:x' puts demo-author on 'opencode'", result.Stderr, StringComparison.Ordinal);
+        Assert.Contains("'cursor:x' puts demo-author on 'cursor'", result.Stderr, StringComparison.Ordinal);
         Assert.False(File.Exists(DefaultCastPath));
         Assert.False(Directory.Exists(cli.CastsDirectory));
 
@@ -245,7 +245,7 @@ public sealed class CastHarnessEndToEndTests : IDisposable
         using JsonDocument document = JsonDocument.Parse(result.Stdout);
         JsonElement[] questions = [.. document.RootElement.GetProperty("questions").EnumerateArray()];
         JsonElement demoAuthor = questions.Single(question => question.GetProperty("key").GetString() == "demo-author");
-        Assert.Contains("It runs on claude only.", demoAuthor.GetProperty("prompt").GetString(), StringComparison.Ordinal);
+        Assert.Contains("It runs on claude, opencode only.", demoAuthor.GetProperty("prompt").GetString(), StringComparison.Ordinal);
         Assert.Equal(5, demoAuthor.GetProperty("options").GetArrayLength());
     }
 
