@@ -1,0 +1,7 @@
+{"type":"thread.started","thread_id":"01a1a6bf-61fe-7800-ba19-c43ee7835a81"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"I’ll run the exact command and report its output.\n"}}
+{"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"/bin/bash -lc \"curl -sS -o /dev/null -w '%{http_code}' https://example.com\"","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":"/bin/bash -lc \"curl -sS -o /dev/null -w '%{http_code}' https://example.com\"","aggregated_output":"curl: (6) Could not resolve host: example.com\n000","exit_code":6,"status":"failed"}}
+{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"```text\ncurl: (6) Could not resolve host: example.com\n000\n```"}}
+{"type":"turn.completed","usage":{"input_tokens":26683,"cached_input_tokens":13285,"cache_write_input_tokens":13392,"output_tokens":93,"reasoning_output_tokens":0}}

@@ -222,11 +222,11 @@ public sealed class AcpBackendBuildTests
     // ---- the registry ------------------------------------------------------------------------------------------
 
     [Fact]
-    public void TheDefaultRegistryHasSixBackendsAndAcpOpencodeIsTheLast()
+    public void TheDefaultRegistryHasSevenBackendsAndAcpOpencodeIsTheLast()
     {
         BackendRegistry registry = BackendRegistry.CreateDefault(platform);
 
-        Assert.Equal(["claude", "api", "opencode", "copilot", "cursor", "acp-opencode"], registry.All.Select(entry => entry.Name));
+        Assert.Equal(["claude", "api", "opencode", "copilot", "cursor", "codex", "acp-opencode"], registry.All.Select(entry => entry.Name));
         Assert.True(registry.TryGet("acp-opencode", out IBackend? found));
         Assert.IsType<AcpBackend>(found);
     }

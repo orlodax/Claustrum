@@ -12,7 +12,7 @@
   "deny": ["git push"],
   "mayDelegate": ["architect"],
   "report": "builder",
-  "harnesses": ["claude", "opencode", "cursor", "copilot"],
+  "harnesses": ["claude", "opencode", "cursor", "copilot", "codex"],
   "nonNegotiable": [
     "This repo's CLAUDE.md/AGENTS.md are law; never override them with a generic convention.",
     "You never create, modify or delete a test file — pre-existing ones and fixtures included — never run tests, and never summon the tester or reviewer yourself.",

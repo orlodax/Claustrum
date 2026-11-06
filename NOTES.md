@@ -7372,3 +7372,128 @@ them first-class on opencode.
   `OpencodeSync` are back to one entry per file, and `opencode.json`'s `playwright` key is once more a
   human's own — never written, never warned about. This note supersedes the two above that called the
   opencode demo-author's Playwright-MCP binding "not taken".
+
+## The codex backend, validated against a real install (2026-11-04)
+
+`codex-cli 0.166.0` (`npm i -g @openai/codex`, `~/.npm-global/bin/codex`), signed in by the owner with `codex login
+--with-api-key` (a colleague's OpenAI key; `codex login status` → `API key configured`, `~/.codex/auth.json` holds
+`{"auth_mode":"apikey","OPENAI_API_KEY":…}`). The owner ruled out opencode as the route to OpenAI. 18 paid `codex exec` runs in
+scratch `git init` repos, every one `… | codex exec --json … -`, plus three free ones that never reached a model. Captures are in
+`tests/fixtures/codex/`, paths scrubbed to `/work`. The default model for this login is `gpt-6.1-sol` (read from the session
+file under `~/.codex/sessions/`, since the `--json` stream does not name it).
+
+1. **Doctor.** `codex --version` → `codex-cli 0.166.0`, exit 0. `VersionProbe` passes it through.
+2. **The stream.** `--json` prints JSONL: `thread.started {thread_id}`, `turn.started`, `item.started`/`item.completed {item}`,
+   `turn.completed {usage}` or `turn.failed {error.message}`. Item types seen: `agent_message {text}`, `command_execution
+   {command, aggregated_output, exit_code, status: completed|failed}`, `file_change {changes[{path, kind}], status}`, and
+   `error {message}` (a non-fatal warning). The final answer is the **last** `agent_message`, since the first is often a preamble
+   ("I’ll read `a.txt`…", `tools-read-only.jsonl`). A top-level `error` event is a retry notice (`Reconnecting... 2/5 …`), never
+   the outcome; only `turn.failed` is. Exit 0 on success, 1 on `turn.failed`.
+3. **Usage, no cost.** `{"input_tokens":13266,"cached_input_tokens":0,"cache_write_input_tokens":13263,"output_tokens":6,
+   "reasoning_output_tokens":0}`. OpenAI counts `input_tokens` with the cached ones included, unlike claude. No price anywhere,
+   so `cost_usd` is null and a budget charges the whole cap, as for cursor and copilot.
+4. **The prompt on stdin.** `-` reads the whole prompt from stdin, so the role body is prefixed onto the brief like cursor's.
+   There is no system-prompt flag; codex reads the repo's `AGENTS.md` on its own (the e2e reviewer's first command was
+   `cat AGENTS.md CLAUDE.md`).
+5. **The git check.** Outside a git repo: exit 1, empty stdout, stderr `Not inside a trusted directory and
+   --skip-git-repo-check was not specified.` (`not-a-git-repo.stderr.txt`). Claustrum decides where a run happens, so the flag
+   is always passed.
+6. **Errors.**
+   - No credential: ten `Reconnecting…` notices, then `turn.failed` `unexpected status 401 Unauthorized: Missing bearer…`, about
+     45 s (`auth-401.jsonl`).
+   - `-m gpt-nonexistent-9`: `turn.failed` `The model `gpt-nonexistent-9` does not exist or you do not have access to it.`,
+     with no status and no type (`model-not-found.jsonl`).
+   - `-c model_reasoning_effort="bogus"`: the message is the provider's JSON body, `{"error":{"type":"invalid_request_error",…},
+     "status":400}` (`invalid-request-400.jsonl`).
+   So `Classify` reads a JSON body's `status` and `error.type`, codex's own `unexpected status NNN` prefix, and the
+   model-not-found sentence matched whole, anchored at both ends. That last one is the single place a message's words decide.
+   It is narrow on purpose (ProviderErrors): a message that only contains the sentence is Other. A 429 / quota refusal was not
+   reachable here; see the review findings below for the sentences codex prints instead.
+7. **Effort.** The 400 above lists the accepted values: `none, minimal, low, medium, high, xhigh, max`. The role tiers' `high`,
+   `xhigh` and `max` pass straight as `-c model_reasoning_effort="<effort>"`; `xhigh` and `max` both ran.
+8. **Sandboxes.**
+   - `read-only`: `cat` ran, `echo e > e.txt` → `Read-only file system`.
+   - `workspace-write` wrote `b.txt` in the cwd, but refused `~/.cache/claustrum-codex-probe/out2.txt` (`Read-only file
+     system`). It **did** write a file outside the cwd under `/tmp`: `/tmp` and `$TMPDIR` are writable roots by default (the
+     session file says `"exclude_slash_tmp":false`).
+   - Both read a file outside the cwd (`~/.cache/…/out.txt`), which is why read dirs need no flag. `--add-dir` exists, but it
+     makes a dir *writable*.
+   - The network is off in both (`curl: (6) Could not resolve host`). `-c sandbox_workspace_write.network_access=true` turns
+     it on (curl `200`). `-c sandbox_read_only.network_access=true` is refused (`unknown configuration field` under
+     `--strict-config`), so a read-only role works offline.
+   - **With no sandbox named, a fresh `exec` is `workspace-write`** (it wrote `d.txt`), not read-only.
+9. **A refused command is invisible in `--json`.** The `echo y > …/out2.txt` that the sandbox refused never appears as an item;
+   only the model's own report of the error does (`sandbox-denied-write.jsonl`). So the tool-call count is a lower bound: it
+   counts the completed `command_execution`, `file_change`, `mcp_tool_call` and `web_search` items.
+10. **Resume.** `codex exec resume [OPTIONS] <id> -` kept the thread (`thread_id` unchanged, the answer recalled `a.txt`).
+    `resume` takes no `-s` and no `-C`. ⚠ **A resume with no sandbox named fell back to workspace-write on a thread started
+    read-only**: it wrote `r1.txt`. `-c sandbox_mode="read-only"` on the resume refused `r3.txt`, and `-c
+    sandbox_mode="workspace-write"` wrote `r2.txt`. The session file shows the policy per turn. So `Build` always names the
+    sandbox through `-c sandbox_mode` (also measured on a fresh `exec`: `-c sandbox_mode="read-only"` refused `e.txt`), and the
+    workspace is the process cwd, which both forms use. Don't "simplify" this into `-s`: `resume` would reject it.
+11. **No native deny.** Codex has execpolicy `.rules` files, loaded from `~/.codex` and the project, but no per-run flag that
+    takes a rule. The deny list is a prompt rule, like cursor's, and doctor says so as an advisory. Writing a per-job rules file
+    under `CODEX_HOME` is a possible follow-up.
+
+**The mapping:** readonly → `read-only`; edit → `workspace-write`; shell and edit+shell → `workspace-write` with network (see
+the review findings below for what it still cannot write); full → `danger-full-access`. The missing half of shell (no
+editing) and of edit (no shell) is a prompt rule, as on cursor. `CODEX_HOME` reaches the child by exact name: a `CODEX_` prefix
+would also forward a parent codex's `CODEX_SANDBOX*` markers, the reason `CLAUDE_CONFIG_DIR` is exact. `OPENAI_*` goes by prefix.
+
+**End to end through Claustrum** (Debug build): `claustrum run code-reviewer --backend codex --model gpt-6.1-sol --permission
+readonly --json --stream --no-live` on this worktree. It returned `status: success`, the session id, usage (41824 in / 1234 out /
+17392 cached / 24426 cache-write), no changed files and a parsed `claustrum-report`. The stream printed `SAYS` and `SHELL`
+lines. `--resume <that id>` recalled the two files it had read. `--model gpt-nonexistent-9` failed with `error_kind:
+model_not_found`.
+
+**Not built:** a live protocol (codex holds no conversation on stdin; a per-turn resume like opencode's would work), environment
+classification (`Trace`; `command_execution` carries `exit_code` and `aggregated_output`, so it is feasible), and `sync --only
+codex` (codex has no per-role agent files).
+
+### The blind review's findings, measured (2026-11-04, same day)
+
+A blind code review read codex's source at tag `rust-v0.166.0`, and four of its findings changed the backend. Each was measured
+here before the fix (6 more paid runs, 2 free ones):
+
+- **A codex `.rules` allow rule ran a command outside the read-only sandbox.** In `codex/exec_policy.rs`, a command matched by
+  `decision="allow"` skips the sandbox. Codex trusts a repo itself after any run that can write it (`set_project_trust_level`:
+  `~/.codex/config.toml` gained `[projects."<repo>"] trust_level = "trusted"` for every scratch repo with a workspace-write run,
+  and for a fresh clone after one `dotnet build`), and a trusted repo's `.codex/rules/` and `.codex/config.toml` load.
+  - With `.codex/rules/allow.rules` = `prefix_rule(pattern=["touch"], decision="allow")` in a trusted scratch repo,
+    `codex exec -c sandbox_mode="read-only"` ran `touch bypass1.txt` with exit 0, and the file was there.
+  - With `--ignore-rules --ignore-user-config` added, `touch bypass2.txt` → `Read-only file system`.
+  - A trusted repo's `.codex/config.toml` with `model_reasoning_effort = "bogus"` made the plain run fail with the 400. With
+    `--ignore-user-config` it answered "Hi!": the trust table is in the ignored user config, so the repo layer stays off.
+  - Auth survives both flags. So every `Build` passes them, on `resume` too (both subcommands list them). Codex still writes the
+    trust entry; it is inert for Claustrum's runs. The same class of hole as claude's `.mcp.json` (#128).
+- **`OPENAI_API_KEY` does not log `codex exec` in.** `load_auth` reads `CODEX_API_KEY` only. Measured with an empty `CODEX_HOME`
+  and a bogus key: `OPENAI_API_KEY=sk-bogus…` → `401 … Missing bearer` (never sent), `CODEX_API_KEY=sk-bogus…` → `401 Incorrect
+  API key provided`. `backends doctor` now checks `CODEX_API_KEY`, which reaches the child through the `*_API_KEY` rule.
+- **A 429 or a 5xx is never `unexpected status NNN`.** Codex maps them to fixed sentences (`protocol/src/error.rs`): "Quota
+  exceeded. …", "You’ve hit your usage limit…", "Your workspace is out of credits.…", "Selected model is at capacity.…", "We’re
+  currently experiencing high demand…", and `exceeded retry limit, last status: 429 Too Many Requests`. `Classify` now matches
+  those from the start, plus the retry-limit prefix's status. They were read in the source, not provoked: no quota was reachable.
+  An earlier line here saying a 429 "goes through the same status and type paths" was wrong.
+- **workspace-write writes only the cwd, `/tmp` and `$TMPDIR`.** `.git` at the project root stays read-only, and so does a
+  linked worktree's git dir, which lives outside the cwd. So does `~/.claustrum`, where a nested `claustrum run` keeps its job,
+  so the architect (which delegates and integrates with git) is taken off codex. A builder or tester still works: `dotnet build`
+  of a fresh clone ran green under `workspace-write` + network from a warm `~/.nuget`. A restore that has to add a package to
+  `~/.nuget`, or `~/.npm`, is expected to fail; that is unmeasured.
+- The stream labelled a terminal `error` event RETRY. Now only `Reconnecting...` is a retry. The final error prints once, as
+  ERROR, since `turn.failed` repeats it.
+- Left as is: a read dir under `/tmp` or `$TMPDIR` is writable at the `workspace-write` levels and dispatch does not say so.
+  `ReadDirsWritableAt` takes a level, not a dir. MANUAL's read-dirs table states it.
+
+### The architect runs on codex at `full` (2026-11-04, the owner's call)
+
+The owner chose to keep the architect on codex rather than drop it. role.json gained `permissionByBackend`, a map from backend to
+level that replaces `permission` on that backend. `Config.Resolve` reads it below `roles.<role>.permission` and `--permission`.
+The architect sets `{"codex": "full"}`, so its receipt says `full`; a backend-side role-name check would have run it unsandboxed
+under a receipt that said `edit+shell`. This adds no escalation path: a repo's role override could already set `permission`.
+
+Measured with one paid run (Debug build first on `PATH`, since the installed 0.5.0 has no codex): `claustrum run architect --backend
+codex --model gpt-6.1-sol --no-live` with a brief to delegate exactly one code-reviewer on codex. The architect's shell ran
+`claustrum run code-reviewer --backend codex …`. The child job (`~/.claustrum/jobs/…-2a6353dc`) finished `success` with
+`backend.json` `permission: "readonly"`; the architect's own (`…-6a66f8a2`) says `permission: "full"`. Both finished `success`, and
+no file changed. So the nested Claustrum and the nested codex both work from inside `danger-full-access`. Integration (rebase,
+fast-forward in a builder's worktree) was not exercised by that run.

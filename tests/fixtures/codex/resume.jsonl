@@ -1,0 +1,4 @@
+{"type":"thread.started","thread_id":"01a1a6bc-f0fd-7042-896e-cecd203c68f8"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"I read `a.txt`, which contained `hello from fixture`."}}
+{"type":"turn.completed","usage":{"input_tokens":40307,"cached_input_tokens":26762,"cache_write_input_tokens":13536,"output_tokens":135,"reasoning_output_tokens":0}}

@@ -59,7 +59,8 @@ public sealed class RoleRenderer(RoleLibrary library)
             Blind: definition.Blind,
             Warnings: warnings.Count > 0 ? [.. warnings] : null,
             UserMcp: definition.UserMcp,
-            McpServers: LibraryMcpServers(cwd is null ? definition : library.LoadRole(role, cwd: null).Definition, harness));
+            McpServers: LibraryMcpServers(cwd is null ? definition : library.LoadRole(role, cwd: null).Definition, harness),
+            PermissionByBackend: definition.PermissionByBackend);
     }
 
     // #140: `mcp__<server>` (or `mcp__<server>__<tool>`) in the library's own role.json `tools`, never a repo override's: a repo naming

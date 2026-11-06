@@ -2,6 +2,7 @@ using System.Diagnostics.CodeAnalysis;
 using Claustrum.Core.Backends.Acp;
 using Claustrum.Core.Backends.Api;
 using Claustrum.Core.Backends.Claude;
+using Claustrum.Core.Backends.Codex;
 using Claustrum.Core.Backends.Copilot;
 using Claustrum.Core.Backends.Cursor;
 using Claustrum.Core.Backends.Opencode;
@@ -24,6 +25,7 @@ public sealed class BackendRegistry(IEnumerable<IBackend> backends)
         new OpencodeBackend(platform),
         new CopilotBackend(platform),
         new CursorBackend(platform),
+        new CodexBackend(platform),
         new AcpBackend(platform, new OpencodeAcpHarness(platform)),
     ]);
 

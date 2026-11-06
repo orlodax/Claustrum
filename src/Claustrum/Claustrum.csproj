@@ -9,7 +9,7 @@
     <ToolCommandName>claustrum</ToolCommandName>
     <PackageId>Claustrum</PackageId>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-    <Description>Harness-neutral coding-agent delegation: one binary that runs role-based agent jobs on claude, opencode, cursor or copilot, as a CLI and as an MCP server.</Description>
+    <Description>Harness-neutral coding-agent delegation: one binary that runs role-based agent jobs on claude, opencode, cursor, copilot or codex, as a CLI and as an MCP server.</Description>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageProjectUrl>https://github.com/orlodax/Claustrum</PackageProjectUrl>
     <PackageTags>agents;mcp;cli;claude;opencode;cursor;copilot</PackageTags>

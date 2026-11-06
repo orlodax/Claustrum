@@ -17,6 +17,7 @@ namespace Claustrum.Core.Backends.Api;
 public sealed class ApiBackend(IPlatform platform) : IBackend
 {
     private static readonly TimeSpan detectTimeout = TimeSpan.FromSeconds(10);
+    private static readonly string[] keyNames = ["OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"];
 
     // Anthropic's Messages API requires max_tokens; there is no per-role token budget in Claustrum
     // to derive one from (BudgetUsd is a dollar cap, not a token count), so this stays a generous
@@ -37,17 +38,16 @@ public sealed class ApiBackend(IPlatform platform) : IBackend
         if (!curl.Found)
             return curl;
 
-        bool hasKey = !string.IsNullOrEmpty(platform.GetEnvironmentVariable("OPENROUTER_API_KEY"))
-            || !string.IsNullOrEmpty(platform.GetEnvironmentVariable("ANTHROPIC_API_KEY"));
+        bool hasKey = keyNames.Any(name => !string.IsNullOrEmpty(platform.GetEnvironmentVariable(name)));
 
-        return hasKey ? curl : curl with { Problems = [.. curl.Problems, "neither OPENROUTER_API_KEY nor ANTHROPIC_API_KEY is set"] };
+        return hasKey ? curl : curl with { Problems = [.. curl.Problems, "none of OPENROUTER_API_KEY, OPENAI_API_KEY or ANTHROPIC_API_KEY is set"] };
     }
 
     public ProcessSpec Build(ResolvedRun run)
     {
         int colon = run.Role.Model.IndexOf(':');
         if (colon < 0)
-            throw new InvalidOperationException($"api backend model must be 'openrouter:<model>' or 'anthropic:<model>', got '{run.Role.Model}'");
+            throw new InvalidOperationException($"api backend model must be 'openrouter:<model>', 'openai:<model>' or 'anthropic:<model>', got '{run.Role.Model}'");
 
         string provider = run.Role.Model[..colon];
         string modelId = run.Role.Model[(colon + 1)..];
@@ -57,13 +57,17 @@ public sealed class ApiBackend(IPlatform platform) : IBackend
         {
             "openrouter" => (
                 "https://openrouter.ai/api/v1/chat/completions",
-                BuildOpenAiCompatibleBody(modelId, systemPrompt, run.Brief),
+                BuildOpenAiCompatibleBody(modelId, systemPrompt, run.Brief, askForUsage: true),
                 $"Authorization: Bearer {RequireKey("OPENROUTER_API_KEY")}"),
+            "openai" => (
+                "https://api.openai.com/v1/chat/completions",
+                BuildOpenAiCompatibleBody(modelId, systemPrompt, run.Brief, askForUsage: false),
+                $"Authorization: Bearer {RequireKey("OPENAI_API_KEY")}"),
             "anthropic" => (
                 "https://api.anthropic.com/v1/messages",
                 BuildAnthropicBody(modelId, systemPrompt, run.Brief),
                 $"x-api-key: {RequireKey("ANTHROPIC_API_KEY")}"),
-            _ => throw new InvalidOperationException($"api backend model provider must be 'openrouter' or 'anthropic', got '{provider}'"),
+            _ => throw new InvalidOperationException($"api backend model provider must be 'openrouter', 'openai' or 'anthropic', got '{provider}'"),
         };
 
         string bodyPath = Path.Combine(run.JobDirectory, "api-request-body.json");
@@ -111,12 +115,14 @@ public sealed class ApiBackend(IPlatform platform) : IBackend
                     ? messageProp.GetString() ?? trimmed
                     : trimmed;
                 int? status = TryGetInt(errorElement, "code");
-                string? type = errorElement.ValueKind == JsonValueKind.Object && errorElement.TryGetProperty("type", out JsonElement typeProp) && typeProp.ValueKind == JsonValueKind.String ? typeProp.GetString() : null;
+                // OpenAI's `code` is a string (`invalid_api_key`, `insufficient_quota`, `model_not_found`) and names the refusal more
+                // precisely than its `type`, which is `invalid_request_error` for a bad key and a bad body alike.
+                string? type = TryGetString(errorElement, "code") ?? TryGetString(errorElement, "type");
                 return new ParsedOutput(message, null, null, null, [], root, IsError: true, ProviderErrors.Classify(status, type), message, ToolCallsCompleted: 0);
             }
 
             return root.TryGetProperty("choices", out JsonElement choices)
-                ? ParseOpenRouterSuccess(root, choices, exitCode != 0)
+                ? ParseOpenAiCompatibleSuccess(root, choices, exitCode != 0)
                 : ParseAnthropicSuccess(root, exitCode != 0);
         }
     }
@@ -168,7 +174,7 @@ public sealed class ApiBackend(IPlatform platform) : IBackend
         return config.ToString();
     }
 
-    private static string BuildOpenAiCompatibleBody(string modelId, string systemPrompt, string brief)
+    private static string BuildOpenAiCompatibleBody(string modelId, string systemPrompt, string brief, bool askForUsage)
     {
         using MemoryStream buffer = new();
         using (Utf8JsonWriter writer = new(buffer))
@@ -188,10 +194,13 @@ public sealed class ApiBackend(IPlatform platform) : IBackend
             // OpenRouter's documented opt-in for usage accounting. Measured 2026-09-22: this account
             // gets `usage.cost` on deepseek-v4-flash *with or without* it, so it is belt-and-braces
             // rather than load-bearing — kept because "one account, one model" is no basis for
-            // dropping the only documented way to ask.
-            writer.WriteStartObject("usage");
-            writer.WriteBoolean("include", true);
-            writer.WriteEndObject();
+            // dropping the only documented way to ask. OpenRouter only: OpenAI refuses a request argument it does not know.
+            if (askForUsage)
+            {
+                writer.WriteStartObject("usage");
+                writer.WriteBoolean("include", true);
+                writer.WriteEndObject();
+            }
             writer.WriteEndObject();
         }
 
@@ -219,7 +228,8 @@ public sealed class ApiBackend(IPlatform platform) : IBackend
         return Encoding.UTF8.GetString(buffer.ToArray());
     }
 
-    private static ParsedOutput ParseOpenRouterSuccess(JsonElement root, JsonElement choices, bool httpError)
+    // OpenRouter and OpenAI share this shape; only OpenRouter adds `usage.cost`, so an OpenAI run reports tokens and a null cost.
+    private static ParsedOutput ParseOpenAiCompatibleSuccess(JsonElement root, JsonElement choices, bool httpError)
     {
         string finalMessage = choices.ValueKind == JsonValueKind.Array && choices.GetArrayLength() > 0
             && choices[0].TryGetProperty("message", out JsonElement message)
@@ -269,8 +279,15 @@ public sealed class ApiBackend(IPlatform platform) : IBackend
         return new ParsedOutput(finalMessage, null, null, usage, [], root, httpError);
     }
 
+    private static string? TryGetString(JsonElement parent, string propertyName) =>
+        parent.ValueKind == JsonValueKind.Object
+        && parent.TryGetProperty(propertyName, out JsonElement property)
+        && property.ValueKind == JsonValueKind.String ? property.GetString() : null;
+
+    // The Number check is load-bearing: TryGetInt32 throws on a string, and OpenAI's `error.code` is one (`invalid_api_key`) or null.
     private static int? TryGetInt(JsonElement parent, string propertyName) =>
         parent.ValueKind == JsonValueKind.Object
         && parent.TryGetProperty(propertyName, out JsonElement property)
+        && property.ValueKind == JsonValueKind.Number
         && property.TryGetInt32(out int value) ? value : null;
 }
